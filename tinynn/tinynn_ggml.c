@@ -998,12 +998,26 @@ void tnn_scratch_set(void *sess, int idx, double v)
     s->scratch[idx] = (float)v;
 }
 
+/* Out-of-range reads used to silently return 0.0 — indistinguishable
+ * from a legitimate zero in the scratch slot. Now we still return 0.0
+ * for backward compatibility, but emit a once-per-session warning so
+ * the failure is visible. Callers that need the legitimate zero/OOR
+ * distinction should check bounds themselves. */
 double tnn_scratch_get(void *sess, int idx)
 {
     if (!sess) return 0.0;
     tnn_session *s = (tnn_session *)sess;
     int max_n = TNN_SCRATCH_BYTES / (int)sizeof(float);
-    if (idx < 0 || idx >= max_n) return 0.0;
+    if (idx < 0 || idx >= max_n) {
+        if (!s->scratch_overflow_warned) {
+            fprintf(stderr, "[tnn] WARN: tnn_scratch_get idx=%d out of range "
+                            "(max=%d). Returning 0.0 — but this is now a "
+                            "silent zero, not a real one. Check your indexing.\n",
+                            idx, max_n);
+            s->scratch_overflow_warned = 1;
+        }
+        return 0.0;
+    }
     return (double)s->scratch[idx];
 }
 
@@ -1032,25 +1046,67 @@ int tnn_scratch_get_i32(void *sess, int idx)
     if (!sess) return 0;
     tnn_session *s = (tnn_session *)sess;
     int max_n = TNN_SCRATCH_BYTES / (int)sizeof(int32_t);
-    if (idx < 0 || idx >= max_n) return 0;
+    if (idx < 0 || idx >= max_n) {
+        if (!s->scratch_overflow_warned) {
+            fprintf(stderr, "[tnn] WARN: tnn_scratch_get_i32 idx=%d out of "
+                            "range (max=%d). Returning 0 — but this is a "
+                            "silent zero, not a real one.\n",
+                            idx, max_n);
+            s->scratch_overflow_warned = 1;
+        }
+        return 0;
+    }
     return (int)((int32_t *)s->scratch)[idx];
 }
 
+/* Bounds-checked upload: tensor must fit in the 16 MiB scratch. Larger
+ * tensors caused the silent UB that produced NaN logits at L=1 on
+ * Qwen2.5-0.5B (ffn_gate = 17.4 MB > 16 MB scratch); the memcpy past
+ * the scratch end overwrote adjacent heap. Use chunked uploaders for
+ * anything that might be large:
+ *   - tnn_upload_from_float_array (chunked f32 upload)
+ *   - tnn_upload_transposed_f64   (chunked transposed f64 upload)
+ * Returns 0 on success, -1 on null sess/tensor, -2 on size overflow. */
 int tnn_upload(void *sess, void *tensor)
 {
     if (!sess || !tensor) return -1;
     tnn_session *s = (tnn_session *)sess;
     struct ggml_tensor *t = (struct ggml_tensor *)tensor;
-    ggml_backend_tensor_set(t, s->scratch, 0, ggml_nbytes(t));
+    size_t nbytes = ggml_nbytes(t);
+    if (nbytes > (size_t)TNN_SCRATCH_BYTES) {
+        if (!s->scratch_overflow_warned) {
+            fprintf(stderr, "[tnn] WARN: tnn_upload tensor=%zu bytes exceeds "
+                            "scratch=%d bytes. Skipping upload (was: silent UB). "
+                            "Use tnn_upload_from_float_array or "
+                            "tnn_upload_transposed_f64 for tensors > 16 MiB.\n",
+                            nbytes, TNN_SCRATCH_BYTES);
+            s->scratch_overflow_warned = 1;
+        }
+        return -2;
+    }
+    ggml_backend_tensor_set(t, s->scratch, 0, nbytes);
     return 0;
 }
 
+/* Same bounds check as tnn_upload — a download into an oversized
+ * tensor would memcpy past the scratch end into adjacent heap. */
 int tnn_download(void *sess, void *tensor)
 {
     if (!sess || !tensor) return -1;
     tnn_session *s = (tnn_session *)sess;
     struct ggml_tensor *t = (struct ggml_tensor *)tensor;
-    ggml_backend_tensor_get(t, s->scratch, 0, ggml_nbytes(t));
+    size_t nbytes = ggml_nbytes(t);
+    if (nbytes > (size_t)TNN_SCRATCH_BYTES) {
+        if (!s->scratch_overflow_warned) {
+            fprintf(stderr, "[tnn] WARN: tnn_download tensor=%zu bytes exceeds "
+                            "scratch=%d bytes. Skipping download (was: silent UB). "
+                            "Use tnn_download_to_f64_array for tensors > 16 MiB.\n",
+                            nbytes, TNN_SCRATCH_BYTES);
+            s->scratch_overflow_warned = 1;
+        }
+        return -2;
+    }
+    ggml_backend_tensor_get(t, s->scratch, 0, nbytes);
     return 0;
 }
 

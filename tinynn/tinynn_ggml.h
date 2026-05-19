@@ -2,6 +2,8 @@
 #define TINYNN_GGML_H
 
 #include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -17,7 +19,30 @@ extern "C" {
  * (ne0=m, ne1=n) where m = rows of A and n = rows of B (A,B given as
  * ne0=k, ne1=rows). Reading the logical (m,n) row-major result: index
  * scratch[j*m + i] after tnn_tensor_pull. The Ruby side does the swap.
+ *
+ * Scratch buffer is 16 MiB (4 M f32 slots). Tensors larger than that
+ * MUST use the chunked uploaders (`tnn_upload_from_float_array`,
+ * `tnn_upload_transposed_f64`) — calling tnn_upload directly on an
+ * oversized tensor is bounds-checked now (was silent UB) but the call
+ * still fails.
  */
+
+/* TNN_ASSERT: debug-mode assert. In NDEBUG builds it compiles away.
+ * Use at "shouldn't happen" boundaries (post-invariant checks, FFI
+ * shape preconditions). Cheap. Pays for itself the first time it
+ * catches a silent regression — the silent-failure family of bugs is
+ * what makes this codebase hard to debug otherwise. */
+#ifdef NDEBUG
+#define TNN_ASSERT(cond, msg) ((void)0)
+#else
+#define TNN_ASSERT(cond, msg) do { \
+    if (!(cond)) { \
+        fprintf(stderr, "[tnn] TNN_ASSERT failed: %s\n  at %s:%d (%s)\n", \
+                (msg), __FILE__, __LINE__, #cond); \
+        abort(); \
+    } \
+} while (0)
+#endif
 
 void  *tnn_session_new(int prefer_cuda);     /* 0 = CPU only, 1 = CUDA if compiled in */
 void   tnn_session_free(void *sess);

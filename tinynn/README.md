@@ -306,10 +306,36 @@ which is why the result indexes as `scratch[j*m + i]` in
 
 ### Scratch buffer
 
-Each session owns a 16 MiB host-side scratch buffer used as a staging
-area. Bulk uploads use Spinel #474's `:float_array` / `:int_array`
-specs to memcpy directly from `Mat.flat`'s contiguous f64 storage —
-no per-element FFI calls.
+Each session owns a **16 MiB** host-side scratch buffer (4 M f32
+slots, or 4 M i32 slots — the same bytes, treated differently per
+primitive). Bulk uploads use Spinel #474's `:float_array` /
+`:int_array` specs to memcpy directly from `Mat.flat`'s contiguous
+f64 storage — no per-element FFI calls.
+
+**Tensors larger than 16 MiB must use the chunked uploaders** —
+`tnn_upload_from_float_array` (f32) or `tnn_upload_transposed_f64`
+(transposed f64). Calling `tnn_upload` directly on an oversized
+tensor is now bounds-checked and emits a once-per-session warning
+(it used to be silent UB — `memcpy` past the scratch end into
+adjacent heap; the Qwen2.5-0.5B `ffn_gate` overflow at 17.4 MB > 16
+MiB was the canonical bug that motivated this hardening — see
+[`docs/qwen25-known-issue.md`](../docs/qwen25-known-issue.md) and
+[GitHub issue #1](https://github.com/OriPekelman/toy/issues/1)).
+
+The hardened primitives:
+
+| Primitive | Out-of-range behaviour |
+| --- | --- |
+| `tnn_scratch_set` / `_i32` | Warn once per session; skip the write. |
+| `tnn_scratch_get` / `_i32` | Warn once per session; return 0 (back-compat) — but the zero is visible-as-silent now. |
+| `tnn_upload`               | Warn once; return -2; do not memcpy. |
+| `tnn_download`             | Warn once; return -2; do not memcpy. |
+| `tnn_view_2d` / `tnn_cpy`  | ggml-side asserts handle shape errors; we don't double-check. |
+
+For debug-build invariant checks, use `TNN_ASSERT(cond, msg)` from
+`tinynn_ggml.h`. It compiles away in `-DNDEBUG` release builds and
+`fprintf+abort`s in dev builds — used at "shouldn't happen"
+boundaries.
 
 ## Upstream status
 
