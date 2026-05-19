@@ -1,17 +1,30 @@
-# lib/toy_smollm2_ffi_kv_cuda.rb — Toy::SmolLM2 KV-cache decode via ggml FFI.
+# lib/toy_smollm2_ffi_kv_cuda.rb — CUDA mirror of `lib/toy_smollm2_ffi_kv.rb`.
 #
-# Mirror of lib/gpt2_ffi_kv_cuda.rb but for the llama-family architecture:
+# Llama-family decode (SmolLM2 / TinyLlama / Qwen2.5) via the FFI KV cache:
 #   - RMSNorm (no beta) instead of LayerNorm
-#   - No biases on Q / K / V / O / FFN projections
+#   - Optional Q/K/V bias (Qwen2.x; flag-gated)
 #   - SwiGLU FFN: down( silu(gate(x)) * up(x) )
 #   - RoPE applied to Q and K before the dot product
-#   - GQA: K and V are stored per-`n_kv`-head, not per-`n_heads`-head.
-#     Each KV head is shared by group_size = n_heads / n_kv query heads.
+#   - GQA: K and V stored per-`n_kv` head, shared by group_size = n_heads / n_kv
+#     query heads
 #
 # Per decode step builds a single-position compute graph; K and V at
 # the current position are written into persistent per-layer buffers
-# via cpy-into-view (same pattern as the GPT-2 cache). Cost per step:
-# constant in prompt length.
+# via cpy-into-view. Cost per step is constant in prompt length.
+#
+# Mechanically the same as toy_smollm2_ffi_kv.rb modulo `TinyNN` →
+# `TinyNNCuda` and class names suffixed `Cuda`. Phase 0 replaces both
+# files with a single generic `TransformerLM`; see
+# `docs/design/arch-struct.md`.
+#
+# WARNING: known divergence — this file's CUDA `build_decode_step` has
+# the PRE-Phase-3 V-matmul order (`matmul(t_h, t_w_v)`, result
+# ne=[1, d_head]); the CPU version has the Phase-3 flip
+# (`matmul(t_w_v, t_h)`, result ne=[d_head, 1]). Mathematically
+# equivalent for F32 and currently produces matching output thanks to
+# the cpy-strided fix (ggml-org/ggml#1497). Phase 0 will unify; until
+# then this divergence is documented but not "fixed" because the CUDA
+# path is currently passing parity tests.
 
 require_relative "transformer"
 require_relative "toy"

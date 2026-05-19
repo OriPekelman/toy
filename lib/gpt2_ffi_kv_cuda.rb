@@ -1,18 +1,17 @@
-# GPT2KVFFICacheCuda — per-step decode with persistent K/V kv_cache.
+# GPT2KVFFICacheCuda — CUDA mirror of `lib/gpt2_ffi_kv.rb`.
 #
-# At each decode step:
-#   - Build a single-position compute graph for position `pos`
-#   - Compute new q, k, v for one position
-#   - Write k_new and v_new into the persistent K[pos] / V[:, pos]
-#     buffers via cpy-into-view (validated in kv_multi_cpy_smoke.rb)
-#   - Attention reads K[0:pos+1] and V[0:pos+1] from the persistent
-#     buffers, so per-step compute is constant in prompt length
+# This file is mechanically the same as gpt2_ffi_kv.rb modulo:
+#   * `TinyNN` → `TinyNNCuda` (CUDA FFI module)
+#   * `GPT2KVFFICache` → `GPT2KVFFICacheCuda` (Spinel collapses same-named
+#     classes across modules; the suffix prevents that)
+#   * `require_relative "tinynn"` → `..."tinynn_cuda"`
 #
-# Cost per step: ~1 matmul of size (d_head × d_model) for q/k/v, one
-# scaled-dot attention over (pos+1) keys, and the FFN — all on a
-# single position. ggml-cpu at distilgpt2 shape: target ~3-8 ms vs
-# ~17 ms per full-T_SEQ forward at T_SEQ=5 (and that grows linearly
-# in T_SEQ; the KV path is flat).
+# Phase 0 replaces both files with one generic `TransformerLM` taking
+# a backend flag (PyTorch-style); see `docs/design/arch-struct.md`.
+# Until then: any change to gpt2_ffi_kv.rb MUST be mirrored here, or
+# the CPU and CUDA paths will silently diverge (the Qwen V-matmul flip
+# is the canonical example of this drift — see
+# `docs/design/arch-struct.md` and the cpy-strided incident).
 
 require_relative "transformer"
 require_relative "gpt2"
