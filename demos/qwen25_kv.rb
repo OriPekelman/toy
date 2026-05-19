@@ -1,8 +1,12 @@
-# demos/qwen25_kv.rb — Qwen2.5-0.5B inference via the FFI KV-cache.
+# Qwen2.5 inference via the Mat-mediated FFI KV-cache path. The slow,
+# correct, gold-standard reference. Use the mmap demos
+# (qwen25_native_mmap{,_cuda}) for actual performance.
 #
-# Same FFI KV path as SmolLM2 — the architectural delta is Q/K/V biases
-# (Qwen2.x convention). Toggling `qkv_bias=true` in realize_for wires
-# the bias add through.
+# Pick model via env:
+#   GGUF=data/qwen25-0.5b-f32.gguf  ./demos/qwen25_kv   # default
+#   GGUF=data/qwen25-1.5b-f32.gguf  ./demos/qwen25_kv
+#   GGUF=data/qwen25-3b-f32.gguf    ./demos/qwen25_kv
+#   GGUF=data/qwen25-7b-q8_0.gguf   ./demos/qwen25_kv   # Q8 via Mat-mediated
 #
 # Tokenize first:
 #   ./prep/qwen25_tokens.py encode "Hello, my name is"
@@ -13,10 +17,10 @@ require_relative "../lib/toy_smollm2_loader"
 require_relative "../lib/toy_smollm2_ffi_kv"
 require_relative "../lib/training"
 
-GGUF     = "data/qwen25-0.5b-f32.gguf"
-IDS_PATH = "data/qwen25_prompt_ids.txt"
-MAX_T    = 256
-N_NEW    = 16
+GGUF     = ENV["GGUF"]     || "data/qwen25-0.5b-f32.gguf"
+IDS_PATH = ENV["IDS_PATH"] || "data/qwen25_prompt_ids.txt"
+MAX_T    = (ENV["MAX_T"]   || "256").to_i
+N_NEW    = (ENV["N_NEW"]   || "16").to_i
 
 # --- config from GGUF ---
 cfg = SmolLM2ConfigLoader.read(GGUF)
@@ -37,7 +41,7 @@ puts "config: vocab=" + cfg.vocab.to_s +
 model = Toy::SmolLM2.new(cfg)
 GGUFLoad.load_toy_smollm2(model, GGUF)
 puts ""
-puts model.describe
+puts model.algorithm_card
 puts ""
 
 # --- realize KV cache + upload weights ---

@@ -31,7 +31,7 @@ puts "config: vocab=" + cfg.vocab.to_s +
 model = Toy::SmolLM2.new(cfg)
 GGUFLoad.load_toy_smollm2(model, GGUF)
 puts ""
-puts model.describe
+puts model.algorithm_card
 puts ""
 
 # --- realize KV cache + upload weights ---

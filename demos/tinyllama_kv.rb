@@ -32,7 +32,7 @@ puts "config: vocab=" + cfg.vocab.to_s +
 model = Toy::SmolLM2.new(cfg)
 GGUFLoad.load_toy_smollm2(model, GGUF)
 puts ""
-puts model.describe
+puts model.algorithm_card
 puts ""
 puts "DEBUG: has_untied_output=" + model.has_untied_output.to_s
 puts "DEBUG: output_proj shape=[" + model.output_proj.nrows.to_s + ", " + model.output_proj.ncols.to_s + "]"

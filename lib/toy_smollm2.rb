@@ -153,32 +153,9 @@ module Toy
       total
     end
 
-    # Build a multi-line description of the architecture and return
-    # it as a String. Caller does `puts model.describe`.
-    def describe
-      blk0 = @stack[0]
-      s = "Toy::SmolLM2 (" + Toy.fmt_count(param_count) + " params)\n"
-      s = s + "  config: vocab=" + @cfg.vocab.to_s
-      s = s + " d_model=" + @cfg.d_model.to_s
-      s = s + " n_heads=" + @cfg.n_heads.to_s
-      s = s + " n_kv=" + @cfg.n_kv.to_s
-      s = s + " d_ff=" + @cfg.d_ff.to_s
-      s = s + " n_layers=" + @cfg.n_layers.to_s
-      s = s + " ctx=" + @cfg.ctx.to_s
-      s = s + " rope_base=" + @cfg.rope_base.to_s + "\n"
-      s = s + "  token_embed: " + @token_embed.summary
-      s = s + "  [" + Toy.fmt_count(@token_embed.param_count) + "]\n"
-      s = s + "  rope:        " + @rope.summary + "\n"
-      s = s + "  stack: " + @cfg.n_layers.to_s + " × SmolLM2Block\n"
-      s = s + "    rn1:  " + blk0.rn1.summary + "\n"
-      s = s + "    attn: " + blk0.attn.summary + "\n"
-      s = s + "    rn2:  " + blk0.rn2.summary + "\n"
-      s = s + "    ffn:  " + blk0.ffn.summary + "\n"
-      s = s + "    (per-block params: " + Toy.fmt_count(blk0.param_count) + ")\n"
-      s = s + "  final_norm: " + @final_norm.summary + "\n"
-      s = s + "  unembed: tied to token_embed (logits = x · token_embed.T)"
-      s
-    end
+    # Introspection: `model.algorithm_card` (Phuong-Hutter pseudocode
+    # with shape annotations) is the single canonical path. See
+    # demos/algorithm_cards.rb.
 
     # Phuong–Hutter style algorithm card. Reads like the paper —
     # tensor shapes annotated on the right, ←  for assignment, ▷ for

@@ -370,9 +370,21 @@ smollm2_kv:        demos/smollm2_kv
 demos/smollm2_kv: demos/smollm2_kv.rb lib/toy_card.rb lib/toy.rb lib/toy_smollm2.rb lib/toy_smollm2_loader.rb lib/toy_smollm2_ffi_kv.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/training.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
+# Qwen2.5 Mat-mediated KV-cache (CPU). The slow, correct reference path.
+# Run with `GGUF=data/qwen25-1.5b-f32.gguf ./demos/qwen25_kv` etc.
 qwen25_kv:        demos/qwen25_kv
 demos/qwen25_kv: demos/qwen25_kv.rb lib/toy_card.rb lib/toy.rb lib/toy_smollm2.rb lib/toy_smollm2_loader.rb lib/toy_smollm2_ffi_kv.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/training.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
+
+# Qwen2.5 Phase-2 mmap inference (CPU). Canonical performance path.
+qwen25_native_mmap:        demos/qwen25_native_mmap
+demos/qwen25_native_mmap: demos/qwen25_native_mmap.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/training.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
+	$(SPINEL) $< -o $@
+
+# Qwen2.5 Phase-2 mmap inference (CUDA). Requires `make setup-ggml-cuda`.
+qwen25_native_mmap_cuda:        demos/qwen25_native_mmap_cuda
+demos/qwen25_native_mmap_cuda: demos/qwen25_native_mmap_cuda.rb lib/toy.rb lib/toy_smollm2.rb lib/toy_smollm2_loader.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/training.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
+	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 
 # SmolLM2-135M FFI KV-cache (CUDA).
 smollm2_kv_cuda:        demos/smollm2_kv_cuda

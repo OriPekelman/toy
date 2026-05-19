@@ -19,7 +19,6 @@ cfg  = Toy::GPT2Config.new(ext.vocab_size, ext.d_model, ext.n_heads,
 model = Toy::GPT2.new(cfg)
 GGUFLoad.load_toy_gpt2(model, GGUF)
 puts ""
-puts model.describe
 puts ""
 puts model.algorithm_card
 puts ""

@@ -118,31 +118,9 @@ module Toy
       total
     end
 
-    # Build a multi-line description of the architecture and return
-    # it as a String. Caller does `puts model.describe`.
-    def describe
-      blk0 = @stack[0]
-      s = "Toy::GPT2 (" + Toy.fmt_count(param_count) + " params)\n"
-      s = s + "  config: vocab=" + @cfg.vocab.to_s
-      s = s + " d_model=" + @cfg.d_model.to_s
-      s = s + " n_heads=" + @cfg.n_heads.to_s
-      s = s + " d_ff=" + @cfg.d_ff.to_s
-      s = s + " n_layers=" + @cfg.n_layers.to_s
-      s = s + " ctx=" + @cfg.ctx.to_s + "\n"
-      s = s + "  token_embed: " + @token_embed.summary
-      s = s + "  [" + Toy.fmt_count(@token_embed.param_count) + "]\n"
-      s = s + "  pos_embed:   " + @pos_embed.summary
-      s = s + "  [" + Toy.fmt_count(@pos_embed.param_count) + "]\n"
-      s = s + "  stack: " + @cfg.n_layers.to_s + " × GPT2Block\n"
-      s = s + "    ln1:    " + blk0.ln1.summary + "\n"
-      s = s + "    attn: " + blk0.attn.summary + "\n"
-      s = s + "    ln2:    " + blk0.ln2.summary + "\n"
-      s = s + "    ffn:    " + blk0.ffn.summary + "\n"
-      s = s + "    (per-block params: " + Toy.fmt_count(blk0.param_count) + ")\n"
-      s = s + "  final_norm: " + @final_norm.summary + "\n"
-      s = s + "  unembed: tied to token_embed (logits = x · token_embed.T)"
-      s
-    end
+    # Introspection: `model.algorithm_card` (Phuong-Hutter pseudocode
+    # with shape annotations) is the single canonical path. See
+    # demos/algorithm_cards.rb.
 
     # Phuong–Hutter style algorithm card for the whole model.
     # See arXiv:2207.09238 for the formalism. Mamba (arXiv:2312.00752)

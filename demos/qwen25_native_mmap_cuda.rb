@@ -1,22 +1,23 @@
-# demos/qwen25_direct_native_mmap_cuda.rb — CUDA mirror of
-# qwen25_direct_native_mmap.rb. Loads a native-layout GGUF and binds
-# weight tensors directly at the mmap'd file pages via the vendored
-# ggml_backend_cuda_buffer_from_ptr (commit 5f3bee4 in
-# vendor/ggml; project commit e302d32). On GB10 unified memory the
-# kernels read host-mmap pages via UVA — zero copy.
+# Phase 2 BYO-pointer mmap inference (CUDA). Weight tensors bind
+# directly to the mmap'd file pages via ggml_backend_cuda_buffer_from_ptr
+# (vendored ggml-cuda patch). On GB10 unified memory, kernels read
+# the host mmap via UVA — zero copy.
 #
-# F32-only on CUDA today (the V matmul flip required for Q8 hasn't
-# been mirrored to the CUDA build_decode_step). Target file: a 1.5B
-# f32 native GGUF.
+# Pick model via env:
+#   GGUF=data/qwen25-1.5b-native.gguf  ./demos/qwen25_native_mmap_cuda
+#   GGUF=data/qwen25-7b-native.gguf    ./demos/qwen25_native_mmap_cuda
+#
+# F32-only on CUDA today (V matmul flip needed for Q8 not yet mirrored
+# to the CUDA decode_step). Defaults to 1.5B F32.
 
 require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
 require_relative "../lib/toy_smollm2_loader"
 require_relative "../lib/toy_smollm2_ffi_kv_cuda"
 
-GGUF  = "data/qwen25-1.5b-native.gguf"
-MAX_T = 256
-N_NEW = 8
+GGUF  = ENV["GGUF"]  || "data/qwen25-1.5b-native.gguf"
+MAX_T = (ENV["MAX_T"] || "256").to_i
+N_NEW = (ENV["N_NEW"] || "8").to_i
 
 ids = [9707, 11, 847, 829, 374]
 

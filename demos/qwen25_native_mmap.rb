@@ -1,17 +1,21 @@
-# demos/qwen25_direct_native_mmap.rb — Phase 2 BYO-pointer demo.
-# Weights are NOT copied into a destination buffer; the persistent
-# ggml tensors point directly at the GGUF file's mmap'd pages.
+# Phase 2 BYO-pointer mmap inference (CPU). Weights are NOT copied
+# into a destination buffer — persistent ggml tensors point directly
+# at the GGUF's mmap'd pages.
 #
-# Parity goal: identical first-token logit + 8-token continuation to
-# demos/qwen25_direct_native (which does the same load but copies
-# bytes into a backend-allocated buffer).
+# Pick model + precision via env:
+#   GGUF=data/qwen25-0.5b-native.gguf     ./demos/qwen25_native_mmap   # F32
+#   GGUF=data/qwen25-1.5b-native.gguf     ./demos/qwen25_native_mmap   # F32
+#   GGUF=data/qwen25-7b-native-q8.gguf    ./demos/qwen25_native_mmap   # Q8
+#   GGUF=data/qwen25-7b-native.gguf       ./demos/qwen25_native_mmap   # F32
+#
+# Defaults to 0.5B F32 for quick smoke checks.
 
 require_relative "../lib/toy_smollm2_ffi_kv"
 require_relative "../lib/toy_smollm2_loader"
 
-GGUF  = "data/qwen25-7b-native-q8.gguf"
-MAX_T = 256
-N_NEW = 8
+GGUF  = ENV["GGUF"]  || "data/qwen25-0.5b-native.gguf"
+MAX_T = (ENV["MAX_T"] || "256").to_i
+N_NEW = (ENV["N_NEW"] || "8").to_i
 
 ids = [9707, 11, 847, 829, 374]
 
@@ -28,8 +32,6 @@ puts "flags: untied=" + flags.untied.to_s +
      " qkv_bias=" + flags.qkv_bias.to_s +
      " weight_type=" + wtype.to_s
 
-# Open the GGUF; the session keeps it alive (its mmap backs all
-# weight tensors). Don't close it until inference is done.
 gguf = TinyNN.tnn_gguf_load(GGUF)
 
 kv = SmolLM2KVFFICache.new
