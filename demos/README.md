@@ -31,7 +31,13 @@ they can find `data/*.gguf`, prompts, BPE tables.
 
 | Source | Build | What |
 |---|---|---|
-| `train.rb` | `make train` | TinyStories from-scratch training via `Toy::Trainer`. ⚠ Currently broken (Spinel HEAD regression, 2026-05-13). |
+| `train.rb` | `make train` | TinyStories from-scratch training via `Toy::Trainer` (CPU). Generate corpus first: `ruby prep/prep_tinystories.rb --max_lines 500`. |
+
+CPU training is wired up; CUDA training is a planned effort —
+backward kernels (RMS-norm-back, RoPE-back, attention-back) and a
+backward-graph driver are needed. See
+[`../docs/design/finetuning.md`](../docs/design/finetuning.md) for
+the roadmap.
 
 ## Quickstart
 
