@@ -348,6 +348,25 @@ class SmolLM2KVFFICache
       li = li + 1
     end
 
+    # F1.2: mark LoRA tensors as trainable BEFORE finalize_weights.
+    # set_param flips a flag on the tensor; the build_backward pass
+    # later walks PARAM-flagged nodes to emit grad nodes. Doing it
+    # here (rather than in the smoke) keeps the cache class as the
+    # single source of truth for what's trainable in a session.
+    if @lora_q_enabled
+      li2 = 0
+      while li2 < @n_layers
+        blk2 = @kv_blocks_ffi[li2]
+        hq = 0
+        while hq < @n_heads
+          TinyNN.tnn_set_param(blk2.t_w_lora_a_q[hq])
+          TinyNN.tnn_set_param(blk2.t_w_lora_b_q[hq])
+          hq = hq + 1
+        end
+        li2 = li2 + 1
+      end
+    end
+
     # Finalize the regular persistent context (K/V cache buffers).
     # Mmap'd tensors don't need finalization — they were allocated
     # against weights_buf_mmap inline.
