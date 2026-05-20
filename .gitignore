@@ -171,3 +171,7 @@ demos/smollm2_lora_train_step
 demos/smollm2_lora_train_ce
 demos/smollm2_lora_forward_cuda
 demos/smollm2_lora_train_ce_cuda
+demos/smollm2_lora_train_bench
+demos/smollm2_lora_train_bench_cuda
+demos/smollm2_lora_grad_probe
+demos/smollm2_lora_grad_probe_cuda
