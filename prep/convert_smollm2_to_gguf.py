@@ -6,6 +6,7 @@
 #   "safetensors",
 #   "gguf>=0.10",
 #   "numpy",
+#   "tokenizers",
 # ]
 # ///
 #
@@ -66,6 +67,116 @@ def is_quantizable(name: str, shape) -> bool:
     return True
 
 
+def embed_tokenizer(w: "gguf.GGUFWriter", repo_id: str, cache: str) -> None:
+    """Pull the model's tokenizer from HF and embed vocab + merges +
+    special-token IDs + chat template into the GGUF.
+
+    Covers tiktoken-style byte-level BPE (Llama-3, Qwen2/3, SmolLM2):
+    these all store their vocab + merges in `tokenizer.json` under
+    `model.vocab` and `model.merges`. SentencePiece tokenizers
+    (Mistral, TinyLlama) use a different on-disk layout; falls back
+    to extracting vocab via the HF tokenizers Python API.
+    """
+    from tokenizers import Tokenizer
+    import tempfile
+
+    print(f"  embedding tokenizer from {repo_id}…")
+    # Locate the tokenizer.json (downloads on first run, cached after).
+    tok_path = hf_hub_download(repo_id=repo_id, filename="tokenizer.json",
+                                cache_dir=cache)
+    tok = Tokenizer.from_file(tok_path)
+    vocab = tok.get_vocab()        # dict[str, int]
+    inv_vocab = sorted(vocab.items(), key=lambda kv: kv[1])
+    tokens   = [k for k, _ in inv_vocab]
+    n_vocab  = len(tokens)
+
+    # Token type tags. 1=NORMAL, 3=CONTROL/SPECIAL. Used by llama.cpp
+    # to skip special tokens during text decode.
+    added_ids = set()
+    if hasattr(tok, "get_added_tokens_decoder"):
+        # Returns dict[int, AddedToken] keyed by token id.
+        added_ids = set(tok.get_added_tokens_decoder().keys())
+    token_type = [3 if i in added_ids else 1 for i in range(n_vocab)]
+
+    # Merges. Try to read from tokenizer.json's model.merges first;
+    # fall back to empty if not present (SentencePiece path).
+    with open(tok_path) as f:
+        tjson = json.load(f)
+    raw_merges = tjson.get("model", {}).get("merges", [])
+    # Newer HF tokenizers format stores merges as [["a", "b"], ...];
+    # older versions as ["a b", ...]. Normalize to "a b" strings.
+    merges = []
+    for m in raw_merges:
+        if isinstance(m, list):
+            merges.append(f"{m[0]} {m[1]}")
+        else:
+            merges.append(m)
+
+    # GGUF tokenizer model identifier. For tiktoken-style byte-BPE
+    # (the Llama-3 / Qwen / SmolLM2 family) llama.cpp uses "gpt2"
+    # (it's the same byte-level BPE algorithm). SentencePiece would
+    # be "llama". We default to "gpt2" since that's our main family;
+    # SentencePiece support is a follow-up.
+    w.add_tokenizer_model("gpt2")
+
+    # Pre-tokenizer hint. "llama-bpe" tells consumers to use the
+    # cl100k_base-style pre-tokenizer regex (Llama-3 / Qwen). Mistral
+    # / TinyLlama would want "default" but they're SentencePiece;
+    # noting in TODO.
+    w.add_string("tokenizer.ggml.pre", "llama-bpe")
+
+    w.add_token_list(tokens)
+    w.add_token_types(token_type)
+    if merges:
+        w.add_token_merges(merges)
+    print(f"    vocab={n_vocab} merges={len(merges)}")
+
+    # Special token IDs. tok.token_to_id returns None if absent.
+    def get_id(name: str):
+        return tok.token_to_id(name)
+
+    # Read from tokenizer config first (canonical source); fall back
+    # to common names.
+    tcfg_path = None
+    try:
+        tcfg_path = hf_hub_download(repo_id=repo_id, filename="tokenizer_config.json",
+                                     cache_dir=cache)
+    except Exception:
+        pass
+
+    bos_id = eos_id = pad_id = unk_id = None
+    chat_template = None
+    if tcfg_path:
+        with open(tcfg_path) as f:
+            tcfg = json.load(f)
+        chat_template = tcfg.get("chat_template")
+        for key, setter in (
+            ("bos_token", lambda v: v),
+            ("eos_token", lambda v: v),
+            ("pad_token", lambda v: v),
+            ("unk_token", lambda v: v),
+        ):
+            tok_obj = tcfg.get(key)
+            if isinstance(tok_obj, dict):
+                tok_str = tok_obj.get("content")
+            else:
+                tok_str = tok_obj
+            tid = get_id(tok_str) if tok_str else None
+            if key == "bos_token": bos_id = tid
+            elif key == "eos_token": eos_id = tid
+            elif key == "pad_token": pad_id = tid
+            elif key == "unk_token": unk_id = tid
+
+    if bos_id is not None: w.add_bos_token_id(bos_id)
+    if eos_id is not None: w.add_eos_token_id(eos_id)
+    if pad_id is not None: w.add_pad_token_id(pad_id)
+    if unk_id is not None: w.add_unk_token_id(unk_id)
+    if chat_template:
+        w.add_chat_template(chat_template)
+    print(f"    bos={bos_id} eos={eos_id} pad={pad_id} unk={unk_id} "
+          f"chat_template={'yes' if chat_template else 'no'}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo-id", default=REPO_ID)
@@ -86,6 +197,13 @@ def main():
                          "loader picks this path automatically via the "
                          "'toy.ggml_native' metadata key. NOT compatible "
                          "with the old transposed loader path.")
+    ap.add_argument("--with-tokenizer", action="store_true",
+                    help="Embed the model's tokenizer (vocab + merges + "
+                         "special token IDs + chat template) into the "
+                         "GGUF. Required for Ruby-side encoding/decoding "
+                         "via lib/tokenizer.rb; without this flag, callers "
+                         "must tokenize via prep/llama_tokens.py and pass "
+                         "token IDs to the model.")
     args = ap.parse_args()
 
     qtype = None
@@ -198,6 +316,12 @@ def main():
     # ggml ne=[in, out] without transpose.
     if args.ggml_native:
         w.add_bool("toy.ggml_native", True)
+
+    # Embed tokenizer (vocab + merges + special-token IDs + chat
+    # template) when --with-tokenizer. Required for Ruby-side
+    # encode/decode via lib/tokenizer.rb.
+    if args.with_tokenizer:
+        embed_tokenizer(w, args.repo_id, args.cache)
 
     # Quantize 2-D weight tensors when --quantize is set. add() wraps
     # w.add_tensor so quantization is transparent at the call sites.
