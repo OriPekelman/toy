@@ -148,6 +148,15 @@ void  *tnn_rms_norm_back(void *sess, void *x, void *dy, double eps);
 void  *tnn_silu_back(void *sess, void *x, void *dy);
 void  *tnn_rope_ext_back(void *sess, void *dy, void *pos, int n_dims,
                          double freq_base);
+
+/* Phase F0.4 — autograd via ggml_build_backward_expand. Mark loss +
+ * params, build the forward graph (tnn_realize), then call build_backward
+ * → compute_backward → tensor_grad to retrieve gradients. */
+void  *tnn_sum            (void *sess, void *a);
+void   tnn_set_loss       (void *tensor);
+int    tnn_build_backward (void *sess);
+int    tnn_compute_backward(void *sess);
+void  *tnn_tensor_grad    (void *sess, void *tensor);
                                                          /* d/dx of plain RMSNorm(x) (no gamma); caller handles gamma chain. */
 void  *tnn_softmax_back(void *sess, void *a, void *dy); /* d/dx of per-row softmax. a is softmax output. */
 void  *tnn_get_rows(void *sess, void *table, void *idx);

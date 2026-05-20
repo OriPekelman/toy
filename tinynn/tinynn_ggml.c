@@ -856,10 +856,88 @@ void tnn_set_output(void *tensor)
     ggml_set_output((struct ggml_tensor *)tensor);
 }
 
+/* Sum all elements → scalar. Used to build a loss from a vector
+ * output (e.g. sum(y * y) for an L2 squared loss). */
+void *tnn_sum(void *sess, void *a)
+{
+    if (!sess || !a) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_sum(s->ctx, (struct ggml_tensor *)a);
+}
+
 void tnn_set_param(void *tensor)
 {
     if (!tensor) return;
     ggml_set_param((struct ggml_tensor *)tensor);
+}
+
+/* Mark a tensor as the training loss. Required for autograd via
+ * ggml_build_backward_expand — it asserts at least one node is marked
+ * as loss and at least one as param. Typically the scalar output of
+ * a sum-reduce or cross-entropy. */
+void tnn_set_loss(void *tensor)
+{
+    if (!tensor) return;
+    ggml_set_loss((struct ggml_tensor *)tensor);
+}
+
+/* Phase F0.4 autograd: after building a forward graph + marking params
+ * + marking loss, call this to extend the graph with backward nodes.
+ *
+ * Workflow (caller side):
+ *   1. tnn_input_*_persistent(...) for params, mark each with tnn_set_param
+ *   2. Build forward ops (matmul, gelu, ...) ending in a scalar loss
+ *   3. tnn_set_loss(loss_tensor); tnn_set_output(loss_tensor)
+ *   4. tnn_realize(sess, loss_tensor)
+ *   5. tnn_build_backward(sess)   ← extends s->graph_b with backward nodes
+ *   6. tnn_compute_backward(sess) ← runs forward+backward
+ *   7. tnn_tensor_grad(param)     ← retrieve the gradient tensor
+ *
+ * The backward extends s->graph_b (we keep s->graph as forward-only
+ * for inference use); a freshly-duped copy of s->graph is taken with
+ * grads=true so ggml_build_backward_expand has the slots it needs.
+ * Returns 0 on success, -1 on failure. */
+int tnn_build_backward(void *sess)
+{
+    if (!sess) return -1;
+    tnn_session *s = (tnn_session *)sess;
+    if (!s->realized) return -2;   /* must build forward first */
+
+    /* Dup the forward graph with force_grads=true so the dup has
+     * grads + grad_accs slots wired up. */
+    s->graph_b = ggml_graph_dup(s->ctx, s->graph, /*force_grads=*/true);
+    if (!s->graph_b) return -3;
+
+    /* Expand the duped graph with backward nodes for every param. */
+    ggml_build_backward_expand(s->ctx, s->graph_b, NULL);
+
+    /* Reserve scheduler slots for the new graph. */
+    if (!ggml_backend_sched_reserve(s->engine->sched, s->graph_b)) {
+        return -4;
+    }
+    s->realized_b = 1;
+    return 0;
+}
+
+/* Run the backward graph (forward + backward in one compute call). */
+int tnn_compute_backward(void *sess)
+{
+    if (!sess) return -1;
+    tnn_session *s = (tnn_session *)sess;
+    if (!s->realized_b) return -2;
+    enum ggml_status rc = ggml_backend_sched_graph_compute(s->engine->sched, s->graph_b);
+    return (rc == GGML_STATUS_SUCCESS) ? 0 : (int)rc;
+}
+
+/* Return the gradient tensor for a param. Caller can then read its
+ * data via tnn_download. Returns NULL if no gradient exists (param
+ * wasn't marked, or backward wasn't built/computed). */
+void *tnn_tensor_grad(void *sess, void *tensor)
+{
+    if (!sess || !tensor) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    if (!s->graph_b) return NULL;
+    return (void *)ggml_graph_get_grad(s->graph_b, (struct ggml_tensor *)tensor);
 }
 
 void *tnn_input_1d_f32(void *sess, int n)

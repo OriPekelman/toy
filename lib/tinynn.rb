@@ -377,6 +377,12 @@ module TinyNN
   ffi_func :tnn_softmax_back,     [:ptr, :ptr, :ptr],       :ptr
   ffi_func :tnn_silu_back,        [:ptr, :ptr, :ptr],       :ptr
   ffi_func :tnn_rope_ext_back,    [:ptr, :ptr, :ptr, :int, :double], :ptr
+  # Phase F0.4 — autograd
+  ffi_func :tnn_sum,              [:ptr, :ptr],             :ptr
+  ffi_func :tnn_set_loss,         [:ptr],                   :void
+  ffi_func :tnn_build_backward,   [:ptr],                   :int
+  ffi_func :tnn_compute_backward, [:ptr],                   :int
+  ffi_func :tnn_tensor_grad,      [:ptr, :ptr],             :ptr
   ffi_func :tnn_get_rows,         [:ptr, :ptr, :ptr],       :ptr
   ffi_func :tnn_get_rows_back,    [:ptr, :ptr, :ptr, :ptr], :ptr
   ffi_func :tnn_input_1d_i32,     [:ptr, :int],             :ptr
