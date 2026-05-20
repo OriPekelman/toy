@@ -515,6 +515,15 @@ ab-smoke-sgd: tinynn/ab_smoke_sgd
 tinynn/ab_smoke_sgd: tinynn/ab_smoke_sgd.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) tinynn/ab_smoke_sgd.rb -o tinynn/ab_smoke_sgd
 
+# F1.2 step 1: multi-step LoRA convergence via the F1.1 in-graph
+# optimizer. Toy shape; SGD; 60 steps; asserts final loss < 10% of
+# initial (passes at ~10e-13 of initial).
+ab-smoke-lora-train: tinynn/ab_smoke_lora_train
+	./tinynn/ab_smoke_lora_train
+
+tinynn/ab_smoke_lora_train: tinynn/ab_smoke_lora_train.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
+	$(SPINEL) tinynn/ab_smoke_lora_train.rb -o tinynn/ab_smoke_lora_train
+
 # Forward-only smoke: does TransformerLM#forward run at current Spinel
 # master? (The #473 SIGBUS is in backward; forward might be OK.)
 forward-smoke: tinynn/forward_smoke
