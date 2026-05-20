@@ -258,6 +258,52 @@ int tnn_gguf_get_bool(void *handle, const char *key)
     return gguf_get_val_bool(s->gguf_ctx, kid) ? 1 : 0;
 }
 
+/* String metadata. Used for general.architecture, general.name, and
+ * the tokenizer's chat_template. Returns NULL if the key is missing
+ * or has a non-string type. The returned pointer is owned by ggml
+ * (lives until tnn_gguf_free); callers should not free it. */
+const char *tnn_gguf_get_str(void *handle, const char *key)
+{
+    if (!handle || !key) return NULL;
+    tnn_gguf_session *s = (tnn_gguf_session *)handle;
+    int64_t kid = gguf_find_key(s->gguf_ctx, key);
+    if (kid < 0) return NULL;
+    enum gguf_type t = gguf_get_kv_type(s->gguf_ctx, kid);
+    if (t != GGUF_TYPE_STRING) return NULL;
+    return gguf_get_val_str(s->gguf_ctx, kid);
+}
+
+/* Array metadata: length. Used to enumerate tokenizer.ggml.tokens
+ * (string array, == vocab size) and .merges (string array of BPE
+ * pairs). Returns -1 if the key is missing or non-array. */
+int tnn_gguf_arr_n(void *handle, const char *key)
+{
+    if (!handle || !key) return -1;
+    tnn_gguf_session *s = (tnn_gguf_session *)handle;
+    int64_t kid = gguf_find_key(s->gguf_ctx, key);
+    if (kid < 0) return -1;
+    enum gguf_type t = gguf_get_kv_type(s->gguf_ctx, kid);
+    if (t != GGUF_TYPE_ARRAY) return -1;
+    return (int)gguf_get_arr_n(s->gguf_ctx, kid);
+}
+
+/* Array element accessor (string-typed arrays only). Used to iterate
+ * tokenizer vocab + merges. Returns NULL on bounds error or non-string
+ * array. Caller must not free the returned pointer. */
+const char *tnn_gguf_arr_str(void *handle, const char *key, int i)
+{
+    if (!handle || !key || i < 0) return NULL;
+    tnn_gguf_session *s = (tnn_gguf_session *)handle;
+    int64_t kid = gguf_find_key(s->gguf_ctx, key);
+    if (kid < 0) return NULL;
+    enum gguf_type t = gguf_get_kv_type(s->gguf_ctx, kid);
+    if (t != GGUF_TYPE_ARRAY) return NULL;
+    enum gguf_type at = gguf_get_arr_type(s->gguf_ctx, kid);
+    if (at != GGUF_TYPE_STRING) return NULL;
+    if ((size_t)i >= gguf_get_arr_n(s->gguf_ctx, kid)) return NULL;
+    return gguf_get_arr_str(s->gguf_ctx, kid, (size_t)i);
+}
+
 /* Helper: locate the raw bytes of a GGUF tensor in the mmap'd file.
  * No dequant — caller wants the on-disk type preserved (Phase 3 of
  * memory-design.md: Q8 stays Q8 in memory). Phase 2: the bytes live

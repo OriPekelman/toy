@@ -39,6 +39,15 @@ int    tnn_gguf_get_u32(void *handle, const char *key);
 double tnn_gguf_get_f32(void *handle, const char *key);
 int    tnn_gguf_get_bool(void *handle, const char *key);
 
+/* String metadata: returns NULL if key missing / not a string. The
+ * returned pointer is owned by ggml; do not free. */
+const char *tnn_gguf_get_str(void *handle, const char *key);
+
+/* Array metadata. n() returns -1 on missing / non-array. arr_str()
+ * returns NULL on bounds error or non-string-typed array. */
+int         tnn_gguf_arr_n  (void *handle, const char *key);
+const char *tnn_gguf_arr_str(void *handle, const char *key, int i);
+
 /* Phase 2 BYO-pointer mmap accessors. Used to wire weight tensors to
  * point at file pages via tnn_session_attach_weight_mmap. */
 void  *tnn_gguf_mmap_base(void *handle);

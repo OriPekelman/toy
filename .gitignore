@@ -6,6 +6,9 @@ demos/tinyllama_kv_cuda
 demos/qwen25_kv
 demos/qwen25_native_mmap
 demos/qwen25_native_mmap_cuda
+demos/qwen25_transformer_lm
+tinynn/arch_probe
+tinynn/arch_smoke
 demos/qwen25_per_layer_cpu
 demos/qwen25_per_layer_cuda
 demos/cuda_byo_ptr_smoke

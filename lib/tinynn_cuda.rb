@@ -159,6 +159,9 @@ module TinyNNCuda
   ffi_func :tnn_gguf_find_index,            [:ptr, :str],     :int
   ffi_func :tnn_gguf_tensor_type,           [:ptr, :int],     :int
   ffi_func :tnn_gguf_get_bool,              [:ptr, :str],     :int
+  ffi_func :tnn_gguf_get_str,               [:ptr, :str],     :str
+  ffi_func :tnn_gguf_arr_n,                 [:ptr, :str],     :int
+  ffi_func :tnn_gguf_arr_str,               [:ptr, :str, :int], :str
   ffi_func :tnn_gguf_mmap_base,             [:ptr],           :ptr
   ffi_func :tnn_gguf_mmap_size,             [:ptr],           :size_t
   ffi_func :tnn_gguf_tensor_file_offset,    [:ptr, :int],     :size_t
