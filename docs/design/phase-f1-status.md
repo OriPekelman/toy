@@ -1,6 +1,8 @@
 # Phase F1 status — backward-through-matmul resolved
 
 **Date:** 2026-05-21
+**F1.1 status:** plumbing **complete**; the "real-model LoRA layer"
+                work moves to F1.2 (see "Next concrete step" below).
 
 ## Resolution
 
@@ -75,3 +77,48 @@ When you want to read an intermediate forward tensor (e.g. `y`) after
 slot with a backward intermediate, and the readback returns garbage.
 `set_output(loss)` is already needed for the loss tensor for the same
 reason.
+
+## What this phase actually shipped
+
+| Item | Status |
+|---|---|
+| ggml backward op bindings (silu_back, rms_norm_back, rope_ext_back, gelu_back, soft_max_back) | F0 — shipped |
+| `ggml_build_backward_expand` autograd | F0.4 — shipped |
+| In-graph optimizer C primitives (build_backward / extend_backward_graph / realize_backward / graph_reset / opt_step_sgd / opt_step_adamw / sum / set_loss) | F1.0 + F1.1 — shipped |
+| Minimal LoRA-shaped training step (forward + backward + opt_step in one compute) | F1.0 — shipped |
+| Matmul-backward bisection (5 micros) + root-cause C POC | F1.1 — shipped |
+| `tnn_build_forward_only` + acceptance: all 5 micros green | F1.1 — shipped |
+
+## What F1.1 explicitly did NOT cover
+
+The original F1.1 line was "LoRA on a real model layer". That phrasing
+collapsed two pieces:
+
+1. **Make the in-graph optimizer correct.** ← this is what F1.1 shipped.
+2. **Actually inject LoRA adapters on (say) SmolLM2-135M's attention
+   projections and train them on a tiny dataset.** ← this is real work
+   (1-2 weeks per `docs/design/finetuning.md`), and properly lives in
+   F1.2 (SFT loop driver + tiny dataset) now that F1.1's plumbing is
+   green.
+
+The split is honest: the optimizer mechanics and the SFT-loop ergonomics
+are independent failure modes, and shipping them as one phase made the
+bisection harder than it needed to be.
+
+## Next concrete step (F1.2)
+
+Per `docs/design/finetuning.md` Phase F1 ("LoRA on CPU first"):
+
+- Pick the smallest live model: SmolLM2-135M (`data/smollm2-135m-*`).
+- Add LoRA adapter matrices on the attention `q_proj` and `v_proj` of
+  one layer first (typical LoRA scope). r=16 is the doc's default.
+- Wire `ctx_w_lora` as a third persistent ctx (alongside `ctx_w`,
+  `ctx`). Adapters + their Adam state live there.
+- Build forward + backward + adamw_step in one `graph_b` via the
+  primitives F1.1 just validated.
+- Driver: `lib/lora_trainer.rb` (parallel to `lib/toy_trainer.rb`).
+- Demo: `demos/sft_lora.rb` — fine-tune on a 100-example alpaca
+  subset.
+- Acceptance: loss decreases monotonically over 10 epochs.
+
+CUDA is F2 (same graph, swap backend). Don't try them together.

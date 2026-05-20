@@ -1,7 +1,8 @@
 # Phase 0.6 scope — graph inlining + legacy deletion
 
-**Status:** queued for dedicated session
-**Date:** 2026-05-20
+**Status:** **DEFERRED 2026-05-21** — not blocked, not scheduled.
+                  See "Re-trigger conditions" below.
+**Date:** 2026-05-20 (initial scoping); deferral note added 2026-05-21
 
 ## What's been working
 
@@ -80,3 +81,37 @@ must be named differently to avoid Spinel class-collapse).
 
 Phase 0.6 stays queued as a "do when the maintenance cost crosses the
 refactor cost" item. Currently it hasn't.
+
+## Re-trigger conditions
+
+Pick this up when any **one** of the following becomes true:
+
+1. **A new architecture lands and needs > ~50 LOC of CPU/CUDA mirror
+   duplication.** Qwen3 dense would likely fit existing classes. Qwen3
+   MoE almost certainly won't — the expert routing inside FFN is the
+   trip wire. When the MoE branch starts mutating both
+   `SmolLM2KVFFICache` and `SmolLM2KVFFICacheCuda` in parallel, do 0.6
+   first.
+2. **A CPU/CUDA divergence ships to production.** We caught one
+   (Phase 3 V-matmul flip) and fixed both sides in the same week. A
+   second occurrence — especially one that bites a user — flips the
+   maintenance-cost ledger.
+3. **The Spinel ivar-collision (#626 issue #1) is upstream-fixed AND
+   we want to delete `lib/gguf_kv.rb`** as the decoupling shim. Phase
+   0.6 cleans up the workaround surface.
+
+Until then: keep the CPU/CUDA mirror discipline documented in commit
+`e7332b8` (each file's header has the "mirror to/from the other side"
+rule). Phase 0.7 acceptance gates (docs/design/phase-07-acceptance.md)
+catch CPU-side regressions; the `*_cuda` smoke demos catch GPU-side.
+
+## What still needs Phase 0.6 eventually
+
+Even with the gates and mirror discipline, the ~1000-line CPU/CUDA
+twin will keep generating low-grade tax: every bug fix is two reviews,
+every new arch feature is two PRs, every benchmark needs two
+invocations. Phase 0.6 is the right end-state. It's just not the right
+**this-month** state.
+
+Re-read this doc before opening the Phase 0.6 PR — the "Recommended
+scope" section is still the plan.
