@@ -865,6 +865,21 @@ void *tnn_sum(void *sess, void *a)
     return (void *)ggml_sum(s->ctx, (struct ggml_tensor *)a);
 }
 
+/* Cross-entropy loss against a probability-distribution label tensor.
+ * Wraps ggml_cross_entropy_loss: returns a scalar. The label tensor
+ * has the same shape as the logits and should be a probability dist
+ * (one-hot for hard targets, label-smoothed for soft). Output is the
+ * mean negative log-likelihood across the columns of a (a column =
+ * one example). Used for F1.2 SmolLM2 LoRA fine-tuning. */
+void *tnn_cross_entropy_loss(void *sess, void *a, void *b)
+{
+    if (!sess || !a || !b) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_cross_entropy_loss(s->ctx,
+                                            (struct ggml_tensor *)a,
+                                            (struct ggml_tensor *)b);
+}
+
 void tnn_set_param(void *tensor)
 {
     if (!tensor) return;

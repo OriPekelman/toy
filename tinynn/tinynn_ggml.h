@@ -153,6 +153,10 @@ void  *tnn_rope_ext_back(void *sess, void *dy, void *pos, int n_dims,
  * params, build the forward graph (tnn_realize), then call build_backward
  * → compute_backward → tensor_grad to retrieve gradients. */
 void  *tnn_sum            (void *sess, void *a);
+/* CE loss wrapper. b is the labels probability distribution
+ * (one-hot for hard targets, label-smoothed otherwise). Returns a
+ * scalar loss tensor. */
+void  *tnn_cross_entropy_loss(void *sess, void *a, void *b);
 void   tnn_set_loss       (void *tensor);
 int    tnn_build_backward (void *sess);                 /* dup + build_backward_expand, no alloc */
 int    tnn_extend_backward_graph(void *sess, void *node); /* add node (typically opt_step output) */

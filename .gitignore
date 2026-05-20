@@ -168,3 +168,4 @@ tinynn/ab_smoke_train_micro5
 tinynn/ab_smoke_lora_train
 demos/smollm2_lora_forward
 demos/smollm2_lora_train_step
+demos/smollm2_lora_train_ce
