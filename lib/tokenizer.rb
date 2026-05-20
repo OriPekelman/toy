@@ -1,19 +1,19 @@
-# Tokenizer — GGUF-embedded BPE decode side.
+# Tokenizer — GGUF-embedded BPE decoder.
 #
-# Phase 0 ships **decode only** (token IDs → text). The encode side
-# (text → IDs) stays external for now; clients tokenize via the Python
-# scripts in `prep/` and pass IDs to inference.
+# Phase D1: prep/convert_smollm2_to_gguf.py --with-tokenizer embeds
+# vocab + merges + special-token IDs in the GGUF.
 #
-# Construction is via Tokenizer.from_gguf(path). Returns a Tokenizer
-# instance whose `vocab` array is populated when the GGUF embeds the
-# tokenizer (HF-converted GGUFs typically do); otherwise an "absent"
-# tokenizer that raises on #decode.
+# Phase D2 (this file): the Ruby decoder. Decouples from lib/tinynn.rb
+# by going through lib/gguf_kv.rb instead — this dodges a Spinel
+# cross-class type-inference issue where loading Tokenizer alongside
+# lib/transformer.rb widened Mat#nrows from mrb_int to sp_RbVal.
 #
-# Current state: most GGUFs converted by this repo's `prep/convert_*`
-# scripts do NOT embed the tokenizer. Extend those scripts to call
-# gguf.GGUFWriter.add_tokenizer_* if you need decode-side support.
+# Status: filing 3 Spinel issues; see docs/design/tokenizer-status.md
+# for the catalog. Full encoder + large-vocab decode are blocked on
+# upstream fixes. This file ships a viable scaffold + a small-vocab
+# smoke test.
 
-require_relative "tinynn"
+require_relative "gguf_kv"
 
 class Tokenizer
   attr_reader :vocab_size, :bos_id, :eos_id, :pad_id, :unk_id, :present
@@ -28,9 +28,6 @@ class Tokenizer
     @present    = (vocab.length > 0)
   end
 
-  # Look up a single token. Returns the GGUF-stored string form (which
-  # for byte-BPE tokenizers may include the bytechar marker — the
-  # caller's decode loop handles whitespace and byte chars).
   def token_at(id)
     if id < 0 || id >= @vocab_size
       return ""
@@ -38,15 +35,13 @@ class Tokenizer
     @vocab[id]
   end
 
-  # Greedy decode: concatenate token strings, skipping BOS/EOS.
-  # For Llama / Qwen tokenizers this gives a readable approximation
-  # (the leading-space marker `Ġ` from byte-BPE shows up as-is for
-  # now; a follow-up decoder handles the byte-char remap).
+  # Decode token IDs back to text. Returns the raw byte-char form
+  # (GPT-2 mapping: "Ġ" for space, "Ċ" for newline). A follow-up
+  # decoder lifts these back to UTF-8 — blocked on Spinel-side
+  # constraints in the byte-char build path.
   def decode(ids)
     if !@present
-      puts "Tokenizer.decode: tokenizer not embedded in GGUF (vocab is empty). " +
-           "Use the Python tokenizer in prep/ for now, or extend the converter " +
-           "to embed tokenizer.ggml.tokens / .merges."
+      puts "Tokenizer.decode: vocab not loaded (re-convert with --with-tokenizer)"
       return ""
     end
     out = ""
@@ -63,37 +58,58 @@ class Tokenizer
     out
   end
 
-  # Build from a GGUF file. If the GGUF has `tokenizer.ggml.tokens`
-  # populated, the result decodes correctly; otherwise the Tokenizer
-  # is constructed with an empty vocab (callers see #present? == false).
+  # Build from a GGUF file. The full-vocab populate path is currently
+  # blocked by Spinel issues (see docs/design/tokenizer-status.md); we
+  # populate first N tokens only as a placeholder until the upstream
+  # fixes land.
   def self.from_gguf(path)
-    handle = TinyNN.tnn_gguf_load(path)
+    empty = [""]
+    empty.pop
+    handle = GgufKV.tnn_gguf_load(path)
     if handle == nil
-      return Tokenizer.new([], -1, -1, -1, -1)
+      return Tokenizer.new(empty, -1, -1, -1, -1)
     end
 
-    bos = TinyNN.tnn_gguf_get_u32(handle, "tokenizer.ggml.bos_token_id")
-    eos = TinyNN.tnn_gguf_get_u32(handle, "tokenizer.ggml.eos_token_id")
-    pad = TinyNN.tnn_gguf_get_u32(handle, "tokenizer.ggml.padding_token_id")
-    unk = TinyNN.tnn_gguf_get_u32(handle, "tokenizer.ggml.unknown_token_id")
-    n   = TinyNN.tnn_gguf_arr_n(handle, "tokenizer.ggml.tokens")
+    bos = GgufKV.tnn_gguf_get_u32(handle, "tokenizer.ggml.bos_token_id")
+    eos = GgufKV.tnn_gguf_get_u32(handle, "tokenizer.ggml.eos_token_id")
+    pad = GgufKV.tnn_gguf_get_u32(handle, "tokenizer.ggml.padding_token_id")
+    unk = GgufKV.tnn_gguf_get_u32(handle, "tokenizer.ggml.unknown_token_id")
+    n   = GgufKV.tnn_gguf_arr_n(handle, "tokenizer.ggml.tokens")
 
     vocab = [""]
     vocab.pop
-    if n > 0
+    # SPINEL-LIMITED: populate up to a small cap. Populating the full
+    # vocab triggers a GC segv on Tokenizer.new — Spinel's :str FFI
+    # return aliases to ggml-owned memory and even fresh-string-copy
+    # workarounds don't currently produce a Ruby-owned string. Tracking
+    # in docs/design/tokenizer-status.md.
+    cap = n
+    if cap > 256
+      cap = 256
+    end
+    if cap > 0
       i = 0
-      while i < n
-        s = TinyNN.tnn_gguf_arr_str(handle, "tokenizer.ggml.tokens", i)
+      while i < cap
+        s = GgufKV.tnn_gguf_arr_str(handle, "tokenizer.ggml.tokens", i)
         if s == nil
           vocab.push("")
         else
-          vocab.push(s)
+          # Walk chars to (try to) force a fresh string. Imperfect under
+          # current Spinel; see the doc.
+          copy = ""
+          chars = s.chars
+          j = 0
+          while j < chars.length
+            copy = copy + chars[j]
+            j = j + 1
+          end
+          vocab.push(copy)
         end
         i = i + 1
       end
     end
 
-    TinyNN.tnn_gguf_free(handle)
+    GgufKV.tnn_gguf_free(handle)
     Tokenizer.new(vocab, bos, eos, pad, unk)
   end
 end

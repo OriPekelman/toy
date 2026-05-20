@@ -301,3 +301,26 @@ module Toy
   def self.tap_info:     (String label, Mat x) -> Mat
   def self.fmt_count:    (Integer n) -> String
 end
+
+# ============================================================================
+# Tokenizer — GGUF-embedded BPE decoder. (lib/tokenizer.rb)
+# Declared here to pin Spinel's analyzer; cross-class polymorphism on
+# `length` was widening Mat#nrows to sp_RbVal in compiled artifacts.
+# ============================================================================
+class Tokenizer
+  attr_reader vocab_size: Integer
+  attr_reader bos_id:     Integer
+  attr_reader eos_id:     Integer
+  attr_reader pad_id:     Integer
+  attr_reader unk_id:     Integer
+  attr_reader present:    bool
+
+  def initialize: (Array[String] vocab,
+                   Integer bos_id, Integer eos_id,
+                   Integer pad_id, Integer unk_id) -> void
+
+  def token_at: (Integer id) -> String
+  def decode:   (Array[Integer] ids) -> String
+
+  def self.from_gguf: (String path) -> Tokenizer
+end
