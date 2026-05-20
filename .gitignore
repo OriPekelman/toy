@@ -157,3 +157,8 @@ tinynn/ab_smoke_train_step
 tinynn/ab_smoke_train_sgd
 tinynn/tok_roundtrip
 tinynn/tok_minimal
+tinynn/ab_smoke_train_micro
+tinynn/ab_smoke_train_micro2
+tinynn/ab_smoke_train_micro3
+tinynn/ab_smoke_train_micro4
+tinynn/ab_smoke_train_micro5

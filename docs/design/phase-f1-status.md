@@ -1,110 +1,85 @@
-# Phase F1 status — in-graph optimizer landed; values need investigation
+# Phase F1 status — autograd bisected to backward-through-matmul
 
-**Date:** 2026-05-20
+**Date:** 2026-05-21
 
-## Done in this session
+## Bisection results
 
-### Architecture (no tech debt)
+Five micro-smokes (`tinynn/ab_smoke_train_micro{1..5}.rb`) bracket the
+issue:
 
-Refactored autograd flow to clean phases so caller can insert
-optimizer nodes between graph build and graph alloc:
+| Smoke | Setup | Result |
+|---|---|---|
+| micro1 | scalar W; loss = W² (no matmul); SGD step | ✅ exact: W 1.0 → 0.98, loss=1, grad=2 |
+| micro2 | W,x both 1-element; y = matmul(W, x); loss = y²; SGD | ✗ W unchanged; loss=0; grad=0 |
+| micro3 | W,x both 2-element; y = matmul(W, x); loss = y²; SGD | ✗ W unchanged; loss=0; grad=0 (readback shows y=162382, garbage) |
+| micro4 | Forward-only matmul; no backward | ✅ exact: y=11, loss=121 |
+| micro5 | Same as micro3 but no optimizer (backward only) | ✗ loss=0, grad=0, y garbage |
 
-```
-tnn_realize(sess, loss)             # forward graph
-tnn_build_backward(sess)            # adds backward nodes; NO alloc
-                                    # → caller extends here ↓
-for each param:
-  opt = tnn_opt_step_adamw(sess, p, grad, m, v, hp)   # or _sgd
-  tnn_extend_backward_graph(sess, opt)
-tnn_realize_backward(sess)          # sched-alloc the FINAL graph
-tnn_graph_reset(sess)               # zero grads + momenta; loss_grad = 1
-loop:
-  tnn_compute_backward(sess)        # fwd + bwd + opt in one call
-  read scalar loss; repeat
-```
+The pattern:
 
-Five new C primitives + FFI bindings:
-- `tnn_sum(sess, a)` — scalar reduce (loss building block).
-- `tnn_set_loss(t)` — flags a tensor as the training loss.
-- `tnn_build_backward(sess)` — dups graph + `ggml_build_backward_expand`.
-- `tnn_extend_backward_graph(sess, node)` — `ggml_build_forward_expand` for opt-step nodes.
-- `tnn_realize_backward(sess)` — sched alloc.
-- `tnn_graph_reset(sess)` — `ggml_graph_reset` (zeros grads, momenta).
-- `tnn_tensor_grad(sess, t)` — `ggml_graph_get_grad`.
-- `tnn_opt_step_adamw(...)` — already had this; bound the AdamW arg layout.
-- `tnn_opt_step_sgd(...)` — added for sanity-checking gradient direction.
+- **Forward-only with matmul works** (micro4).
+- **Backward without matmul works** (micro1).
+- **Backward with matmul does NOT work** (micro2/3/5).
 
-This is the **right shape** for fine-tuning: no host readback of
-intermediates, no per-step graph rebuild, no LD/ST overhead between
-forward, backward, and optimizer.
+So:
+- ggml autograd is functional at the basement.
+- ggml matmul forward is functional.
+- The **chained backward through matmul → mul** is the broken thing.
 
-### Smokes
+This is independent of:
+- The optimizer (broken with or without opt_step_sgd).
+- Output flags on intermediate tensors.
+- Order of upload vs graph_reset.
+- Shape (broken at K=1, K=2, K=3).
 
-- `tinynn/ab_smoke_train_step.rb` — Adam in-graph training step.
-- `tinynn/ab_smoke_train_sgd.rb` — SGD variant for gradient-direction
-  sanity check.
+## What we know NOT to be the cause
 
-Both compile + run + show W getting updated by the optimizer.
+- Not the optimizer node setup (micro5 has no optimizer; still broken).
+- Not the readback path (micro1 reads everything correctly).
+- Not graph_reset timing (tried before AND after uploads).
 
-## What needs investigation
+## What's most likely
 
-Loss + gradient *magnitudes* from the in-graph optimizer are off vs
-analytical expectation by ~100×. Concrete observation:
+- Some interaction between `ggml_build_backward_expand` and matmul
+  nodes in particular. Maybe ggml requires `ggml_set_input` on `t_x`
+  or a particular flag setup the autograd needs.
+- Or my `tnn_realize_backward`'s sched setup doesn't allocate enough
+  for the backward-through-matmul intermediate gradient tensors.
+- Or the sched needs `ggml_backend_sched_reserve` first, then a real
+  alloc — the order matters.
 
-```
-Toy: y = W @ x; loss = sum(y²); W=[-0.2, 0.3, 0.5, -0.1, 0.4, 0.1]; x=[1,2,3]
-Hand:    y = [1.9, 1.0]; loss = 4.61
-         ∂L/∂W[0,0] = 2 * y[0] * x[0] = 3.8
+## Recommended next concrete step
 
-ggml SGD step 1 (lr=0.01): W[0] went from -0.2 to -6.99.
-  Δ = -6.79  ⇒  lr * grad = 6.79  ⇒  grad ~ 679 (not 3.8).
-```
+Look at `vendor/ggml/tests/test-backend-ops.cpp` for the existing test
+of `ggml_mul_mat` backward. They exercise the exact path. Compare:
+- Their cgraph build sequence
+- Their flag setup (set_input/set_output/set_param)
+- Their sched setup
+- Their compute path
 
-Two threads interact:
+If our setup diverges, copy theirs. If our setup matches but values
+diverge, file as a ggml issue.
 
-1. **F0.4 readback issue** (still open) — `tnn_download` of compute-node
-   outputs returns wrong bytes. Loss reads back as 679.34, gradient also
-   reads back as 679.34. Suspicious that they're equal — sched may be
-   pointing both downloads at the same buffer.
-
-2. **Possible ggml autograd shape misunderstanding** — even if readback
-   is broken, the W change of -6.79 per step is REAL (we observe W's
-   internal value moving), so the internal gradient really is ~679,
-   not 3.8. This suggests autograd is computing the gradient of
-   something other than what I marked as `loss`, OR the `tnn_sum`
-   I'm using doesn't reduce all the way to a scalar.
-
-## Next concrete debugging step
-
-Build a fully analytical micro-smoke:
-
-- Single param: 1-element W = 1.0
-- Loss = W² (no matmul, no sum — just a square)
-- Mark W param, mark loss = loss tensor
-- Run one SGD step with lr=0.01
-- Hand: ∂(W²)/∂W = 2W = 2. SGD: W' = 1 - 0.01*2 = 0.98.
-
-If we see W' = 0.98 → ggml autograd works correctly at the simplest
-shape; the bug is in our sum/matmul gradient handling. If we see
-something else → ggml or our wrapper has a shape-handling bug at the
-absolute basement.
-
-This bisects perfectly. ~1 day to get the right answer.
+This is **bounded ~half a day** of focused work.
 
 ## What unblocks F2 / F3 / F4
 
-Once the F1 micro-smoke is correct, F2 (LoRA on CUDA) is the same
-graph + `TinyNNCuda` swap. F3 (full FT) adds Adam state for all
-weights. F4 (QLoRA) layers Q8 base.
+Once F1's matmul-backward chain is fixed:
+- F2 (LoRA on CUDA): same graph, swap `TinyNN` → `TinyNNCuda`
+- F3 (full FT): same pattern, more params
+- F4 (QLoRA): same pattern, Q8 base
 
-The in-graph optimizer architecture from today is the **load-bearing**
-piece — it removes the per-step graph rebuild that would have made
-training at scale prohibitive. The remaining work is calibration +
-real-model integration.
+The in-graph optimizer infrastructure from earlier today is
+load-bearing and validated. The blocker is purely the autograd-
+through-matmul behavior, not the architecture.
 
-## Honest assessment
+## What landed this session
 
-F1.1 is "infrastructure shipped, calibration TODO". Not the
-"loss-decreasing on a real model layer" we'd hoped for, but the
-right architecture is in place — once the value-mismatch is found,
-everything downstream of it works.
+Five micro-smokes preserved as `tinynn/ab_smoke_train_micro{1..5}.rb`
+— each reproduces a specific point in the bisection. They:
+- Are self-contained (no project deps beyond lib/tinynn).
+- Compile cleanly under fresh Spinel (no pollution from the F1 work).
+- Run in <1s each.
+- Make the bisection trivially repeatable.
+
+The next-session opener has the file paths + test inputs ready.
