@@ -12,7 +12,7 @@
 #
 # Usage:
 #   arch = Arch.from_gguf("data/qwen25-1.5b-native.gguf")
-#   lm   = TransformerLM.new(arch, :cpu)             # or :cuda
+#   lm   = ToyLM.new(arch, :cpu)             # or :cuda
 #   lm.load("data/qwen25-1.5b-native.gguf")
 #   ids  = lm.generate([9707, 11, 847, 829, 374], 8) # 8 new tokens
 #
@@ -25,7 +25,7 @@ require_relative "sampler"
 require_relative "toy_smollm2_loader"
 require_relative "toy_smollm2_ffi_kv"
 
-class TransformerLM
+class ToyLM
   attr_reader :arch, :backend, :tokenizer, :max_T
 
   def initialize(arch, backend)
@@ -58,10 +58,31 @@ class TransformerLM
     flags = GGUFLoad.detect_smollm2_flags(path)
     wtype = GGUFLoad.detect_weight_type(path)
     cfg   = SmolLM2ConfigLoader.read(path)
-    @gguf_handle = TinyNN.tnn_gguf_load(path)
+
+    # Format dispatch. Phase 2 mmap requires the GGUF to be in native
+    # layout (toy.ggml_native flag set by --ggml-native at convert
+    # time). Legacy GGUFs have transposed bytes and would produce
+    # garbage if read directly; fall back to the Mat-mediated direct
+    # loader for those.
+    probe = TinyNN.tnn_gguf_load(path)
+    is_native = false
+    if probe != nil
+      is_native = (TinyNN.tnn_gguf_get_bool(probe, "toy.ggml_native") == 1)
+      TinyNN.tnn_gguf_free(probe)
+    end
+
     kv = SmolLM2KVFFICache.new
     kv.set_weight_type(wtype)
-    kv.realize_for_mmap(@gguf_handle, cfg, @max_T, flags.untied, flags.qkv_bias)
+
+    if is_native
+      @gguf_handle = TinyNN.tnn_gguf_load(path)
+      kv.realize_for_mmap(@gguf_handle, cfg, @max_T, flags.untied, flags.qkv_bias)
+    else
+      kv.realize_for(@max_T, cfg.d_model, cfg.d_ff, cfg.n_heads, cfg.n_kv,
+                     cfg.n_layers, cfg.vocab, cfg.rope_base, cfg.rms_eps,
+                     flags.untied, flags.qkv_bias)
+      GGUFLoad.load_kv_cache_auto(kv, path)
+    end
     @kv_cpu = kv
   end
 

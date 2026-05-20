@@ -10,7 +10,7 @@ N_NEW = (ENV["N_NEW"] || "8").to_i
 arch = Arch.from_gguf(GGUF)
 puts arch.summary
 
-lm = TransformerLM.new(arch, :cpu)
+lm = ToyLM.new(arch, :cpu)
 lm.load(GGUF)
 
 ids = lm.generate([9707, 11, 847, 829, 374], N_NEW)
