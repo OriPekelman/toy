@@ -1,0 +1,36 @@
+diff --git a/src/ggml.c b/src/ggml.c
+index 476c307..df5de39 100644
+--- a/src/ggml.c
++++ b/src/ggml.c
+@@ -6511,6 +6511,31 @@ static void ggml_compute_backward(
+                 ggml_add_or_set(ctx, cgraph, isrc0, ggml_repeat(ctx, grad, src0));
+             }
+         } break;
++        case GGML_OP_CONCAT: {
++            // Backward of concat(a, b, dim) is the two slices of the
++            // upstream grad along that dim. Vendored locally for
++            // SmolLM2 LoRA training (F1.2) — per-head Q outputs are
++            // concat'd along dim=0 before the O projection, so we need
++            // to back-propagate through this op to reach the LoRA
++            // params.  See docs/design/concat-back-patch-2026-05-21.md.
++            const int dim = ((const int32_t *) tensor->op_params)[0];
++            GGML_ASSERT(dim >= 0 && dim < GGML_MAX_DIMS);
++            if (src0_needs_grads) {
++                ggml_add_or_set(ctx, cgraph, isrc0,
++                    ggml_view_4d(ctx, grad,
++                                  src0->ne[0], src0->ne[1], src0->ne[2], src0->ne[3],
++                                  grad->nb[1], grad->nb[2], grad->nb[3],
++                                  /*offset=*/ 0));
++            }
++            if (src1_needs_grads) {
++                size_t offset = (size_t) src0->ne[dim] * grad->nb[dim];
++                ggml_add_or_set(ctx, cgraph, isrc1,
++                    ggml_view_4d(ctx, grad,
++                                  src1->ne[0], src1->ne[1], src1->ne[2], src1->ne[3],
++                                  grad->nb[1], grad->nb[2], grad->nb[3],
++                                  offset));
++            }
++        } break;
+         case GGML_OP_RMS_NORM: {
+             if (src0_needs_grads) {
+                 float eps;

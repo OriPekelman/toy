@@ -1,0 +1,253 @@
+From 5f3bee41202b1f60faeba381787bbf7c394d1579 Mon Sep 17 00:00:00 2001
+From: Ori Pekelman <ori@pekelman.com>
+Date: Mon, 18 May 2026 15:25:16 +0000
+Subject: [PATCH] ggml-cuda: add ggml_backend_cuda_buffer_from_ptr
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Mirrors the existing ggml_backend_cpu_buffer_from_ptr for the CUDA
+backend. Wraps an externally-managed host region (e.g. mmap'd model
+file) via cudaHostRegister(... HostRegisterMapped) +
+cudaHostGetDevicePointer. On unified-memory SKUs (GB10 / DGX Spark /
+Jetson) the returned device pointer equals the host pointer and
+kernels read host pages directly via UVA — zero copy.
+
+Read-only by convention: set_tensor / memset_tensor are no-ops.
+get_tensor uses host memcpy (the host pointer is valid in both
+contexts on UVA). free_buffer cudaHostUnregisters the region but
+does NOT free the underlying memory (caller owns it).
+
+Uses a dedicated buffer_type with NULL get_alloc_size (so it defaults
+to ggml_nbytes — no MATRIX_ROW_PADDING padding past the tensor end).
+For Qwen2.5 1.5B/3B/7B (d_model ∈ {1536, 2048, 3584}, all multiples
+of 512) this is fine; for 0.5B (d_model=896, % 512 != 0) quantized
+matmul kernels can read past the last row into adjacent tensor data —
+documented limitation.
+
+Smoke-tested on GB10 (Grace Blackwell, 124 GiB unified memory):
+  - cuda_buffer_from_ptr returns a valid buffer wrapping a 2.3 GB
+    mmap'd GGUF.
+  - buffer base == host pointer (true UVA confirmed).
+  - reading 4 bytes via dev_ptr yields 'GGUF' (the on-disk magic).
+  - free_buffer unregisters cleanly; the mmap is still valid for
+    munmap afterward.
+
+Vendored for downstream toy-ruby-neural-network (oripekelman) — see
+that project's docs/cuda-byo-pointer-design.md for context.
+---
+ include/ggml-cuda.h        |   7 ++
+ src/ggml-cuda/ggml-cuda.cu | 179 +++++++++++++++++++++++++++++++++++++
+ 2 files changed, 186 insertions(+)
+
+diff --git a/include/ggml-cuda.h b/include/ggml-cuda.h
+index 5436c7e..9cf7b62 100644
+--- a/include/ggml-cuda.h
++++ b/include/ggml-cuda.h
+@@ -27,6 +27,13 @@ GGML_BACKEND_API bool ggml_backend_is_cuda(ggml_backend_t backend);
+ // device buffer
+ GGML_BACKEND_API ggml_backend_buffer_type_t ggml_backend_cuda_buffer_type(int device);
+ 
++// BYO-pointer: wrap an externally-managed host region (e.g. mmap'd GGUF
++// file) as a CUDA backend buffer. Uses cudaHostRegister + UVA so device
++// kernels read the host pages directly — zero copy on unified-memory
++// SKUs (GB10 / DGX Spark / Jetson). Returns NULL on failure; caller
++// owns the underlying memory (cudaHostUnregister fires on free).
++GGML_BACKEND_API ggml_backend_buffer_t ggml_backend_cuda_buffer_from_ptr(void * host_ptr, size_t size, int device);
++
+ // conduct allreduce operation between devices
+ GGML_BACKEND_API bool ggml_backend_cuda_allreduce_tensor(ggml_backend_t * backends, struct ggml_tensor ** tensors, size_t n_backends);
+ 
+diff --git a/src/ggml-cuda/ggml-cuda.cu b/src/ggml-cuda/ggml-cuda.cu
+index b92a208..6a9b2b1 100644
+--- a/src/ggml-cuda/ggml-cuda.cu
++++ b/src/ggml-cuda/ggml-cuda.cu
+@@ -850,6 +850,185 @@ ggml_backend_buffer_type_t ggml_backend_cuda_buffer_type(int device) {
+     return &ggml_backend_cuda_buffer_types[device];
+ }
+ 
++// cuda from-ptr buffer (BYO-pointer)
++//
++// Wraps an externally-managed host region as a CUDA buffer via
++// cudaHostRegister + cudaHostGetDevicePointer. Caller owns the
++// underlying memory (typically an mmap'd GGUF file).
++//
++// On UVA-enabled platforms (most modern NVIDIA, all unified-memory
++// SKUs including GB10 / DGX Spark / Jetson) the device pointer equals
++// the host pointer, so kernel reads land directly on the file pages.
++//
++// Read-only by convention. set_tensor / memset_tensor are no-ops
++// (asserts off in release; abort in debug).
++
++struct ggml_backend_cuda_buffer_from_ptr_context {
++    int    device;
++    void * dev_ptr;   // UVA-mapped device pointer
++    void * host_ptr;  // original host pointer (for cudaHostUnregister)
++    size_t size;
++    std::string name;
++
++    ggml_backend_cuda_buffer_from_ptr_context(int device, void * dev_ptr,
++                                                void * host_ptr, size_t size) :
++        device(device), dev_ptr(dev_ptr), host_ptr(host_ptr), size(size),
++        name(GGML_CUDA_NAME + std::string("_mapped") + std::to_string(device)) {
++    }
++
++    ~ggml_backend_cuda_buffer_from_ptr_context() {
++        if (host_ptr) {
++            ggml_cuda_set_device(device);
++            (void) cudaHostUnregister(host_ptr);
++            (void) cudaGetLastError();   // clear if already-unregistered
++        }
++    }
++};
++
++static void ggml_backend_cuda_buffer_from_ptr_free(ggml_backend_buffer_t buffer) {
++    auto * ctx = (ggml_backend_cuda_buffer_from_ptr_context *) buffer->context;
++    delete ctx;
++}
++
++static void * ggml_backend_cuda_buffer_from_ptr_get_base(ggml_backend_buffer_t buffer) {
++    auto * ctx = (ggml_backend_cuda_buffer_from_ptr_context *) buffer->context;
++    return ctx->dev_ptr;
++}
++
++static void ggml_backend_cuda_buffer_from_ptr_set_tensor(
++    ggml_backend_buffer_t buffer, ggml_tensor * tensor,
++    const void * data, size_t offset, size_t size)
++{
++    (void) buffer; (void) tensor; (void) data; (void) offset; (void) size;
++    GGML_ABORT("ggml_backend_cuda_buffer_from_ptr is read-only");
++}
++
++static void ggml_backend_cuda_buffer_from_ptr_get_tensor(
++    ggml_backend_buffer_t buffer, const ggml_tensor * tensor,
++    void * data, size_t offset, size_t size)
++{
++    (void) buffer;
++    // tensor->data is the (UVA) device pointer; the same address is
++    // host-readable on unified-memory SKUs, so a plain memcpy works
++    // without a cudaMemcpy bounce.
++    memcpy(data, (const char *) tensor->data + offset, size);
++}
++
++static const ggml_backend_buffer_i ggml_backend_cuda_buffer_from_ptr_interface = {
++    /* .free_buffer     = */ ggml_backend_cuda_buffer_from_ptr_free,
++    /* .get_base        = */ ggml_backend_cuda_buffer_from_ptr_get_base,
++    /* .init_tensor     = */ NULL,   // no padding zeroing — caller owns bytes
++    /* .memset_tensor   = */ NULL,   // read-only
++    /* .set_tensor      = */ ggml_backend_cuda_buffer_from_ptr_set_tensor,
++    /* .get_tensor      = */ ggml_backend_cuda_buffer_from_ptr_get_tensor,
++    /* .set_tensor_2d   = */ NULL,
++    /* .get_tensor_2d   = */ NULL,
++    /* .cpy_tensor      = */ NULL,
++    /* .clear           = */ NULL,
++    /* .reset           = */ NULL,
++};
++
++// Buffer type with NULL get_alloc_size (defaults to ggml_nbytes) — no
++// MATRIX_ROW_PADDING padding. The mmap'd file doesn't have padding
++// after each tensor (GGUF only aligns tensor starts to 32 bytes, not
++// 512). Quantized matmul kernels that read past the last row require
++// ne0 % MATRIX_ROW_PADDING == 0 to stay in bounds. For Qwen2.5
++// 1.5B/3B/7B (d_model 1536/2048/3584), all multiples of 512 — fine.
++// For 0.5B (d_model 896, % 512 == 384), this is a known limitation;
++// callers should fall through to the CPU buffer or regenerate with
++// padded dimensions.
++static const char * ggml_backend_cuda_buffer_from_ptr_type_get_name(ggml_backend_buffer_type_t buft) {
++    GGML_UNUSED(buft);
++    return GGML_CUDA_NAME "_Mapped";
++}
++
++static size_t ggml_backend_cuda_buffer_from_ptr_type_get_alignment(ggml_backend_buffer_type_t buft) {
++    GGML_UNUSED(buft);
++    return 32;   // matches GGUF's tensor alignment
++}
++
++static const ggml_backend_buffer_type_i ggml_backend_cuda_buffer_from_ptr_type_interface = {
++    /* .get_name         = */ ggml_backend_cuda_buffer_from_ptr_type_get_name,
++    /* .alloc_buffer     = */ NULL,  // not callable; we always go through buffer_from_ptr
++    /* .get_alignment    = */ ggml_backend_cuda_buffer_from_ptr_type_get_alignment,
++    /* .get_max_size     = */ NULL,
++    /* .get_alloc_size   = */ NULL,  // defaults to ggml_nbytes — no padding
++    /* .is_host          = */ NULL,
++};
++
++static ggml_backend_buffer_type_t ggml_backend_cuda_buffer_from_ptr_type(int device) {
++    static std::mutex mutex;
++    std::lock_guard<std::mutex> lock(mutex);
++
++    if (device >= ggml_backend_cuda_get_device_count()) {
++        return nullptr;
++    }
++
++    static ggml_backend_buffer_type ggml_backend_cuda_buffer_from_ptr_types[GGML_CUDA_MAX_DEVICES];
++    static bool initialized = false;
++
++    if (!initialized) {
++        // Only initialise slots for actual devices — calling
++        // ggml_backend_reg_dev_get with an out-of-range index aborts.
++        int n = ggml_backend_cuda_get_device_count();
++        for (int i = 0; i < n; i++) {
++            ggml_backend_cuda_buffer_from_ptr_types[i] = {
++                /* .iface    = */ ggml_backend_cuda_buffer_from_ptr_type_interface,
++                /* .device   = */ ggml_backend_reg_dev_get(ggml_backend_cuda_reg(), i),
++                /* .context  = */ NULL,
++            };
++        }
++        initialized = true;
++    }
++
++    return &ggml_backend_cuda_buffer_from_ptr_types[device];
++}
++
++ggml_backend_buffer_t ggml_backend_cuda_buffer_from_ptr(void * host_ptr, size_t size, int device) {
++    if (!host_ptr || size == 0) return NULL;
++    if ((uintptr_t) host_ptr % 32 != 0) return NULL;
++    if (device < 0 || device >= ggml_backend_cuda_get_device_count()) return NULL;
++
++    ggml_cuda_set_device(device);
++
++    // Register the mmap'd region with CUDA so device kernels can read
++    // it via UVA. cudaHostRegisterMapped is the load-bearing flag for
++    // getting a device-addressable pointer back.
++    unsigned int flags = cudaHostRegisterPortable | cudaHostRegisterMapped;
++#if CUDART_VERSION >= 11010
++    flags |= cudaHostRegisterReadOnly;
++#endif
++    cudaError_t err = cudaHostRegister(host_ptr, size, flags);
++    if (err != cudaSuccess) {
++        // Retry without ReadOnly for older drivers / different memory
++        // domains (cudaErrorInvalidValue).
++        (void) cudaGetLastError();
++        err = cudaHostRegister(host_ptr, size,
++                                cudaHostRegisterPortable | cudaHostRegisterMapped);
++        if (err != cudaSuccess) {
++            (void) cudaGetLastError();
++            return NULL;
++        }
++    }
++
++    void * dev_ptr = nullptr;
++    err = cudaHostGetDevicePointer(&dev_ptr, host_ptr, 0);
++    if (err != cudaSuccess) {
++        (void) cudaGetLastError();
++        (void) cudaHostUnregister(host_ptr);
++        (void) cudaGetLastError();
++        return NULL;
++    }
++
++    auto * ctx = new ggml_backend_cuda_buffer_from_ptr_context(
++        device, dev_ptr, host_ptr, size);
++
++    return ggml_backend_buffer_init(
++        ggml_backend_cuda_buffer_from_ptr_type(device),
++        ggml_backend_cuda_buffer_from_ptr_interface,
++        ctx, size);
++}
++
+ // cuda split buffer
+ 
+ static int64_t get_row_rounding(const std::array<float, GGML_CUDA_MAX_DEVICES> & tensor_split) {
+-- 
+2.43.0
+

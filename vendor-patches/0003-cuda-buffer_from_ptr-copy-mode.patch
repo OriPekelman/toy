@@ -1,0 +1,128 @@
+From 360dc26d32381ce857f7d48f0bcc2975ba814505 Mon Sep 17 00:00:00 2001
+From: Ori Pekelman <ori@pekelman.com>
+Date: Mon, 18 May 2026 17:08:24 +0000
+Subject: [PATCH] ggml-cuda buffer_from_ptr: add GGML_CUDA_BYO_PTR_MODE=copy
+ A/B mode
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The UVA-mapped path produces wrong matmul output on GB10 (see prior
+note). To isolate whether the bug is UVA-specific or something else
+entirely, this commit adds a runtime A/B: setting
+GGML_CUDA_BYO_PTR_MODE=copy switches the implementation to
+cudaMalloc + cudaMemcpy from host_ptr into newly-allocated device
+memory, returning a buffer that's functionally identical to a
+regular cuda-buffer wrapped around a normal device allocation.
+
+Result: COPY mode produces THE SAME wrong matmul output as UVA mode.
+So the bug is NOT in UVA-on-file-backed-mmap mechanics. It's
+somewhere in how the ggml CUDA path runs in our downstream
+Spinel-built binary — possibly a buffer/tensor-metadata issue, a
+schedule mismatch, or an incomplete archive link. Filed for
+follow-up; documentation in toy_ruby_neural_network's
+project_phase2_cuda_byo memory note.
+---
+ src/ggml-cuda/ggml-cuda.cu | 75 ++++++++++++++++++++++++++++----------
+ 1 file changed, 55 insertions(+), 20 deletions(-)
+
+diff --git a/src/ggml-cuda/ggml-cuda.cu b/src/ggml-cuda/ggml-cuda.cu
+index 3fe3738..74bfd5f 100644
+--- a/src/ggml-cuda/ggml-cuda.cu
++++ b/src/ggml-cuda/ggml-cuda.cu
+@@ -877,10 +877,15 @@ struct ggml_backend_cuda_buffer_from_ptr_context {
+     }
+ 
+     ~ggml_backend_cuda_buffer_from_ptr_context() {
++        ggml_cuda_set_device(device);
+         if (host_ptr) {
+-            ggml_cuda_set_device(device);
++            // UVA mode: unregister the pinned host region.
+             (void) cudaHostUnregister(host_ptr);
+-            (void) cudaGetLastError();   // clear if already-unregistered
++            (void) cudaGetLastError();
++        } else if (dev_ptr) {
++            // COPY mode: free the device memory we allocated.
++            (void) cudaFree(dev_ptr);
++            (void) cudaGetLastError();
+         }
+     }
+ };
+@@ -991,26 +996,56 @@ ggml_backend_buffer_t ggml_backend_cuda_buffer_from_ptr(void * host_ptr, size_t
+ 
+     ggml_cuda_set_device(device);
+ 
+-    // Register the mmap'd region with CUDA so device kernels can read
+-    // it via UVA. cudaHostRegisterMapped is the load-bearing flag for
+-    // getting a device-addressable pointer back. We deliberately do
+-    // NOT use cudaHostRegisterReadOnly — it caused garbled matmul
+-    // output during testing (likely a kernel-cache interaction;
+-    // pinpointing the exact cause is TODO).
+-    unsigned int flags = cudaHostRegisterPortable | cudaHostRegisterMapped;
+-    cudaError_t err = cudaHostRegister(host_ptr, size, flags);
+-    if (err != cudaSuccess) {
+-        (void) cudaGetLastError();
+-        return NULL;
+-    }
++    // Two implementation modes. The "UVA" mode is the cheap one — no
++    // device memory allocation, kernels read host pages directly via
++    // UVA after cudaHostRegister. Empirically that produces garbled
++    // matmul output on this SKU (GB10) for reasons not yet understood:
++    // host-side memcpy via the dev_ptr returns correct bytes, and a
++    // minimal CUDA kernel reading single bytes via dev_ptr also
++    // returns correct bytes, but real matmul kernels read junk.
++    //
++    // "COPY" mode allocates device memory and cudaMemcpy's from
++    // host_ptr. Costs the memory + load time, but gives us a normal
++    // cudaMalloc'd buffer that matmul kernels can read like any
++    // other. Pick via GGML_CUDA_BYO_PTR_MODE=copy (default UVA).
++    const char *mode = getenv("GGML_CUDA_BYO_PTR_MODE");
++    bool use_copy = (mode != nullptr && strcmp(mode, "copy") == 0);
+ 
+     void * dev_ptr = nullptr;
+-    err = cudaHostGetDevicePointer(&dev_ptr, host_ptr, 0);
+-    if (err != cudaSuccess) {
+-        (void) cudaGetLastError();
+-        (void) cudaHostUnregister(host_ptr);
+-        (void) cudaGetLastError();
+-        return NULL;
++    cudaError_t err;
++
++    if (use_copy) {
++        // Allocate device memory, copy from host.
++        err = cudaMalloc(&dev_ptr, size);
++        if (err != cudaSuccess) {
++            (void) cudaGetLastError();
++            return NULL;
++        }
++        err = cudaMemcpy(dev_ptr, host_ptr, size, cudaMemcpyHostToDevice);
++        if (err != cudaSuccess) {
++            (void) cudaGetLastError();
++            (void) cudaFree(dev_ptr);
++            return NULL;
++        }
++        // For the "copy" mode we DON'T cudaHostRegister; host_ptr will
++        // be NULL'd in our context so free_buffer skips unregister.
++        host_ptr = nullptr;
++    } else {
++        // UVA mode: pin the mmap'd region, get the device-addressable
++        // pointer. Reads happen directly through this address.
++        unsigned int flags = cudaHostRegisterPortable | cudaHostRegisterMapped;
++        err = cudaHostRegister(host_ptr, size, flags);
++        if (err != cudaSuccess) {
++            (void) cudaGetLastError();
++            return NULL;
++        }
++        err = cudaHostGetDevicePointer(&dev_ptr, host_ptr, 0);
++        if (err != cudaSuccess) {
++            (void) cudaGetLastError();
++            (void) cudaHostUnregister(host_ptr);
++            (void) cudaGetLastError();
++            return NULL;
++        }
+     }
+ 
+     // Reuse the EXISTING cuda buffer interface so:
+-- 
+2.43.0
+

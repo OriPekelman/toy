@@ -1,0 +1,117 @@
+From 238426683b10bc63fcc781a5848553536614e0ef Mon Sep 17 00:00:00 2001
+From: Ori Pekelman <ori@pekelman.com>
+Date: Mon, 18 May 2026 17:00:35 +0000
+Subject: [PATCH] ggml-cuda buffer_from_ptr: reuse cuda iface; drop ReadOnly
+ flag
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Iterating on the BYO-pointer patch. Two changes:
+
+* Reuse the existing ggml_backend_cuda_buffer_interface (with a
+  swapped free_buffer for our caller-owned context) instead of a
+  custom from_ptr_interface. This makes ggml_backend_buffer_is_cuda
+  return true for our buffer, unlocking the cuda↔cuda cpy_tensor
+  fast-path and any other code gated on is_cuda. Our from_ptr_context
+  layout is compatible with ggml_backend_cuda_buffer_context for the
+  fields the standard iface touches (device, dev_ptr).
+
+* Drop cudaHostRegisterReadOnly. It caused garbled matmul output in
+  testing. Suspect a kernel-cache interaction; needs deeper
+  investigation. The patch is still functional without it.
+
+Known issue (not fixed here): CUDA matmul kernels reading via the
+UVA-mapped pointer return deterministic-but-wrong values for an
+mmap'd-file region. The C-level smoke test (host-side memcpy from
+dev_ptr) returns correct bytes ('GGUF' magic), so the buffer
+plumbing is OK; the issue is somewhere in how kernel-side reads
+interact with file-backed mmap pages. Possible avenues to explore:
+- Test with cudaMallocManaged + cudaMemcpy from mmap, instead of
+  cudaHostRegister-pinning the mmap pages directly.
+- Verify with a minimal CUDA kernel reading via dev_ptr — does it
+  see the same bytes as host memcpy?
+- Check if CUDA's file-backed-mmap support on GB10 has caveats not
+  documented in the public API.
+---
+ src/ggml-cuda/ggml-cuda.cu | 50 ++++++++++++++++++++++++++------------
+ 1 file changed, 34 insertions(+), 16 deletions(-)
+
+diff --git a/src/ggml-cuda/ggml-cuda.cu b/src/ggml-cuda/ggml-cuda.cu
+index 6a9b2b1..3fe3738 100644
+--- a/src/ggml-cuda/ggml-cuda.cu
++++ b/src/ggml-cuda/ggml-cuda.cu
+@@ -993,22 +993,15 @@ ggml_backend_buffer_t ggml_backend_cuda_buffer_from_ptr(void * host_ptr, size_t
+ 
+     // Register the mmap'd region with CUDA so device kernels can read
+     // it via UVA. cudaHostRegisterMapped is the load-bearing flag for
+-    // getting a device-addressable pointer back.
++    // getting a device-addressable pointer back. We deliberately do
++    // NOT use cudaHostRegisterReadOnly — it caused garbled matmul
++    // output during testing (likely a kernel-cache interaction;
++    // pinpointing the exact cause is TODO).
+     unsigned int flags = cudaHostRegisterPortable | cudaHostRegisterMapped;
+-#if CUDART_VERSION >= 11010
+-    flags |= cudaHostRegisterReadOnly;
+-#endif
+     cudaError_t err = cudaHostRegister(host_ptr, size, flags);
+     if (err != cudaSuccess) {
+-        // Retry without ReadOnly for older drivers / different memory
+-        // domains (cudaErrorInvalidValue).
+         (void) cudaGetLastError();
+-        err = cudaHostRegister(host_ptr, size,
+-                                cudaHostRegisterPortable | cudaHostRegisterMapped);
+-        if (err != cudaSuccess) {
+-            (void) cudaGetLastError();
+-            return NULL;
+-        }
++        return NULL;
+     }
+ 
+     void * dev_ptr = nullptr;
+@@ -1020,13 +1013,38 @@ ggml_backend_buffer_t ggml_backend_cuda_buffer_from_ptr(void * host_ptr, size_t
+         return NULL;
+     }
+ 
++    // Reuse the EXISTING cuda buffer interface so:
++    //   1. ggml_backend_buffer_is_cuda(buf) returns true — unlocks
++    //      cuda↔cuda cpy_tensor fast-path and any other ggml-cuda
++    //      code that gates on this.
++    //   2. The scheduler dispatches matmul to the CUDA kernel via
++    //      the registered buffer_type.
++    //
++    // The context type is OUR from_ptr_context (so free_buffer can
++    // cudaHostUnregister without freeing the underlying memory).
++    // We have to lie about the iface to make is_cuda true, but the
++    // existing iface's free_buffer is cudaFree which would corrupt
++    // our caller-owned memory — so we override free_buffer below
++    // after init.
++    //
++    // Caveat: the buffer_type's get_alloc_size rounds quantized
++    // tensors up to MATRIX_ROW_PADDING (512). For mmap'd tensors
++    // with ne0 % 512 != 0 (e.g. Qwen2.5-0.5B Q8 d_model=896), the
++    // rounded size exceeds the file's per-tensor bytes; alloc
++    // fails. For 1.5B / 3B / 7B (d_model multiples of 512) this is
++    // fine.
+     auto * ctx = new ggml_backend_cuda_buffer_from_ptr_context(
+         device, dev_ptr, host_ptr, size);
+-
+-    return ggml_backend_buffer_init(
+-        ggml_backend_cuda_buffer_from_ptr_type(device),
+-        ggml_backend_cuda_buffer_from_ptr_interface,
++    ggml_backend_buffer_t buf = ggml_backend_buffer_init(
++        ggml_backend_cuda_buffer_type(device),
++        ggml_backend_cuda_buffer_interface,
+         ctx, size);
++    // Swap in our destructor — we own the context, not a cudaMalloc'd
++    // device buffer.
++    if (buf) {
++        buf->iface.free_buffer = ggml_backend_cuda_buffer_from_ptr_free;
++    }
++    return buf;
+ }
+ 
+ // cuda split buffer
+-- 
+2.43.0
+

@@ -1,0 +1,61 @@
+From 6ff957b629d08a2239b316f31ac0c9ee58fa13a7 Mon Sep 17 00:00:00 2001
+From: Ori Pekelman <ori@pekelman.com>
+Date: Mon, 18 May 2026 20:48:40 +0000
+Subject: [PATCH] ggml-cuda: fix cpy into strided view_2d destination
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+ggml_cuda_cpy enabled cpy_scalar_transpose whenever src looked like a
+"compact transpose" (nb01 == elt_size, nb02 == ne00*ne01*elt_size),
+without checking the destination's layout. cpy_scalar_transpose
+indexes dst as `imat*n + (ty+j)*ne00 + tx` — a contiguous write,
+ignoring nb1 on dst.
+
+For the common KV-cache pattern
+  V_slot = view_2d(t_V, ne0=1, ne1=d_head, nb1=max_T*4, offset=pos*4)
+  cpy(t_v_new, V_slot)
+the transpose kernel was triggered because src (the matmul result)
+satisfied the trivial transpose conditions. The dst is a strided
+view (nb1 != ne0*elt_size), so the kernel packed the source's
+d_head bytes contiguously at offset pos*4 instead of distributing
+them one element per max_T-spaced row.
+
+Symptom on Qwen2.5-1.5B inference: V-cache writes silently corrupted
+every decode step; logits diverged from CPU on layer 1 onward.
+
+Fix: also require ggml_is_contiguous(src1) before enabling the
+transpose path. Falls back to the general cpy_scalar kernel which
+correctly uses dst strides nb10/nb11/nb12/nb13.
+
+Repro: tinynn/ab_smoke_cpy_strided_{cpu,cuda}.rb in
+oripekelman/toy_ruby_neural_network@46a61c0 — pre-patch CPU and
+CUDA diverge; post-patch they agree.
+
+Filed upstream as ggml-org/ggml#1497.
+---
+ src/ggml-cuda/cpy.cu | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/src/ggml-cuda/cpy.cu b/src/ggml-cuda/cpy.cu
+index d208acf..f1235f4 100644
+--- a/src/ggml-cuda/cpy.cu
++++ b/src/ggml-cuda/cpy.cu
+@@ -404,8 +404,13 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
+     char * src1_ddc = (char *) src1->data;
+ 
+     const bool contiguous_srcs = ggml_is_contiguous(src0) && ggml_is_contiguous(src1);
++    // cpy_scalar_transpose writes dst contiguously (no nb1[i] strides) — it
++    // is only correct when dst itself is contiguous. Without this guard, a
++    // strided dst (e.g. view_2d into a KV-cache slot) gets its source bytes
++    // packed at offset 0 instead of distributed across rows.
+     const bool can_be_transposed = nb01 == (int64_t)ggml_element_size(src0) &&
+-        src0->ne[3] == 1 && nb02 == ne00 * ne01 * (int64_t)ggml_element_size(src0);
++        src0->ne[3] == 1 && nb02 == ne00 * ne01 * (int64_t)ggml_element_size(src0) &&
++        ggml_is_contiguous(src1);
+ 
+     if (src0->type == src1->type && contiguous_srcs) {
+         GGML_ASSERT(ggml_nbytes(src0) == ggml_nbytes(src1));
+-- 
+2.43.0
+

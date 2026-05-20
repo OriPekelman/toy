@@ -81,6 +81,29 @@ tep_demo/openai_api_qwen25_%: tep_demo/openai_api_qwen25_%.rb $(OPENAI_QWEN_DEPS
 	$(SPINEL) $< -o $@
 
 # --- ggml vendor ------------------------------------------------------------
+# Vendor patches that must land before any ggml build target. See
+# vendor-patches/README.md for the per-patch rationale.
+GGML_PATCHES := \
+	vendor-patches/0001-cuda-buffer_from_ptr.patch \
+	vendor-patches/0002-cuda-buffer_from_ptr-reuse-iface.patch \
+	vendor-patches/0003-cuda-buffer_from_ptr-copy-mode.patch \
+	vendor-patches/0004-cuda-cpy-strided.patch \
+	vendor-patches/0005-concat-backward.patch
+
+# Sentinel file marking that all $(GGML_PATCHES) have been applied to
+# the vendored tree. Build targets depend on it through CMakeLists.txt
+# (which depends on this sentinel) so a fresh clone applies the patches
+# exactly once, and re-runs of `make setup-ggml` are no-ops as long as
+# the patch set is unchanged.
+$(GGML_DIR)/.patched: $(GGML_DIR)/CMakeLists.txt $(GGML_PATCHES)
+	@echo "  reset vendor/ggml to upstream HEAD (build/ untouched)"
+	@cd $(GGML_DIR) && git reset --hard HEAD >/dev/null
+	@cd $(GGML_DIR) && for p in $(GGML_PATCHES); do \
+	  echo "  apply $$p"; \
+	  git apply "$(CURDIR)/$$p" || { echo "    FAILED"; exit 1; }; \
+	done
+	touch $@
+
 $(GGML_DIR)/CMakeLists.txt:
 	mkdir -p vendor
 	git clone --depth 1 $(GGML_REPO) $(GGML_DIR)
@@ -89,7 +112,7 @@ $(GGML_DIR)/CMakeLists.txt:
 # ships libomp (LLVM), not libgomp (GNU); ggml's own thread pool covers
 # CPU parallelism either way. Same setting used on Linux for build
 # parity (and so lib/tinynn.rb doesn't need ffi_lib "gomp").
-setup-ggml: $(GGML_DIR)/CMakeLists.txt
+setup-ggml: $(GGML_DIR)/.patched
 	cd $(GGML_DIR) && $(CMAKE_ENV) cmake -B build \
 	  -DBUILD_SHARED_LIBS=OFF -DGGML_STATIC=ON \
 	  -DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_VULKAN=OFF \
@@ -98,7 +121,7 @@ setup-ggml: $(GGML_DIR)/CMakeLists.txt
 	  -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON
 	cd $(GGML_DIR) && $(CMAKE_ENV) cmake --build build -j$(NJOBS)
 
-setup-ggml-cuda: $(GGML_DIR)/CMakeLists.txt
+setup-ggml-cuda: $(GGML_DIR)/.patched
 	cd $(GGML_DIR) && PATH=$(CUDA_DIR)/bin:$$PATH $(CMAKE_ENV) cmake -B build-cuda \
 	  -DBUILD_SHARED_LIBS=OFF -DGGML_STATIC=ON \
 	  -DGGML_CUDA=ON -DGGML_METAL=OFF -DGGML_VULKAN=OFF \
