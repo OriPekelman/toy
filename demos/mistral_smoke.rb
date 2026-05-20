@@ -1,17 +1,13 @@
 require_relative "../lib/arch"
 require_relative "../lib/transformer_lm"
 
-GGUF = ENV["GGUF"] || "data/llama-3.2-1b-f32.gguf"
-
+GGUF = ENV["GGUF"] || "data/mistral-7b-instruct-v0.2.gguf"
 arch = Arch.from_gguf(GGUF)
 puts arch.summary
-
 lm = ToyLM.new(arch, :cpu)
 lm.load(GGUF)
-
-# Llama-3.2 tokens for "Hello, my name is"
-ids = lm.generate([791, 6864, 315, 9822, 374], 12)
-
+# Mistral prompt IDs filled in below
+ids = lm.generate([415, 5565, 302, 4843, 349], 12)
 print "generated ids:"
 k = 0
 while k < ids.length

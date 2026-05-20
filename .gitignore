@@ -140,3 +140,11 @@ demos/smollm2
 demos/train
 demos/tinyllama
 docs/references/
+demos/qwen25_toylm_cuda
+demos/llama32_smoke
+demos/tinyllama_toylm
+demos/smollm2_toylm
+demos/mistral_smoke
+demos/qwen25_transformer_lm
+tinynn/llama_probe
+tinynn/native_probe
