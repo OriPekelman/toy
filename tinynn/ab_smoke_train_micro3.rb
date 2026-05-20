@@ -31,7 +31,7 @@ t_loss = TinyNN.tnn_mul(sess, t_y, t_y)
 TinyNN.tnn_set_output(t_y)
 TinyNN.tnn_set_output(t_loss)
 TinyNN.tnn_set_loss(t_loss)
-TinyNN.tnn_realize(sess, t_loss)
+TinyNN.tnn_build_forward_only(sess, t_loss)
 
 rc = TinyNN.tnn_build_backward(sess)
 puts "build rc=" + rc.to_s

@@ -1041,6 +1041,26 @@ int tnn_realize(void *sess, void *result)
     return 0;
 }
 
+/* Same as tnn_realize minus the sched-alloc. Training callers use this:
+ * tnn_build_forward_only(sess, loss) → tnn_build_backward(sess) →
+ * (optional tnn_extend_backward_graph for opt_step) → tnn_realize_backward.
+ * The follow-up tnn_realize_backward does the single sched-alloc on the
+ * combined graph_b. Calling tnn_realize THEN tnn_realize_backward is
+ * broken: the sched_reset between the two leaves tensor buffer pointers
+ * stale and the second alloc lands tensors on freed-pool memory (validated
+ * 2026-05-20 with a standalone ggml POC reproducing micro5's failure
+ * byte-for-byte; see docs/design/phase-f1-status.md). */
+int tnn_build_forward_only(void *sess, void *result)
+{
+    if (!sess || !result) return -1;
+    tnn_session *s = (tnn_session *)sess;
+    if (s->realized) return -2;
+    ggml_build_forward_expand(s->graph, (struct ggml_tensor *)result);
+    s->realized   = 1;
+    s->last_graph = 1;
+    return 0;
+}
+
 /* Add an extra tensor's compute tree to the graph BEFORE tnn_realize.
  * Use for side-effect ops (ggml_cpy into a view) that aren't reachable
  * from the final result tensor — without this they'd be pruned. The

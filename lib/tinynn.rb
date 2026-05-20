@@ -455,6 +455,7 @@ module TinyNN
   ffi_func :tnn_scratch_set_i32,  [:ptr, :int, :int],       :void
   ffi_func :tnn_scratch_get_i32,  [:ptr, :int],             :int
   ffi_func :tnn_realize,          [:ptr, :ptr],             :int
+  ffi_func :tnn_build_forward_only, [:ptr, :ptr],           :int
   ffi_func :tnn_add_to_graph,     [:ptr, :ptr],             :int
   ffi_func :tnn_compute,          [:ptr],                   :int
   ffi_func :tnn_scratch_set,      [:ptr, :int, :double],    :void

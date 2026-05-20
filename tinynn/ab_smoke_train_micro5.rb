@@ -16,10 +16,10 @@ TinyNN.tnn_finalize_weights(sess)
 t_x = TinyNN.tnn_input_2d_f32(sess, 1, K)
 t_y = TinyNN.tnn_matmul(sess, t_W, t_x)
 t_loss = TinyNN.tnn_mul(sess, t_y, t_y)
-# DON'T mark t_y as output — see if it's interfering with autograd
+TinyNN.tnn_set_output(t_y)         # protect y's slot from sched aliasing
 TinyNN.tnn_set_output(t_loss)
 TinyNN.tnn_set_loss(t_loss)
-TinyNN.tnn_realize(sess, t_loss)
+TinyNN.tnn_build_forward_only(sess, t_loss)
 
 TinyNN.tnn_build_backward(sess)
 TinyNN.tnn_realize_backward(sess)

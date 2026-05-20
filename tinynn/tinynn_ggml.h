@@ -195,6 +195,15 @@ void   tnn_adam_step_scratch(void *sess, int n,
  * called once after all ops are declared and before any upload. */
 int    tnn_realize(void *sess, void *result);
 
+/* Forward-graph build for training callers: appends nodes via
+ * ggml_build_forward_expand but does NOT sched-alloc. The follow-up
+ * tnn_build_backward + tnn_realize_backward does the single sched-alloc
+ * on the combined graph_b. Calling tnn_realize before tnn_realize_backward
+ * is broken: the sched_reset between the two leaves tensor buffer pointers
+ * stale (the second alloc lands on freed pool memory). Inference callers
+ * keep using tnn_realize; training callers use this. */
+int    tnn_build_forward_only(void *sess, void *result);
+
 /* Add a tensor's compute tree to the graph before tnn_realize. Used
  * for side-effect ops (ggml_cpy into a persistent view) that aren't
  * reachable from the realize target and would otherwise be pruned. */
