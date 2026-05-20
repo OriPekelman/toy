@@ -180,7 +180,17 @@ puts "final   CE = " + final.to_s
 if any_nan
   puts "VERDICT: FAIL (NaN in loss trajectory)"; exit 1
 end
-if final >= initial
-  puts "VERDICT: FAIL (CE did not decrease)"; exit 1
+# Tightened gate (2026-05-21): CPU sched aliases intermediate grad
+# tensors in the long SmolLM2 backward chain — gradients flow at
+# ~1/1000 the correct magnitude. CPU "passes" a loose monotonic-
+# decrease gate purely from FP accumulation drift, even though the
+# model isn't learning. The strict `final < 0.5 * initial` gate
+# rejects that fake pass. CUDA passes; CPU fails until the upstream
+# ggml-cpu sched bug is fixed. See docs/design/task70-root-cause-2026-05-21.md.
+threshold = 0.5 * initial
+if final >= threshold
+  puts "VERDICT: FAIL (CE " + initial.to_s + " → " + final.to_s +
+       "; needed < " + threshold.to_s + " for real training signal)"
+  exit 1
 end
-puts "VERDICT: PASS (CE decreased " + initial.to_s + " → " + final.to_s + ")"
+puts "VERDICT: PASS (CE " + initial.to_s + " → " + final.to_s + ")"

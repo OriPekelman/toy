@@ -452,6 +452,13 @@ smollm2_lora_train_ce_cuda:        demos/smollm2_lora_train_ce_cuda
 demos/smollm2_lora_train_ce_cuda: demos/smollm2_lora_train_ce_cuda.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 
+# Task #70 diagnostic — same CE smoke but with every graph_b node
+# pinned. Confirms sched intermediate-grad aliasing is the CPU
+# divergence's root cause. See docs/design/task70-root-cause-2026-05-21.md.
+smollm2_lora_train_ce_pinned:        demos/smollm2_lora_train_ce_pinned
+demos/smollm2_lora_train_ce_pinned: demos/smollm2_lora_train_ce_pinned.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
+	$(SPINEL) $< -o $@
+
 # Per-phase training-step bench (CPU + CUDA). Times graph_reset /
 # uploads / compute_backward / download separately. Doc:
 # docs/design/bench-train-2026-05-21.md.

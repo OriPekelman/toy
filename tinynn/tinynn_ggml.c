@@ -989,6 +989,36 @@ int tnn_graph_reset(void *sess)
     return 0;
 }
 
+/* Task #70 diagnostic — pin EVERY node in graph_b as an output, so
+ * sched is forbidden from reusing any intermediate's buffer slot
+ * once the node is computed. Used to test the hypothesis that the
+ * CPU/CUDA training divergence is caused by sched aliasing of
+ * intermediate grad tensors in long backward chains. Returns the
+ * number of nodes pinned.
+ *
+ * Call AFTER tnn_build_backward (so the backward nodes exist) but
+ * BEFORE tnn_realize_backward (so the sched sees the output flags
+ * when it allocates buffers).
+ *
+ * This is a diagnostic primitive, NOT a recommended training path —
+ * pinning every node defeats the sched's buffer-reuse optimization
+ * and inflates memory by ~node-count tensors. Use only to localize
+ * sched aliasing as the cause. */
+int tnn_pin_all_graph_b_nodes(void *sess)
+{
+    if (!sess) return -1;
+    tnn_session *s = (tnn_session *)sess;
+    if (!s->graph_b) return -2;
+    int n = ggml_graph_n_nodes(s->graph_b);
+    int i = 0;
+    while (i < n) {
+        struct ggml_tensor *t = ggml_graph_node(s->graph_b, i);
+        if (t) ggml_set_output(t);
+        i++;
+    }
+    return n;
+}
+
 /* Run the backward graph (forward + backward in one compute call). */
 int tnn_compute_backward(void *sess)
 {

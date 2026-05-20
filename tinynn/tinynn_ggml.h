@@ -157,6 +157,10 @@ void  *tnn_sum            (void *sess, void *a);
  * (one-hot for hard targets, label-smoothed otherwise). Returns a
  * scalar loss tensor. */
 void  *tnn_cross_entropy_loss(void *sess, void *a, void *b);
+
+/* Diagnostic — pin every node in graph_b as output (no sched reuse).
+ * See task70-bisect doc for usage notes. */
+int    tnn_pin_all_graph_b_nodes(void *sess);
 void   tnn_set_loss       (void *tensor);
 int    tnn_build_backward (void *sess);                 /* dup + build_backward_expand, no alloc */
 int    tnn_extend_backward_graph(void *sess, void *node); /* add node (typically opt_step output) */

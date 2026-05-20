@@ -457,6 +457,7 @@ module TinyNN
   ffi_func :tnn_realize,          [:ptr, :ptr],             :int
   ffi_func :tnn_build_forward_only, [:ptr, :ptr],           :int
   ffi_func :tnn_cross_entropy_loss, [:ptr, :ptr, :ptr],     :ptr
+  ffi_func :tnn_pin_all_graph_b_nodes, [:ptr],              :int
   ffi_func :tnn_add_to_graph,     [:ptr, :ptr],             :int
   ffi_func :tnn_compute,          [:ptr],                   :int
   ffi_func :tnn_scratch_set,      [:ptr, :int, :double],    :void

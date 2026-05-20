@@ -147,7 +147,12 @@ puts "final   CE = " + final.to_s
 if any_nan
   puts "VERDICT: FAIL (NaN in loss trajectory)"; exit 1
 end
-if final >= initial
-  puts "VERDICT: FAIL (CE did not decrease)"; exit 1
+# Tightened gate matching the CPU smoke (see comment there + task #70).
+# CUDA training is real — CE drops from ~7.5 to ~0.2 in 20 SGD steps.
+threshold = 0.5 * initial
+if final >= threshold
+  puts "VERDICT: FAIL (CE " + initial.to_s + " → " + final.to_s +
+       "; needed < " + threshold.to_s + ")"
+  exit 1
 end
-puts "VERDICT: PASS (CE decreased " + initial.to_s + " → " + final.to_s + ")"
+puts "VERDICT: PASS (CE " + initial.to_s + " → " + final.to_s + ")"
