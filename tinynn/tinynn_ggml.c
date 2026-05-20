@@ -903,16 +903,24 @@ int tnn_build_backward(void *sess)
     tnn_session *s = (tnn_session *)sess;
     if (!s->realized) return -2;   /* must build forward first */
 
-    /* Dup the forward graph with force_grads=true so the dup has
-     * grads + grad_accs slots wired up. */
+    /* ggml_build_backward_expand requires cgraph->grads + grad_accs
+     * to be non-NULL, which ggml_new_graph_custom only allocates when
+     * `grads=true`. Our session's graph is created with grads=false
+     * (forward-only). Solve by dup'ing with force_grads=true. The
+     * duped graph SHARES tensor pointers with the original — leaves
+     * and compute nodes alike — so readbacks through forward tensor
+     * handles still work after compute_backward writes through them. */
     s->graph_b = ggml_graph_dup(s->ctx, s->graph, /*force_grads=*/true);
     if (!s->graph_b) return -3;
 
     /* Expand the duped graph with backward nodes for every param. */
     ggml_build_backward_expand(s->ctx, s->graph_b, NULL);
 
-    /* Reserve scheduler slots for the new graph. */
-    if (!ggml_backend_sched_reserve(s->engine->sched, s->graph_b)) {
+    /* Reset + alloc for the new graph (matches the forward
+     * realize+alloc pattern; reserve isn't enough — the scheduler
+     * needs an actual allocation pass for compute_backward to run). */
+    ggml_backend_sched_reset(s->engine->sched);
+    if (!ggml_backend_sched_alloc_graph(s->engine->sched, s->graph_b)) {
         return -4;
     }
     s->realized_b = 1;

@@ -46,28 +46,36 @@ returns a non-null tensor; ggml's autograd machinery is in motion.
 
 ### Outstanding (F0.4 follow-up)
 
-The readout of `t_y` and the gradient tensor produces values that
-don't match the analytical reference for these specific shapes:
+After investigation: **leaves read back correctly** (W and x preserved
+post-backward); **scalar loss reads back correctly** (12.2 — exact);
+**multi-element compute nodes do not** (t_y reads back as [59.03,
+59.03] instead of [1.4, 3.2]; W's gradient as [59.03, 59.03, 23.05,
+59.03, 59.03, 23.05] instead of [2.8, 5.6, 8.4, 6.4, 12.8, 19.2]).
 
-```
-y       ggml = [59.03, 59.03]   expected = [1.4, 3.2]
-loss    ggml = 12.2             expected = 12.2  ✓
-dL/dW   ggml = [59.03, 59.03, 23.05, 59.03, 59.03, 23.05]
-                                expected = [2.8, 5.6, 8.4, 6.4, 12.8, 19.2]
-```
+The pattern (repeated values, only 2 unique floats in the gradient)
+suggests buffer overlap: ggml's scheduler reuses compute-node
+backing storage aggressively, and `tnn_download(t_y)` after
+`compute_backward` reads from whatever the sched left there.
+`ggml_set_output(t_y)` flag (which we set) doesn't prevent reuse for
+this graph shape.
 
-Loss being exact while y readout is wrong is the telltale: forward is
-correct, but reading the y / gradient buffer back to host scratch after
-`compute_backward` is reading the wrong bytes. Hypothesis: the backward
-graph's scheduler re-allocates intermediate buffers, and the project's
-existing `tnn_download` reads from the scheduler-managed backing of t_y
-which has been reassigned. Mitigation will be to use
-`ggml_backend_tensor_get` on the specific tensor's CURRENT data pointer,
-or to mark t_y persistent.
+**Tried + didn't help:**
+- `ggml_backend_sched_alloc_graph` instead of `_reserve` for graph_b
+- Reading W (a leaf — does work)
+- Reading t_y after various invalidations
 
-This is a real but bounded bug. Phase F1 (LoRA on CPU) can start
-without it — the relevant gradient is read from `tnn_tensor_grad`
-which returns a graph-stable handle.
+**What still needs investigation (≥1 day):**
+- Either: copy each output-of-interest to a persistent tensor at end
+  of graph (forces backing into ctx_w's stable buffer)
+- Or: walk the scheduler's per-tensor backend pointer + read directly
+  from there
+- Or: build forward+backward+optimizer-step as one in-graph compute
+  (mnist-example pattern) so we never need to read intermediates
+
+For F1 work, option 3 is the right shape: keep gradients on-graph,
+feed straight into `tnn_opt_step_adamw`. We never download
+intermediates; only the scalar loss for logging. That sidesteps the
+issue entirely.
 
 ## Gap analysis vs the fine-tuning design
 
