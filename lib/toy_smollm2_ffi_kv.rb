@@ -36,7 +36,14 @@ class SmolLM2KVBlockFFI
                 :t_w_q, :t_w_k, :t_w_v, :t_w_o,
                 :t_b_q, :t_b_k, :t_b_v,
                 :t_w_gate, :t_w_up, :t_w_down,
-                :t_K, :t_V
+                :t_K, :t_V,
+                # F1.2: optional LoRA adapters on Q projection (one
+                # rank-R pair per Q head). t_w_lora_a_q[hq] has shape
+                # (r, d_model); t_w_lora_b_q[hq] has shape (d_head, r).
+                # Allocated only when cache.lora_q_enabled at realize
+                # time. Trainable f32 tensors in ctx_w (not mmap'd from
+                # GGUF — adapters are session-local).
+                :t_w_lora_a_q, :t_w_lora_b_q
 
   def initialize
     @t_rn1_gamma = TinyNN.tnn_null_ptr
@@ -53,6 +60,8 @@ class SmolLM2KVBlockFFI
     @t_w_gate = TinyNN.tnn_null_ptr
     @t_w_up   = TinyNN.tnn_null_ptr
     @t_w_down = TinyNN.tnn_null_ptr
+    @t_w_lora_a_q = [TinyNN.tnn_null_ptr]
+    @t_w_lora_b_q = [TinyNN.tnn_null_ptr]
   end
 end
 
@@ -69,7 +78,12 @@ class SmolLM2KVFFICache
                 # via #set_weight_type before #realize_for to keep
                 # quantized weights quantized in memory.
                 :weight_type,
-                :gguf_handle_keepalive
+                :gguf_handle_keepalive,
+                # F1.2: LoRA on Q projection. enable_lora_q!(r) sets
+                # both flags BEFORE realize. When enabled, each block
+                # gets per-Q-head trainable A/B adapter pairs spliced
+                # into the Q matmul: q_eff = w_q[h]@h + B[h]@A[h]@h.
+                :lora_q_enabled, :lora_q_rank
 
   def initialize
     @realized   = false
@@ -105,6 +119,19 @@ class SmolLM2KVFFICache
     @trace_tensors.pop
     @weight_type   = 0                # GGML_TYPE_F32; legacy default
     @gguf_handle_keepalive = TinyNN.tnn_null_ptr  # set by realize_for_mmap
+    @lora_q_enabled = false
+    @lora_q_rank    = 0
+  end
+
+  # F1.2: enable per-Q-head LoRA on this session's forward graph. Call
+  # BEFORE realize_for_mmap. Adapter A is (r, d_model), adapter B is
+  # (d_head, r); both trainable F32 tensors in ctx_w (not mmap'd, so
+  # writes survive). Standard LoRA init: A = small Gaussian, B = 0,
+  # which makes the adapter a no-op at step 0 (forward output ==
+  # baseline). Use upload_lora_zero!(seed) to set up that init.
+  def enable_lora_q!(r)
+    @lora_q_enabled = true
+    @lora_q_rank    = r
   end
 
   # Phase 3 opt-in: set the ggml type used for 2D linear weights when
@@ -222,6 +249,26 @@ class SmolLM2KVFFICache
         hq = hq + 1
       end
 
+      # F1.2: per-Q-head LoRA adapter slots. F32-only, allocated in
+      # ctx_w (trainable, not mmap'd). A: (r, d_model). B: (d_head, r).
+      # Standard init (A small Gaussian + B zero) makes the adapter
+      # equal to zero at step 0 → forward output matches the base
+      # model exactly. Caller seeds via upload_lora_q_init!(seed).
+      if @lora_q_enabled
+        blk.t_w_lora_a_q = [TinyNN.tnn_input_2d_f32_persistent(@sess,
+                              @lora_q_rank, @d_model)]
+        blk.t_w_lora_b_q = [TinyNN.tnn_input_2d_f32_persistent(@sess,
+                              @d_head, @lora_q_rank)]
+        hq = 1
+        while hq < @n_heads
+          blk.t_w_lora_a_q.push(TinyNN.tnn_input_2d_f32_persistent(@sess,
+                                  @lora_q_rank, @d_model))
+          blk.t_w_lora_b_q.push(TinyNN.tnn_input_2d_f32_persistent(@sess,
+                                  @d_head, @lora_q_rank))
+          hq = hq + 1
+        end
+      end
+
       # K, V per-kv-head — same slicing math.
       k_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_k.weight")
       v_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_v.weight")
@@ -334,6 +381,44 @@ class SmolLM2KVFFICache
   # top-level driver — this file deliberately does NOT require it
   # (require-order with GGUFLoad's methods that touch `weight_type`
   # was triggering a Spinel GC crash in decode_step).
+  # F1.2: standard LoRA init for the Q adapters. A = small Gaussian
+  # (scale = init_scale, default 0.01); B = zero. With B=0 the LoRA
+  # contribution is exactly zero, so forward output matches the base
+  # model bit-for-bit at step 0. Call AFTER realize_for_mmap.
+  def upload_lora_q_init!(seed, init_scale)
+    if !@lora_q_enabled; return; end
+    s = seed
+    m_a = Mat.new(@lora_q_rank, @d_model)
+    m_b = Mat.new(@d_head, @lora_q_rank)
+    z_b = m_b
+    i_b = 0
+    while i_b < @d_head * @lora_q_rank
+      z_b.flat[i_b] = 0.0
+      i_b = i_b + 1
+    end
+    li = 0
+    while li < @n_layers
+      blk = @kv_blocks_ffi[li]
+      hq = 0
+      while hq < @n_heads
+        # Per-(layer, head) Gaussian for A via Box-Muller on an LCG.
+        ii = 0
+        while ii < @lora_q_rank * @d_model
+          s = (s * 1103515245 + 12345) & 0x7FFFFFFF
+          u1 = (s.to_f + 1.0) / 2147483648.0
+          s = (s * 1103515245 + 12345) & 0x7FFFFFFF
+          u2 = (s.to_f + 1.0) / 2147483648.0
+          m_a.flat[ii] = init_scale * Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math::PI * u2)
+          ii = ii + 1
+        end
+        TinyNN.stage_row_major_and_upload(@sess, blk.t_w_lora_a_q[hq], m_a)
+        TinyNN.stage_row_major_and_upload(@sess, blk.t_w_lora_b_q[hq], z_b)
+        hq = hq + 1
+      end
+      li = li + 1
+    end
+  end
+
   def realize_and_load_auto(gguf_path, max_T, cfg, flags)
     gguf = TinyNN.tnn_gguf_load(gguf_path)
     is_native = TinyNN.tnn_gguf_get_bool(gguf, "toy.ggml_native") == 1
@@ -686,6 +771,17 @@ class SmolLM2KVFFICache
     hkv = hq / @group_size
 
     t_q_raw = TinyNN.tnn_matmul(@sess, blk.t_w_q[hq], t_h)   # ne=[d_head, 1]
+    # F1.2: optional LoRA on Q. Standard placement is BEFORE the bias
+    # add (HF LoRA practice — the bias stays a property of the base
+    # projection, LoRA only adjusts the linear part). Math:
+    #   q_lora = w_lora_b[hq] @ (w_lora_a[hq] @ t_h)
+    #   q_raw  := q_raw + q_lora
+    # With B init to zero, q_lora == 0 and q_raw is unchanged.
+    if @lora_q_enabled
+      t_lora_a_h    = TinyNN.tnn_matmul(@sess, blk.t_w_lora_a_q[hq], t_h)      # ne=[r, 1]
+      t_lora_b_a_h  = TinyNN.tnn_matmul(@sess, blk.t_w_lora_b_q[hq], t_lora_a_h)# ne=[d_head, 1]
+      t_q_raw       = TinyNN.tnn_add(@sess, t_q_raw, t_lora_b_a_h)
+    end
     if @has_qkv_bias
       t_q_pre = TinyNN.tnn_add(@sess, t_q_raw, blk.t_b_q[hq])
     else
