@@ -388,6 +388,17 @@ qwen25_acceptance:        demos/qwen25_acceptance
 demos/qwen25_acceptance: demos/qwen25_acceptance.rb lib/arch.rb lib/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
+# Inference bench (CPU). Long warmup + long prefill + per-token stats.
+# Pick model via GGUF env; see docs/design/bench-cuda-2026-05-21.md.
+qwen25_bench_cpu:        demos/qwen25_bench_cpu
+demos/qwen25_bench_cpu: demos/qwen25_bench_cpu.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
+	$(SPINEL) $< -o $@
+
+# Inference bench (CUDA). Same shape as the CPU bench for side-by-side.
+qwen25_bench_cuda:        demos/qwen25_bench_cuda
+demos/qwen25_bench_cuda: demos/qwen25_bench_cuda.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
+	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
+
 # Qwen2.5 Phase-2 mmap inference (CUDA). Requires `make setup-ggml-cuda`.
 qwen25_native_mmap_cuda:        demos/qwen25_native_mmap_cuda
 demos/qwen25_native_mmap_cuda: demos/qwen25_native_mmap_cuda.rb lib/toy.rb lib/toy_smollm2.rb lib/toy_smollm2_loader.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/training.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a

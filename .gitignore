@@ -8,6 +8,8 @@ demos/qwen25_native_mmap
 demos/qwen25_native_mmap_cuda
 demos/qwen25_transformer_lm
 demos/qwen25_acceptance
+demos/qwen25_bench_cpu
+demos/qwen25_bench_cuda
 tinynn/arch_probe
 tinynn/arch_smoke
 demos/qwen25_per_layer_cpu
