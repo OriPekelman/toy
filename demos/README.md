@@ -4,20 +4,32 @@ End-to-end Ruby drivers. Source here; build target names match the
 file base; binaries land back here. **Run from the repo root** so
 they can find `data/*.gguf`, prompts, BPE tables.
 
-## Inference
+## Generic inference path (Phase 0 — preferred for new work)
+
+| Source | What |
+|---|---|
+| `qwen25_transformer_lm.rb` | Qwen2.5 via the generic `ToyLM` (lib/transformer_lm.rb). `GGUF=…` picks size + F32/Q8. |
+| `qwen25_toylm_cuda.rb`     | CUDA mirror of the above (`ToyLMCuda`). F32 + aligned-`d_ff` Q8. |
+| `llama32_smoke.rb`         | Llama-3.2-1B via `ToyLM`. `GGUF=…` swaps to 3B. |
+| `mistral_smoke.rb`         | Mistral-7B-Instruct-v0.2 via `ToyLM`. |
+| `tinyllama_toylm.rb`       | TinyLlama-1.1B via `ToyLM`. |
+| `smollm2_toylm.rb`         | SmolLM2-135M via `ToyLM`. |
+| `sampler_smoke.rb`         | Sampler module smoke (temperature / top_k / top_p / determinism). `MODE=greedy\|topk\|topp` + `SEED=N`. |
+
+## Legacy / per-model inference
 
 | Source | Build | What |
 |---|---|---|
-| `gpt2.rb`            | `make gpt2`            | DistilGPT-2 / GPT-2 via `Toy::GPT2` (native Mat) |
-| `smollm2.rb`         | `make smollm2`         | SmolLM2-135M via `Toy::SmolLM2` (native Mat) |
-| `smollm2_kv.rb`      | `make smollm2_kv`      | SmolLM2-135M FFI KV-cache (CPU) |
-| `smollm2_kv_cuda.rb` | `make smollm2_kv_cuda` | SmolLM2-135M FFI KV-cache (CUDA) |
-| `tinyllama.rb`       | `make tinyllama`       | TinyLlama-1.1B via `Toy::SmolLM2` (native Mat) |
-| `tinyllama_kv.rb`    | `make tinyllama_kv`    | TinyLlama-1.1B FFI KV-cache (CPU) |
+| `gpt2.rb`              | `make gpt2`              | DistilGPT-2 / GPT-2 via `Toy::GPT2` (native Mat) |
+| `smollm2.rb`           | `make smollm2`           | SmolLM2-135M via `Toy::SmolLM2` (native Mat) |
+| `smollm2_kv.rb`        | `make smollm2_kv`        | SmolLM2-135M FFI KV-cache (CPU) |
+| `smollm2_kv_cuda.rb`   | `make smollm2_kv_cuda`   | SmolLM2-135M FFI KV-cache (CUDA) |
+| `tinyllama.rb`         | `make tinyllama`         | TinyLlama-1.1B via `Toy::SmolLM2` (native Mat) |
+| `tinyllama_kv.rb`      | `make tinyllama_kv`      | TinyLlama-1.1B FFI KV-cache (CPU) |
 | `tinyllama_kv_cuda.rb` | `make tinyllama_kv_cuda` | TinyLlama-1.1B FFI KV-cache (CUDA) |
-| `qwen25_kv.rb`       | `make qwen25_kv`       | Qwen2.5 Mat-mediated KV (slow gold reference). `GGUF=…` picks 0.5B–7B. |
-| `qwen25_native_mmap.rb` | `make qwen25_native_mmap` | Qwen2.5 Phase-2 mmap (CPU). Canonical CPU path. `GGUF=…` picks size + F32/Q8. |
-| `qwen25_native_mmap_cuda.rb` | `make qwen25_native_mmap_cuda` | Qwen2.5 Phase-2 mmap (CUDA). Canonical CUDA path. F32 only today. |
+| `qwen25_kv.rb`         | `make qwen25_kv`         | Qwen2.5 Mat-mediated KV (slow gold reference). |
+| `qwen25_native_mmap.rb`      | `make qwen25_native_mmap`      | Qwen2.5 Phase-2 mmap (CPU). |
+| `qwen25_native_mmap_cuda.rb` | `make qwen25_native_mmap_cuda` | Qwen2.5 Phase-2 mmap (CUDA). |
 
 ## Parity tools
 

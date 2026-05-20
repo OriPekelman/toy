@@ -148,3 +148,4 @@ demos/mistral_smoke
 demos/qwen25_transformer_lm
 tinynn/llama_probe
 tinynn/native_probe
+demos/sampler_smoke

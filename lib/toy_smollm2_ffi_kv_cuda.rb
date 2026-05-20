@@ -17,14 +17,13 @@
 # files with a single generic `TransformerLM`; see
 # `docs/design/arch-struct.md`.
 #
-# WARNING: known divergence — this file's CUDA `build_decode_step` has
-# the PRE-Phase-3 V-matmul order (`matmul(t_h, t_w_v)`, result
-# ne=[1, d_head]); the CPU version has the Phase-3 flip
-# (`matmul(t_w_v, t_h)`, result ne=[d_head, 1]). Mathematically
-# equivalent for F32 and currently produces matching output thanks to
-# the cpy-strided fix (ggml-org/ggml#1497). Phase 0 will unify; until
-# then this divergence is documented but not "fixed" because the CUDA
-# path is currently passing parity tests.
+# RESOLVED 2026-05-20: previously the CUDA `build_decode_step` used
+# the PRE-Phase-3 V-matmul order `matmul(t_h, t_w_v)` (ne=[1, d_head]).
+# Mathematically equivalent on F32 but aborted on Q8 — ggml-cuda's
+# quantized matmul kernel requires the quantized operand as src0. Now
+# mirrors the CPU version: `matmul(t_w_v, t_h)`, ne=[d_head, 1]. The
+# cpy-into-strided V_slot relies on the ggml-org/ggml#1497 patch we
+# landed earlier.
 
 require_relative "transformer"
 require_relative "toy"
@@ -178,7 +177,7 @@ class SmolLM2KVFFICacheCuda
       blk.t_V   = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess, d_head, max_T)]
       if qkv_bias
         blk.t_b_k = [TinyNNCuda.tnn_input_1d_f32_persistent(@sess, d_head)]
-        blk.t_b_v = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess, d_head, 1)]
+        blk.t_b_v = [TinyNNCuda.tnn_input_1d_f32_persistent(@sess, d_head)]
       end
       hkv = 1
       while hkv < n_kv
@@ -188,7 +187,7 @@ class SmolLM2KVFFICacheCuda
         blk.t_V.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess, d_head, max_T))
         if qkv_bias
           blk.t_b_k.push(TinyNNCuda.tnn_input_1d_f32_persistent(@sess, d_head))
-          blk.t_b_v.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess, d_head, 1))
+          blk.t_b_v.push(TinyNNCuda.tnn_input_1d_f32_persistent(@sess, d_head))
         end
         hkv = hkv + 1
       end
@@ -335,12 +334,12 @@ class SmolLM2KVFFICacheCuda
         # CUDA V bias stays 2D [1, d_head] because CUDA build_decode_step
         # has NOT been migrated to weight-first V matmul.
         blk.t_b_k = [TinyNNCuda.tnn_input_1d_persistent_mmap(@sess, @d_head, 0, kb_off)]
-        blk.t_b_v = [TinyNNCuda.tnn_input_2d_persistent_mmap(@sess, @d_head, 1, 0, vb_off)]
+        blk.t_b_v = [TinyNNCuda.tnn_input_1d_persistent_mmap(@sess, @d_head, 0, vb_off)]
         hkv = 1
         while hkv < @n_kv
           blk.t_b_k.push(TinyNNCuda.tnn_input_1d_persistent_mmap(@sess, @d_head, 0,
                            kb_off + hkv * bias_stride))
-          blk.t_b_v.push(TinyNNCuda.tnn_input_2d_persistent_mmap(@sess, @d_head, 1, 0,
+          blk.t_b_v.push(TinyNNCuda.tnn_input_1d_persistent_mmap(@sess, @d_head, 0,
                            vb_off + hkv * bias_stride))
           hkv = hkv + 1
         end
@@ -435,7 +434,14 @@ class SmolLM2KVFFICacheCuda
         t_k_pre = t_k_raw
       end
       t_k_rot = TinyNNCuda.tnn_rope_ext(@sess, t_k_pre, t_pos, @d_head, @rope_base)
-      t_v_raw = TinyNNCuda.tnn_matmul(@sess, t_h, blk.t_w_v[hkv])         # ne=[1, d_head]
+      # Phase 3 V-matmul flip: weight in src0 (was: weight in src1).
+      # Required for Q8 weights — ggml-cuda's quantized matmul kernel
+      # only accepts the quantized operand as src0. With the old order
+      # `matmul(t_h, blk.t_w_v[hkv])` Q8 weights aborted with an assert.
+      # Result shape becomes ne=[d_head, 1] (was ne=[1, d_head]); the
+      # cpy-into-strided V_slot relies on the ggml-org/ggml#1497 patch
+      # to handle the transposing write correctly on CUDA.
+      t_v_raw = TinyNNCuda.tnn_matmul(@sess, blk.t_w_v[hkv], t_h)         # ne=[d_head, 1]
       if @has_qkv_bias
         t_v_new = TinyNNCuda.tnn_add(@sess, t_v_raw, blk.t_b_v[hkv])
       else

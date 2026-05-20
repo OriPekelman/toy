@@ -15,22 +15,49 @@ named after the math.
 
 ## Supported models
 
-| Family            | Model           | Params | F32 | Q8_0 | CPU | CUDA |
-| ----------------- | --------------- | ------ | --- | ---- | --- | ---- |
-| GPT-2             | DistilGPT-2     | 82M    | ✓   |      | ✓   | ✓    |
-| GPT-2             | GPT-2 small     | 124M   | ✓   |      | ✓   | ✓    |
-| Llama family      | SmolLM2-135M    | 135M   | ✓   | ✓    | ✓   | ✓    |
-| Llama family      | SmolLM2-360M    | 360M   | ✓   |      | ✓   | ✓    |
-| Llama family      | TinyLlama-1.1B  | 1.1B   | ✓   | ✓    | ✓   | ✓    |
-| Llama + QKV bias  | Qwen2.5-0.5B    | 0.5B   | ✓   | ✓    | ✓   | ✓    |
-| Llama + QKV bias  | Qwen2.5-1.5B    | 1.5B   | ✓   | ✓    | ✓   | ✓    |
-| Llama + QKV bias  | Qwen2.5-3B      | 3B     | ✓   | ✓    | ✓   | ✓    |
-| Llama + QKV bias  | Qwen2.5-7B      | 7B     | ✓   | ✓    | ✓   | ✓    |
+| Family            | Model              | Params | F32 | Q8_0 | CPU | CUDA F32 | CUDA Q8 |
+| ----------------- | ------------------ | ------ | --- | ---- | --- | -------- | ------- |
+| GPT-2             | DistilGPT-2        | 82M    | ✓   |      | ✓   | ✓        |         |
+| GPT-2             | GPT-2 small        | 124M   | ✓   |      | ✓   | ✓        |         |
+| Llama family      | SmolLM2-135M       | 135M   | ✓   | ✓    | ✓   | ✓        |         |
+| Llama family      | SmolLM2-360M       | 360M   | ✓   |      | ✓   | ✓        |         |
+| Llama family      | TinyLlama-1.1B     | 1.1B   | ✓   | ✓    | ✓   | ✓        |         |
+| Llama family      | Llama-3.2-1B       | 1B     | ✓   |      | ✓   | ✓        |         |
+| Llama family      | Llama-3.2-3B       | 3B     | ✓   |      | ✓   | ✓        |         |
+| Llama family      | Mistral-7B-v0.2    | 7B     | ✓   | ✓    | ✓   |          | ✓       |
+| Llama + QKV bias  | Qwen2.5-0.5B       | 0.5B   | ✓   | ✓    | ✓   | ✓        |         |
+| Llama + QKV bias  | Qwen2.5-1.5B       | 1.5B   | ✓   | ✓    | ✓   | ✓        | †       |
+| Llama + QKV bias  | Qwen2.5-3B         | 3B     | ✓   | ✓    | ✓   | ✓        | †       |
+| Llama + QKV bias  | Qwen2.5-7B         | 7B     | ✓   | ✓    | ✓   |          | ✓       |
 
-7B-Q8 inference: **7.4 GB RSS** via zero-copy mmap of the GGUF
-weights into both CPU and CUDA buffers (UVA on GB10). Next targets:
-Llama-3.2, Qwen3 dense, Qwen3 MoE — see
-[`docs/design/arch-struct.md`](docs/design/arch-struct.md).
+† Qwen2.5-1.5B/3B Q8 abort on CUDA at weight-load time: ggml-cuda's
+quantized matmul requires `d_ff` aligned to 512, and those models'
+`d_ff` (8960, 11008) aren't. F32 path works for all sizes.
+
+Today's bench:
+
+| Model              | CPU tok/s | CPU RSS  |
+| ------------------ | --------- | -------- |
+| SmolLM2-135M       | **47**    | 0.55 GB  |
+| SmolLM2-360M       | **24**    | 1.41 GB  |
+| Qwen2.5-0.5B Q8    | **21**    | 0.91 GB  |
+| Qwen2.5-0.5B       | 14.5      | 1.89 GB  |
+| TinyLlama-1.1B     | 9.6       | 3.92 GB  |
+| Qwen2.5-1.5B Q8    | 9.0       | 2.22 GB  |
+| Llama-3.2-1B       | 7.1       | 4.69 GB  |
+| Qwen2.5-1.5B       | 6.4       | 5.80 GB  |
+| Qwen2.5-3B Q8      | 4.9       | 3.98 GB  |
+| Llama-3.2-3B       | 3.8       | 12.08 GB |
+| Qwen2.5-3B         | 3.7       | 11.57 GB |
+| Mistral-7B Q8      | 2.4       | 7.17 GB  |
+| Qwen2.5-7B Q8      | 2.4       | 7.09 GB  |
+
+7B-Q8 inference: **7.1 GB RSS** via zero-copy mmap of the GGUF
+weights into both CPU and CUDA buffers (UVA on GB10).
+Full bench notes: [`docs/bench-gx10-2026-05-20.md`](docs/bench-gx10-2026-05-20.md).
+
+Next targets: Qwen3 dense (Qwen3.6-27B + WebWorld-8B), Qwen3 MoE
+(35B-A3B), GLM-4.7-Flash — see [`docs/design/arch-struct.md`](docs/design/arch-struct.md).
 
 ## What it looks like
 
