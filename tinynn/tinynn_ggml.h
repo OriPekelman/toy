@@ -154,8 +154,11 @@ void  *tnn_rope_ext_back(void *sess, void *dy, void *pos, int n_dims,
  * → compute_backward → tensor_grad to retrieve gradients. */
 void  *tnn_sum            (void *sess, void *a);
 void   tnn_set_loss       (void *tensor);
-int    tnn_build_backward (void *sess);
-int    tnn_compute_backward(void *sess);
+int    tnn_build_backward (void *sess);                 /* dup + build_backward_expand, no alloc */
+int    tnn_extend_backward_graph(void *sess, void *node); /* add node (typically opt_step output) */
+int    tnn_realize_backward(void *sess);                /* sched-alloc the final backward graph */
+int    tnn_graph_reset    (void *sess);                 /* zero grads + momenta; seed loss grad = 1 */
+int    tnn_compute_backward(void *sess);                /* runs fwd + bwd + (opt) in one call */
 void  *tnn_tensor_grad    (void *sess, void *tensor);
                                                          /* d/dx of plain RMSNorm(x) (no gamma); caller handles gamma chain. */
 void  *tnn_softmax_back(void *sess, void *a, void *dy); /* d/dx of per-row softmax. a is softmax output. */
@@ -226,6 +229,7 @@ void  *tnn_input_1d_f32(void *sess, int n);
  * and beta1h = 1 / (1 - b1^t), beta2h = 1 / (1 - b2^t) -- so
  * mh = m * beta1h = m_hat, vh = sqrt(v * beta2h) + eps = sqrt(v_hat) + eps. */
 void  *tnn_opt_step_adamw(void *sess, void *a, void *grad, void *m, void *v, void *params);
+void  *tnn_opt_step_sgd  (void *sess, void *a, void *grad, void *params);
 
 /* Compute the (already-built) graph. Must be called after upload. */
 int    tnn_compute(void *sess);

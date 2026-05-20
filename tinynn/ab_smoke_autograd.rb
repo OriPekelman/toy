@@ -60,9 +60,13 @@ while i < xv.length
 end
 TinyNN.stage_row_major_and_upload(sess, t_x, m_x)
 
-# Build & run backward
+# Build backward graph (no allocation yet)
 rc = TinyNN.tnn_build_backward(sess)
 puts "build_backward rc=" + rc.to_s
+if rc != 0; exit 1; end
+# No opt_step extension here — just verify backward-only still works
+rc = TinyNN.tnn_realize_backward(sess)
+puts "realize_backward rc=" + rc.to_s
 if rc != 0; exit 1; end
 rc = TinyNN.tnn_compute_backward(sess)
 puts "compute_backward rc=" + rc.to_s

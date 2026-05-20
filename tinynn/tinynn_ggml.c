@@ -897,6 +897,20 @@ void tnn_set_loss(void *tensor)
  * for inference use); a freshly-duped copy of s->graph is taken with
  * grads=true so ggml_build_backward_expand has the slots it needs.
  * Returns 0 on success, -1 on failure. */
+/* Split tnn_build_backward into two phases so callers can extend the
+ * graph with optimizer-step nodes between build and alloc. Typical
+ * in-graph-optimizer flow:
+ *
+ *   tnn_realize(sess, loss)            // forward graph
+ *   tnn_build_backward(sess)           // dup + build_backward_expand
+ *   for each param:
+ *     opt_node = tnn_opt_step_adamw(sess, p, grad, m, v, hp)
+ *     tnn_extend_backward_graph(sess, opt_node)
+ *   tnn_realize_backward(sess)         // sched-alloc the final graph
+ *   loop:
+ *     tnn_compute_backward(sess)       // fwd + bwd + adam in one call
+ *     read scalar loss; repeat
+ */
 int tnn_build_backward(void *sess)
 {
     if (!sess) return -1;
@@ -908,22 +922,55 @@ int tnn_build_backward(void *sess)
      * `grads=true`. Our session's graph is created with grads=false
      * (forward-only). Solve by dup'ing with force_grads=true. The
      * duped graph SHARES tensor pointers with the original — leaves
-     * and compute nodes alike — so readbacks through forward tensor
-     * handles still work after compute_backward writes through them. */
+     * and compute nodes alike. */
     s->graph_b = ggml_graph_dup(s->ctx, s->graph, /*force_grads=*/true);
     if (!s->graph_b) return -3;
 
-    /* Expand the duped graph with backward nodes for every param. */
+    /* Expand with backward nodes for every node tagged as param. */
     ggml_build_backward_expand(s->ctx, s->graph_b, NULL);
+    /* Note: NOT allocated yet — caller may extend with opt_step nodes,
+     * then call tnn_realize_backward to finalize the allocation. */
+    return 0;
+}
 
-    /* Reset + alloc for the new graph (matches the forward
-     * realize+alloc pattern; reserve isn't enough — the scheduler
-     * needs an actual allocation pass for compute_backward to run). */
+/* Add a node to the backward graph (typically an opt_step output).
+ * Used between tnn_build_backward and tnn_realize_backward. */
+int tnn_extend_backward_graph(void *sess, void *node)
+{
+    if (!sess || !node) return -1;
+    tnn_session *s = (tnn_session *)sess;
+    if (!s->graph_b) return -2;
+    ggml_build_forward_expand(s->graph_b, (struct ggml_tensor *)node);
+    return 0;
+}
+
+/* Finalize the backward graph allocation. Called once, after all
+ * opt_step nodes have been added. Subsequent compute_backward calls
+ * are cheap re-runs. */
+int tnn_realize_backward(void *sess)
+{
+    if (!sess) return -1;
+    tnn_session *s = (tnn_session *)sess;
+    if (!s->graph_b) return -2;
     ggml_backend_sched_reset(s->engine->sched);
     if (!ggml_backend_sched_alloc_graph(s->engine->sched, s->graph_b)) {
-        return -4;
+        return -3;
     }
     s->realized_b = 1;
+    return 0;
+}
+
+/* Initialize the backward-graph state: zero all gradient
+ * accumulators + Adam moments (m, v) for any opt_step nodes; set the
+ * loss tensor's incoming gradient to 1.0. Call this ONCE between
+ * tnn_realize_backward and the first tnn_compute_backward. Subsequent
+ * compute calls accumulate normally — momenta persist across steps. */
+int tnn_graph_reset(void *sess)
+{
+    if (!sess) return -1;
+    tnn_session *s = (tnn_session *)sess;
+    if (!s->graph_b) return -2;
+    ggml_graph_reset(s->graph_b);
     return 0;
 }
 
@@ -965,6 +1012,20 @@ void *tnn_opt_step_adamw(void *sess, void *a, void *grad, void *m, void *v, void
                                         (struct ggml_tensor *)m,
                                         (struct ggml_tensor *)v,
                                         (struct ggml_tensor *)params);
+}
+
+/* SGD step: w = w - alpha * grad - alpha * wd * w. Simpler than Adam,
+ * useful for sanity-checking the autograd gradient direction (no
+ * momentum to obscure things). params is a 1-D 2-element tensor:
+ * [alpha, weight_decay]. */
+void *tnn_opt_step_sgd(void *sess, void *a, void *grad, void *params)
+{
+    if (!sess || !a || !grad || !params) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_opt_step_sgd(s->ctx,
+                                      (struct ggml_tensor *)a,
+                                      (struct ggml_tensor *)grad,
+                                      (struct ggml_tensor *)params);
 }
 
 int tnn_realize(void *sess, void *result)

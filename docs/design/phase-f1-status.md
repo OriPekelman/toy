@@ -1,142 +1,110 @@
-# Phase F1-F4 status — fine-tuning rollout
+# Phase F1 status — in-graph optimizer landed; values need investigation
 
 **Date:** 2026-05-20
 
-## Where we are
+## Done in this session
 
-| Sub-task | Status | Where |
-| --- | --- | --- |
-| F0 (groundwork) | ✅ shipped | `docs/design/phase-f0-status.md` |
-| F1.0 (LoRA algorithm smoke) | ✅ shipped | `demos/lora_smoke.rb` |
-| F1.1 (LoRA via FFI, scale) | next | |
-| F1.2 (SFT loop + real dataset) | queued | |
-| F2 (LoRA on CUDA) | queued | |
-| F3 (full fine-tune) | queued | |
-| F4 (QLoRA) | queued | |
+### Architecture (no tech debt)
 
-## F1.0 shipped
+Refactored autograd flow to clean phases so caller can insert
+optimizer nodes between graph build and graph alloc:
 
-`demos/lora_smoke.rb` — toy regression to zero output via LoRA on a
-single Linear layer. W_base is frozen; A (R×K) and B (OUT×R) are
-trainable. Hand-coded backward (sidesteps F0.4's tensor-readback
-TODO):
+```
+tnn_realize(sess, loss)             # forward graph
+tnn_build_backward(sess)            # adds backward nodes; NO alloc
+                                    # → caller extends here ↓
+for each param:
+  opt = tnn_opt_step_adamw(sess, p, grad, m, v, hp)   # or _sgd
+  tnn_extend_backward_graph(sess, opt)
+tnn_realize_backward(sess)          # sched-alloc the FINAL graph
+tnn_graph_reset(sess)               # zero grads + momenta; loss_grad = 1
+loop:
+  tnn_compute_backward(sess)        # fwd + bwd + opt in one call
+  read scalar loss; repeat
+```
 
-  ∂L/∂y = 2y
-  ∂L/∂A = Bᵀ · (∂L/∂y) · xᵀ
-  ∂L/∂B = (∂L/∂y) · (A · x)ᵀ
+Five new C primitives + FFI bindings:
+- `tnn_sum(sess, a)` — scalar reduce (loss building block).
+- `tnn_set_loss(t)` — flags a tensor as the training loss.
+- `tnn_build_backward(sess)` — dups graph + `ggml_build_backward_expand`.
+- `tnn_extend_backward_graph(sess, node)` — `ggml_build_forward_expand` for opt-step nodes.
+- `tnn_realize_backward(sess)` — sched alloc.
+- `tnn_graph_reset(sess)` — `ggml_graph_reset` (zeros grads, momenta).
+- `tnn_tensor_grad(sess, t)` — `ggml_graph_get_grad`.
+- `tnn_opt_step_adamw(...)` — already had this; bound the AdamW arg layout.
+- `tnn_opt_step_sgd(...)` — added for sanity-checking gradient direction.
 
-Result: loss **1.124 → 4.3e-8** in 30 SGD steps. Eight orders of
-magnitude. Algorithm proven; shape proven; the rest is plumbing.
+This is the **right shape** for fine-tuning: no host readback of
+intermediates, no per-step graph rebuild, no LD/ST overhead between
+forward, backward, and optimizer.
 
-### Spinel discoveries during F1.0
+### Smokes
 
-- `Mat` as multi-return value (`return [a, b]; x, y = fn()`) segvs.
-  Worked around by exposing each return as a separate function.
-  Worth filing alongside the other Spinel issues we've collected.
+- `tinynn/ab_smoke_train_step.rb` — Adam in-graph training step.
+- `tinynn/ab_smoke_train_sgd.rb` — SGD variant for gradient-direction
+  sanity check.
 
-## F1.1 — LoRA via FFI ops, real model layer
+Both compile + run + show W getting updated by the optimizer.
 
-Scope: instead of Mat math, run the LoRA forward + backward through
-ggml ops via the existing tinynn FFI. Required for performance at
-real model scale (matmul of ~1500×1500 weights, not 4×3).
+## What needs investigation
 
-Two flavors possible:
+Loss + gradient *magnitudes* from the in-graph optimizer are off vs
+analytical expectation by ~100×. Concrete observation:
 
-1. **Per-step session rebuild** — build a fresh forward+backward
-   graph each step, stage A/B values into it. Simple but each step
-   pays graph-build cost (~ms). Fine for small models (SmolLM2-135M).
-2. **Persistent training graph** — build forward+backward+adam_step
-   once (mnist-example pattern), run compute repeatedly. Required for
-   the 7B case where graph-build amortizes badly.
+```
+Toy: y = W @ x; loss = sum(y²); W=[-0.2, 0.3, 0.5, -0.1, 0.4, 0.1]; x=[1,2,3]
+Hand:    y = [1.9, 1.0]; loss = 4.61
+         ∂L/∂W[0,0] = 2 * y[0] * x[0] = 3.8
 
-F1.1 ships flavor 1 first (proves the FFI path); flavor 2 lands as
-F1.1b / F1.2.
+ggml SGD step 1 (lr=0.01): W[0] went from -0.2 to -6.99.
+  Δ = -6.79  ⇒  lr * grad = 6.79  ⇒  grad ~ 679 (not 3.8).
+```
 
-### F1.1 work items (estimated)
+Two threads interact:
 
-| Item | Effort |
-| --- | --- |
-| `LoraAdapter` Ruby class holding A, B, gradient buffers, Adam state | 1d |
-| FFI graph builder: forward through one Linear with adapter injection | 1d |
-| Hand-coded backward via FFI ops (matmul, scale) | 1d |
-| Adam optimizer step (we have `tnn_opt_step_adamw` already) | 0.5d |
-| Smoke on a single Linear from SmolLM2-135M's first attn layer | 0.5d |
+1. **F0.4 readback issue** (still open) — `tnn_download` of compute-node
+   outputs returns wrong bytes. Loss reads back as 679.34, gradient also
+   reads back as 679.34. Suspicious that they're equal — sched may be
+   pointing both downloads at the same buffer.
 
-**Estimate: ~4 days dedicated work** to land F1.1.
+2. **Possible ggml autograd shape misunderstanding** — even if readback
+   is broken, the W change of -6.79 per step is REAL (we observe W's
+   internal value moving), so the internal gradient really is ~679,
+   not 3.8. This suggests autograd is computing the gradient of
+   something other than what I marked as `loss`, OR the `tnn_sum`
+   I'm using doesn't reduce all the way to a scalar.
 
-## F1.2 — SFT loop driver + tiny dataset
+## Next concrete debugging step
 
-After F1.1 lands, the SFT loop is mechanical:
+Build a fully analytical micro-smoke:
 
-- Read prep'd `data/sft_train.bin` (format defined in finetuning.md)
-- Per batch: tokenize → forward → masked CE loss → backward → adam → repeat
-- Eval every N steps + checkpoint LoRA weights
+- Single param: 1-element W = 1.0
+- Loss = W² (no matmul, no sum — just a square)
+- Mark W param, mark loss = loss tensor
+- Run one SGD step with lr=0.01
+- Hand: ∂(W²)/∂W = 2W = 2. SGD: W' = 1 - 0.01*2 = 0.98.
 
-The HARDEST part is loss masking — cross_entropy_grad already supports
-`target=-100` skip; we just need to plumb it through.
+If we see W' = 0.98 → ggml autograd works correctly at the simplest
+shape; the bug is in our sum/matmul gradient handling. If we see
+something else → ggml or our wrapper has a shape-handling bug at the
+absolute basement.
 
-**Estimate: 1-2 weeks** (per finetuning.md design).
+This bisects perfectly. ~1 day to get the right answer.
 
-## F2 — LoRA on CUDA
+## What unblocks F2 / F3 / F4
 
-Mirror F1's CPU driver to TinyNNCuda. Mostly mechanical given:
-- `lib/transformer_lm_cuda.rb` pattern already shows how (per
-  `docs/design/arch-struct.md`'s "two delegating wrappers" notes).
-- All ops we use have CUDA bindings.
-- The toy `lora_smoke` could be ported as `lora_smoke_cuda` once
-  the math is FFI-side.
+Once the F1 micro-smoke is correct, F2 (LoRA on CUDA) is the same
+graph + `TinyNNCuda` swap. F3 (full FT) adds Adam state for all
+weights. F4 (QLoRA) layers Q8 base.
 
-**Estimate: 3-5 days after F1.1 ships.**
+The in-graph optimizer architecture from today is the **load-bearing**
+piece — it removes the per-step graph rebuild that would have made
+training at scale prohibitive. The remaining work is calibration +
+real-model integration.
 
-## F3 — full fine-tune on CUDA
+## Honest assessment
 
-All weights trainable. Adam state context. Memory math (from
-`docs/design/finetuning.md`):
-
-| Model | Weights | + grad | + Adam | Total | GB10 fit |
-| --- | --- | --- | --- | --- | --- |
-| Qwen2.5-0.5B | 2 GB | +2 | +4 | ~8 GB | ✓ |
-| Qwen2.5-1.5B | 6 GB | +6 | +12 | ~24 GB | ✓ |
-| Qwen2.5-3B   | 12 GB | +12 | +24 | ~48 GB | ✓ |
-| Qwen2.5-7B   | 30 GB | +30 | +60 | ~120 GB | tight |
-
-Full-FT ceiling ~3B on GB10 with comfortable headroom. 7B needs
-gradient checkpointing OR optimizer-state offload OR LoRA.
-
-**Estimate: 1-2 weeks after F2.**
-
-## F4 — QLoRA
-
-Base in Q8 (existing Phase 3 path) + LoRA in F32. Mathematically:
-QLoRA = LoRA + the base happens to be quantized. Memory at 7B-Q8:
-
-- Base: 7.4 GB (Q8 mmap'd, frozen)
-- LoRA A + B + Adam: ~70-100 MB
-- Activations: a few hundred MB at inference shape
-
-Total ~8 GB. Fits comfortably on any modern GPU.
-
-**Estimate: 3-5 days after F3.** Mostly memory bookkeeping + a
-mixed-precision matmul code path.
-
-## Honest summary
-
-F0 + F1.0 land in this session (today). F1.1 onward is real
-engineering work — each phase 3-10 days. Realistic timeline:
-
-- F1.1: ~4 days (next session focus)
-- F1.2: ~1 week (data + loss masking + checkpointing)
-- F2: ~3 days after F1.1+F1.2 (CUDA mirror)
-- F3: ~1-2 weeks (different scope — full Adam state)
-- F4: ~3-5 days after F3 (mixed precision)
-
-Total to QLoRA-working: ~4-6 weeks of focused work. Realistic.
-
-## What's UNBLOCKED by F0+F1.0
-
-- The math is proven. We know LoRA works algorithm-wise.
-- ggml's autograd is wired (F0.4 has the pipeline; readback fix is
-  surgical when needed).
-- Forward + backward + optimizer ops are all bound through FFI.
-- The next session can start at F1.1 step 1 (`LoraAdapter` class)
-  without any prerequisite research.
+F1.1 is "infrastructure shipped, calibration TODO". Not the
+"loss-decreasing on a real model layer" we'd hoped for, but the
+right architecture is in place — once the value-mismatch is found,
+everything downstream of it works.

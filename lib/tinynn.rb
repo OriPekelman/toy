@@ -378,11 +378,14 @@ module TinyNN
   ffi_func :tnn_silu_back,        [:ptr, :ptr, :ptr],       :ptr
   ffi_func :tnn_rope_ext_back,    [:ptr, :ptr, :ptr, :int, :double], :ptr
   # Phase F0.4 — autograd
-  ffi_func :tnn_sum,              [:ptr, :ptr],             :ptr
-  ffi_func :tnn_set_loss,         [:ptr],                   :void
-  ffi_func :tnn_build_backward,   [:ptr],                   :int
-  ffi_func :tnn_compute_backward, [:ptr],                   :int
-  ffi_func :tnn_tensor_grad,      [:ptr, :ptr],             :ptr
+  ffi_func :tnn_sum,                  [:ptr, :ptr],             :ptr
+  ffi_func :tnn_set_loss,             [:ptr],                   :void
+  ffi_func :tnn_build_backward,       [:ptr],                   :int
+  ffi_func :tnn_extend_backward_graph,[:ptr, :ptr],             :int
+  ffi_func :tnn_realize_backward,     [:ptr],                   :int
+  ffi_func :tnn_graph_reset,          [:ptr],                   :int
+  ffi_func :tnn_compute_backward,     [:ptr],                   :int
+  ffi_func :tnn_tensor_grad,          [:ptr, :ptr],             :ptr
   ffi_func :tnn_get_rows,         [:ptr, :ptr, :ptr],       :ptr
   ffi_func :tnn_get_rows_back,    [:ptr, :ptr, :ptr, :ptr], :ptr
   ffi_func :tnn_input_1d_i32,     [:ptr, :int],             :ptr
@@ -405,6 +408,7 @@ module TinyNN
   ffi_func :tnn_switch_b,         [:ptr],                   :int
   ffi_func :tnn_compute_b,        [:ptr],                   :int
   ffi_func :tnn_opt_step_adamw,   [:ptr, :ptr, :ptr, :ptr, :ptr, :ptr], :ptr
+  ffi_func :tnn_opt_step_sgd,     [:ptr, :ptr, :ptr, :ptr],             :ptr
   ffi_func :tnn_adam_step_scratch,[:ptr, :int, :double, :double, :double, :double, :double, :double], :void
 
   # GGUF model-file loader (S5). Path-based; pass nil-friendly via tnn_gguf_load_empty
