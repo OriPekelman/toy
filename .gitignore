@@ -169,3 +169,5 @@ tinynn/ab_smoke_lora_train
 demos/smollm2_lora_forward
 demos/smollm2_lora_train_step
 demos/smollm2_lora_train_ce
+demos/smollm2_lora_forward_cuda
+demos/smollm2_lora_train_ce_cuda

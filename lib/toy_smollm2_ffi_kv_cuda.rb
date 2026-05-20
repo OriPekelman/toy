@@ -39,7 +39,14 @@ class SmolLM2KVBlockFFICuda
                 :t_w_q, :t_w_k, :t_w_v, :t_w_o,
                 :t_b_q, :t_b_k, :t_b_v,
                 :t_w_gate, :t_w_up, :t_w_down,
-                :t_K, :t_V
+                :t_K, :t_V,
+                # F2 mirror of F1.2: optional LoRA adapters on Q
+                # projection (one rank-R pair per Q head). See the
+                # CPU twin (lib/toy_smollm2_ffi_kv.rb) for the full
+                # contract — same shapes, same standard init, same
+                # forward-graph splice. Trainable F32 in ctx_w (not
+                # mmap'd; adapter weights are session-local).
+                :t_w_lora_a_q, :t_w_lora_b_q
 
   def initialize
     @t_rn1_gamma = TinyNNCuda.tnn_null_ptr
@@ -56,6 +63,8 @@ class SmolLM2KVBlockFFICuda
     @t_w_gate = TinyNNCuda.tnn_null_ptr
     @t_w_up   = TinyNNCuda.tnn_null_ptr
     @t_w_down = TinyNNCuda.tnn_null_ptr
+    @t_w_lora_a_q = [TinyNNCuda.tnn_null_ptr]
+    @t_w_lora_b_q = [TinyNNCuda.tnn_null_ptr]
   end
 end
 
@@ -67,7 +76,8 @@ class SmolLM2KVFFICacheCuda
                 :group_size, :n_layers, :vocab_size, :rope_base,
                 :rms_eps, :realized,
                 :weight_type,
-                :gguf_handle_keepalive
+                :gguf_handle_keepalive,
+                :lora_q_enabled, :lora_q_rank
 
   def initialize
     @realized   = false
@@ -91,6 +101,14 @@ class SmolLM2KVFFICacheCuda
     @kv_blocks_ffi      = [SmolLM2KVBlockFFICuda.new]
     @weight_type        = 0   # GGML_TYPE_F32 default
     @gguf_handle_keepalive = TinyNNCuda.tnn_null_ptr
+    @lora_q_enabled = false
+    @lora_q_rank    = 0
+  end
+
+  # F2 mirror — see lib/toy_smollm2_ffi_kv.rb#enable_lora_q!
+  def enable_lora_q!(r)
+    @lora_q_enabled = true
+    @lora_q_rank    = r
   end
 
   # Phase 3 opt-in. CUDA path currently supports F32 only — the
@@ -209,6 +227,43 @@ class SmolLM2KVFFICacheCuda
   # ggml_backend_cuda_buffer_from_ptr; on GB10 unified memory this
   # means CUDA kernels read the host-mmap pages directly via UVA.
   #
+  # F2 mirror of F1.2 — standard LoRA init for the Q adapters.
+  # A = small Gaussian (init_scale), B = zero. Same Box-Muller LCG
+  # seed sequence as the CPU twin so a (seed, init_scale) pair
+  # yields identical adapter values across backends.
+  def upload_lora_q_init!(seed, init_scale)
+    if !@lora_q_enabled; return; end
+    s = seed
+    m_a = Mat.new(@lora_q_rank, @d_model)
+    m_b = Mat.new(@d_head, @lora_q_rank)
+    z_b = m_b
+    i_b = 0
+    while i_b < @d_head * @lora_q_rank
+      z_b.flat[i_b] = 0.0
+      i_b = i_b + 1
+    end
+    li = 0
+    while li < @n_layers
+      blk = @kv_blocks_ffi[li]
+      hq = 0
+      while hq < @n_heads
+        ii = 0
+        while ii < @lora_q_rank * @d_model
+          s = (s * 1103515245 + 12345) & 0x7FFFFFFF
+          u1 = (s.to_f + 1.0) / 2147483648.0
+          s = (s * 1103515245 + 12345) & 0x7FFFFFFF
+          u2 = (s.to_f + 1.0) / 2147483648.0
+          m_a.flat[ii] = init_scale * Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math::PI * u2)
+          ii = ii + 1
+        end
+        TinyNNCuda.upload_row_major(@sess, blk.t_w_lora_a_q[hq], m_a)
+        TinyNNCuda.upload_row_major(@sess, blk.t_w_lora_b_q[hq], z_b)
+        hq = hq + 1
+      end
+      li = li + 1
+    end
+  end
+
   # F32-only on CUDA today (the V matmul flip needed for Q8 hasn't
   # been mirrored to the CUDA build_decode_step).
   def realize_for_mmap(gguf_handle, cfg, max_T, untied, qkv_bias)
@@ -289,6 +344,23 @@ class SmolLM2KVFFICacheCuda
         hq = hq + 1
       end
 
+      # F2 mirror — per-Q-head LoRA adapters. Allocated in ctx_w
+      # (trainable, not mmap'd). See CPU twin for the rationale.
+      if @lora_q_enabled
+        blk.t_w_lora_a_q = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
+                              @lora_q_rank, @d_model)]
+        blk.t_w_lora_b_q = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
+                              @d_head, @lora_q_rank)]
+        hq = 1
+        while hq < @n_heads
+          blk.t_w_lora_a_q.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
+                                  @lora_q_rank, @d_model))
+          blk.t_w_lora_b_q.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
+                                  @d_head, @lora_q_rank))
+          hq = hq + 1
+        end
+      end
+
       k_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_k.weight")
       v_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_v.weight")
       k_off_base = TinyNNCuda.tnn_gguf_tensor_file_offset(gguf_handle, k_idx)
@@ -363,6 +435,21 @@ class SmolLM2KVFFICacheCuda
                        TinyNNCuda.tnn_gguf_tensor_file_offset(gguf_handle, down_idx))
 
       li = li + 1
+    end
+
+    # F2 mirror — mark LoRA tensors as trainable BEFORE finalize.
+    if @lora_q_enabled
+      li2 = 0
+      while li2 < @n_layers
+        blk2 = @kv_blocks_ffi[li2]
+        hq = 0
+        while hq < @n_heads
+          TinyNNCuda.tnn_set_param(blk2.t_w_lora_a_q[hq])
+          TinyNNCuda.tnn_set_param(blk2.t_w_lora_b_q[hq])
+          hq = hq + 1
+        end
+        li2 = li2 + 1
+      end
     end
 
     TinyNNCuda.tnn_finalize_weights(@sess)
@@ -498,6 +585,14 @@ class SmolLM2KVFFICacheCuda
     hkv = hq / @group_size
 
     t_q_raw = TinyNNCuda.tnn_matmul(@sess, blk.t_w_q[hq], t_h)   # ne=[d_head, 1]
+    # F2 mirror — optional LoRA on Q (same placement + semantics as
+    # the CPU twin: spliced BEFORE the bias add, with B init to 0 so
+    # the forward output is bit-identical to baseline at step 0).
+    if @lora_q_enabled
+      t_lora_a_h   = TinyNNCuda.tnn_matmul(@sess, blk.t_w_lora_a_q[hq], t_h)
+      t_lora_b_a_h = TinyNNCuda.tnn_matmul(@sess, blk.t_w_lora_b_q[hq], t_lora_a_h)
+      t_q_raw      = TinyNNCuda.tnn_add(@sess, t_q_raw, t_lora_b_a_h)
+    end
     if @has_qkv_bias
       t_q_pre = TinyNNCuda.tnn_add(@sess, t_q_raw, blk.t_b_q[hq])
     else

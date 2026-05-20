@@ -125,8 +125,22 @@ module TinyNNCuda
   ffi_func :tnn_get_rows,         [:ptr, :ptr, :ptr],       :ptr
   ffi_func :tnn_get_rows_back,    [:ptr, :ptr, :ptr, :ptr], :ptr
   ffi_func :tnn_realize,          [:ptr, :ptr],             :int
+  ffi_func :tnn_build_forward_only, [:ptr, :ptr],           :int
   ffi_func :tnn_add_to_graph,     [:ptr, :ptr],             :int
   ffi_func :tnn_compute,          [:ptr],                   :int
+  # Training primitives — CUDA mirror of the CPU binding set. See
+  # tinynn/tinynn_ggml.c for the contracts. Same C library is linked;
+  # we only need the FFI declarations on the CUDA module surface.
+  ffi_func :tnn_build_backward,       [:ptr],                       :int
+  ffi_func :tnn_extend_backward_graph,[:ptr, :ptr],                 :int
+  ffi_func :tnn_realize_backward,     [:ptr],                       :int
+  ffi_func :tnn_graph_reset,          [:ptr],                       :int
+  ffi_func :tnn_compute_backward,     [:ptr],                       :int
+  ffi_func :tnn_tensor_grad,          [:ptr, :ptr],                 :ptr
+  ffi_func :tnn_set_loss,             [:ptr],                       :void
+  ffi_func :tnn_sum,                  [:ptr, :ptr],                 :ptr
+  ffi_func :tnn_cross_entropy_loss,   [:ptr, :ptr, :ptr],           :ptr
+  ffi_func :tnn_opt_step_sgd,         [:ptr, :ptr, :ptr, :ptr],     :ptr
   ffi_func :tnn_scratch_set,      [:ptr, :int, :double],    :void
   ffi_func :tnn_scratch_get,      [:ptr, :int],             :double
   ffi_func :tnn_scratch_set_i32,  [:ptr, :int, :int],       :void

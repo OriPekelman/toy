@@ -151,8 +151,8 @@ while s < STEPS
   TinyNN.tnn_graph_reset(sess)
   TinyNN.upload_int_array(sess, step_h.t_token_id, [last_prompt_id])
   TinyNN.upload_int_array(sess, step_h.t_pos,      [TRAIN_POS])
-  TinyNN.stage_row_major_and_upload(sess, t_labels, m_labels)
-  TinyNN.stage_row_major_and_upload(sess, t_hp_v,   m_hp_v)
+  TinyNN.upload_row_major(sess, t_labels, m_labels)
+  TinyNN.upload_row_major(sess, t_hp_v,   m_hp_v)
 
   rc = TinyNN.tnn_compute_backward(sess)
   if rc != 0; puts "compute_backward rc=" + rc.to_s; exit 1; end

@@ -442,6 +442,16 @@ smollm2_lora_train_ce:        demos/smollm2_lora_train_ce
 demos/smollm2_lora_train_ce: demos/smollm2_lora_train_ce.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
+# F2 step 1: CUDA mirror of the LoRA forward parity gate.
+smollm2_lora_forward_cuda:        demos/smollm2_lora_forward_cuda
+demos/smollm2_lora_forward_cuda: demos/smollm2_lora_forward_cuda.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
+	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
+
+# F2 step 2: CUDA mirror of the multi-layer SGD CE training smoke.
+smollm2_lora_train_ce_cuda:        demos/smollm2_lora_train_ce_cuda
+demos/smollm2_lora_train_ce_cuda: demos/smollm2_lora_train_ce_cuda.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
+	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
+
 # Qwen2.5 Phase-2 mmap inference (CUDA). Requires `make setup-ggml-cuda`.
 qwen25_native_mmap_cuda:        demos/qwen25_native_mmap_cuda
 demos/qwen25_native_mmap_cuda: demos/qwen25_native_mmap_cuda.rb lib/toy.rb lib/toy_smollm2.rb lib/toy_smollm2_loader.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/training.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
