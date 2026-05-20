@@ -155,3 +155,5 @@ tinynn/ab_smoke_autograd
 demos/lora_smoke
 tinynn/ab_smoke_train_step
 tinynn/ab_smoke_train_sgd
+tinynn/tok_roundtrip
+tinynn/tok_minimal
