@@ -149,3 +149,5 @@ demos/qwen25_transformer_lm
 tinynn/llama_probe
 tinynn/native_probe
 demos/sampler_smoke
+tinynn/ab_smoke_silu_back
+tinynn/ab_smoke_rope_back

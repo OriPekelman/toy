@@ -722,6 +722,47 @@ void *tnn_softmax_back(void *sess, void *a, void *dy)
                                            1.0f, 0.0f);
 }
 
+/* Backward for SiLU activation. SiLU(x) = x * sigmoid(x);
+ * dSiLU/dx = sigmoid(x) * (1 + x * (1 - sigmoid(x)))
+ * Given x and dy (gradient from upstream), returns dx.
+ *
+ * NOTE: ggml_silu_back's public header comment swaps the args
+ * ("a - x, b - dy"). Reading the actual CPU op, src[0]=dy and
+ * src[1]=x. We pass (dy, x) to match the implementation. */
+void *tnn_silu_back(void *sess, void *x, void *dy)
+{
+    if (!sess || !x || !dy) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_silu_back(s->ctx,
+                                   (struct ggml_tensor *)dy,
+                                   (struct ggml_tensor *)x);
+}
+
+/* Backward for RoPE-NEOX. Same arg convention as tnn_rope_ext but
+ * also takes dy (gradient of the rope_ext output). Returns dx. The
+ * YaRN-related params are pinned to no-scaling defaults to match
+ * tnn_rope_ext. */
+void *tnn_rope_ext_back(void *sess, void *dy, void *pos, int n_dims,
+                        double freq_base)
+{
+    if (!sess || !dy || !pos) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    const int mode = 2;   /* GGML_ROPE_TYPE_NEOX */
+    return (void *)ggml_rope_ext_back(s->ctx,
+                                       (struct ggml_tensor *)dy,
+                                       (struct ggml_tensor *)pos,
+                                       NULL,                /* freq factors */
+                                       n_dims,
+                                       mode,
+                                       0,                   /* n_ctx_orig */
+                                       (float)freq_base,
+                                       1.0f,                /* freq_scale */
+                                       0.0f,                /* ext_factor */
+                                       1.0f,                /* attn_factor */
+                                       32.0f,               /* beta_fast */
+                                       1.0f);               /* beta_slow */
+}
+
 void *tnn_get_rows(void *sess, void *table, void *idx)
 {
     if (!sess || !table || !idx) return NULL;

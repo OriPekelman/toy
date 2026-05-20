@@ -141,6 +141,13 @@ void  *tnn_scale(void *sess, void *a, double s);        /* element-wise a * s */
 
 /* Backward ops. */
 void  *tnn_rms_norm_back(void *sess, void *x, void *dy, double eps);
+
+/* Phase F0 — backward ops for fine-tuning. Each one mirrors the
+ * forward op's shape: same context, same tensor handles, returns a
+ * new compute tensor representing dx. */
+void  *tnn_silu_back(void *sess, void *x, void *dy);
+void  *tnn_rope_ext_back(void *sess, void *dy, void *pos, int n_dims,
+                         double freq_base);
                                                          /* d/dx of plain RMSNorm(x) (no gamma); caller handles gamma chain. */
 void  *tnn_softmax_back(void *sess, void *a, void *dy); /* d/dx of per-row softmax. a is softmax output. */
 void  *tnn_get_rows(void *sess, void *table, void *idx);

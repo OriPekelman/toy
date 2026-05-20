@@ -375,6 +375,8 @@ module TinyNN
   ffi_func :tnn_scale,            [:ptr, :ptr, :double],    :ptr
   ffi_func :tnn_rms_norm_back,    [:ptr, :ptr, :ptr, :double], :ptr
   ffi_func :tnn_softmax_back,     [:ptr, :ptr, :ptr],       :ptr
+  ffi_func :tnn_silu_back,        [:ptr, :ptr, :ptr],       :ptr
+  ffi_func :tnn_rope_ext_back,    [:ptr, :ptr, :ptr, :int, :double], :ptr
   ffi_func :tnn_get_rows,         [:ptr, :ptr, :ptr],       :ptr
   ffi_func :tnn_get_rows_back,    [:ptr, :ptr, :ptr, :ptr], :ptr
   ffi_func :tnn_input_1d_i32,     [:ptr, :int],             :ptr
@@ -1175,6 +1177,29 @@ module TinyNN
 
     out = Mat.new(vocab_size, d_out.ncols)
     n = vocab_size * d_out.ncols
+    i = 0
+    while i < n
+      out.flat[i] = TinyNN.tnn_scratch_get(sess, i)
+      i = i + 1
+    end
+    TinyNN.tnn_session_free(sess)
+    out
+  end
+
+  # Backward for SiLU: given x (the input to silu) and dy (gradient
+  # from upstream), returns dx. dx = dy * (sigmoid(x) * (1 + x * (1 - sigmoid(x)))).
+  def self.silu_back(x, dy)
+    sess = TinyNN.tnn_session_new(0)
+    tx  = TinyNN.tnn_input_2d_f32(sess, x.nrows, x.ncols)
+    tdy = TinyNN.tnn_input_2d_f32(sess, dy.nrows, dy.ncols)
+    tc  = TinyNN.tnn_silu_back(sess, tx, tdy)
+    TinyNN.tnn_realize(sess, tc)
+    TinyNN.stage_row_major_and_upload(sess, tx,  x)
+    TinyNN.stage_row_major_and_upload(sess, tdy, dy)
+    TinyNN.tnn_compute(sess)
+    TinyNN.tnn_download(sess, tc)
+    out = Mat.new(x.nrows, x.ncols)
+    n = x.nrows * x.ncols
     i = 0
     while i < n
       out.flat[i] = TinyNN.tnn_scratch_get(sess, i)
