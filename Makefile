@@ -539,6 +539,16 @@ smollm2_seq_parity_t4_cuda:        demos/smollm2_seq_parity_t4_cuda
 demos/smollm2_seq_parity_t4_cuda: demos/smollm2_seq_parity_t4_cuda.rb lib/llama_seq_forward_ffi_cuda.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 
+# M3 step 3 — seq-mode LoRA training smoke (CPU). One forward + backward
+# + opt_step over T positions; loss should decrease over N steps.
+smollm2_seq_train:        demos/smollm2_seq_train
+demos/smollm2_seq_train: demos/smollm2_seq_train.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
+	$(SPINEL) $< -o $@
+
+smollm2_seq_train_cuda:        demos/smollm2_seq_train_cuda
+demos/smollm2_seq_train_cuda: demos/smollm2_seq_train_cuda.rb lib/llama_seq_forward_ffi_cuda.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
+	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
+
 # Per-phase training-step bench (CPU + CUDA). Times graph_reset /
 # uploads / compute_backward / download separately. Doc:
 # docs/design/bench-train-2026-05-21.md.

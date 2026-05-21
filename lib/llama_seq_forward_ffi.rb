@@ -27,7 +27,15 @@ class LlamaSeqBlockFFI
   attr_accessor :t_seq_rn1_gamma, :t_seq_rn2_gamma,
                 :t_seq_w_q,  :t_seq_w_k,  :t_seq_w_v,  :t_seq_w_o,
                 :t_seq_b_q,  :t_seq_b_k,  :t_seq_b_v,
-                :t_seq_w_gate, :t_seq_w_up, :t_seq_w_down
+                :t_seq_w_gate, :t_seq_w_up, :t_seq_w_down,
+                # M3 step 3: LoRA-Q adapter pair + persistent Adam moments.
+                # Same shapes as SmolLM2KVBlockFFI's lora ivars; we keep
+                # them on the seq-block so a future training driver can
+                # share weights with the KV-decode path (both classes
+                # allocate against the same gguf mmap).
+                :t_seq_w_lora_a_q, :t_seq_w_lora_b_q,
+                :t_seq_w_lora_a_q_m, :t_seq_w_lora_a_q_v,
+                :t_seq_w_lora_b_q_m, :t_seq_w_lora_b_q_v
 
   def initialize
     @t_seq_rn1_gamma = TinyNN.tnn_null_ptr
@@ -42,6 +50,12 @@ class LlamaSeqBlockFFI
     @t_seq_w_gate = TinyNN.tnn_null_ptr
     @t_seq_w_up   = TinyNN.tnn_null_ptr
     @t_seq_w_down = TinyNN.tnn_null_ptr
+    @t_seq_w_lora_a_q   = [TinyNN.tnn_null_ptr]
+    @t_seq_w_lora_b_q   = [TinyNN.tnn_null_ptr]
+    @t_seq_w_lora_a_q_m = [TinyNN.tnn_null_ptr]
+    @t_seq_w_lora_a_q_v = [TinyNN.tnn_null_ptr]
+    @t_seq_w_lora_b_q_m = [TinyNN.tnn_null_ptr]
+    @t_seq_w_lora_b_q_v = [TinyNN.tnn_null_ptr]
   end
 end
 
@@ -55,7 +69,14 @@ class LlamaSeqForwardFFICache
                 :seq_rope_base, :seq_rms_eps, :seq_realized,
                 :t_seq_token_ids, :t_seq_positions,
                 :t_seq_x_embed, :t_seq_x_final, :t_seq_logits,
-                :seq_gguf_handle_keepalive
+                :seq_gguf_handle_keepalive,
+                # M3 step 3 LoRA flags. Both must be set BEFORE
+                # realize_for_mmap. enable_lora_q!(r) allocates the
+                # adapter A/B pair per Q head; enable_lora_q_adamw!
+                # additionally allocates persistent Adam m/v alongside
+                # them (mirrors F1.2 step 6b).
+                :seq_lora_q_enabled, :seq_lora_q_rank,
+                :seq_lora_q_adamw_enabled
 
   def initialize
     @seq_realized   = false
@@ -83,6 +104,25 @@ class LlamaSeqForwardFFICache
     @t_seq_x_embed   = TinyNN.tnn_null_ptr
     @t_seq_x_final   = TinyNN.tnn_null_ptr
     @t_seq_logits    = TinyNN.tnn_null_ptr
+    @seq_lora_q_enabled       = false
+    @seq_lora_q_rank          = 0
+    @seq_lora_q_adamw_enabled = false
+  end
+
+  # M3 step 3 — turn on LoRA on the Q projection. Adapter A is (r, d_model),
+  # B is (d_head, r). Standard init: A small Gaussian, B zero → adapter is
+  # a no-op at step 0. Call BEFORE realize_for_mmap. Mirrors
+  # SmolLM2KVFFICache#enable_lora_q!.
+  def enable_lora_q!(r)
+    @seq_lora_q_enabled = true
+    @seq_lora_q_rank    = r
+  end
+
+  # M3 step 3 — allocate persistent AdamW moments next to each LoRA pair
+  # (parallel to F1.2 step 6b on SmolLM2KVFFICache). Required to keep
+  # optimizer state alive across reset_for_rebuild / multi-step training.
+  def enable_lora_q_adamw!
+    @seq_lora_q_adamw_enabled = true
   end
 
   # Allocate persistent weights mmap'd from `gguf_handle` (caller is
@@ -171,6 +211,46 @@ class LlamaSeqForwardFFICache
         hq = hq + 1
       end
 
+      # M3 step 3 — LoRA-Q adapter pair per Q head. Trainable F32 in
+      # ctx_w (mirrors SmolLM2KVFFICache). Optional persistent Adam m/v.
+      if @seq_lora_q_enabled
+        blk.t_seq_w_lora_a_q = [TinyNN.tnn_input_2d_f32_persistent(@sess,
+                                  @seq_lora_q_rank, @seq_d_model)]
+        blk.t_seq_w_lora_b_q = [TinyNN.tnn_input_2d_f32_persistent(@sess,
+                                  @seq_d_head, @seq_lora_q_rank)]
+        hql = 1
+        while hql < @seq_n_heads
+          blk.t_seq_w_lora_a_q.push(TinyNN.tnn_input_2d_f32_persistent(@sess,
+                                      @seq_lora_q_rank, @seq_d_model))
+          blk.t_seq_w_lora_b_q.push(TinyNN.tnn_input_2d_f32_persistent(@sess,
+                                      @seq_d_head, @seq_lora_q_rank))
+          hql = hql + 1
+        end
+
+        if @seq_lora_q_adamw_enabled
+          blk.t_seq_w_lora_a_q_m = [TinyNN.tnn_input_2d_f32_persistent(@sess,
+                                      @seq_lora_q_rank, @seq_d_model)]
+          blk.t_seq_w_lora_a_q_v = [TinyNN.tnn_input_2d_f32_persistent(@sess,
+                                      @seq_lora_q_rank, @seq_d_model)]
+          blk.t_seq_w_lora_b_q_m = [TinyNN.tnn_input_2d_f32_persistent(@sess,
+                                      @seq_d_head, @seq_lora_q_rank)]
+          blk.t_seq_w_lora_b_q_v = [TinyNN.tnn_input_2d_f32_persistent(@sess,
+                                      @seq_d_head, @seq_lora_q_rank)]
+          hqm = 1
+          while hqm < @seq_n_heads
+            blk.t_seq_w_lora_a_q_m.push(TinyNN.tnn_input_2d_f32_persistent(@sess,
+                                          @seq_lora_q_rank, @seq_d_model))
+            blk.t_seq_w_lora_a_q_v.push(TinyNN.tnn_input_2d_f32_persistent(@sess,
+                                          @seq_lora_q_rank, @seq_d_model))
+            blk.t_seq_w_lora_b_q_m.push(TinyNN.tnn_input_2d_f32_persistent(@sess,
+                                          @seq_d_head, @seq_lora_q_rank))
+            blk.t_seq_w_lora_b_q_v.push(TinyNN.tnn_input_2d_f32_persistent(@sess,
+                                          @seq_d_head, @seq_lora_q_rank))
+            hqm = hqm + 1
+          end
+        end
+      end
+
       # K, V heads — per-KV-head [d_head, d_model].
       k_idx      = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_k.weight")
       v_idx      = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_v.weight")
@@ -245,18 +325,65 @@ class LlamaSeqForwardFFICache
       li = li + 1
     end
 
+    # Mark LoRA tensors as trainable BEFORE finalize. set_param flips
+    # the PARAM flag so build_backward walks them when emitting grad nodes.
+    if @seq_lora_q_enabled
+      li2 = 0
+      while li2 < @seq_n_layers
+        blk2 = @seq_blocks_ffi[li2]
+        hq_p = 0
+        while hq_p < @seq_n_heads
+          TinyNN.tnn_set_param(blk2.t_seq_w_lora_a_q[hq_p])
+          TinyNN.tnn_set_param(blk2.t_seq_w_lora_b_q[hq_p])
+          hq_p = hq_p + 1
+        end
+        li2 = li2 + 1
+      end
+    end
+
     TinyNN.tnn_finalize_weights(@sess)
 
-    # Compute inputs. Token IDs and positions live in the session (compute)
-    # context, length T each. Caller fills them via upload_int_array.
+    # Zero-init persistent AdamW moments. Same contract as F1.2 step 6b
+    # on SmolLM2KVFFICache — m and v start at 0 per the AdamW update rule.
+    if @seq_lora_q_adamw_enabled
+      za = Mat.new(@seq_lora_q_rank, @seq_d_model)
+      zb = Mat.new(@seq_d_head,      @seq_lora_q_rank)
+      i = 0
+      while i < @seq_lora_q_rank * @seq_d_model; za.flat[i] = 0.0; i = i + 1; end
+      j = 0
+      while j < @seq_d_head * @seq_lora_q_rank; zb.flat[j] = 0.0; j = j + 1; end
+      li_z = 0
+      while li_z < @seq_n_layers
+        blk_z = @seq_blocks_ffi[li_z]
+        hqz = 0
+        while hqz < @seq_n_heads
+          TinyNN.upload_row_major(@sess, blk_z.t_seq_w_lora_a_q_m[hqz], za)
+          TinyNN.upload_row_major(@sess, blk_z.t_seq_w_lora_a_q_v[hqz], za)
+          TinyNN.upload_row_major(@sess, blk_z.t_seq_w_lora_b_q_m[hqz], zb)
+          TinyNN.upload_row_major(@sess, blk_z.t_seq_w_lora_b_q_v[hqz], zb)
+          hqz = hqz + 1
+        end
+        li_z = li_z + 1
+      end
+    end
+
+    build_forward_in_current_ctx
+    TinyNN.tnn_realize(@sess, @t_seq_logits)
+    @seq_realized = true
+  end
+
+  # Build the forward graph in the CURRENT compute context. Used both
+  # from realize_for_mmap (first realize) and after tnn_reset_for_rebuild
+  # (e.g. when switching from inference to training, which needs the
+  # forward + loss + backward + opt_step all in one rebuilt ctx).
+  # Stores the per-graph tensor handles back on `self`.
+  def build_forward_in_current_ctx
     @t_seq_token_ids = TinyNN.tnn_input_1d_i32(@sess, @seq_t)
     @t_seq_positions = TinyNN.tnn_input_1d_i32_ctx(@sess, @seq_t)
 
     eps   = @seq_rms_eps
     scale = 1.0 / Math.sqrt(@seq_d_head.to_f)
 
-    # Embed lookup. ggml's get_rows over an int32 vector of length T
-    # gives ne=[d_model, T] — same shape the per-block ops expect.
     @t_seq_x_embed = TinyNN.tnn_get_rows(@sess, @t_seq_token_embed, @t_seq_token_ids)
     TinyNN.tnn_set_output(@t_seq_x_embed)
 
@@ -276,9 +403,72 @@ class LlamaSeqForwardFFICache
       @t_seq_logits = TinyNN.tnn_matmul(@sess, @t_seq_token_embed, @t_seq_x_final)
     end
     TinyNN.tnn_set_output(@t_seq_logits)
+  end
 
-    TinyNN.tnn_realize(@sess, @t_seq_logits)
-    @seq_realized = true
+  # M3 step 3 — rebuild the session graph as forward + CE loss + backward
+  # + AdamW opt_step over every LoRA pair. After this, callers upload
+  # token IDs + positions + labels (one-hot vocab×T) + hp vector and
+  # call tnn_compute_backward to get one training step over the whole
+  # T-position sequence.
+  #
+  # Returns the (loss_tensor, labels_tensor, hp_tensor) triple.
+  def build_training_step
+    if !@seq_lora_q_enabled || !@seq_lora_q_adamw_enabled
+      puts "build_training_step: requires enable_lora_q! AND enable_lora_q_adamw!"
+      return nil
+    end
+    TinyNN.tnn_reset_for_rebuild(@sess)
+    build_forward_in_current_ctx
+
+    # Label tensor: same shape as logits, ggml ne=[vocab, T]. Our
+    # wrapper takes (rows, cols) and emits ggml(cols, rows), so pass
+    # (T, vocab) here to get ne=[vocab, T]. One-hot per ne1-column
+    # (i.e. per position).
+    t_labels = TinyNN.tnn_input_2d_f32(@sess, @seq_t, @seq_vocab_size)
+    # Hyper-params vector for AdamW: alpha, beta1, beta2, eps, wd, beta1h, beta2h.
+    t_hp = TinyNN.tnn_input_1d_f32(@sess, 7)
+
+    # CE loss over all T columns. ggml_cross_entropy_loss returns the
+    # mean over columns — masking is a follow-up (would zero specific
+    # columns in labels before this op).
+    t_loss = TinyNN.tnn_cross_entropy_loss(@sess, @t_seq_logits, t_labels)
+    TinyNN.tnn_set_output(t_loss)
+    TinyNN.tnn_set_loss(t_loss)
+
+    TinyNN.tnn_build_forward_only(@sess, t_loss)
+    TinyNN.tnn_build_backward(@sess)
+
+    # Emit one opt_step_adamw per LoRA-A and per LoRA-B tensor; thread
+    # each through tnn_extend_backward_graph so sched sees the writes.
+    li = 0
+    while li < @seq_n_layers
+      blk = @seq_blocks_ffi[li]
+      hq = 0
+      while hq < @seq_n_heads
+        t_a       = blk.t_seq_w_lora_a_q[hq]
+        t_b       = blk.t_seq_w_lora_b_q[hq]
+        t_grad_a  = TinyNN.tnn_tensor_grad(@sess, t_a)
+        t_grad_b  = TinyNN.tnn_tensor_grad(@sess, t_b)
+        t_opt_a   = TinyNN.tnn_opt_step_adamw(@sess, t_a, t_grad_a,
+                                                blk.t_seq_w_lora_a_q_m[hq],
+                                                blk.t_seq_w_lora_a_q_v[hq], t_hp)
+        t_opt_b   = TinyNN.tnn_opt_step_adamw(@sess, t_b, t_grad_b,
+                                                blk.t_seq_w_lora_b_q_m[hq],
+                                                blk.t_seq_w_lora_b_q_v[hq], t_hp)
+        TinyNN.tnn_extend_backward_graph(@sess, t_opt_a)
+        TinyNN.tnn_extend_backward_graph(@sess, t_opt_b)
+        hq = hq + 1
+      end
+      li = li + 1
+    end
+
+    # Pin every node in graph_b before sched-alloc — workaround for the
+    # ggml-cpu sched-aliasing bug on long backward chains (documented in
+    # project_cpu_cuda_lora_train_divergence_2026_05_21). Memory cost
+    # grows roughly with node count; fine for SmolLM2-135M at T<=64.
+    TinyNN.tnn_pin_all_graph_b_nodes(@sess)
+    TinyNN.tnn_realize_backward(@sess)
+    [t_loss, t_labels, t_hp]
   end
 
   # GGUF type → bytes-per-row stride for per-head slicing. Mirrors the
@@ -385,6 +575,13 @@ class LlamaSeqForwardFFICache
   def build_seq_qhead(t_h, blk, hq, t_k_per_kv, t_vt_per_kv, scale)
     hkv = hq / @seq_group_size
     t_q_raw = TinyNN.tnn_matmul(@sess, blk.t_seq_w_q[hq], t_h)
+    # M3 step 3 — LoRA splice on Q (same as decode_step). With B
+    # zero-initialized this is a no-op at step 0.
+    if @seq_lora_q_enabled
+      t_lora_a   = TinyNN.tnn_matmul(@sess, blk.t_seq_w_lora_a_q[hq], t_h)
+      t_lora_b_a = TinyNN.tnn_matmul(@sess, blk.t_seq_w_lora_b_q[hq], t_lora_a)
+      t_q_raw    = TinyNN.tnn_add(@sess, t_q_raw, t_lora_b_a)
+    end
     if @seq_has_qkv_bias
       t_q_pre = TinyNN.tnn_add(@sess, t_q_raw, blk.t_seq_b_q[hq])
     else
@@ -416,5 +613,40 @@ class LlamaSeqForwardFFICache
     TinyNN.upload_int_array(@sess, @t_seq_positions, positions)
     TinyNN.tnn_compute(@sess)
     @t_seq_logits
+  end
+
+  # Seed LoRA-A with a small Gaussian and LoRA-B with zero — the
+  # standard init makes the adapter a no-op at step 0 (forward output
+  # equals the base model). Mirror of SmolLM2KVFFICache#upload_lora_q_init!.
+  def upload_lora_q_init!(seed, init_scale)
+    if !@seq_lora_q_enabled; return; end
+    s = seed
+    m_a = Mat.new(@seq_lora_q_rank, @seq_d_model)
+    m_b = Mat.new(@seq_d_head, @seq_lora_q_rank)
+    i_b = 0
+    while i_b < @seq_d_head * @seq_lora_q_rank
+      m_b.flat[i_b] = 0.0
+      i_b = i_b + 1
+    end
+    li = 0
+    while li < @seq_n_layers
+      blk = @seq_blocks_ffi[li]
+      hq = 0
+      while hq < @seq_n_heads
+        ii = 0
+        while ii < @seq_lora_q_rank * @seq_d_model
+          s = (s * 1103515245 + 12345) & 0x7FFFFFFF
+          u1 = (s.to_f + 1.0) / 2147483648.0
+          s = (s * 1103515245 + 12345) & 0x7FFFFFFF
+          u2 = (s.to_f + 1.0) / 2147483648.0
+          m_a.flat[ii] = init_scale * Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math::PI * u2)
+          ii = ii + 1
+        end
+        TinyNN.stage_row_major_and_upload(@sess, blk.t_seq_w_lora_a_q[hq], m_a)
+        TinyNN.stage_row_major_and_upload(@sess, blk.t_seq_w_lora_b_q[hq], m_b)
+        hq = hq + 1
+      end
+      li = li + 1
+    end
   end
 end
