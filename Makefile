@@ -66,7 +66,16 @@ examples/example_train: examples/02_train_custom_gpt.rb lib/transformer.rb lib/t
 	$(SPINEL) $< -o $@
 example_train: examples/example_train
 
-examples/example_finetune_cuda: examples/03_finetune_lora.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
+examples/example_finetune: examples/03_finetune_lora.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
+	$(SPINEL) $< -o $@
+example_finetune: examples/example_finetune
+
+# CUDA mirror — same source, swap TinyNN → TinyNNCuda by including
+# both libs. The example source uses TinyNN; the CUDA build link-step
+# carries CUDA symbols too (no source change). For real GPU speedup
+# users typically write a `_cuda` variant; this mirror is for the
+# build-recipe story.
+examples/example_finetune_cuda: examples/03_finetune_lora_cuda.rb lib/llama_seq_forward_ffi_cuda.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 example_finetune_cuda: examples/example_finetune_cuda
 
@@ -78,7 +87,7 @@ examples/example_list_models: examples/05_list_models.rb lib/model_index.rb lib/
 	$(SPINEL) $< -o $@
 example_list_models: examples/example_list_models
 
-examples: example_inference example_train example_finetune_cuda example_serve example_list_models
+examples: example_inference example_train example_finetune example_finetune_cuda example_serve example_list_models
 
 # Parity-checks vs native TransformerLM.forward.
 
