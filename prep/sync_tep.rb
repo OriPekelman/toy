@@ -28,6 +28,13 @@ require "pathname"
 
 TEP_SRC = ENV.fetch("TEP_SRC", File.expand_path("~/sites/tep"))
 TEP_DST = File.expand_path("../tep_demo/_tep_lib", __dir__)
+TEP_REF = ENV["TEP_REF"]   # nil = use whatever's currently checked out
+
+# Read pinned ref from TEP_VERSION if it exists and TEP_REF wasn't set.
+PIN_FILE = File.expand_path("../TEP_VERSION", __dir__)
+if TEP_REF.nil? && File.exist?(PIN_FILE)
+  TEP_REF = File.read(PIN_FILE).strip
+end
 
 def die(msg)
   $stderr.puts "[sync_tep] FAIL: #{msg}"
@@ -35,6 +42,21 @@ def die(msg)
 end
 
 die "TEP_SRC=#{TEP_SRC} doesn't exist"      unless Dir.exist?(TEP_SRC)
+
+# If a ref is pinned, check it out in the sibling tep checkout
+# before syncing. Caller can opt out with TEP_REF=main (or any
+# other ref); leaving TEP_REF unset uses whatever's currently
+# checked out in TEP_SRC (useful when actively developing Tep).
+if TEP_REF
+  current = `cd #{TEP_SRC} && git rev-parse HEAD 2>/dev/null`.strip
+  want    = `cd #{TEP_SRC} && git rev-parse #{TEP_REF} 2>/dev/null`.strip
+  die "TEP_REF=#{TEP_REF} doesn't resolve in #{TEP_SRC} — fetch first?" if want.empty?
+  if current != want
+    out = `cd #{TEP_SRC} && git checkout #{TEP_REF} 2>&1`
+    die "failed to check out #{TEP_REF} in #{TEP_SRC}:\n#{out}" unless $?.success?
+  end
+end
+
 die "TEP_SRC has no lib/tep.rb"             unless File.exist?("#{TEP_SRC}/lib/tep.rb")
 die "TEP_SRC has no lib/tep/sphttp.o (run `make` in the tep checkout)" unless File.exist?("#{TEP_SRC}/lib/tep/sphttp.o")
 die "TEP_SRC has no lib/tep/tep_sqlite.o"   unless File.exist?("#{TEP_SRC}/lib/tep/tep_sqlite.o")
@@ -116,7 +138,14 @@ end
 # Report what we synced.
 upstream_rev = `cd #{TEP_SRC} && git rev-parse --short HEAD 2>/dev/null`.strip
 upstream_rev = "(no git)" if upstream_rev.empty?
+upstream_describe = `cd #{TEP_SRC} && git describe --tags --always 2>/dev/null`.strip
+upstream_describe = upstream_rev if upstream_describe.empty?
 n_files = Dir.glob("#{TEP_DST}/**/*.rb").size
-puts "[sync_tep] OK — synced #{n_files} files from #{TEP_SRC} @ #{upstream_rev}"
+puts "[sync_tep] OK — synced #{n_files} files from #{TEP_SRC} @ #{upstream_describe}"
 puts "[sync_tep]      PG:     #{pg_cflags.empty? ? '(disabled — libpq missing)' : 'enabled'}"
 puts "[sync_tep]      SQLite: #{sqlite_libs}"
+if TEP_REF
+  puts "[sync_tep]      ref:    #{TEP_REF} (pinned)"
+else
+  puts "[sync_tep]      ref:    #{upstream_rev} (HEAD — not pinned; create TEP_VERSION to pin)"
+end
