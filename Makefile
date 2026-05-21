@@ -568,6 +568,13 @@ smollm2_seq_train_cuda:        demos/smollm2_seq_train_cuda
 demos/smollm2_seq_train_cuda: demos/smollm2_seq_train_cuda.rb lib/llama_seq_forward_ffi_cuda.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 
+# F3 — full fine-tune on CUDA. Every per-block weight tensor is
+# writable F32 + AdamW state; opt_step on each. See
+# docs/roadmap/f3-full-finetune-2026-05-21.md.
+smollm2_seq_full_finetune_cuda:        demos/smollm2_seq_full_finetune_cuda
+demos/smollm2_seq_full_finetune_cuda: demos/smollm2_seq_full_finetune_cuda.rb lib/llama_seq_forward_ffi_cuda.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
+	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
+
 # Per-phase training-step bench (CPU + CUDA). Times graph_reset /
 # uploads / compute_backward / download separately. Doc:
 # docs/design/bench-train-2026-05-21.md.

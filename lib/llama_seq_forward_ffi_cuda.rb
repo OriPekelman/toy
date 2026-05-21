@@ -40,7 +40,13 @@ class LlamaSeqBlockFFICuda
                 # allocate against the same gguf mmap).
                 :t_seq_w_lora_a_q, :t_seq_w_lora_b_q,
                 :t_seq_w_lora_a_q_m, :t_seq_w_lora_a_q_v,
-                :t_seq_w_lora_b_q_m, :t_seq_w_lora_b_q_v
+                :t_seq_w_lora_b_q_m, :t_seq_w_lora_b_q_v,
+                # F3 full fine-tune (CPU + CUDA via gen_cuda_mirror).
+                # Parallel arrays of (weight, m, v) triples — one entry
+                # per trainable weight tensor in this block. Populated
+                # only on the realize_for_full_finetune path; left empty
+                # in the mmap / LoRA-only paths.
+                :ft_weights, :ft_m, :ft_v
 
   def initialize
     @t_seq_rn1_gamma = TinyNNCuda.tnn_null_ptr
@@ -61,6 +67,9 @@ class LlamaSeqBlockFFICuda
     @t_seq_w_lora_a_q_v = [TinyNNCuda.tnn_null_ptr]
     @t_seq_w_lora_b_q_m = [TinyNNCuda.tnn_null_ptr]
     @t_seq_w_lora_b_q_v = [TinyNNCuda.tnn_null_ptr]
+    @ft_weights = [TinyNNCuda.tnn_null_ptr]; @ft_weights.pop
+    @ft_m       = [TinyNNCuda.tnn_null_ptr]; @ft_m.pop
+    @ft_v       = [TinyNNCuda.tnn_null_ptr]; @ft_v.pop
   end
 end
 
@@ -81,7 +90,13 @@ class LlamaSeqForwardFFICacheCuda
                 # additionally allocates persistent Adam m/v alongside
                 # them (mirrors F1.2 step 6b).
                 :seq_lora_q_enabled, :seq_lora_q_rank,
-                :seq_lora_q_adamw_enabled
+                :seq_lora_q_adamw_enabled,
+                # F3 full fine-tune. When set BEFORE
+                # realize_for_full_finetune, every per-block weight
+                # tensor is allocated writable F32 in ctx_w with paired
+                # Adam m/v and marked set_param; build_training_step
+                # then emits opt_step on each.
+                :seq_full_finetune_enabled
 
   def initialize
     @seq_realized   = false
@@ -112,6 +127,16 @@ class LlamaSeqForwardFFICacheCuda
     @seq_lora_q_enabled       = false
     @seq_lora_q_rank          = 0
     @seq_lora_q_adamw_enabled = false
+    @seq_full_finetune_enabled = false
+  end
+
+  # F3 — turn on full fine-tune. Every per-block weight tensor will
+  # be allocated as writable F32 in ctx_w (instead of mmap'd from the
+  # GGUF), paired with persistent Adam m/v, and marked trainable.
+  # Mutually exclusive with enable_lora_q!. Call BEFORE
+  # realize_for_full_finetune.
+  def enable_full_finetune!
+    @seq_full_finetune_enabled = true
   end
 
   # M3 step 3 — turn on LoRA on the Q projection. Adapter A is (r, d_model),
@@ -377,6 +402,267 @@ class LlamaSeqForwardFFICacheCuda
     @seq_realized = true
   end
 
+  # F3 — full fine-tune realize path. Parallel to realize_for_mmap
+  # but every per-block weight is allocated writable F32 in ctx_w
+  # (no mmap), set_param-marked, paired with Adam m/v, and loaded
+  # from the GGUF post-finalize via the dequantize-friendly
+  # tnn_gguf_copy_* primitives. The embedding tensor + final_norm
+  # gamma stay mmap'd (read-only) — the MVP doesn't train them.
+  def realize_for_full_finetune(gguf_handle, cfg, t_seq, untied, qkv_bias)
+    @seq_t          = t_seq
+    @seq_d_model    = cfg.d_model
+    @seq_d_ff       = cfg.d_ff
+    @seq_n_heads    = cfg.n_heads
+    @seq_n_kv       = cfg.n_kv
+    @seq_d_head     = cfg.d_model / cfg.n_heads
+    @seq_group_size = cfg.n_heads / cfg.n_kv
+    @seq_n_layers   = cfg.n_layers
+    @seq_vocab_size = cfg.vocab
+    @seq_rope_base  = cfg.rope_base
+    @seq_rms_eps    = cfg.rms_eps
+
+    @seq_gguf_handle_keepalive = gguf_handle
+    @sess                  = TinyNNCuda.tnn_session_new(1)
+    @seq_has_untied_output = untied
+    @seq_has_qkv_bias      = qkv_bias
+
+    # Token embed + final norm + (untied) output stay mmap'd —
+    # they're frozen on the MVP. Attach the mmap buffer for those.
+    map_base = TinyNNCuda.tnn_gguf_mmap_base(gguf_handle)
+    map_size = TinyNNCuda.tnn_gguf_mmap_size(gguf_handle)
+    TinyNNCuda.tnn_session_attach_weight_mmap(@sess, map_base, map_size)
+
+    eidx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, "token_embd.weight")
+    eoff = TinyNNCuda.tnn_gguf_tensor_file_offset(gguf_handle, eidx)
+    etyp = TinyNNCuda.tnn_gguf_tensor_type(gguf_handle, eidx)
+    @t_seq_token_embed = TinyNNCuda.tnn_input_2d_persistent_mmap(@sess,
+                           @seq_vocab_size, @seq_d_model, etyp, eoff)
+
+    fnidx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, "output_norm.weight")
+    fnoff = TinyNNCuda.tnn_gguf_tensor_file_offset(gguf_handle, fnidx)
+    @t_seq_final_norm_gamma = TinyNNCuda.tnn_input_1d_persistent_mmap(@sess,
+                                @seq_d_model, 0, fnoff)
+
+    if untied
+      oidx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, "output.weight")
+      ooff = TinyNNCuda.tnn_gguf_tensor_file_offset(gguf_handle, oidx)
+      otyp = TinyNNCuda.tnn_gguf_tensor_type(gguf_handle, oidx)
+      @t_seq_output = TinyNNCuda.tnn_input_2d_persistent_mmap(@sess,
+                        @seq_vocab_size, @seq_d_model, otyp, ooff)
+    end
+
+    @seq_blocks_ffi = [LlamaSeqBlockFFICuda.new]
+    li_init = 1
+    while li_init < @seq_n_layers
+      @seq_blocks_ffi.push(LlamaSeqBlockFFICuda.new)
+      li_init = li_init + 1
+    end
+
+    # Per-block: allocate writable F32 weights + Adam m/v. Record
+    # each (weight, m, v) triple on the block's parallel arrays so
+    # build_training_step can emit opt_step per weight.
+    li = 0
+    while li < @seq_n_layers
+      blk = @seq_blocks_ffi[li]
+
+      blk.t_seq_rn1_gamma = TinyNNCuda.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
+      blk.t_seq_rn2_gamma = TinyNNCuda.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
+      ft_add_1d(blk, blk.t_seq_rn1_gamma)
+      ft_add_1d(blk, blk.t_seq_rn2_gamma)
+
+      blk.t_seq_w_q = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model)]
+      hq = 1
+      while hq < @seq_n_heads
+        blk.t_seq_w_q.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model))
+        hq = hq + 1
+      end
+      hq2 = 0
+      while hq2 < @seq_n_heads
+        ft_add_2d(blk, blk.t_seq_w_q[hq2], @seq_d_head, @seq_d_model)
+        hq2 = hq2 + 1
+      end
+
+      blk.t_seq_w_k = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model)]
+      blk.t_seq_w_v = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model)]
+      hkv = 1
+      while hkv < @seq_n_kv
+        blk.t_seq_w_k.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model))
+        blk.t_seq_w_v.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model))
+        hkv = hkv + 1
+      end
+      hkv2 = 0
+      while hkv2 < @seq_n_kv
+        ft_add_2d(blk, blk.t_seq_w_k[hkv2], @seq_d_head, @seq_d_model)
+        ft_add_2d(blk, blk.t_seq_w_v[hkv2], @seq_d_head, @seq_d_model)
+        hkv2 = hkv2 + 1
+      end
+
+      if qkv_bias
+        blk.t_seq_b_q = [TinyNNCuda.tnn_input_1d_f32_persistent(@sess, @seq_d_head)]
+        hbq = 1
+        while hbq < @seq_n_heads
+          blk.t_seq_b_q.push(TinyNNCuda.tnn_input_1d_f32_persistent(@sess, @seq_d_head))
+          hbq = hbq + 1
+        end
+        blk.t_seq_b_k = [TinyNNCuda.tnn_input_1d_f32_persistent(@sess, @seq_d_head)]
+        blk.t_seq_b_v = [TinyNNCuda.tnn_input_1d_f32_persistent(@sess, @seq_d_head)]
+        hbkv = 1
+        while hbkv < @seq_n_kv
+          blk.t_seq_b_k.push(TinyNNCuda.tnn_input_1d_f32_persistent(@sess, @seq_d_head))
+          blk.t_seq_b_v.push(TinyNNCuda.tnn_input_1d_f32_persistent(@sess, @seq_d_head))
+          hbkv = hbkv + 1
+        end
+        hbq2 = 0
+        while hbq2 < @seq_n_heads
+          ft_add_1d(blk, blk.t_seq_b_q[hbq2])
+          hbq2 = hbq2 + 1
+        end
+        hbkv2 = 0
+        while hbkv2 < @seq_n_kv
+          ft_add_1d(blk, blk.t_seq_b_k[hbkv2])
+          ft_add_1d(blk, blk.t_seq_b_v[hbkv2])
+          hbkv2 = hbkv2 + 1
+        end
+      end
+
+      blk.t_seq_w_o    = TinyNNCuda.tnn_input_2d_f32_persistent(@sess, @seq_d_model, @seq_d_model)
+      blk.t_seq_w_gate = TinyNNCuda.tnn_input_2d_f32_persistent(@sess, @seq_d_ff,    @seq_d_model)
+      blk.t_seq_w_up   = TinyNNCuda.tnn_input_2d_f32_persistent(@sess, @seq_d_ff,    @seq_d_model)
+      blk.t_seq_w_down = TinyNNCuda.tnn_input_2d_f32_persistent(@sess, @seq_d_model, @seq_d_ff)
+      ft_add_2d(blk, blk.t_seq_w_o,    @seq_d_model, @seq_d_model)
+      ft_add_2d(blk, blk.t_seq_w_gate, @seq_d_ff,    @seq_d_model)
+      ft_add_2d(blk, blk.t_seq_w_up,   @seq_d_ff,    @seq_d_model)
+      ft_add_2d(blk, blk.t_seq_w_down, @seq_d_model, @seq_d_ff)
+
+      # Mark every recorded weight as a trainable parameter.
+      wi = 0
+      while wi < blk.ft_weights.length
+        TinyNNCuda.tnn_set_param(blk.ft_weights[wi])
+        wi = wi + 1
+      end
+
+      li = li + 1
+    end
+
+    TinyNNCuda.tnn_finalize_weights(@sess)
+
+    # Post-finalize: load every writable weight from the GGUF.
+    ft_load_from_gguf(gguf_handle, qkv_bias)
+    ft_zero_init_adam(qkv_bias)
+
+    build_forward_in_current_ctx
+    TinyNNCuda.tnn_realize(@sess, @t_seq_logits)
+    @seq_realized = true
+  end
+
+  # Append (weight, m, v) to the block's parallel arrays. Allocates
+  # Adam m and v of the same shape as `weight` as a side effect.
+  def ft_add_2d(blk, weight, rows, cols)
+    blk.ft_weights.push(weight)
+    blk.ft_m.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess, rows, cols))
+    blk.ft_v.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess, rows, cols))
+  end
+
+  def ft_add_1d(blk, weight)
+    n = TinyNNCuda.tnn_tensor_nelements(weight)
+    blk.ft_weights.push(weight)
+    blk.ft_m.push(TinyNNCuda.tnn_input_1d_f32_persistent(@sess, n))
+    blk.ft_v.push(TinyNNCuda.tnn_input_1d_f32_persistent(@sess, n))
+  end
+
+  # Pull bytes from the GGUF into each writable weight. Uses the
+  # existing C-side dequantize-and-copy primitives so a Q8 source
+  # transparently becomes F32 in the target tensor.
+  def ft_load_from_gguf(gguf, qkv_bias)
+    li = 0
+    while li < @seq_n_layers
+      blk = @seq_blocks_ffi[li]
+      prefix = "blk." + li.to_s
+
+      rn1_idx = TinyNNCuda.tnn_gguf_find_index(gguf, prefix + ".attn_norm.weight")
+      rn2_idx = TinyNNCuda.tnn_gguf_find_index(gguf, prefix + ".ffn_norm.weight")
+      TinyNNCuda.tnn_gguf_copy_1d_to_persistent(gguf, rn1_idx, @sess, blk.t_seq_rn1_gamma)
+      TinyNNCuda.tnn_gguf_copy_1d_to_persistent(gguf, rn2_idx, @sess, blk.t_seq_rn2_gamma)
+
+      q_idx = TinyNNCuda.tnn_gguf_find_index(gguf, prefix + ".attn_q.weight")
+      hq = 0
+      while hq < @seq_n_heads
+        TinyNNCuda.tnn_gguf_copy_head_slice_to_persistent_native(gguf, q_idx, @sess,
+          blk.t_seq_w_q[hq], hq, @seq_n_heads, @seq_d_model, @seq_d_head)
+        hq = hq + 1
+      end
+
+      k_idx = TinyNNCuda.tnn_gguf_find_index(gguf, prefix + ".attn_k.weight")
+      v_idx = TinyNNCuda.tnn_gguf_find_index(gguf, prefix + ".attn_v.weight")
+      hkv = 0
+      while hkv < @seq_n_kv
+        TinyNNCuda.tnn_gguf_copy_head_slice_to_persistent_native(gguf, k_idx, @sess,
+          blk.t_seq_w_k[hkv], hkv, @seq_n_kv, @seq_d_model, @seq_d_head)
+        TinyNNCuda.tnn_gguf_copy_head_slice_to_persistent_native(gguf, v_idx, @sess,
+          blk.t_seq_w_v[hkv], hkv, @seq_n_kv, @seq_d_model, @seq_d_head)
+        hkv = hkv + 1
+      end
+
+      if qkv_bias
+        # qbias / kbias / vbias are 1-D head-sliced. We don't have a
+        # dedicated head-slice loader for them; fall through and use
+        # tnn_gguf_copy_head_bias_slice_to_persistent.
+        qb_idx = TinyNNCuda.tnn_gguf_find_index(gguf, prefix + ".attn_q.bias")
+        kb_idx = TinyNNCuda.tnn_gguf_find_index(gguf, prefix + ".attn_k.bias")
+        vb_idx = TinyNNCuda.tnn_gguf_find_index(gguf, prefix + ".attn_v.bias")
+        hbq = 0
+        while hbq < @seq_n_heads
+          TinyNNCuda.tnn_gguf_copy_head_bias_slice_to_persistent(gguf, qb_idx, @sess,
+            blk.t_seq_b_q[hbq], hbq, @seq_d_head)
+          hbq = hbq + 1
+        end
+        hbkv = 0
+        while hbkv < @seq_n_kv
+          TinyNNCuda.tnn_gguf_copy_head_bias_slice_to_persistent(gguf, kb_idx, @sess,
+            blk.t_seq_b_k[hbkv], hbkv, @seq_d_head)
+          TinyNNCuda.tnn_gguf_copy_head_bias_slice_to_persistent(gguf, vb_idx, @sess,
+            blk.t_seq_b_v[hbkv], hbkv, @seq_d_head)
+          hbkv = hbkv + 1
+        end
+      end
+
+      o_idx    = TinyNNCuda.tnn_gguf_find_index(gguf, prefix + ".attn_output.weight")
+      gate_idx = TinyNNCuda.tnn_gguf_find_index(gguf, prefix + ".ffn_gate.weight")
+      up_idx   = TinyNNCuda.tnn_gguf_find_index(gguf, prefix + ".ffn_up.weight")
+      down_idx = TinyNNCuda.tnn_gguf_find_index(gguf, prefix + ".ffn_down.weight")
+      TinyNNCuda.tnn_gguf_copy_to_persistent(gguf, o_idx,    @sess, blk.t_seq_w_o)
+      TinyNNCuda.tnn_gguf_copy_to_persistent(gguf, gate_idx, @sess, blk.t_seq_w_gate)
+      TinyNNCuda.tnn_gguf_copy_to_persistent(gguf, up_idx,   @sess, blk.t_seq_w_up)
+      TinyNNCuda.tnn_gguf_copy_to_persistent(gguf, down_idx, @sess, blk.t_seq_w_down)
+
+      li = li + 1
+    end
+  end
+
+  # Zero-init the Adam moments. m and v both start at 0 per the
+  # AdamW step-0 contract. Different shapes per tensor so we use
+  # the largest Mat we need + a slice-copy convention via
+  # upload_row_major (Mat extent <= tensor extent is fine; we
+  # always fill the tensor's full size by allocating Mat at the
+  # tensor's logical shape).
+  def ft_zero_init_adam(qkv_bias)
+    li = 0
+    while li < @seq_n_layers
+      blk = @seq_blocks_ffi[li]
+      i = 0
+      while i < blk.ft_weights.length
+        n = TinyNNCuda.tnn_tensor_nelements(blk.ft_m[i])
+        z = Mat.new(1, n)
+        k = 0
+        while k < n; z.flat[k] = 0.0; k = k + 1; end
+        TinyNNCuda.upload_row_major(@sess, blk.ft_m[i], z)
+        TinyNNCuda.upload_row_major(@sess, blk.ft_v[i], z)
+        i = i + 1
+      end
+      li = li + 1
+    end
+  end
+
   # Build the forward graph in the CURRENT compute context. Used both
   # from realize_for_mmap (first realize) and after tnn_reset_for_rebuild
   # (e.g. when switching from inference to training, which needs the
@@ -418,8 +704,8 @@ class LlamaSeqForwardFFICacheCuda
   #
   # Returns the (loss_tensor, labels_tensor, hp_tensor) triple.
   def build_training_step
-    if !@seq_lora_q_enabled || !@seq_lora_q_adamw_enabled
-      puts "build_training_step: requires enable_lora_q! AND enable_lora_q_adamw!"
+    if !@seq_full_finetune_enabled && (!@seq_lora_q_enabled || !@seq_lora_q_adamw_enabled)
+      puts "build_training_step: requires enable_lora_q! AND enable_lora_q_adamw!  (or enable_full_finetune!)"
       return nil
     end
     TinyNNCuda.tnn_reset_for_rebuild(@sess)
@@ -443,28 +729,48 @@ class LlamaSeqForwardFFICacheCuda
     TinyNNCuda.tnn_build_forward_only(@sess, t_loss)
     TinyNNCuda.tnn_build_backward(@sess)
 
-    # Emit one opt_step_adamw per LoRA-A and per LoRA-B tensor; thread
-    # each through tnn_extend_backward_graph so sched sees the writes.
-    li = 0
-    while li < @seq_n_layers
-      blk = @seq_blocks_ffi[li]
-      hq = 0
-      while hq < @seq_n_heads
-        t_a       = blk.t_seq_w_lora_a_q[hq]
-        t_b       = blk.t_seq_w_lora_b_q[hq]
-        t_grad_a  = TinyNNCuda.tnn_tensor_grad(@sess, t_a)
-        t_grad_b  = TinyNNCuda.tnn_tensor_grad(@sess, t_b)
-        t_opt_a   = TinyNNCuda.tnn_opt_step_adamw(@sess, t_a, t_grad_a,
-                                                blk.t_seq_w_lora_a_q_m[hq],
-                                                blk.t_seq_w_lora_a_q_v[hq], t_hp)
-        t_opt_b   = TinyNNCuda.tnn_opt_step_adamw(@sess, t_b, t_grad_b,
-                                                blk.t_seq_w_lora_b_q_m[hq],
-                                                blk.t_seq_w_lora_b_q_v[hq], t_hp)
-        TinyNNCuda.tnn_extend_backward_graph(@sess, t_opt_a)
-        TinyNNCuda.tnn_extend_backward_graph(@sess, t_opt_b)
-        hq = hq + 1
+    if @seq_full_finetune_enabled
+      # F3 — emit opt_step_adamw for every recorded (weight, m, v)
+      # triple. The arrays are populated in realize_for_full_finetune.
+      li = 0
+      while li < @seq_n_layers
+        blk = @seq_blocks_ffi[li]
+        wi = 0
+        while wi < blk.ft_weights.length
+          tw = blk.ft_weights[wi]
+          tg = TinyNNCuda.tnn_tensor_grad(@sess, tw)
+          to = TinyNNCuda.tnn_opt_step_adamw(@sess, tw, tg,
+                                          blk.ft_m[wi], blk.ft_v[wi], t_hp)
+          TinyNNCuda.tnn_extend_backward_graph(@sess, to)
+          wi = wi + 1
+        end
+        li = li + 1
       end
-      li = li + 1
+    else
+      # LoRA-only training (M3 step 3). One opt_step_adamw per LoRA-A
+      # and per LoRA-B tensor; thread each through extend_backward_graph
+      # so sched sees the writes.
+      li = 0
+      while li < @seq_n_layers
+        blk = @seq_blocks_ffi[li]
+        hq = 0
+        while hq < @seq_n_heads
+          t_a       = blk.t_seq_w_lora_a_q[hq]
+          t_b       = blk.t_seq_w_lora_b_q[hq]
+          t_grad_a  = TinyNNCuda.tnn_tensor_grad(@sess, t_a)
+          t_grad_b  = TinyNNCuda.tnn_tensor_grad(@sess, t_b)
+          t_opt_a   = TinyNNCuda.tnn_opt_step_adamw(@sess, t_a, t_grad_a,
+                                                  blk.t_seq_w_lora_a_q_m[hq],
+                                                  blk.t_seq_w_lora_a_q_v[hq], t_hp)
+          t_opt_b   = TinyNNCuda.tnn_opt_step_adamw(@sess, t_b, t_grad_b,
+                                                  blk.t_seq_w_lora_b_q_m[hq],
+                                                  blk.t_seq_w_lora_b_q_v[hq], t_hp)
+          TinyNNCuda.tnn_extend_backward_graph(@sess, t_opt_a)
+          TinyNNCuda.tnn_extend_backward_graph(@sess, t_opt_b)
+          hq = hq + 1
+        end
+        li = li + 1
+      end
     end
 
     # Pin every node in graph_b before sched-alloc — workaround for the

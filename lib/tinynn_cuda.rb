@@ -162,6 +162,7 @@ module TinyNNCuda
   ffi_func :tnn_gelu_back_scratch,[:ptr, :int],             :void
   ffi_func :tnn_set_output,       [:ptr],                   :void
   ffi_func :tnn_set_param,        [:ptr],                   :void
+  ffi_func :tnn_tensor_nelements, [:ptr],                   :int
   ffi_func :tnn_input_1d_f32,     [:ptr, :int],             :ptr
   ffi_func :tnn_input_2d_f32_persistent, [:ptr, :int, :int],   :ptr
   ffi_func :tnn_input_2d_persistent_typed, [:ptr, :int, :int, :int], :ptr
@@ -187,8 +188,11 @@ module TinyNNCuda
   ffi_func :tnn_gguf_mmap_size,             [:ptr],           :size_t
   ffi_func :tnn_gguf_tensor_file_offset,    [:ptr, :int],     :size_t
   ffi_func :tnn_gguf_copy_to_persistent,            [:ptr, :int, :ptr, :ptr], :int
+  ffi_func :tnn_gguf_copy_1d_to_persistent,         [:ptr, :int, :ptr, :ptr], :int
   ffi_func :tnn_gguf_copy_head_slice_to_persistent_native,
            [:ptr, :int, :ptr, :ptr, :int, :int, :int, :int], :int
+  ffi_func :tnn_gguf_copy_head_bias_slice_to_persistent,
+           [:ptr, :int, :ptr, :ptr, :int, :int], :int
   ffi_func :tnn_finalize_weights, [:ptr],                   :int
   ffi_func :tnn_realize_b,        [:ptr, :ptr],             :int
   ffi_func :tnn_switch_a,         [:ptr],                   :int
