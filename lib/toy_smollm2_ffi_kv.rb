@@ -85,7 +85,9 @@ class SmolLM2KVFFICache
                 :max_T, :d_model, :d_ff, :n_heads, :n_kv, :d_head,
                 :group_size, :n_layers, :vocab_size, :rope_base,
                 :rms_eps, :realized,
+                # CUDA-MIRROR-SKIP-BEGIN: trace-tap is CPU-only diagnostic
                 :trace_on, :trace_names, :trace_tensors,
+                # CUDA-MIRROR-SKIP-END
                 # Phase 3: ggml type for 2D linear weights. Default
                 # 0 = GGML_TYPE_F32 (legacy). 8 = GGML_TYPE_Q8_0. Set
                 # via #set_weight_type before #realize_for to keep
@@ -124,6 +126,7 @@ class SmolLM2KVFFICache
     @has_untied_output  = false
     @has_qkv_bias       = false
     @kv_blocks_ffi      = [SmolLM2KVBlockFFI.new]
+    # CUDA-MIRROR-SKIP-BEGIN: trace-tap is CPU-only diagnostic
     # --- trace-tap diagnostics (zero cost when off) ---
     # When @trace_on is true, trace_tap() pushes (name, tensor) onto
     # parallel arrays AND calls tnn_set_output so the scheduler keeps
@@ -136,6 +139,7 @@ class SmolLM2KVFFICache
     @trace_names.pop
     @trace_tensors = [TinyNN.tnn_null_ptr]
     @trace_tensors.pop
+    # CUDA-MIRROR-SKIP-END
     @weight_type   = 0                # GGML_TYPE_F32; legacy default
     @gguf_handle_keepalive = TinyNN.tnn_null_ptr  # set by realize_for_mmap
     @lora_q_enabled = false
@@ -511,8 +515,8 @@ class SmolLM2KVFFICache
           m_a.flat[ii] = init_scale * Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math::PI * u2)
           ii = ii + 1
         end
-        TinyNN.stage_row_major_and_upload(@sess, blk.t_w_lora_a_q[hq], m_a)
-        TinyNN.stage_row_major_and_upload(@sess, blk.t_w_lora_b_q[hq], z_b)
+        TinyNN.upload_row_major(@sess, blk.t_w_lora_a_q[hq], m_a)
+        TinyNN.upload_row_major(@sess, blk.t_w_lora_b_q[hq], z_b)
         hq = hq + 1
       end
       li = li + 1
@@ -559,6 +563,12 @@ class SmolLM2KVFFICache
     end
   end
 
+  # CUDA-MIRROR-SKIP-BEGIN: trace-tap diagnostic ivars are CPU-only;
+  # the CUDA mirror gets a no-op stub for trace_tap and an empty
+  # dump_trace + enable_trace! so callers don't have to backend-switch.
+  # CUDA-MIRROR-STUB:   def enable_trace!; end
+  # CUDA-MIRROR-STUB:   def trace_tap(_name, t); t; end
+  # CUDA-MIRROR-STUB:   def dump_trace; end
   def enable_trace!
     @trace_on = true
   end
@@ -610,6 +620,7 @@ class SmolLM2KVFFICache
       @trace_tensors.pop
     end
   end
+  # CUDA-MIRROR-SKIP-END
 
   # Ruby-OO entry point for "load weights into this realized cache."
   # Auto-detects layout: GGUFs with the `toy.ggml_native` metadata key

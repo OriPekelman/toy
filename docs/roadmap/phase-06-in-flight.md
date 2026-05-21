@@ -61,15 +61,28 @@ content the CPU version lacks. (When it does, we'll add one.)
 
 | Pair | Generator? | Verified |
 | --- | --- | --- |
-| `lib/llama_seq_forward_ffi*` | yes | parity + training smokes PASS, CPU + CUDA |
-| `lib/toy_smollm2_ffi_kv*` | TODO — needs SKIP sentinels for trace-tap | — |
+| `lib/llama_seq_forward_ffi*` | yes (step 1) | parity + training smokes PASS, CPU + CUDA |
+| `lib/toy_smollm2_ffi_kv*` | yes (step 2) | smollm2_kv_cuda + multipos_cuda + multi_cuda + qwen25_native_mmap_cuda PASS |
 | `lib/gpt2_ffi_kv*` (if/when CUDA mirror lands) | TODO | — |
 | `lib/gpt2_ffi*` (FullForwardFFICache) | TODO | — |
 
-The seq pair migration was the proof point. The older pairs need
-SKIP sentinels around CPU-only blocks; the substitution table also
-grows to cover their class names (`SmolLM2KVFFICache`,
-`SmolLM2KVBlockFFI`, etc.).
+Step 2 exercises the STUB sentinel. The CPU file's trace-tap surface
+(`enable_trace!`, `trace_tap`, `dump_trace`, the trace ivars, the
+inline `trace_tap(...)` calls scattered through `build_decode_step`)
+is replaced on the CUDA side with three no-op stubs:
+
+```ruby
+def enable_trace!; end
+def trace_tap(_name, t); t; end
+def dump_trace; end
+```
+
+The inline calls collapse to identity at trace-off (the only mode
+the CUDA mirror knows). One small CPU-side simplification fell out
+of step 2 as well: `TinyNN.stage_row_major_and_upload(...)` becomes
+`TinyNN.upload_row_major(...)`, since the latter exists on both
+backends and the mechanical rename then works. Same change as in
+step 1's seq pair.
 
 ## Re-trigger conditions for the deferral
 
