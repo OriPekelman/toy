@@ -34,6 +34,12 @@ puts "full fine-tune (CUDA): GGUF=" + GGUF + " STEPS=" + STEPS.to_s + " LR=" + L
 gguf = TinyNNCuda.tnn_gguf_load(GGUF)
 seq = LlamaSeqForwardFFICacheCuda.new
 seq.enable_full_finetune!
+# Train embeddings when EMBED=1 in env. Default off because the
+# 100K-vocab models (Qwen) hit a CUDA kernel "invalid argument" on
+# the (vocab × d_model) gradient tensor; SmolLM2 (V=49K) handles it.
+if (ENV["EMBED"] || "0").to_i == 1
+  seq.enable_full_finetune_embeddings!
+end
 seq.realize_for_full_finetune(gguf, cfg, TOKENS.length, flags.untied, flags.qkv_bias)
 
 result   = seq.build_training_step

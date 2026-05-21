@@ -429,6 +429,20 @@ int tnn_finalize_weights(void *sess)
     return 0;
 }
 
+/* Zero an entire persistent tensor via backend memset_tensor. Faster
+ * than building a Mat-of-zeros + upload_row_major when the tensor is
+ * big (e.g. Adam state for vocab×d_model embeddings: ~1 GB of zeros).
+ * Works on both CPU (memset) and CUDA (cudaMemsetAsync). */
+int tnn_zero_tensor(void *sess, void *tensor)
+{
+    if (!sess || !tensor) return -1;
+    tnn_session *s = (tnn_session *)sess;
+    (void)s;
+    struct ggml_tensor *t = (struct ggml_tensor *)tensor;
+    ggml_backend_tensor_memset(t, 0, 0, ggml_nbytes(t));
+    return 0;
+}
+
 void *tnn_matmul(void *sess, void *a, void *b)
 {
     if (!sess || !a || !b) return NULL;

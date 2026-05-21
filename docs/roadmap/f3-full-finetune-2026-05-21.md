@@ -89,12 +89,51 @@ Each block stores parallel arrays of `(weight, m, v)` triples so
 | `tnn_pin_all_graph_b_nodes` (CPU sched-alias workaround) keeps too much alive | Likely OK at SmolLM2-135M; if memory pressure shows up we revisit per-graph instead of all-nodes pinning. |
 | Adam state on CUDA + writable weights on CUDA + grads on CUDA — total VRAM | GB10 has 121 GB; 2 GB is trivial. Larger models (1.5B+) need a memory pass. |
 
-## What it doesn't do (yet)
+## Update — 2026-05-21 (step 2)
 
-- Train embeddings. Add via one set_param + one opt_step per
-  embedding tensor when needed.
-- Train the final-norm gamma. Same shape as above.
-- Q8 base for full FT. The math works but mixing Q8 weight gradient
-  with F32 weight update is a different code path; queued.
-- Memory budget for 1.5B+. The above math says ~24 GB; should fit
-  but smoke first.
+### Embeddings + final-norm are now trainable (opt-in)
+
+`enable_full_finetune_embeddings!` (default OFF) promotes
+`token_embed`, the final-norm gamma, and the untied output projection
+(if present) to writable F32 + Adam m/v + set_param + opt_step.
+When off, they stay mmap'd / read-only and the rest of the model
+still trains.
+
+On SmolLM2-135M (vocab=49K) the on/off paths both converge identically
+on the smoke (CE 9.24 → 0 in ~5 steps either way). On Qwen2.5 (vocab=152K)
+the on path currently aborts in a CUDA kernel with "invalid argument"
+during graph compute — the 233M-element embedding gradient tensor or
+its scatter via get_rows_back appears to trip something we haven't
+isolated. Keeping it as an opt-in is the practical answer.
+
+Backend zero-init for big Adam tensors: a new `tnn_zero_tensor` C
+primitive uses `ggml_backend_tensor_memset` so the 1 GB embedding
+Adam state doesn't materialize a 233M-element Ruby Float array
+first. Saves ~2 GB transient RAM and ~10 s of Ruby-side fill.
+
+### F3 on a larger base — verified
+
+`smollm2_seq_full_finetune_cuda` runs against `data/qwen25-1.5b-native.gguf`
+with embeddings frozen (default). CE 17.65 → 0.0 within 2 steps —
+the per-block parameter count (~1.3B trainable) saturates the
+trivial uniform-target objective fast.
+
+Memory at 1.5B per-block-only F32:
+  base weights mmap   (read-only):  ~5 GB
+  writable per-block weights:       ~5 GB
+  gradients (autograd):             ~5 GB
+  Adam m + Adam v:                 ~10 GB
+  ----------------
+  total                            ~25 GB
+
+GB10's 121 GB swallows it easily.
+
+## What still isn't done
+
+- Train Qwen-class embeddings on CUDA. The kernel that fails is
+  somewhere on the path from CE-loss backward → token-embed gradient.
+  Tracked separately as a follow-up.
+- Q8 base for full FT. F4 (LoRA on Q8) ships; mixing Q8 base with
+  full-FT updates needs its own code path.
+- 3B / 7B full FT. The 25 GB scaling at 1.5B suggests 3B is ~50 GB
+  (fits) and 7B is ~120 GB (doesn't — would need a memory pass).

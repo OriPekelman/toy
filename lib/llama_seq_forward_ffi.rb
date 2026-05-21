@@ -91,7 +91,19 @@ class LlamaSeqForwardFFICache
                 # tensor is allocated writable F32 in ctx_w with paired
                 # Adam m/v and marked set_param; build_training_step
                 # then emits opt_step on each.
-                :seq_full_finetune_enabled
+                :seq_full_finetune_enabled,
+                # Per-cache (not per-block) parallel arrays for the
+                # global trainable weights — token_embed, final-norm
+                # gamma, optional untied output projection. Populated
+                # in realize_for_full_finetune; empty otherwise.
+                :ft_globals_weights, :ft_globals_m, :ft_globals_v,
+                # Opt-in: include the embedding / final-norm /
+                # untied-output tensors in full FT. Off by default
+                # because the embed tensor on vocab≥100K models is
+                # huge (Qwen2.5: 233M params F32) and triggers a CUDA
+                # kernel "invalid argument" we haven't pinpointed.
+                # SmolLM2 (V=49K) is fine with this on.
+                :ft_train_embeddings_enabled
 
   def initialize
     @seq_realized   = false
@@ -123,6 +135,18 @@ class LlamaSeqForwardFFICache
     @seq_lora_q_rank          = 0
     @seq_lora_q_adamw_enabled = false
     @seq_full_finetune_enabled = false
+    @ft_globals_weights = [TinyNN.tnn_null_ptr]; @ft_globals_weights.pop
+    @ft_globals_m       = [TinyNN.tnn_null_ptr]; @ft_globals_m.pop
+    @ft_globals_v       = [TinyNN.tnn_null_ptr]; @ft_globals_v.pop
+    @ft_train_embeddings_enabled = false
+  end
+
+  # F3 — additionally train the embedding / final-norm gamma / untied
+  # output. Opt-in because vocab×d_model is huge on 100K-vocab models.
+  # SmolLM2-135M (V=49K) handles this fine; Qwen2.5 (V=152K) currently
+  # aborts in a CUDA kernel with "invalid argument" we haven't traced.
+  def enable_full_finetune_embeddings!
+    @ft_train_embeddings_enabled = true
   end
 
   # F3 — turn on full fine-tune. Every per-block weight tensor will
@@ -683,29 +707,46 @@ class LlamaSeqForwardFFICache
     @seq_has_untied_output = untied
     @seq_has_qkv_bias      = qkv_bias
 
-    # Token embed + final norm + (untied) output stay mmap'd —
-    # they're frozen on the MVP. Attach the mmap buffer for those.
-    map_base = TinyNN.tnn_gguf_mmap_base(gguf_handle)
-    map_size = TinyNN.tnn_gguf_mmap_size(gguf_handle)
-    TinyNN.tnn_session_attach_weight_mmap(@sess, map_base, map_size)
+    # Token embed + final-norm gamma + (untied) output: trainable
+    # only when opt-in (ft_train_embeddings_enabled). Otherwise
+    # they stay mmap'd / read-only (still need a mmap attach for
+    # this branch).
+    if @ft_train_embeddings_enabled
+      @t_seq_token_embed = TinyNN.tnn_input_2d_f32_persistent(@sess,
+                             @seq_vocab_size, @seq_d_model)
+      ft_add_global_2d(@t_seq_token_embed, @seq_vocab_size, @seq_d_model)
 
-    eidx = TinyNN.tnn_gguf_find_index(gguf_handle, "token_embd.weight")
-    eoff = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, eidx)
-    etyp = TinyNN.tnn_gguf_tensor_type(gguf_handle, eidx)
-    @t_seq_token_embed = TinyNN.tnn_input_2d_persistent_mmap(@sess,
-                           @seq_vocab_size, @seq_d_model, etyp, eoff)
+      @t_seq_final_norm_gamma = TinyNN.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
+      ft_add_global_1d(@t_seq_final_norm_gamma)
 
-    fnidx = TinyNN.tnn_gguf_find_index(gguf_handle, "output_norm.weight")
-    fnoff = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, fnidx)
-    @t_seq_final_norm_gamma = TinyNN.tnn_input_1d_persistent_mmap(@sess,
-                                @seq_d_model, 0, fnoff)
+      if untied
+        @t_seq_output = TinyNN.tnn_input_2d_f32_persistent(@sess,
+                          @seq_vocab_size, @seq_d_model)
+        ft_add_global_2d(@t_seq_output, @seq_vocab_size, @seq_d_model)
+      end
+    else
+      map_base = TinyNN.tnn_gguf_mmap_base(gguf_handle)
+      map_size = TinyNN.tnn_gguf_mmap_size(gguf_handle)
+      TinyNN.tnn_session_attach_weight_mmap(@sess, map_base, map_size)
 
-    if untied
-      oidx = TinyNN.tnn_gguf_find_index(gguf_handle, "output.weight")
-      ooff = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, oidx)
-      otyp = TinyNN.tnn_gguf_tensor_type(gguf_handle, oidx)
-      @t_seq_output = TinyNN.tnn_input_2d_persistent_mmap(@sess,
-                        @seq_vocab_size, @seq_d_model, otyp, ooff)
+      eidx = TinyNN.tnn_gguf_find_index(gguf_handle, "token_embd.weight")
+      eoff = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, eidx)
+      etyp = TinyNN.tnn_gguf_tensor_type(gguf_handle, eidx)
+      @t_seq_token_embed = TinyNN.tnn_input_2d_persistent_mmap(@sess,
+                             @seq_vocab_size, @seq_d_model, etyp, eoff)
+
+      fnidx = TinyNN.tnn_gguf_find_index(gguf_handle, "output_norm.weight")
+      fnoff = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, fnidx)
+      @t_seq_final_norm_gamma = TinyNN.tnn_input_1d_persistent_mmap(@sess,
+                                  @seq_d_model, 0, fnoff)
+
+      if untied
+        oidx = TinyNN.tnn_gguf_find_index(gguf_handle, "output.weight")
+        ooff = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, oidx)
+        otyp = TinyNN.tnn_gguf_tensor_type(gguf_handle, oidx)
+        @t_seq_output = TinyNN.tnn_input_2d_persistent_mmap(@sess,
+                          @seq_vocab_size, @seq_d_model, otyp, ooff)
+      end
     end
 
     @seq_blocks_ffi = [LlamaSeqBlockFFI.new]
@@ -801,11 +842,26 @@ class LlamaSeqForwardFFICache
       li = li + 1
     end
 
+    # Globals are trainable too only when embeddings are opt-in.
+    if @ft_train_embeddings_enabled
+      gi = 0
+      while gi < @ft_globals_weights.length
+        TinyNN.tnn_set_param(@ft_globals_weights[gi])
+        gi = gi + 1
+      end
+    end
+
     TinyNN.tnn_finalize_weights(@sess)
 
     # Post-finalize: load every writable weight from the GGUF.
+    if @ft_train_embeddings_enabled
+      ft_load_globals(gguf_handle, untied)
+    end
     ft_load_from_gguf(gguf_handle, qkv_bias)
     ft_zero_init_adam(qkv_bias)
+    if @ft_train_embeddings_enabled
+      ft_zero_init_adam_globals
+    end
 
     build_forward_in_current_ctx
     TinyNN.tnn_realize(@sess, @t_seq_logits)
@@ -825,6 +881,43 @@ class LlamaSeqForwardFFICache
     blk.ft_weights.push(weight)
     blk.ft_m.push(TinyNN.tnn_input_1d_f32_persistent(@sess, n))
     blk.ft_v.push(TinyNN.tnn_input_1d_f32_persistent(@sess, n))
+  end
+
+  # Same shape as ft_add_2d / ft_add_1d but writes to the cache-level
+  # globals arrays (token_embed, final-norm, untied output).
+  def ft_add_global_2d(weight, rows, cols)
+    @ft_globals_weights.push(weight)
+    @ft_globals_m.push(TinyNN.tnn_input_2d_f32_persistent(@sess, rows, cols))
+    @ft_globals_v.push(TinyNN.tnn_input_2d_f32_persistent(@sess, rows, cols))
+  end
+
+  def ft_add_global_1d(weight)
+    n = TinyNN.tnn_tensor_nelements(weight)
+    @ft_globals_weights.push(weight)
+    @ft_globals_m.push(TinyNN.tnn_input_1d_f32_persistent(@sess, n))
+    @ft_globals_v.push(TinyNN.tnn_input_1d_f32_persistent(@sess, n))
+  end
+
+  # Load token_embed + final-norm + (untied) output from the GGUF
+  # into their now-allocated backend buffers.
+  def ft_load_globals(gguf, untied)
+    eidx = TinyNN.tnn_gguf_find_index(gguf, "token_embd.weight")
+    TinyNN.tnn_gguf_copy_to_persistent(gguf, eidx, @sess, @t_seq_token_embed)
+    fnidx = TinyNN.tnn_gguf_find_index(gguf, "output_norm.weight")
+    TinyNN.tnn_gguf_copy_1d_to_persistent(gguf, fnidx, @sess, @t_seq_final_norm_gamma)
+    if untied
+      oidx = TinyNN.tnn_gguf_find_index(gguf, "output.weight")
+      TinyNN.tnn_gguf_copy_to_persistent(gguf, oidx, @sess, @t_seq_output)
+    end
+  end
+
+  def ft_zero_init_adam_globals
+    gi = 0
+    while gi < @ft_globals_weights.length
+      TinyNN.tnn_zero_tensor(@sess, @ft_globals_m[gi])
+      TinyNN.tnn_zero_tensor(@sess, @ft_globals_v[gi])
+      gi = gi + 1
+    end
   end
 
   # Pull bytes from the GGUF into each writable weight. Uses the
@@ -897,23 +990,17 @@ class LlamaSeqForwardFFICache
   end
 
   # Zero-init the Adam moments. m and v both start at 0 per the
-  # AdamW step-0 contract. Different shapes per tensor so we use
-  # the largest Mat we need + a slice-copy convention via
-  # upload_row_major (Mat extent <= tensor extent is fine; we
-  # always fill the tensor's full size by allocating Mat at the
-  # tensor's logical shape).
+  # AdamW step-0 contract. Uses the backend-side memset primitive
+  # (tnn_zero_tensor) so a 1 GB Adam state doesn't materialize a
+  # Mat-of-zeros in Ruby first.
   def ft_zero_init_adam(qkv_bias)
     li = 0
     while li < @seq_n_layers
       blk = @seq_blocks_ffi[li]
       i = 0
       while i < blk.ft_weights.length
-        n = TinyNN.tnn_tensor_nelements(blk.ft_m[i])
-        z = Mat.new(1, n)
-        k = 0
-        while k < n; z.flat[k] = 0.0; k = k + 1; end
-        TinyNN.upload_row_major(@sess, blk.ft_m[i], z)
-        TinyNN.upload_row_major(@sess, blk.ft_v[i], z)
+        TinyNN.tnn_zero_tensor(@sess, blk.ft_m[i])
+        TinyNN.tnn_zero_tensor(@sess, blk.ft_v[i])
         i = i + 1
       end
       li = li + 1
@@ -1002,6 +1089,16 @@ class LlamaSeqForwardFFICache
           wi = wi + 1
         end
         li = li + 1
+      end
+      # Globals (token_embed, final-norm, optional untied output).
+      gi = 0
+      while gi < @ft_globals_weights.length
+        tw = @ft_globals_weights[gi]
+        tg = TinyNN.tnn_tensor_grad(@sess, tw)
+        to = TinyNN.tnn_opt_step_adamw(@sess, tw, tg,
+                                        @ft_globals_m[gi], @ft_globals_v[gi], t_hp)
+        TinyNN.tnn_extend_backward_graph(@sess, to)
+        gi = gi + 1
       end
     else
       # LoRA-only training (M3 step 3). One opt_step_adamw per LoRA-A

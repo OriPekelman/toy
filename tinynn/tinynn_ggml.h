@@ -81,6 +81,11 @@ void  *tnn_input_1d_persistent_mmap(void *sess, int n, int ggml_type,
  * after declaring persistent tensors and before any tnn_realize. */
 int    tnn_finalize_weights(void *sess);
 
+/* Zero an entire persistent tensor's backend buffer (CPU memset /
+ * cudaMemsetAsync). Use for large Adam-state init where building a
+ * Mat-of-zeros wastes RAM. */
+int    tnn_zero_tensor(void *sess, void *tensor);
+
 /* Build a SECONDARY graph (graph_b) sharing the session's ctx and
  * tensors. Used for adam_step / update passes that mutate persistent
  * weights between forward calls. Does NOT alloc -- call tnn_switch_b
