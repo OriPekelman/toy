@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <dirent.h>
 
 /* Phase 2 (memory-design): we now load GGUFs with no_alloc=true and
  * mmap the file ourselves. Tensor byte accessors point into the
@@ -693,4 +694,73 @@ int tnn_gguf_write_demo_file(const char *path)
     gguf_free(gctx);
     ggml_free(ctx);
     return rc;
+}
+
+/* Filesystem walking — minimal C shim so Spinel-compiled binaries can
+ * scan model caches without a stdlib Dir.entries. Walks `root`
+ * recursively, accumulates absolute paths whose name ends with
+ * `.gguf` (case-sensitive), and returns them newline-separated in a
+ * static buffer. Bails (returns "") if `root` is unreadable; bails if
+ * the buffer would overflow.
+ *
+ * Returns: pointer to a NUL-terminated string of "path1\npath2\n..."
+ *          (empty string if nothing found). The pointer is to a
+ *          single static buffer reused across calls — copy if you
+ *          need to keep the value across another call.
+ *
+ * Usage from Ruby: ffi_func :tnn_list_ggufs, [:str], :str. Split on
+ * "\n" and discard empty trailing entry.
+ */
+#define TNN_LIST_BUF_BYTES (4 * 1024 * 1024)
+static char tnn_list_buf[TNN_LIST_BUF_BYTES];
+static size_t tnn_list_len = 0;
+
+static void tnn_list_walk(const char *path) {
+    DIR *d = opendir(path);
+    if (!d) return;
+    struct dirent *e;
+    char buf[4096];
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.' &&
+            (e->d_name[1] == '\0' ||
+             (e->d_name[1] == '.' && e->d_name[2] == '\0'))) continue;
+        int n = snprintf(buf, sizeof(buf), "%s/%s", path, e->d_name);
+        if (n <= 0 || (size_t)n >= sizeof(buf)) continue;
+        struct stat st;
+        if (lstat(buf, &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) {
+            tnn_list_walk(buf);
+        } else if (S_ISREG(st.st_mode)) {
+            size_t name_len = strlen(e->d_name);
+            if (name_len >= 5 &&
+                memcmp(e->d_name + name_len - 5, ".gguf", 5) == 0) {
+                size_t need = (size_t)n + 1;   /* path + newline */
+                if (tnn_list_len + need + 1 > TNN_LIST_BUF_BYTES) continue;
+                memcpy(tnn_list_buf + tnn_list_len, buf, (size_t)n);
+                tnn_list_len += (size_t)n;
+                tnn_list_buf[tnn_list_len++] = '\n';
+                tnn_list_buf[tnn_list_len] = '\0';
+            }
+        }
+    }
+    closedir(d);
+}
+
+const char *tnn_list_ggufs(const char *root) {
+    tnn_list_buf[0] = '\0';
+    tnn_list_len = 0;
+    if (root) tnn_list_walk(root);
+    return tnn_list_buf;
+}
+
+/* File-size lookup. Returns 0 on stat failure (file missing,
+ * unreadable). Used by ModelIndex for the size column. (Model
+ * files are never 0 bytes; "not found" vs "empty" disambiguation
+ * doesn't bite in practice. size_t keeps the FFI surface simple —
+ * Spinel doesn't expose long long.) */
+size_t tnn_file_size(const char *path) {
+    if (!path) return 0;
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    return (size_t)st.st_size;
 }

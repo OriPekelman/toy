@@ -438,6 +438,9 @@ module TinyNN
   # cost from 12 B to 4 B and unblocking 7B inference. See
   # docs/memory-design.md.
   ffi_func :tnn_gguf_find_index,                    [:ptr, :str],           :int
+  # Filesystem walk for model discovery (lib/model_index.rb).
+  ffi_func :tnn_list_ggufs,                         [:str],                 :str
+  ffi_func :tnn_file_size,                          [:str],                 :size_t
   ffi_func :tnn_gguf_copy_to_persistent,            [:ptr, :int, :ptr, :ptr], :int
   ffi_func :tnn_gguf_copy_1d_to_persistent,         [:ptr, :int, :ptr, :ptr], :int
   ffi_func :tnn_gguf_copy_transposed_to_persistent,

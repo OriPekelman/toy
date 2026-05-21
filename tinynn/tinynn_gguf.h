@@ -148,6 +148,18 @@ int tnn_gguf_copy_head_bias_slice_to_persistent(void *handle, int tensor_idx,
  * linear-scan-in-Ruby overhead. */
 int tnn_gguf_find_index(void *handle, const char *name);
 
+/* Recursively scan `root` for *.gguf files. Returns a static buffer
+ * of newline-separated absolute paths (empty string if none found).
+ * Buffer is reused across calls — copy if needed. Used by
+ * lib/model_index.rb to find models in standard cache locations
+ * (HF hub, Ollama, LM Studio, ./models, ...). */
+const char *tnn_list_ggufs(const char *root);
+
+/* File size in bytes via stat(2). Returns 0 if path doesn't exist
+ * or stat fails (model files are never 0 bytes, so the ambiguity
+ * doesn't bite). */
+size_t tnn_file_size(const char *path);
+
 #ifdef __cplusplus
 }
 #endif

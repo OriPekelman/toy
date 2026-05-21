@@ -74,7 +74,11 @@ examples/example_serve: examples/04_serve_http.rb tep_demo/_tep_lib/tep.rb lib/t
 	$(SPINEL) $< -o $@
 example_serve: examples/example_serve
 
-examples: example_inference example_train example_finetune_cuda example_serve
+examples/example_list_models: examples/05_list_models.rb lib/model_index.rb lib/arch.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
+	$(SPINEL) $< -o $@
+example_list_models: examples/example_list_models
+
+examples: example_inference example_train example_finetune_cuda example_serve example_list_models
 
 # Parity-checks vs native TransformerLM.forward.
 

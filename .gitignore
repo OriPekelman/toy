@@ -179,6 +179,7 @@ examples/example_inference
 examples/example_train
 examples/example_finetune_cuda
 examples/example_serve
+examples/example_list_models
 demos/smollm2_lora_train_bench
 demos/smollm2_lora_train_bench_cuda
 demos/smollm2_lora_grad_probe
