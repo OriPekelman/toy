@@ -103,11 +103,13 @@ class LlamaSeqForwardFFICacheCuda
                 # in realize_for_full_finetune; empty otherwise.
                 :ft_globals_weights, :ft_globals_m, :ft_globals_v,
                 # Opt-in: include the embedding / final-norm /
-                # untied-output tensors in full FT. Off by default
-                # because the embed tensor on vocab≥100K models is
-                # huge (Qwen2.5: 233M params F32) and triggers a CUDA
-                # kernel "invalid argument" we haven't pinpointed.
-                # SmolLM2 (V=49K) is fine with this on.
+                # untied-output tensors in full FT. Default off — the
+                # embed tensor on Qwen-class models is huge (V=152K ×
+                # d=1536 = 233M params F32) and brings the full
+                # forward+backward+opt-step memory closer to the GPU
+                # limit. Works correctly on CUDA after vendor-patches
+                # 0006 chunked the get_rows_back kernel launch
+                # (previously hit CUDA's gridDim.y = 65535 cap).
                 :ft_train_embeddings_enabled
 
   def initialize
@@ -147,9 +149,9 @@ class LlamaSeqForwardFFICacheCuda
   end
 
   # F3 — additionally train the embedding / final-norm gamma / untied
-  # output. Opt-in because vocab×d_model is huge on 100K-vocab models.
-  # SmolLM2-135M (V=49K) handles this fine; Qwen2.5 (V=152K) currently
-  # aborts in a CUDA kernel with "invalid argument" we haven't traced.
+  # output. Opt-in: the embed tensor on Qwen-class vocab is large and
+  # makes the memory budget noticeably tighter, but the math itself
+  # works correctly post vendor-patches/0006 (chunked get_rows_back).
   def enable_full_finetune_embeddings!
     @ft_train_embeddings_enabled = true
   end

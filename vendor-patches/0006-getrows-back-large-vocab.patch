@@ -1,0 +1,69 @@
+From a0000060000000000000000000000000000000a0 Mon Sep 17 00:00:00 2001
+From: Ori Pekelman <ori@pekelman.com>
+Date: Thu, 21 May 2026 00:00:00 +0000
+Subject: [PATCH] ggml-cuda: chunk get_rows_back launch for vocab > 65535
+
+`ggml_cuda_op_get_rows_back` launches the per-row reduction with
+gridDim.y = nrows_dst (the embedding vocab size in the autograd
+case). CUDA caps gridDim.y at 65535 on every shipping arch, so for
+Qwen2.5 (V=151936) the launch fails with cudaErrorInvalidConfiguration
+("invalid argument"), aborting training the moment a model with
+V > 65535 hits the embedding gradient on the backward pass.
+
+The fix: add a row_offset to the kernel and split the launch into
+chunks of at most 65535 rows each. Each chunk's gridDim.y stays
+inside the limit; row_offset positions the chunk in the destination
+vocab axis.
+
+Verified on toy_ruby_neural_network's F3 path:
+- SmolLM2-135M (V=49152): single chunk, no behavior change.
+- Qwen2.5-1.5B (V=151936): three chunks (65535 + 65535 + 20866),
+  embed gradient training now converges.
+---
+ src/ggml-cuda/getrows.cu | 22 ++++++++++++++++------
+ 1 file changed, 16 insertions(+), 6 deletions(-)
+
+diff --git a/src/ggml-cuda/getrows.cu b/src/ggml-cuda/getrows.cu
+index 3fe3738..74bfd5f 100644
+--- a/src/ggml-cuda/getrows.cu
++++ b/src/ggml-cuda/getrows.cu
+@@ -72,14 +72,15 @@ static __global__ void k_get_rows_float(
+
+ template<typename grad_t, typename dst_t>
+ static __global__ void k_get_rows_back_float(
+-        const grad_t * __restrict__ grad, const int32_t * __restrict__ rows, dst_t * __restrict__ dst, const int64_t ncols, const int64_t nrows_grad) {
++        const grad_t * __restrict__ grad, const int32_t * __restrict__ rows, dst_t * __restrict__ dst,
++        const int64_t ncols, const int64_t nrows_grad, const int row_offset) {
+     const int col = blockIdx.x*blockDim.x + threadIdx.x;
+
+     if (col >= ncols) {
+         return;
+     }
+
+-    const int dst_row = blockIdx.y*blockDim.y + threadIdx.y;
++    const int dst_row = blockIdx.y*blockDim.y + threadIdx.y + row_offset;
+
+     float sum = 0.0f;
+
+@@ -294,7 +295,16 @@ void ggml_cuda_op_get_rows_back(ggml_backend_cuda_context & ctx, ggml_tensor * d
+
+     const dim3 block_dims(CUDA_GET_ROWS_BACK_BLOCK_SIZE, 1, 1);
+     const int block_num_x = (ne00 + CUDA_GET_ROWS_BACK_BLOCK_SIZE - 1) / CUDA_GET_ROWS_BACK_BLOCK_SIZE;
+-    const dim3 block_nums(block_num_x, ne1, 1);
+-
+-    k_get_rows_back_float<<<block_nums, block_dims, 0, stream>>>(src0_d, src1_d, dst_d, ne00, ne10);
++
++    // CUDA caps gridDim.y at 65535 on every shipping arch. ne1 = vocab
++    // for the embedding-backward use; we chunk the launch when it
++    // exceeds the cap.
++    const int Y_MAX = 65535;
++    int row_offset = 0;
++    while (row_offset < ne1) {
++        const int chunk = (ne1 - row_offset) < Y_MAX ? (ne1 - row_offset) : Y_MAX;
++        const dim3 block_nums(block_num_x, chunk, 1);
++        k_get_rows_back_float<<<block_nums, block_dims, 0, stream>>>(src0_d, src1_d, dst_d, ne00, ne10, row_offset);
++        row_offset += chunk;
++    }
+ }
+--
+2.43.0

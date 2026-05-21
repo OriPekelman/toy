@@ -100,11 +100,16 @@ When off, they stay mmap'd / read-only and the rest of the model
 still trains.
 
 On SmolLM2-135M (vocab=49K) the on/off paths both converge identically
-on the smoke (CE 9.24 → 0 in ~5 steps either way). On Qwen2.5 (vocab=152K)
-the on path currently aborts in a CUDA kernel with "invalid argument"
-during graph compute — the 233M-element embedding gradient tensor or
-its scatter via get_rows_back appears to trip something we haven't
-isolated. Keeping it as an opt-in is the practical answer.
+on the smoke (CE 9.24 → 0 in ~5 steps either way).
+
+**Update — Qwen-vocab embed training now works** (vendor-patches/0006).
+The CUDA kernel for `get_rows_back` launched with `gridDim.y = vocab`,
+which exceeded the 65535 grid limit for V > 65K (Qwen2.5: V=151936 was
+the canary). The patch chunks the launch: each call handles at most
+65535 rows, and a `row_offset` parameter on the kernel positions the
+chunk within the destination vocab axis. SmolLM2-135M (V=49K) needs
+exactly one chunk and behaves identically. Qwen2.5-1.5B (V=152K) now
+trains the full embedding: CE 17.65 → 0 over 2 steps.
 
 Backend zero-init for big Adam tensors: a new `tnn_zero_tensor` C
 primitive uses `ggml_backend_tensor_memset` so the 1 GB embedding
@@ -130,9 +135,6 @@ GB10's 121 GB swallows it easily.
 
 ## What still isn't done
 
-- Train Qwen-class embeddings on CUDA. The kernel that fails is
-  somewhere on the path from CE-loss backward → token-embed gradient.
-  Tracked separately as a follow-up.
 - Q8 base for full FT. F4 (LoRA on Q8) ships; mixing Q8 base with
   full-FT updates needs its own code path.
 - 3B / 7B full FT. The 25 GB scaling at 1.5B suggests 3B is ~50 GB
