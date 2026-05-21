@@ -39,6 +39,16 @@ GGML_REPO   := https://github.com/ggml-org/ggml.git
 GGML_CUDA_ARCH ?= 121
 CUDA_DIR    ?= /usr/local/cuda
 
+# --- Tep sibling sync -------------------------------------------------------
+# Tep is co-developed with this repo (sibling at ~/sites/tep); we
+# track HEAD continuously. `prep/sync_tep.rb` rsyncs upstream Tep's
+# lib/ into tep_demo/_tep_lib/ and substitutes the @TEP_*@
+# placeholders that upstream's bin/tep handles at build time. Bails
+# loud if a dependency (libpq, libsqlite3) is missing — never
+# silently degrades. Run after pulling Tep changes, or via:
+sync-tep:
+	./prep/sync_tep.rb
+
 # --- pure-Spinel drivers ----------------------------------------------------
 # Source lives in demos/. We expose short top-level target names
 # (`make train_minimal`, `make distilgpt2_demo_text`) that build into
