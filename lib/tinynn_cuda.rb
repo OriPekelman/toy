@@ -193,6 +193,9 @@ module TinyNNCuda
            [:ptr, :int, :ptr, :ptr, :int, :int, :int, :int], :int
   ffi_func :tnn_gguf_copy_head_bias_slice_to_persistent,
            [:ptr, :int, :ptr, :ptr, :int, :int], :int
+  ffi_func :tnn_gguf_copy_verbatim_to_persistent,    [:ptr, :int, :ptr, :ptr], :int
+  ffi_func :tnn_gguf_copy_verbatim_head_slice_to_persistent,
+           [:ptr, :int, :ptr, :ptr, :int, :int], :int
   ffi_func :tnn_finalize_weights, [:ptr],                   :int
   ffi_func :tnn_realize_b,        [:ptr, :ptr],             :int
   ffi_func :tnn_switch_a,         [:ptr],                   :int

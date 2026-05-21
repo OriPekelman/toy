@@ -155,6 +155,268 @@ class LlamaSeqForwardFFICacheCuda
     @seq_lora_q_adamw_enabled = true
   end
 
+  # F4 alternative realize for CUDA + Q8 base. Allocates every weight
+  # tensor in the standard ggml ctx_w (NOT the BYO mmap region), then
+  # verbatim-copies the GGUF bytes in. Buys correctness on CUDA at the
+  # cost of holding the weights twice transiently (mmap + ctx_w during
+  # load; ctx_w only after). Required because the BYO-pointer cuda
+  # buffer's quantized padding zeroing (cudaMemset past tensor data)
+  # would otherwise crash on Q8 tensors with `ne0 % 512 != 0`.
+  #
+  # Use this realize when (a) the GGUF is Q8 AND (b) the backend is
+  # CUDA. CPU + Q8 stays on realize_for_mmap (no padding issue).
+  def realize_for_q8_copy(gguf_handle, cfg, t_seq, untied, qkv_bias)
+    @seq_t          = t_seq
+    @seq_d_model    = cfg.d_model
+    @seq_d_ff       = cfg.d_ff
+    @seq_n_heads    = cfg.n_heads
+    @seq_n_kv       = cfg.n_kv
+    @seq_d_head     = cfg.d_model / cfg.n_heads
+    @seq_group_size = cfg.n_heads / cfg.n_kv
+    @seq_n_layers   = cfg.n_layers
+    @seq_vocab_size = cfg.vocab
+    @seq_rope_base  = cfg.rope_base
+    @seq_rms_eps    = cfg.rms_eps
+
+    @seq_gguf_handle_keepalive = gguf_handle
+    @sess                  = TinyNNCuda.tnn_session_new(1)
+    @seq_has_untied_output = untied
+    @seq_has_qkv_bias      = qkv_bias
+
+    # Read source tensor types so we can allocate ctx_w tensors of the
+    # MATCHING type (verbatim copy requires source/target types match).
+    eidx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, "token_embd.weight")
+    etyp = TinyNNCuda.tnn_gguf_tensor_type(gguf_handle, eidx)
+    @t_seq_token_embed = TinyNNCuda.tnn_input_2d_persistent_typed(@sess,
+                           @seq_vocab_size, @seq_d_model, etyp)
+    @t_seq_final_norm_gamma = TinyNNCuda.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
+    if untied
+      oidx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, "output.weight")
+      otyp = TinyNNCuda.tnn_gguf_tensor_type(gguf_handle, oidx)
+      @t_seq_output = TinyNNCuda.tnn_input_2d_persistent_typed(@sess,
+                        @seq_vocab_size, @seq_d_model, otyp)
+    end
+
+    @seq_blocks_ffi = [LlamaSeqBlockFFICuda.new]
+    li_init = 1
+    while li_init < @seq_n_layers
+      @seq_blocks_ffi.push(LlamaSeqBlockFFICuda.new)
+      li_init = li_init + 1
+    end
+
+    li = 0
+    while li < @seq_n_layers
+      blk    = @seq_blocks_ffi[li]
+      prefix = "blk." + li.to_s
+
+      blk.t_seq_rn1_gamma = TinyNNCuda.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
+      blk.t_seq_rn2_gamma = TinyNNCuda.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
+
+      q_idx  = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_q.weight")
+      q_type = TinyNNCuda.tnn_gguf_tensor_type(gguf_handle, q_idx)
+      blk.t_seq_w_q = [TinyNNCuda.tnn_input_2d_persistent_typed(@sess, @seq_d_head, @seq_d_model, q_type)]
+      hq = 1
+      while hq < @seq_n_heads
+        blk.t_seq_w_q.push(TinyNNCuda.tnn_input_2d_persistent_typed(@sess, @seq_d_head, @seq_d_model, q_type))
+        hq = hq + 1
+      end
+
+      k_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_k.weight")
+      v_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_v.weight")
+      k_type = TinyNNCuda.tnn_gguf_tensor_type(gguf_handle, k_idx)
+      v_type = TinyNNCuda.tnn_gguf_tensor_type(gguf_handle, v_idx)
+      blk.t_seq_w_k = [TinyNNCuda.tnn_input_2d_persistent_typed(@sess, @seq_d_head, @seq_d_model, k_type)]
+      blk.t_seq_w_v = [TinyNNCuda.tnn_input_2d_persistent_typed(@sess, @seq_d_head, @seq_d_model, v_type)]
+      hkv = 1
+      while hkv < @seq_n_kv
+        blk.t_seq_w_k.push(TinyNNCuda.tnn_input_2d_persistent_typed(@sess, @seq_d_head, @seq_d_model, k_type))
+        blk.t_seq_w_v.push(TinyNNCuda.tnn_input_2d_persistent_typed(@sess, @seq_d_head, @seq_d_model, v_type))
+        hkv = hkv + 1
+      end
+
+      if qkv_bias
+        blk.t_seq_b_q = [TinyNNCuda.tnn_input_1d_f32_persistent(@sess, @seq_d_head)]
+        hbq = 1
+        while hbq < @seq_n_heads
+          blk.t_seq_b_q.push(TinyNNCuda.tnn_input_1d_f32_persistent(@sess, @seq_d_head))
+          hbq = hbq + 1
+        end
+        blk.t_seq_b_k = [TinyNNCuda.tnn_input_1d_f32_persistent(@sess, @seq_d_head)]
+        blk.t_seq_b_v = [TinyNNCuda.tnn_input_1d_f32_persistent(@sess, @seq_d_head)]
+        hbkv = 1
+        while hbkv < @seq_n_kv
+          blk.t_seq_b_k.push(TinyNNCuda.tnn_input_1d_f32_persistent(@sess, @seq_d_head))
+          blk.t_seq_b_v.push(TinyNNCuda.tnn_input_1d_f32_persistent(@sess, @seq_d_head))
+          hbkv = hbkv + 1
+        end
+      end
+
+      o_idx    = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_output.weight")
+      gate_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_gate.weight")
+      up_idx   = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_up.weight")
+      down_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_down.weight")
+      blk.t_seq_w_o    = TinyNNCuda.tnn_input_2d_persistent_typed(@sess, @seq_d_model, @seq_d_model,
+                           TinyNNCuda.tnn_gguf_tensor_type(gguf_handle, o_idx))
+      blk.t_seq_w_gate = TinyNNCuda.tnn_input_2d_persistent_typed(@sess, @seq_d_ff, @seq_d_model,
+                           TinyNNCuda.tnn_gguf_tensor_type(gguf_handle, gate_idx))
+      blk.t_seq_w_up   = TinyNNCuda.tnn_input_2d_persistent_typed(@sess, @seq_d_ff, @seq_d_model,
+                           TinyNNCuda.tnn_gguf_tensor_type(gguf_handle, up_idx))
+      blk.t_seq_w_down = TinyNNCuda.tnn_input_2d_persistent_typed(@sess, @seq_d_model, @seq_d_ff,
+                           TinyNNCuda.tnn_gguf_tensor_type(gguf_handle, down_idx))
+
+      # LoRA + Adam allocations (same as realize_for_mmap path).
+      if @seq_lora_q_enabled
+        blk.t_seq_w_lora_a_q = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
+                                  @seq_lora_q_rank, @seq_d_model)]
+        blk.t_seq_w_lora_b_q = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
+                                  @seq_d_head, @seq_lora_q_rank)]
+        hql = 1
+        while hql < @seq_n_heads
+          blk.t_seq_w_lora_a_q.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
+                                      @seq_lora_q_rank, @seq_d_model))
+          blk.t_seq_w_lora_b_q.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
+                                      @seq_d_head, @seq_lora_q_rank))
+          hql = hql + 1
+        end
+        if @seq_lora_q_adamw_enabled
+          blk.t_seq_w_lora_a_q_m = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
+                                      @seq_lora_q_rank, @seq_d_model)]
+          blk.t_seq_w_lora_a_q_v = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
+                                      @seq_lora_q_rank, @seq_d_model)]
+          blk.t_seq_w_lora_b_q_m = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
+                                      @seq_d_head, @seq_lora_q_rank)]
+          blk.t_seq_w_lora_b_q_v = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
+                                      @seq_d_head, @seq_lora_q_rank)]
+          hqm = 1
+          while hqm < @seq_n_heads
+            blk.t_seq_w_lora_a_q_m.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
+                                          @seq_lora_q_rank, @seq_d_model))
+            blk.t_seq_w_lora_a_q_v.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
+                                          @seq_lora_q_rank, @seq_d_model))
+            blk.t_seq_w_lora_b_q_m.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
+                                          @seq_d_head, @seq_lora_q_rank))
+            blk.t_seq_w_lora_b_q_v.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
+                                          @seq_d_head, @seq_lora_q_rank))
+            hqm = hqm + 1
+          end
+        end
+      end
+
+      li = li + 1
+    end
+
+    if @seq_lora_q_enabled
+      li2 = 0
+      while li2 < @seq_n_layers
+        blk2 = @seq_blocks_ffi[li2]
+        hq_p = 0
+        while hq_p < @seq_n_heads
+          TinyNNCuda.tnn_set_param(blk2.t_seq_w_lora_a_q[hq_p])
+          TinyNNCuda.tnn_set_param(blk2.t_seq_w_lora_b_q[hq_p])
+          hq_p = hq_p + 1
+        end
+        li2 = li2 + 1
+      end
+    end
+
+    TinyNNCuda.tnn_finalize_weights(@sess)
+
+    # Load all weight bytes from the GGUF into the now-allocated
+    # backend buffers. Verbatim copy keeps Q8 as Q8.
+    TinyNNCuda.tnn_gguf_copy_verbatim_to_persistent(gguf_handle, eidx, @sess, @t_seq_token_embed)
+    fnidx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, "output_norm.weight")
+    TinyNNCuda.tnn_gguf_copy_1d_to_persistent(gguf_handle, fnidx, @sess, @t_seq_final_norm_gamma)
+    if untied
+      oidx2 = TinyNNCuda.tnn_gguf_find_index(gguf_handle, "output.weight")
+      TinyNNCuda.tnn_gguf_copy_verbatim_to_persistent(gguf_handle, oidx2, @sess, @t_seq_output)
+    end
+
+    li_l = 0
+    while li_l < @seq_n_layers
+      blk    = @seq_blocks_ffi[li_l]
+      prefix = "blk." + li_l.to_s
+      rn1_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_norm.weight")
+      rn2_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_norm.weight")
+      TinyNNCuda.tnn_gguf_copy_1d_to_persistent(gguf_handle, rn1_idx, @sess, blk.t_seq_rn1_gamma)
+      TinyNNCuda.tnn_gguf_copy_1d_to_persistent(gguf_handle, rn2_idx, @sess, blk.t_seq_rn2_gamma)
+
+      q_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_q.weight")
+      hq = 0
+      while hq < @seq_n_heads
+        TinyNNCuda.tnn_gguf_copy_verbatim_head_slice_to_persistent(gguf_handle, q_idx, @sess,
+          blk.t_seq_w_q[hq], hq, @seq_n_heads)
+        hq = hq + 1
+      end
+      k_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_k.weight")
+      v_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_v.weight")
+      hkv = 0
+      while hkv < @seq_n_kv
+        TinyNNCuda.tnn_gguf_copy_verbatim_head_slice_to_persistent(gguf_handle, k_idx, @sess,
+          blk.t_seq_w_k[hkv], hkv, @seq_n_kv)
+        TinyNNCuda.tnn_gguf_copy_verbatim_head_slice_to_persistent(gguf_handle, v_idx, @sess,
+          blk.t_seq_w_v[hkv], hkv, @seq_n_kv)
+        hkv = hkv + 1
+      end
+
+      if qkv_bias
+        qb_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_q.bias")
+        kb_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_k.bias")
+        vb_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_v.bias")
+        hbq = 0
+        while hbq < @seq_n_heads
+          TinyNNCuda.tnn_gguf_copy_head_bias_slice_to_persistent(gguf_handle, qb_idx, @sess,
+            blk.t_seq_b_q[hbq], hbq, @seq_d_head)
+          hbq = hbq + 1
+        end
+        hbkv = 0
+        while hbkv < @seq_n_kv
+          TinyNNCuda.tnn_gguf_copy_head_bias_slice_to_persistent(gguf_handle, kb_idx, @sess,
+            blk.t_seq_b_k[hbkv], hbkv, @seq_d_head)
+          TinyNNCuda.tnn_gguf_copy_head_bias_slice_to_persistent(gguf_handle, vb_idx, @sess,
+            blk.t_seq_b_v[hbkv], hbkv, @seq_d_head)
+          hbkv = hbkv + 1
+        end
+      end
+
+      o_idx    = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_output.weight")
+      gate_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_gate.weight")
+      up_idx   = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_up.weight")
+      down_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_down.weight")
+      TinyNNCuda.tnn_gguf_copy_verbatim_to_persistent(gguf_handle, o_idx,    @sess, blk.t_seq_w_o)
+      TinyNNCuda.tnn_gguf_copy_verbatim_to_persistent(gguf_handle, gate_idx, @sess, blk.t_seq_w_gate)
+      TinyNNCuda.tnn_gguf_copy_verbatim_to_persistent(gguf_handle, up_idx,   @sess, blk.t_seq_w_up)
+      TinyNNCuda.tnn_gguf_copy_verbatim_to_persistent(gguf_handle, down_idx, @sess, blk.t_seq_w_down)
+
+      li_l = li_l + 1
+    end
+
+    if @seq_lora_q_adamw_enabled
+      za = Mat.new(@seq_lora_q_rank, @seq_d_model)
+      zb = Mat.new(@seq_d_head,      @seq_lora_q_rank)
+      i = 0
+      while i < @seq_lora_q_rank * @seq_d_model; za.flat[i] = 0.0; i = i + 1; end
+      j = 0
+      while j < @seq_d_head * @seq_lora_q_rank; zb.flat[j] = 0.0; j = j + 1; end
+      li_z = 0
+      while li_z < @seq_n_layers
+        blk_z = @seq_blocks_ffi[li_z]
+        hqz = 0
+        while hqz < @seq_n_heads
+          TinyNNCuda.upload_row_major(@sess, blk_z.t_seq_w_lora_a_q_m[hqz], za)
+          TinyNNCuda.upload_row_major(@sess, blk_z.t_seq_w_lora_a_q_v[hqz], za)
+          TinyNNCuda.upload_row_major(@sess, blk_z.t_seq_w_lora_b_q_m[hqz], zb)
+          TinyNNCuda.upload_row_major(@sess, blk_z.t_seq_w_lora_b_q_v[hqz], zb)
+          hqz = hqz + 1
+        end
+        li_z = li_z + 1
+      end
+    end
+
+    build_forward_in_current_ctx
+    TinyNNCuda.tnn_realize(@sess, @t_seq_logits)
+    @seq_realized = true
+  end
+
   # Allocate persistent weights mmap'd from `gguf_handle` (caller is
   # responsible for keeping the handle alive — we keepalive it via
   # @seq_gguf_handle_keepalive), compute inputs, and the full forward

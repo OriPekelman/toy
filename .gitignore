@@ -206,3 +206,4 @@ demos/smollm2_seq_train
 demos/smollm2_seq_train_cuda
 examples/example_finetune
 demos/smollm2_seq_full_finetune_cuda
+demos/smollm2_seq_qlora_cuda

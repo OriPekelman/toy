@@ -5,10 +5,9 @@
 #   ./examples/example_finetune_cuda
 #
 # F32 base on CUDA — fully supported.
-# Q8 base on CUDA — currently hits a BYO-pointer buffer-padding
-# limitation in vendor-patches/0002 (works on CPU; CUDA path pending).
-# Use the CPU example (examples/03_finetune_lora.rb) with a Q8 GGUF
-# for QLoRA today.
+# Q8 base on CUDA (QLoRA) — set Q8=1 to switch to the Q8-stays-Q8
+# path that bypasses the BYO-pointer padding issue. Slightly more
+# load time (cudaMemcpy instead of mmap) but full GPU training works.
 
 require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
@@ -33,7 +32,11 @@ gguf = TinyNNCuda.tnn_gguf_load(GGUF)
 seq = LlamaSeqForwardFFICacheCuda.new
 seq.enable_lora_q!(RANK)
 seq.enable_lora_q_adamw!
-seq.realize_for_mmap(gguf, cfg, TOKENS.length, flags.untied, flags.qkv_bias)
+if (ENV["Q8"] || "0").to_i == 1
+  seq.realize_for_q8_copy(gguf, cfg, TOKENS.length, flags.untied, flags.qkv_bias)
+else
+  seq.realize_for_mmap(gguf, cfg, TOKENS.length, flags.untied, flags.qkv_bias)
+end
 seq.upload_lora_q_init!(42, 0.01)
 
 result   = seq.build_training_step

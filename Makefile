@@ -575,6 +575,12 @@ smollm2_seq_full_finetune_cuda:        demos/smollm2_seq_full_finetune_cuda
 demos/smollm2_seq_full_finetune_cuda: demos/smollm2_seq_full_finetune_cuda.rb lib/llama_seq_forward_ffi_cuda.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 
+# F4 (QLoRA) on CUDA via realize_for_q8_copy. Q8 base in standard
+# CUDA buffer + F32 LoRA adapter; bypasses the BYO-pointer padding bug.
+smollm2_seq_qlora_cuda:        demos/smollm2_seq_qlora_cuda
+demos/smollm2_seq_qlora_cuda: demos/smollm2_seq_qlora_cuda.rb lib/llama_seq_forward_ffi_cuda.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
+	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
+
 # Per-phase training-step bench (CPU + CUDA). Times graph_reset /
 # uploads / compute_backward / download separately. Doc:
 # docs/design/bench-train-2026-05-21.md.
