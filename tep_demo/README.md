@@ -25,7 +25,7 @@ The Makefile in the project root drives `hello` and `api`. The
 OpenAI-compat server is built via `prep/build_tep_app.sh` — a wrapper
 that pre-concatenates the project libs because Tep's translator drops
 external `require_relative` (see
-[`docs/tep-issues/01-warn-on-external-require-relative.md`](../docs/tep-issues/01-warn-on-external-require-relative.md)).
+[`docs/archive/upstream/issues-tep/01-warn-on-external-require-relative.md`](../docs/archive/upstream/issues-tep/01-warn-on-external-require-relative.md)).
 
 ```sh
 make setup-ggml                  # one-time
@@ -110,7 +110,7 @@ quotes ~167k req/s; we use `Connection: close` here for simplicity.
   avoid a dispatch clash with `Tep::Router#add` — method names are
   the unit of collision, so `Mat#add!` (in-place) is fine.
 - **OpenAI parser is a hand-rolled byte scan**, not a JSON parser.
-  See [`docs/spinel-issues/03-string-index-returns-minus-one.md`](../docs/spinel-issues/03-string-index-returns-minus-one.md)
+  See [`docs/archive/upstream/issues-spinel/03-string-index-returns-minus-one.md`](../docs/archive/upstream/issues-spinel/03-string-index-returns-minus-one.md)
   for why `String#index` + the `pos.nil?` idiom didn't work on Spinel.
 - **`inference_api.rb` is the older toy path** (random weights, no
   KV cache, T_SEQ-padded forward) — kept for the per-step latency

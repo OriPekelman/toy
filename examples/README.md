@@ -63,8 +63,9 @@ make example_finetune_cuda
 The example fine-tunes 540 LoRA-Q matrices (270 per-head pairs × 2)
 while leaving the 134 M base weights frozen. Real SFT (varied prefixes
 + multi-position + a dataset) needs a sequence-mode forward graph —
-see `docs/design/phase-f1-2-step6-status.md` for the roadmap; the
-mechanics shown here are the same.
+M3 (sequence-mode forward graph) now lands the same training in one
+forward+backward+opt_step across T positions — see
+`demos/smollm2_seq_train_cuda` for the real-SFT-shaped variant.
 
 CPU LoRA training is currently miscalibrated due to a ggml-cpu sched
 bug ([`ggml-org/ggml#1501`](https://github.com/ggml-org/ggml/issues/1501));
@@ -91,14 +92,15 @@ Tep repo; the example's shape is preserved for when it's fixed.
 
 ## Where to go after the examples
 
-- `docs/design/arch-struct.md` — design for the generic `TransformerLM`
-- `demos/` — exhaustive per-model and per-feature drivers
-- `tinynn/` — C+CUDA shim over ggml (FFI bridge, KV cache, mmap loader)
-- `tep_demo/` — full OpenAI-compatible HTTP API (the `04_serve` example is its lite cousin)
+- `docs/INDEX.md` — full tour of the documentation.
+- `docs/architecture.md` — generic `TransformerLM` + `Arch` struct.
+- `demos/` — exhaustive per-model and per-feature drivers.
+- `tinynn/` — C+CUDA shim over ggml (FFI bridge, KV cache, mmap loader).
+- `tep_demo/` — full OpenAI-compatible HTTP API (the `04_serve`
+  example is its lite cousin).
 
-Issues + design notes live in `docs/design/`. Upstream contributions
-(ggml patches, Spinel issues) live in `docs/upstream/` and
-`docs/spinel-issues/`.
+Roadmap + deferred design notes live in `docs/roadmap/`; issues we've
+filed upstream (ggml / Spinel / Tep) live in `docs/archive/upstream/`.
 
 ## Two-line takeaway
 

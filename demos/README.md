@@ -48,7 +48,7 @@ they can find `data/*.gguf`, prompts, BPE tables.
 CPU training is wired up; CUDA training is a planned effort —
 backward kernels (RMS-norm-back, RoPE-back, attention-back) and a
 backward-graph driver are needed. See
-[`../docs/design/finetuning.md`](../docs/design/finetuning.md) for
+[`../docs/roadmap/finetuning.md`](../docs/roadmap/finetuning.md) for
 the roadmap.
 
 ## Quickstart
@@ -72,4 +72,4 @@ GGUF=data/qwen25-1.5b-native.gguf ./demos/qwen25_native_mmap_cuda
 The TinyLlama FFI paths produce NaN logits at full depth due to f32
 overflow on that specific checkpoint. Use `demos/tinyllama` (native
 Mat) for correct output; see
-[`../docs/tinyllama-known-issue.md`](../docs/tinyllama-known-issue.md).
+[`../docs/archive/tinyllama-known-issue.md`](../docs/archive/tinyllama-known-issue.md).

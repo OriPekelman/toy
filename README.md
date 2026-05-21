@@ -54,10 +54,10 @@ Today's bench:
 
 7B-Q8 inference: **7.1 GB RSS** via zero-copy mmap of the GGUF
 weights into both CPU and CUDA buffers (UVA on GB10).
-Full bench notes: [`docs/bench-gx10-2026-05-20.md`](docs/bench-gx10-2026-05-20.md).
+Full bench notes: [`docs/archive/bench-gx10-2026-05-20.md`](docs/archive/bench-gx10-2026-05-20.md).
 
 Next targets: Qwen3 dense (Qwen3.6-27B + WebWorld-8B), Qwen3 MoE
-(35B-A3B), GLM-4.7-Flash — see [`docs/design/arch-struct.md`](docs/design/arch-struct.md).
+(35B-A3B), GLM-4.7-Flash — see [`docs/architecture.md`](docs/architecture.md).
 
 ## What it looks like
 
@@ -136,10 +136,19 @@ Python converter; or `pip install uv` first.
 
 ## Reading the rest
 
-- [`docs/design/arch-struct.md`](docs/design/arch-struct.md) — design for the generic `TransformerLM` + per-model `Arch` struct (next-up refactor)
-- [`docs/HF_GPT2.md`](HF_GPT2.md) — the long story of getting GPT-2 to run identically to PyTorch
-- [`docs/upstream-issues/`](docs/upstream-issues/) — ggml/llama.cpp upstream contributions (HF/GGUF byte-equivalence, CUDA buffer_from_ptr, cpy-into-strided fix)
-- [`docs/bench-gx10-2026-05-16.md`](docs/bench-gx10-2026-05-16.md) — perf numbers
-- [`tep_demo/README.md`](tep_demo/README.md) — OpenAI-compatible HTTP API
+- [`docs/INDEX.md`](docs/INDEX.md) — full tour of the docs (current
+  reference, archived investigations, future-work design notes).
+- [`docs/architecture.md`](docs/architecture.md) — the generic
+  `TransformerLM` + per-model `Arch` struct.
+- [`docs/loader-api.md`](docs/loader-api.md) — Mat-mediated vs direct
+  GGUF→FFI loaders.
+- [`docs/memory-design.md`](docs/memory-design.md) /
+  [`docs/cuda-byo-pointer-design.md`](docs/cuda-byo-pointer-design.md) —
+  why a 7B-Q8 model fits in ~7 GB of RSS.
+- [`docs/roadmap/`](docs/roadmap/) — finetuning roadmap, deferred
+  Phase 0.6 refactor, model targets.
+- [`docs/archive/upstream/`](docs/archive/upstream/) — ggml/Spinel/Tep
+  upstream issues we've filed.
+- [`tep_demo/README.md`](tep_demo/README.md) — OpenAI-compatible HTTP API.
 
 A toy you can read top-to-bottom that happens to run real models.
