@@ -43,7 +43,16 @@ class SmolLM2KVBlockFFI
                 # Allocated only when cache.lora_q_enabled at realize
                 # time. Trainable f32 tensors in ctx_w (not mmap'd from
                 # GGUF — adapters are session-local).
-                :t_w_lora_a_q, :t_w_lora_b_q
+                :t_w_lora_a_q, :t_w_lora_b_q,
+                # F1.2 step 6b: optional persistent Adam moments paired
+                # with the LoRA-A/B tensors above. Allocated in ctx_w
+                # (NOT compute ctx) so they survive tnn_reset_for_rebuild
+                # between multi-position SFT steps. Same shapes as A/B.
+                # Allocated only when cache.lora_q_adamw_enabled. The
+                # m/v live next to A/B so a future "save adapter +
+                # optimizer state" hook can serialize them together.
+                :t_w_lora_a_q_m, :t_w_lora_a_q_v,
+                :t_w_lora_b_q_m, :t_w_lora_b_q_v
 
   def initialize
     @t_rn1_gamma = TinyNN.tnn_null_ptr
@@ -62,6 +71,10 @@ class SmolLM2KVBlockFFI
     @t_w_down = TinyNN.tnn_null_ptr
     @t_w_lora_a_q = [TinyNN.tnn_null_ptr]
     @t_w_lora_b_q = [TinyNN.tnn_null_ptr]
+    @t_w_lora_a_q_m = [TinyNN.tnn_null_ptr]
+    @t_w_lora_a_q_v = [TinyNN.tnn_null_ptr]
+    @t_w_lora_b_q_m = [TinyNN.tnn_null_ptr]
+    @t_w_lora_b_q_v = [TinyNN.tnn_null_ptr]
   end
 end
 
@@ -83,7 +96,13 @@ class SmolLM2KVFFICache
                 # both flags BEFORE realize. When enabled, each block
                 # gets per-Q-head trainable A/B adapter pairs spliced
                 # into the Q matmul: q_eff = w_q[h]@h + B[h]@A[h]@h.
-                :lora_q_enabled, :lora_q_rank
+                :lora_q_enabled, :lora_q_rank,
+                # F1.2 step 6b: when true, realize_for_mmap also
+                # allocates persistent AdamW moments (m, v) for every
+                # LoRA-A/B pair in ctx_w. Required for multi-position
+                # SFT: between graph rebuilds the compute ctx is freed,
+                # so moments held there would be lost (NaN on cycle 2+).
+                :lora_q_adamw_enabled
 
   def initialize
     @realized   = false
@@ -121,6 +140,7 @@ class SmolLM2KVFFICache
     @gguf_handle_keepalive = TinyNN.tnn_null_ptr  # set by realize_for_mmap
     @lora_q_enabled = false
     @lora_q_rank    = 0
+    @lora_q_adamw_enabled = false
   end
 
   # F1.2: enable per-Q-head LoRA on this session's forward graph. Call
@@ -132,6 +152,15 @@ class SmolLM2KVFFICache
   def enable_lora_q!(r)
     @lora_q_enabled = true
     @lora_q_rank    = r
+  end
+
+  # F1.2 step 6b: allocate persistent AdamW moments (m, v) alongside
+  # each LoRA-A/B pair, in ctx_w. Requires enable_lora_q!(...) to have
+  # been called first (so the rank is known). Call BEFORE
+  # realize_for_mmap. Without this, multi-position SFT loses Adam
+  # state at every graph rebuild and diverges to NaN.
+  def enable_lora_q_adamw!
+    @lora_q_adamw_enabled = true
   end
 
   # Phase 3 opt-in: set the ggml type used for 2D linear weights when
@@ -267,6 +296,32 @@ class SmolLM2KVFFICache
                                   @d_head, @lora_q_rank))
           hq = hq + 1
         end
+
+        # F1.2 step 6b: persistent AdamW moments paired with the LoRA
+        # adapter tensors above. Same shapes. Live in ctx_w so they
+        # survive tnn_reset_for_rebuild across multi-position SFT.
+        if @lora_q_adamw_enabled
+          blk.t_w_lora_a_q_m = [TinyNN.tnn_input_2d_f32_persistent(@sess,
+                                  @lora_q_rank, @d_model)]
+          blk.t_w_lora_a_q_v = [TinyNN.tnn_input_2d_f32_persistent(@sess,
+                                  @lora_q_rank, @d_model)]
+          blk.t_w_lora_b_q_m = [TinyNN.tnn_input_2d_f32_persistent(@sess,
+                                  @d_head, @lora_q_rank)]
+          blk.t_w_lora_b_q_v = [TinyNN.tnn_input_2d_f32_persistent(@sess,
+                                  @d_head, @lora_q_rank)]
+          hqm = 1
+          while hqm < @n_heads
+            blk.t_w_lora_a_q_m.push(TinyNN.tnn_input_2d_f32_persistent(@sess,
+                                      @lora_q_rank, @d_model))
+            blk.t_w_lora_a_q_v.push(TinyNN.tnn_input_2d_f32_persistent(@sess,
+                                      @lora_q_rank, @d_model))
+            blk.t_w_lora_b_q_m.push(TinyNN.tnn_input_2d_f32_persistent(@sess,
+                                      @d_head, @lora_q_rank))
+            blk.t_w_lora_b_q_v.push(TinyNN.tnn_input_2d_f32_persistent(@sess,
+                                      @d_head, @lora_q_rank))
+            hqm = hqm + 1
+          end
+        end
       end
 
       # K, V per-kv-head — same slicing math.
@@ -371,6 +426,32 @@ class SmolLM2KVFFICache
     # Mmap'd tensors don't need finalization — they were allocated
     # against weights_buf_mmap inline.
     TinyNN.tnn_finalize_weights(@sess)
+
+    # F1.2 step 6b: zero-init persistent Adam moments. AdamW's update
+    # rule assumes m = v = 0 at step 0 (otherwise the first step picks
+    # up garbage from the buffer). The bias-correction term beta1h/beta2h
+    # then ramps in as the moments accumulate.
+    if @lora_q_adamw_enabled
+      za = Mat.new(@lora_q_rank, @d_model)
+      zb = Mat.new(@d_head,      @lora_q_rank)
+      i = 0
+      while i < @lora_q_rank * @d_model; za.flat[i] = 0.0; i = i + 1; end
+      j = 0
+      while j < @d_head * @lora_q_rank; zb.flat[j] = 0.0; j = j + 1; end
+      li_z = 0
+      while li_z < @n_layers
+        blk_z = @kv_blocks_ffi[li_z]
+        hqz = 0
+        while hqz < @n_heads
+          TinyNN.upload_row_major(@sess, blk_z.t_w_lora_a_q_m[hqz], za)
+          TinyNN.upload_row_major(@sess, blk_z.t_w_lora_a_q_v[hqz], za)
+          TinyNN.upload_row_major(@sess, blk_z.t_w_lora_b_q_m[hqz], zb)
+          TinyNN.upload_row_major(@sess, blk_z.t_w_lora_b_q_v[hqz], zb)
+          hqz = hqz + 1
+        end
+        li_z = li_z + 1
+      end
+    end
 
     # Zero-init K/V cache buffers (same as realize_for + legacy load).
     kv_zero_k = Mat.new(max_T, @d_head)

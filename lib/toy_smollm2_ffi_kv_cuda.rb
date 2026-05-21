@@ -46,7 +46,14 @@ class SmolLM2KVBlockFFICuda
                 # contract — same shapes, same standard init, same
                 # forward-graph splice. Trainable F32 in ctx_w (not
                 # mmap'd; adapter weights are session-local).
-                :t_w_lora_a_q, :t_w_lora_b_q
+                :t_w_lora_a_q, :t_w_lora_b_q,
+                # F1.2 step 6b mirror: persistent AdamW moments
+                # paired with the LoRA adapters. In ctx_w so they
+                # survive tnn_reset_for_rebuild across multi-position
+                # SFT cycles. See the CPU twin for the full
+                # contract.
+                :t_w_lora_a_q_m, :t_w_lora_a_q_v,
+                :t_w_lora_b_q_m, :t_w_lora_b_q_v
 
   def initialize
     @t_rn1_gamma = TinyNNCuda.tnn_null_ptr
@@ -65,6 +72,10 @@ class SmolLM2KVBlockFFICuda
     @t_w_down = TinyNNCuda.tnn_null_ptr
     @t_w_lora_a_q = [TinyNNCuda.tnn_null_ptr]
     @t_w_lora_b_q = [TinyNNCuda.tnn_null_ptr]
+    @t_w_lora_a_q_m = [TinyNNCuda.tnn_null_ptr]
+    @t_w_lora_a_q_v = [TinyNNCuda.tnn_null_ptr]
+    @t_w_lora_b_q_m = [TinyNNCuda.tnn_null_ptr]
+    @t_w_lora_b_q_v = [TinyNNCuda.tnn_null_ptr]
   end
 end
 
@@ -77,7 +88,9 @@ class SmolLM2KVFFICacheCuda
                 :rms_eps, :realized,
                 :weight_type,
                 :gguf_handle_keepalive,
-                :lora_q_enabled, :lora_q_rank
+                :lora_q_enabled, :lora_q_rank,
+                # F1.2 step 6b mirror: see CPU twin.
+                :lora_q_adamw_enabled
 
   def initialize
     @realized   = false
@@ -103,12 +116,18 @@ class SmolLM2KVFFICacheCuda
     @gguf_handle_keepalive = TinyNNCuda.tnn_null_ptr
     @lora_q_enabled = false
     @lora_q_rank    = 0
+    @lora_q_adamw_enabled = false
   end
 
   # F2 mirror — see lib/toy_smollm2_ffi_kv.rb#enable_lora_q!
   def enable_lora_q!(r)
     @lora_q_enabled = true
     @lora_q_rank    = r
+  end
+
+  # F1.2 step 6b mirror — see lib/toy_smollm2_ffi_kv.rb#enable_lora_q_adamw!
+  def enable_lora_q_adamw!
+    @lora_q_adamw_enabled = true
   end
 
   # Phase 3 opt-in. CUDA path currently supports F32 only — the
@@ -359,6 +378,32 @@ class SmolLM2KVFFICacheCuda
                                   @d_head, @lora_q_rank))
           hq = hq + 1
         end
+
+        # F1.2 step 6b mirror — persistent AdamW moments paired with
+        # the LoRA adapters. Same shapes; same allocator (ctx_w via
+        # tnn_input_2d_f32_persistent). See CPU twin.
+        if @lora_q_adamw_enabled
+          blk.t_w_lora_a_q_m = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
+                                  @lora_q_rank, @d_model)]
+          blk.t_w_lora_a_q_v = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
+                                  @lora_q_rank, @d_model)]
+          blk.t_w_lora_b_q_m = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
+                                  @d_head, @lora_q_rank)]
+          blk.t_w_lora_b_q_v = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
+                                  @d_head, @lora_q_rank)]
+          hqm = 1
+          while hqm < @n_heads
+            blk.t_w_lora_a_q_m.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
+                                      @lora_q_rank, @d_model))
+            blk.t_w_lora_a_q_v.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
+                                      @lora_q_rank, @d_model))
+            blk.t_w_lora_b_q_m.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
+                                      @d_head, @lora_q_rank))
+            blk.t_w_lora_b_q_v.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
+                                      @d_head, @lora_q_rank))
+            hqm = hqm + 1
+          end
+        end
       end
 
       k_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_k.weight")
@@ -453,6 +498,30 @@ class SmolLM2KVFFICacheCuda
     end
 
     TinyNNCuda.tnn_finalize_weights(@sess)
+
+    # F1.2 step 6b mirror — zero-init persistent Adam moments. See
+    # CPU twin (lib/toy_smollm2_ffi_kv.rb) for the rationale.
+    if @lora_q_adamw_enabled
+      za = Mat.new(@lora_q_rank, @d_model)
+      zb = Mat.new(@d_head,      @lora_q_rank)
+      i = 0
+      while i < @lora_q_rank * @d_model; za.flat[i] = 0.0; i = i + 1; end
+      j = 0
+      while j < @d_head * @lora_q_rank; zb.flat[j] = 0.0; j = j + 1; end
+      li_z = 0
+      while li_z < @n_layers
+        blk_z = @kv_blocks_ffi[li_z]
+        hqz = 0
+        while hqz < @n_heads
+          TinyNNCuda.upload_row_major(@sess, blk_z.t_w_lora_a_q_m[hqz], za)
+          TinyNNCuda.upload_row_major(@sess, blk_z.t_w_lora_a_q_v[hqz], za)
+          TinyNNCuda.upload_row_major(@sess, blk_z.t_w_lora_b_q_m[hqz], zb)
+          TinyNNCuda.upload_row_major(@sess, blk_z.t_w_lora_b_q_v[hqz], zb)
+          hqz = hqz + 1
+        end
+        li_z = li_z + 1
+      end
+    end
 
     kv_zero_k = Mat.new(max_T, @d_head)
     kv_zero_v = Mat.new(@d_head, max_T)

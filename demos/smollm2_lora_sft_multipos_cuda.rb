@@ -5,27 +5,25 @@
 # tensors (LoRA-A, LoRA-B, Adam m/v) flow between the two graphs;
 # only the forward/backward chain is rebuilt.
 #
+# The Adam m/v tensors live in ctx_w (allocated by the cache via
+# `enable_lora_q_adamw!` before realize_for_mmap), so they survive
+# `tnn_reset_for_rebuild` between position-switch rebuilds. Previously
+# m/v lived in the compute ctx and were freed on rebuild → cycle 2
+# diverged to NaN. The persistent variant is the F1.2 step 6b fix.
+#
 # Limitation: each position-switch tears down graph_b and re-sched-
 # allocs (sched can't keep two cgraphs alive simultaneously). The cost
 # is ~6 ms build + a few hundred ms sched-alloc per switch — fine for
 # 2-position cycle, not viable for true full-sequence SFT (which is
 # what 6d would need). For real SFT we need a SEQUENCE-mode forward
 # graph (FullForwardFFICache-shape) that processes all T positions
-# in one compute. That's the M3-shaped prerequisite (task #69) for
+# in one compute. That's the M3-shaped prerequisite (task #75) for
 # step 6c/6d.
 #
 # Also: each rebuild writes K/V into the cache at its position via
 # cpy, so the KV state isn't stable across the cycle. The model sees
 # inconsistent contexts. This smoke is a mechanical validation
 # ("multi-pos training plumbing works") not a real SFT signal.
-#
-# What this DOES prove:
-#   - Persistent LoRA + Adam m/v survive graph teardown + rebuild.
-#   - tnn_build_backward + opt_step_adamw + realize_backward can be
-#     called multiple times in a session, each time bound to a fresh
-#     forward graph.
-#   - Acceptance: each position's loss decreases under its own
-#     training (averaged over the cycle).
 #
 # Run: ./demos/smollm2_lora_sft_multipos_cuda
 
@@ -38,7 +36,7 @@ GGUF      = ENV["GGUF"]      || "data/smollm2-135m-native.gguf"
 MAX_T     = (ENV["MAX_T"]    || "32").to_i
 RANK      = (ENV["RANK"]     || "16").to_i
 SEED      = (ENV["SEED"]     || "42").to_i
-CYCLES    = (ENV["CYCLES"]   || "5").to_i
+CYCLES    = (ENV["CYCLES"]   || "10").to_i
 LR        = (ENV["LR"]       || "0.001").to_f
 BETA1     = 0.9
 BETA2     = 0.999
@@ -60,6 +58,7 @@ puts "multipos SFT: " + CYCLES.to_s + " cycles (pos4 → pos5), LR=" + LR.to_s
 gguf = TinyNNCuda.tnn_gguf_load(GGUF)
 kv = SmolLM2KVFFICacheCuda.new
 kv.enable_lora_q!(RANK)
+kv.enable_lora_q_adamw!                   # F1.2 step 6b: persistent m/v
 kv.realize_for_mmap(gguf, cfg, MAX_T, flags.untied, flags.qkv_bias)
 kv.upload_lora_q_init!(SEED, 0.01)
 
@@ -71,7 +70,10 @@ while i < PROMPT.length
 end
 last_prompt_id = PROMPT[PROMPT.length - 1]
 
-# Adam state — shape mirrors LoRA-A/B persistent tensors.
+# Adam state — flattened into the same idx scheme used in
+# build_training_graph (li * n_heads + hq). The cache owns the
+# persistent tensors; we just gather pointers into linear arrays
+# for the inner loop.
 m_tensors_a = []
 v_tensors_a = []
 m_tensors_b = []
@@ -79,14 +81,13 @@ v_tensors_b = []
 sess = kv.sess
 li = 0
 while li < cfg.n_layers
+  blk_init = kv.kv_blocks_ffi[li]
   hq = 0
   while hq < cfg.n_heads
-    m_a = TinyNNCuda.tnn_input_2d_f32(sess, RANK, cfg.d_model)
-    v_a = TinyNNCuda.tnn_input_2d_f32(sess, RANK, cfg.d_model)
-    m_b = TinyNNCuda.tnn_input_2d_f32(sess, cfg.d_model / cfg.n_heads, RANK)
-    v_b = TinyNNCuda.tnn_input_2d_f32(sess, cfg.d_model / cfg.n_heads, RANK)
-    m_tensors_a.push(m_a); v_tensors_a.push(v_a)
-    m_tensors_b.push(m_b); v_tensors_b.push(v_b)
+    m_tensors_a.push(blk_init.t_w_lora_a_q_m[hq])
+    v_tensors_a.push(blk_init.t_w_lora_a_q_v[hq])
+    m_tensors_b.push(blk_init.t_w_lora_b_q_m[hq])
+    v_tensors_b.push(blk_init.t_w_lora_b_q_v[hq])
     hq = hq + 1
   end
   li = li + 1
@@ -196,15 +197,12 @@ puts "pos4: " + init4.to_s + " → " + final4.to_s
 puts "pos5: " + init5.to_s + " → " + final5.to_s
 
 # Acceptance: BOTH positions show meaningful decrease AND no NaN.
-# As shipped this smoke FAILs — it surfaces the architectural
-# limitation that the multipos path needs persistent Adam (m, v)
-# state in ctx_w, not compute-side. Between cycles
-# tnn_reset_for_rebuild frees ctx, taking m / v with it, Adam state
-# is lost, and the next step diverges to NaN. The smoke is preserved
-# as a regression marker for when the cache class grows a
-# realize_for_mmap_with_adam_state() variant.
+# Previously this smoke FAILED because Adam m/v lived in the compute
+# ctx and were freed at every position-switch rebuild → cycle 2
+# diverged to NaN. F1.2 step 6b moved m/v to ctx_w (persistent) via
+# `kv.enable_lora_q_adamw!`, fixing the divergence.
 if final4.to_s == "NaN" || final5.to_s == "NaN"
-  puts "VERDICT: FAIL (NaN — Adam m/v lost across position-switch rebuild)"; exit 1
+  puts "VERDICT: FAIL (NaN — Adam m/v not persisting across position-switch rebuild)"; exit 1
 end
 if final4 >= 0.7 * init4
   puts "VERDICT: FAIL (pos4 didn't converge: " + init4.to_s + " → " + final4.to_s + ")"; exit 1

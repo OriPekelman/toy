@@ -509,6 +509,13 @@ smollm2_lora_sft_multi_cuda:        demos/smollm2_lora_sft_multi_cuda
 demos/smollm2_lora_sft_multi_cuda: demos/smollm2_lora_sft_multi_cuda.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 
+# F1.2 step 6b — multi-position SFT (cycle pos4 / pos5). Validates
+# that persistent Adam m/v (allocated by enable_lora_q_adamw! +
+# realize_for_mmap) survive tnn_reset_for_rebuild between cycles.
+smollm2_lora_sft_multipos_cuda:        demos/smollm2_lora_sft_multipos_cuda
+demos/smollm2_lora_sft_multipos_cuda: demos/smollm2_lora_sft_multipos_cuda.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
+	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
+
 # Per-phase training-step bench (CPU + CUDA). Times graph_reset /
 # uploads / compute_backward / download separately. Doc:
 # docs/design/bench-train-2026-05-21.md.
