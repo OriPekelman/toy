@@ -72,10 +72,13 @@ static tnn_engine *tnn_engine_get(int prefer_cuda)
     backends[n_backends++] = e->backend;
     if (e->cpu_backend) backends[n_backends++] = e->cpu_backend;
     /* Scheduler graph-size hint. Must be >= n_nodes + n_leafs of the
-     * largest graph we'll alloc. 16384 matches the per-session graph
-     * cap (see tnn_session_new). */
+     * largest graph we'll alloc. 65536 covers seq-mode training of
+     * Qwen2.5-3B at T<=32 with LoRA + AdamW + pin_all_graph_b_nodes
+     * (~30K backward nodes once every grad-chain intermediate is
+     * pinned-as-output for the ggml-cpu sched-alias workaround).
+     * Older path (KV-cache decode, T=1) used 16384; we leave headroom. */
     e->sched = ggml_backend_sched_new(backends, NULL, n_backends,
-                                       16384, false, true);
+                                       65536, false, true);
 
     *slot = e;
     return e;
@@ -160,10 +163,12 @@ void *tnn_session_new(int prefer_cuda)
     s->ctx = ggml_init(params);
     /* Graph node-count budget. Default GGML_DEFAULT_GRAPH_SIZE=2048
      * is enough for distilgpt2 (6 layers, ~1200 nodes/step) but not
-     * for gpt2-small (12 layers, ~2500) and larger. 16384 covers up
-     * to gpt2-xl (48 layers). Cost is one int slot per node header. */
-    s->graph   = ggml_new_graph_custom(s->ctx, 16384, false);
-    s->graph_b = ggml_new_graph_custom(s->ctx, 16384, false);
+     * for gpt2-small (12 layers, ~2500) and larger. 65536 covers
+     * seq-mode training (Qwen2.5-3B, T<=32, LoRA + AdamW + pinned
+     * graph_b) — matches the engine sched hash-set size. Cost is one
+     * int slot per node header. */
+    s->graph   = ggml_new_graph_custom(s->ctx, 65536, false);
+    s->graph_b = ggml_new_graph_custom(s->ctx, 65536, false);
 
     /* Weights ctx pool. Sized for ~1024 weight tensors -- generous
      * upper bound that covers FullForwardFFICache at LLM scale

@@ -1,4 +1,14 @@
 # demos/smollm2_seq_train.rb — M3 step 3 acceptance (CPU).
+# Also doubles as the F4 (QLoRA) smoke: pass GGUF=...-q8.gguf to train
+# LoRA-Q against a Q8 base on CPU. Mat-mediated CPU mmap doesn't pad,
+# so any d_model / d_ff is fine — verified on qwen25-0.5b-native-q8
+# (15.4 → 6.4 over 10 steps, ratio 0.41).
+#
+# F4 on CUDA has an outstanding BYO-pointer Q8 buffer padding issue
+# in vendor-patches/0002 — the cuda buffer_type's get_alloc_size
+# rounds quantized tensors up to MATRIX_ROW_PADDING (512); the
+# padding zeroing then writes past the mmap region. Tracked as a
+# follow-up patch; CPU is the supported QLoRA path for now.
 #
 # One forward + backward + opt_step over T=4 positions of a SmolLM2-135M
 # sequence, repeated N steps. Validates that the sequence-mode forward
