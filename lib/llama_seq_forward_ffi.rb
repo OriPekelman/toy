@@ -642,8 +642,8 @@ class LlamaSeqForwardFFICache
           m_a.flat[ii] = init_scale * Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math::PI * u2)
           ii = ii + 1
         end
-        TinyNN.stage_row_major_and_upload(@sess, blk.t_seq_w_lora_a_q[hq], m_a)
-        TinyNN.stage_row_major_and_upload(@sess, blk.t_seq_w_lora_b_q[hq], m_b)
+        TinyNN.upload_row_major(@sess, blk.t_seq_w_lora_a_q[hq], m_a)
+        TinyNN.upload_row_major(@sess, blk.t_seq_w_lora_b_q[hq], m_b)
         hq = hq + 1
       end
       li = li + 1

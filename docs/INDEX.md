@@ -33,9 +33,10 @@ Project-level READMEs sit next to their code: [`README.md`](../README.md),
   F1 (LoRA + AdamW) is shipped (CPU + CUDA via the seq-forward graph).
   F3 (full fine-tune on CUDA) and F4 (QLoRA: Q8 base + F32 LoRA) are
   the next two.
-- [`roadmap/phase-06-deferred.md`](roadmap/phase-06-deferred.md) —
-  graph-inlining refactor. Deferred 2026-05-21 with explicit
-  re-trigger conditions; current CPU/CUDA mirror pattern is fine.
+- [`roadmap/phase-06-in-flight.md`](roadmap/phase-06-in-flight.md) —
+  CPU/CUDA mirror deduplication. Un-deferred 2026-05-21; the seq-mode
+  pair is now generated from the CPU source via
+  `prep/gen_cuda_mirror.rb`; older KV-cache pair migration pending.
 - [`roadmap/scout-small-models.md`](roadmap/scout-small-models.md) —
   next-target survey across modern small models.
 - [`roadmap/lowerer-design.md`](roadmap/lowerer-design.md) — a
