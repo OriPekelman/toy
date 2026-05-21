@@ -575,6 +575,28 @@ void *tnn_view_2d(void *sess, void *a, int ne0, int ne1, long nb1, long offset)
                                   (size_t)nb1, (size_t)offset);
 }
 
+/* Reshape a contiguous tensor to (ne0, ne1, ne2). The total element
+ * count must match. Used by the sequence-mode forward (M3) to lift
+ * Q/K from ne=[d_head, T] to ne=[d_head, 1, T] before ggml_rope_ext —
+ * rope_ext asserts a->ne[2] == positions->ne[0]. */
+void *tnn_reshape_3d(void *sess, void *a, int ne0, int ne1, int ne2)
+{
+    if (!sess || !a) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_reshape_3d(s->ctx, (struct ggml_tensor *)a,
+                                     (int64_t)ne0, (int64_t)ne1, (int64_t)ne2);
+}
+
+/* Reshape a contiguous tensor back to (ne0, ne1). After rope_ext on
+ * a [d_head, 1, T] tensor, downstream matmul wants [d_head, T] again. */
+void *tnn_reshape_2d(void *sess, void *a, int ne0, int ne1)
+{
+    if (!sess || !a) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_reshape_2d(s->ctx, (struct ggml_tensor *)a,
+                                     (int64_t)ne0, (int64_t)ne1);
+}
+
 /* Copy a -> b. Used to write k_new into a view of the persistent K
  * buffer (b = view_2d(K, d_head, 1, ..., offset=pos*d_head*4)). */
 void *tnn_cpy(void *sess, void *a, void *b)

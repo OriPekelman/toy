@@ -113,12 +113,15 @@ module TinyNNCuda
   ffi_func :tnn_layer_norm,       [:ptr, :ptr, :ptr, :ptr, :double], :ptr
   ffi_func :tnn_view_1d,          [:ptr, :ptr, :int, :long],         :ptr
   ffi_func :tnn_view_2d,          [:ptr, :ptr, :int, :int, :long, :long], :ptr
+  ffi_func :tnn_reshape_3d,       [:ptr, :ptr, :int, :int, :int], :ptr
+  ffi_func :tnn_reshape_2d,       [:ptr, :ptr, :int, :int],       :ptr
   ffi_func :tnn_cpy,              [:ptr, :ptr, :ptr],       :ptr
   ffi_func :tnn_set_rows,         [:ptr, :ptr, :ptr, :ptr], :ptr
   ffi_func :tnn_soft_max_ext,     [:ptr, :ptr, :ptr, :double, :double], :ptr
   ffi_func :tnn_set_2d,           [:ptr, :ptr, :ptr, :long, :long], :ptr
   ffi_func :tnn_reset_for_rebuild, [:ptr],                  :int
   ffi_func :tnn_scale,            [:ptr, :ptr, :double],    :ptr
+  ffi_func :tnn_transpose,        [:ptr, :ptr],             :ptr
   ffi_func :tnn_softmax_back,     [:ptr, :ptr, :ptr],       :ptr
   ffi_func :tnn_silu_back,        [:ptr, :ptr, :ptr],       :ptr
   ffi_func :tnn_rope_ext_back,    [:ptr, :ptr, :ptr, :int, :double], :ptr

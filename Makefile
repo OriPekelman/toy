@@ -524,6 +524,21 @@ smollm2_seq_parity:        demos/smollm2_seq_parity
 demos/smollm2_seq_parity: demos/smollm2_seq_parity.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
+# M3 step 2 — T=4 trajectory parity (CPU). Per-position seq logits must
+# match the decode_step trajectory; proves causal-mask + multi-pos RoPE.
+smollm2_seq_parity_t4:        demos/smollm2_seq_parity_t4
+demos/smollm2_seq_parity_t4: demos/smollm2_seq_parity_t4.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
+	$(SPINEL) $< -o $@
+
+# M3 step 2 — CUDA mirror. T=1 and T=4 vs CPU decode_step trajectory.
+smollm2_seq_parity_cuda:        demos/smollm2_seq_parity_cuda
+demos/smollm2_seq_parity_cuda: demos/smollm2_seq_parity_cuda.rb lib/llama_seq_forward_ffi_cuda.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
+	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
+
+smollm2_seq_parity_t4_cuda:        demos/smollm2_seq_parity_t4_cuda
+demos/smollm2_seq_parity_t4_cuda: demos/smollm2_seq_parity_t4_cuda.rb lib/llama_seq_forward_ffi_cuda.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
+	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
+
 # Per-phase training-step bench (CPU + CUDA). Times graph_reset /
 # uploads / compute_backward / download separately. Doc:
 # docs/design/bench-train-2026-05-21.md.

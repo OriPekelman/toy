@@ -129,6 +129,13 @@ void  *tnn_view_1d(void *sess, void *a, int ne0, long offset);
 void  *tnn_view_2d(void *sess, void *a, int ne0, int ne1, long nb1, long offset);
 void  *tnn_cpy(void *sess, void *a, void *b);
 
+/* Reshape a contiguous tensor to a new shape with the same total
+ * element count. Used by the M3 sequence-mode forward to lift
+ * (d_head, T) → (d_head, 1, T) for rope_ext, then back to (d_head, T)
+ * for the downstream matmul. */
+void  *tnn_reshape_3d(void *sess, void *a, int ne0, int ne1, int ne2);
+void  *tnn_reshape_2d(void *sess, void *a, int ne0, int ne1);
+
 /* set_rows + soft_max_ext: the canonical KV-cache attention primitives.
  * set_rows writes the new k/v row at a RUNTIME index, so the graph is
  * static across decode steps. soft_max_ext applies an additive mask

@@ -329,7 +329,14 @@ class LlamaSeqForwardFFICache
       else
         t_k_pre = t_k_raw
       end
-      t_k = TinyNN.tnn_rope_ext(@sess, t_k_pre, @t_seq_positions, @seq_d_head, @seq_rope_base)
+      # ggml_rope_ext requires a->ne[2] == positions->ne[0]. Our K is
+      # ne=[d_head, T] (ne[2]=1); reshape to ne=[d_head, 1, T] so ne[2]==T,
+      # then reshape back after rope. Reshape is metadata-only (no copy)
+      # on contiguous tensors. At T=1 this is a no-op (1 == 1).
+      t_k_pre3 = TinyNN.tnn_reshape_3d(@sess, t_k_pre, @seq_d_head, 1, @seq_t)
+      t_k3     = TinyNN.tnn_rope_ext(@sess, t_k_pre3, @t_seq_positions,
+                                       @seq_d_head, @seq_rope_base)
+      t_k      = TinyNN.tnn_reshape_2d(@sess, t_k3, @seq_d_head, @seq_t)
       t_k_per_kv.push(t_k)
 
       t_v_raw = TinyNN.tnn_matmul(@sess, blk.t_seq_w_v[hkv], t_h)
@@ -383,7 +390,11 @@ class LlamaSeqForwardFFICache
     else
       t_q_pre = t_q_raw
     end
-    t_q = TinyNN.tnn_rope_ext(@sess, t_q_pre, @t_seq_positions, @seq_d_head, @seq_rope_base)
+    # Same rope-shape lift as the K path; see comment in build_seq_block.
+    t_q_pre3 = TinyNN.tnn_reshape_3d(@sess, t_q_pre, @seq_d_head, 1, @seq_t)
+    t_q3     = TinyNN.tnn_rope_ext(@sess, t_q_pre3, @t_seq_positions,
+                                     @seq_d_head, @seq_rope_base)
+    t_q      = TinyNN.tnn_reshape_2d(@sess, t_q3, @seq_d_head, @seq_t)
 
     # scores ne=[T_keys, T_queries]. Same shape as decode_step's
     # matmul(K_hist, q) at T_keys = pos+1, T_queries = 1.
