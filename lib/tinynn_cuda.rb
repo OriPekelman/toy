@@ -141,6 +141,8 @@ module TinyNNCuda
   ffi_func :tnn_sum,                  [:ptr, :ptr],                 :ptr
   ffi_func :tnn_cross_entropy_loss,   [:ptr, :ptr, :ptr],           :ptr
   ffi_func :tnn_opt_step_sgd,         [:ptr, :ptr, :ptr, :ptr],     :ptr
+  ffi_func :tnn_pin_all_graph_b_nodes,[:ptr],                       :int
+  ffi_func :tnn_graph_reset_grads_only,[:ptr],                      :int
   ffi_func :tnn_scratch_set,      [:ptr, :int, :double],    :void
   ffi_func :tnn_scratch_get,      [:ptr, :int],             :double
   ffi_func :tnn_scratch_set_i32,  [:ptr, :int, :int],       :void

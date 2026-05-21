@@ -459,6 +459,13 @@ smollm2_lora_train_ce_pinned:        demos/smollm2_lora_train_ce_pinned
 demos/smollm2_lora_train_ce_pinned: demos/smollm2_lora_train_ce_pinned.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
+# F1.2 step 5: AdamW training with per-step m/v preservation via
+# tnn_graph_reset_grads_only. Converges 7.5 → 0.09 in 20 SGD steps
+# at LR=1e-3 — proper SFT-shaped learning curve.
+smollm2_lora_train_adamw_cuda:        demos/smollm2_lora_train_adamw_cuda
+demos/smollm2_lora_train_adamw_cuda: demos/smollm2_lora_train_adamw_cuda.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
+	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
+
 # Per-phase training-step bench (CPU + CUDA). Times graph_reset /
 # uploads / compute_backward / download separately. Doc:
 # docs/design/bench-train-2026-05-21.md.

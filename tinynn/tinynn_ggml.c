@@ -989,6 +989,43 @@ int tnn_graph_reset(void *sess)
     return 0;
 }
 
+/* F1.2 step 5: zero grad accumulators (and reset loss_grad to 1) but
+ * leave opt_step's m / v momenta alone. Lets AdamW survive across
+ * training steps without losing momentum, while still clearing the
+ * grads between iterations so the next compute_backward recomputes
+ * them from scratch (not accumulates).
+ *
+ * Mirrors ggml_graph_reset minus the GGML_OP_OPT_STEP_ADAMW arm that
+ * zeros src[2] (m) and src[3] (v). For SGD this primitive and
+ * tnn_graph_reset behave identically. For AdamW the difference is
+ * load-bearing: graph_reset would clobber momentum every step. */
+int tnn_graph_reset_grads_only(void *sess)
+{
+    if (!sess) return -1;
+    tnn_session *s = (tnn_session *)sess;
+    if (!s->graph_b) return -2;
+    int n_nodes = ggml_graph_n_nodes(s->graph_b);
+    int i = 0;
+    while (i < n_nodes) {
+        struct ggml_tensor * node     = ggml_graph_node(s->graph_b, i);
+        struct ggml_tensor * grad_acc = ggml_graph_get_grad_acc(s->graph_b, node);
+        if (grad_acc) {
+            if (node->flags & GGML_TENSOR_FLAG_LOSS) {
+                const float onef = 1.0f;
+                if (grad_acc->buffer) {
+                    ggml_backend_tensor_set(grad_acc, &onef, 0, sizeof(float));
+                } else if (grad_acc->data) {
+                    *((float *) grad_acc->data) = onef;
+                }
+            } else {
+                ggml_set_zero(grad_acc);
+            }
+        }
+        i++;
+    }
+    return 0;
+}
+
 /* Task #70 diagnostic — pin EVERY node in graph_b as an output, so
  * sched is forbidden from reusing any intermediate's buffer slot
  * once the node is computed. Used to test the hypothesis that the
