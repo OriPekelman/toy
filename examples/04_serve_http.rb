@@ -84,4 +84,4 @@ end
 
 Tep.post "/generate", GenerateHandler.new
 puts "serving on :" + PORT.to_s + " — POST /generate"
-Tep.run!(PORT, 1, false, false)
+Tep.run!(PORT, 1, false)
