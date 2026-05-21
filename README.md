@@ -98,17 +98,19 @@ that constructs the model — the round-trip closes.
 ## Quickstart
 
 ```sh
-make setup-ggml                                # ~30 s
-./prep/convert_smollm2_to_gguf.py              # writes data/smollm2-135m-f32.gguf
-./prep/smollm2_tokens.py encode "Once upon a time"
-
-make smollm2_kv && ./demos/smollm2_kv
-./prep/smollm2_tokens.py decode
-# → "Once upon a time, there was a little girl named Lily..."
+make setup-ggml                                # one-time, ~30 s
+make example_inference                         # build the smallest example
+GGUF=data/qwen25-0.5b-native.gguf ./examples/example_inference
+# → ids: 9707 11 847 829 374 264 220 16 15 ...
 ```
 
-For CUDA + Qwen2.5: `make setup-ggml-cuda` then build a `demos/qwen25_*`
-demo. See [`demos/README.md`](demos/README.md).
+The [`examples/`](examples/README.md) directory has four short,
+focused entry points — inference / train-from-scratch / LoRA
+fine-tune / HTTP serve. Each is one Ruby file under 80 lines that
+compiles to a single native binary.
+
+For CUDA + Qwen2.5: `make setup-ggml-cuda` then build a
+[`demos/qwen25_*`](demos/README.md) demo or the `_cuda` examples.
 
 Requires Ruby, [Spinel](https://github.com/matz/spinel) at
 `~/sites/spinel`, and a C compiler. `uv` installs itself for the
@@ -118,6 +120,7 @@ Python converter; or `pip install uv` first.
 
 | Path | What |
 | --- | --- |
+| [`examples/`](examples/README.md) | **Start here.** Four short entry points: inference, train-from-scratch, LoRA fine-tune, HTTP serve. |
 | [`lib/toy.rb`](lib/toy.rb) | Building blocks: `Mat`, `LayerNorm`, `RMSNorm`, `Linear`, `Embedding`, `CausalSelfAttention`, `GQAttention`, `FFN`, `SwiGLU`, `RoPE` |
 | [`lib/toy_gpt2.rb`](lib/toy_gpt2.rb) | `Toy::GPT2` — full HF GPT-2 in ~80 lines |
 | [`lib/toy_smollm2.rb`](lib/toy_smollm2.rb) | `Toy::SmolLM2` — Llama-family path (SmolLM2 / TinyLlama / Qwen2.5) |
@@ -125,8 +128,9 @@ Python converter; or `pip install uv` first.
 | [`lib/toy_trainer.rb`](lib/toy_trainer.rb) | `Toy::Trainer` — training-loop wrapper |
 | [`sig/toy.rbs`](sig/toy.rbs) | RBS type signatures |
 | [`tinynn/`](tinynn/) | C/CUDA shim over ggml — FFI bridge, KV cache, mmap loader |
-| [`vendor/ggml`](vendor/ggml) | Vendored ggml + local CUDA patches (BYO-pointer mmap, strided-cpy fix) |
-| [`demos/`](demos/) | End-to-end Ruby drivers — see [`demos/README.md`](demos/README.md) |
+| [`vendor/ggml`](vendor/ggml) | Vendored ggml + local CUDA + autograd patches (BYO-pointer mmap, strided-cpy fix, concat backward) |
+| [`vendor-patches/`](vendor-patches/README.md) | The patches above, persisted; setup-ggml applies them automatically. |
+| [`demos/`](demos/) | Per-model and per-feature drivers — see [`demos/README.md`](demos/README.md) |
 | [`tep_demo/`](tep_demo/) | OpenAI-compatible HTTP API via Tep+Spinel |
 | [`docs/`](docs/) | Long-form notes: design docs, benchmarks, upstream issues |
 

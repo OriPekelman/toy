@@ -45,6 +45,27 @@ CUDA_DIR    ?= /usr/local/cuda
 # demos/. Run the resulting binaries from the repo root.
 all: demos/train demos/smollm2
 
+# --- examples/ getting-started entry points --------------------------------
+# Compact, one-file demos covering the main use cases. See
+# examples/README.md.
+examples/example_inference: examples/01_inference.rb lib/arch.rb lib/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
+	$(SPINEL) $< -o $@
+example_inference: examples/example_inference
+
+examples/example_train: examples/02_train_custom_gpt.rb lib/transformer.rb lib/training.rb lib/toy_trainer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
+	$(SPINEL) $< -o $@
+example_train: examples/example_train
+
+examples/example_finetune_cuda: examples/03_finetune_lora.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
+	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
+example_finetune_cuda: examples/example_finetune_cuda
+
+examples/example_serve: examples/04_serve_http.rb tep_demo/_tep_lib/tep.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
+	$(SPINEL) $< -o $@
+example_serve: examples/example_serve
+
+examples: example_inference example_train example_finetune_cuda example_serve
+
 # Parity-checks vs native TransformerLM.forward.
 
 # Tep+Spinel HTTP server demos. See tep_demo/README.md. Builds bypass
