@@ -54,6 +54,12 @@ class Tokenizer
     # vocab/merges hashes ran inside one ctor — moved out for safety).
     @byte_to_char = nil
     @char_to_byte = nil
+
+    # One-shot warn flag for UNK emissions. We *never* silently emit
+    # UNK — see lib/tokenizer.rb's encode for the rationale. The first
+    # piece that misses vocab prints to stderr with the piece value;
+    # subsequent misses are quiet to avoid spamming long prompts.
+    @warned_unk = false
   end
 
   def build_byte_tables
@@ -198,10 +204,19 @@ class Tokenizer
         k = 0
         while k < pieces.length - 1
           key = pieces[k] + " " + pieces[k + 1]
-          r = @merge_rank[key]
-          if r != nil && r < best_rank
-            best_rank = r
-            best_idx = k
+          # IMPORTANT: in Spinel, `Hash#[missing_key]` returns the
+          # integer 0, not nil. Without the has_key? guard, every
+          # absent merge appears to have rank 0 (the highest
+          # priority), which makes BPE apply spurious merges and
+          # produce pieces that aren't in the vocab. The bug shows
+          # up on SmolLM2 (where merges are sparser) but the same
+          # broken control flow is there on every model.
+          if @merge_rank.has_key?(key)
+            r = @merge_rank[key]
+            if r < best_rank
+              best_rank = r
+              best_idx = k
+            end
           end
           k = k + 1
         end
@@ -211,16 +226,25 @@ class Tokenizer
         pieces[best_idx] = pieces[best_idx] + pieces[best_idx + 1]
         pieces.delete_at(best_idx + 1)
       end
-      # Vocab lookup.
+      # Vocab lookup. Same has_key? rule as the merge loop above —
+      # without it, missing vocab entries silently resolve to id 0
+      # (whatever vocab[0] is, usually a special token like
+      # <|endoftext|>), and the decode side strips it. End result:
+      # text round-trips with silently-dropped characters.
       pi = 0
       while pi < pieces.length
-        tid = @vocab_inv[pieces[pi]]
-        if tid == nil
+        piece = pieces[pi]
+        if @vocab_inv.has_key?(piece)
+          ids.push(@vocab_inv[piece])
+        else
+          if !@warned_unk
+            puts "WARN: tokenizer: piece " + piece.inspect +
+                 " not in vocab — emitting UNK (this prompt may decode lossy)"
+            @warned_unk = true
+          end
           if @unk_id != nil && @unk_id >= 0
             ids.push(@unk_id)
           end
-        else
-          ids.push(tid)
         end
         pi = pi + 1
       end

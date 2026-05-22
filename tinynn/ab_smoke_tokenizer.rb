@@ -22,7 +22,7 @@ SAMPLES = ["Once upon a time",
            "Q: What is 2 + 2?\nA: ",
            "I/O bound: read('foo.txt')"]
 
-MODELS = ["data/smollm2-135m-tok-new.gguf",
+MODELS = ["data/smollm2-135m-tok.gguf",
           "data/llama-3.2-1b-tok.gguf",
           "data/qwen25-0.5b-tok.gguf"]
 
@@ -76,6 +76,20 @@ puts ""
 puts "=== single-char probe ==="
 probe = ["?", "\n", "/", "'", ".", "!", "@", "#",
          "?\n", "I/O", ".txt", "('", "2?", "Q:", "is 2"]
+
+# Probe vocab around id 0 to see if SmolLM2's "UNK" is actually a
+# real token. If vocab[0] is "?Ċ" then "UNK" isn't UNK at all — the
+# encoder just happens to emit id 0 when lookup fails AND id 0
+# corresponds to a real token in vocab.
+mi2 = 0
+while mi2 < MODELS.length
+  t2 = Tokenizer.from_gguf(MODELS[mi2])
+  if t2.present
+    puts MODELS[mi2] + " vocab[0..4] = " +
+         [t2.token_at(0), t2.token_at(1), t2.token_at(2), t2.token_at(3), t2.token_at(4)].inspect
+  end
+  mi2 = mi2 + 1
+end
 mi = 0
 while mi < MODELS.length
   tok = Tokenizer.from_gguf(MODELS[mi])

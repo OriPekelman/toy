@@ -28,12 +28,15 @@
   converted with `--with-tokenizer`: encode `PROMPT`, generate,
   decode the IDs back into text. Falls back to the hardcoded
   five-ID SmolLM2 prompt + raw IDs when no tokenizer is embedded.
-- Verified Tokenizer round-trip on SmolLM2-135M, Llama-3.2-1B, and
-  Qwen2.5-0.5B via `tinynn/ab_smoke_tokenizer.rb`. Llama and Qwen
-  pass 5/5 representative English prompts; SmolLM2 fails 2/5 on
-  edge-case chunks like `?\n` and `.txt` — its merge dict produces
-  intermediate pieces not in the vocab and the encoder emits UNK.
-  Known limitation; tracked as T1.2.
+- `tinynn/ab_smoke_tokenizer.rb`: 15/15 prompts round-trip
+  bit-identically on SmolLM2-135M, Llama-3.2-1B, Qwen2.5-0.5B.
+  The earlier "SmolLM2 fails 2/5" bug (`?\n` and `.txt` patterns)
+  was actually a **Spinel hash codegen bug**: `Hash#[missing_key]`
+  returns integer 0 instead of nil, so missing merges appeared as
+  rank-0 (top-priority) merges in the BPE loop. Fixed by guarding
+  every hash read with `has_key?`. Tokenizer now warns loudly when
+  emitting UNK so the next instance of this class of bug surfaces
+  fast.
 
 ### RoPE scaling (FFI)
 
