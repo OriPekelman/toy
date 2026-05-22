@@ -29,6 +29,7 @@ GGUF      = ENV["GGUF"]    || "data/smollm2-135m-native.gguf"
 RANK      = (ENV["RANK"]   || "8").to_i
 STEPS     = (ENV["STEPS"]  || "20").to_i
 LR        = (ENV["LR"]     || "0.001").to_f
+TRACE     = ENV["TRACE"]   || ""    # path to Chrome Trace JSON; empty disables
 
 # T=4 prompt; CE objective pushes every position's argmax toward
 # TARGET_ID. Real SFT (shifted next-token labels + a position mask)
@@ -88,8 +89,19 @@ m_hp.flat[3] = 1.0e-8
 m_hp.flat[4] = 0.0
 
 positions = [0, 1, 2, 3]
+
+if TRACE.length > 0
+  rc = TinyNN.tnn_trace_open(TRACE)
+  if rc != 0
+    puts "trace_open failed: rc=" + rc.to_s + " (TRACE=" + TRACE + ")"
+  else
+    puts "tracing to " + TRACE
+  end
+end
+
 step = 1
 while step <= STEPS
+  _t_step = TinyNN.tnn_trace_begin("step")
   m_hp.flat[5] = 1.0 / (1.0 - (0.9   ** step.to_f))
   m_hp.flat[6] = 1.0 / (1.0 - (0.999 ** step.to_f))
   if step == 1
@@ -104,5 +116,11 @@ while step <= STEPS
   TinyNN.tnn_compute_backward(seq.sess)
   TinyNN.tnn_download(seq.sess, t_loss)
   puts "step " + step.to_s.rjust(3) + ": CE=" + TinyNN.tnn_scratch_get(seq.sess, 0).to_s
+  TinyNN.tnn_trace_end("step", _t_step)
   step = step + 1
+end
+
+if TRACE.length > 0
+  TinyNN.tnn_trace_close
+  puts "trace closed: " + TRACE
 end

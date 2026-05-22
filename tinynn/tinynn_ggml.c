@@ -1,4 +1,5 @@
 #include "tinynn_ggml.h"
+#include "tinynn_trace.h"
 #include "ggml.h"
 #include "ggml-backend.h"
 #include "ggml-cpu.h"
@@ -1042,10 +1043,11 @@ int tnn_realize_backward(void *sess)
     if (!sess) return -1;
     tnn_session *s = (tnn_session *)sess;
     if (!s->graph_b) return -2;
+    int64_t _t = tnn_trace_begin("realize_backward");
     ggml_backend_sched_reset(s->engine->sched);
-    if (!ggml_backend_sched_alloc_graph(s->engine->sched, s->graph_b)) {
-        return -3;
-    }
+    int ok = ggml_backend_sched_alloc_graph(s->engine->sched, s->graph_b) ? 1 : 0;
+    tnn_trace_end("realize_backward", _t);
+    if (!ok) return -3;
     s->realized_b = 1;
     return 0;
 }
@@ -1137,7 +1139,9 @@ int tnn_compute_backward(void *sess)
     if (!sess) return -1;
     tnn_session *s = (tnn_session *)sess;
     if (!s->realized_b) return -2;
+    int64_t _t = tnn_trace_begin("compute_backward");
     enum ggml_status rc = ggml_backend_sched_graph_compute(s->engine->sched, s->graph_b);
+    tnn_trace_end("compute_backward", _t);
     return (rc == GGML_STATUS_SUCCESS) ? 0 : (int)rc;
 }
 
@@ -1190,9 +1194,12 @@ int tnn_realize(void *sess, void *result)
     if (!sess || !result) return -1;
     tnn_session *s = (tnn_session *)sess;
     if (s->realized) return -2;
+    int64_t _t = tnn_trace_begin("realize");
     ggml_build_forward_expand(s->graph, (struct ggml_tensor *)result);
     ggml_backend_sched_reset(s->engine->sched);
-    if (!ggml_backend_sched_alloc_graph(s->engine->sched, s->graph)) return -3;
+    int ok = ggml_backend_sched_alloc_graph(s->engine->sched, s->graph) ? 1 : 0;
+    tnn_trace_end("realize", _t);
+    if (!ok) return -3;
     s->realized   = 1;
     s->last_graph = 1;
     return 0;
@@ -1281,7 +1288,9 @@ int tnn_compute(void *sess)
     if (!sess) return -1;
     tnn_session *s = (tnn_session *)sess;
     if (!s->realized) return -2;
+    int64_t _t = tnn_trace_begin("compute");
     enum ggml_status rc = ggml_backend_sched_graph_compute(s->engine->sched, s->graph);
+    tnn_trace_end("compute", _t);
     return (rc == GGML_STATUS_SUCCESS) ? 0 : (int)rc;
 }
 
@@ -1449,7 +1458,9 @@ int tnn_upload(void *sess, void *tensor)
         }
         return -2;
     }
+    int64_t _t = tnn_trace_begin("upload");
     ggml_backend_tensor_set(t, s->scratch, 0, nbytes);
+    tnn_trace_end("upload", _t);
     return 0;
 }
 
@@ -1471,7 +1482,9 @@ int tnn_download(void *sess, void *tensor)
         }
         return -2;
     }
+    int64_t _t = tnn_trace_begin("download");
     ggml_backend_tensor_get(t, s->scratch, 0, nbytes);
+    tnn_trace_end("download", _t);
     return 0;
 }
 
@@ -1537,6 +1550,7 @@ int tnn_upload_transposed_f64(void *sess, void *tensor,
 int tnn_upload_from_float_array(void *sess, void *tensor, const double *data, size_t n)
 {
     if (!sess || !tensor || !data) return -1;
+    int64_t _trace = tnn_trace_begin("upload_from_float_array");
     tnn_session *s = (tnn_session *)sess;
     struct ggml_tensor *t = (struct ggml_tensor *)tensor;
     const size_t chunk_floats = TNN_SCRATCH_BYTES / sizeof(float);
@@ -1556,6 +1570,7 @@ int tnn_upload_from_float_array(void *sess, void *tensor, const double *data, si
                                   this_chunk * sizeof(float));
         off += this_chunk;
     }
+    tnn_trace_end("upload_from_float_array", _trace);
     return 0;
 }
 
@@ -1595,6 +1610,7 @@ int tnn_upload_from_int_array(void *sess, void *tensor, const long *data, size_t
     size_t max_n = TNN_SCRATCH_BYTES / sizeof(int32_t);
     if (n > max_n) return -2;
 
+    int64_t _trace = tnn_trace_begin("upload_from_int_array");
     int32_t *dst = (int32_t *)s->scratch;
     /* i64 → i32 narrowing. Spinel's :int_array is `const int64_t *`; ggml's
      * GGML_TYPE_I32 row-index tensors are 32-bit. Caller responsibility
@@ -1602,6 +1618,7 @@ int tnn_upload_from_int_array(void *sess, void *tensor, const long *data, size_t
     for (size_t i = 0; i < n; ++i) dst[i] = (int32_t)data[i];
 
     ggml_backend_tensor_set(t, dst, 0, n * sizeof(int32_t));
+    tnn_trace_end("upload_from_int_array", _trace);
     return 0;
 }
 

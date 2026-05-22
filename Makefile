@@ -189,14 +189,17 @@ setup-ggml-cuda: $(GGML_DIR)/.patched
 # --- tinynn shim (CPU build) ------------------------------------------------
 GGML_INC := -I$(GGML_DIR)/include -I$(GGML_DIR)/src
 
-tinynn/tinynn_ggml.o: tinynn/tinynn_ggml.c tinynn/tinynn_ggml.h
+tinynn/tinynn_ggml.o: tinynn/tinynn_ggml.c tinynn/tinynn_ggml.h tinynn/tinynn_trace.h
 	$(CC) $(CFLAGS) $(GGML_INC) -c $< -o $@
 
 tinynn/tinynn_gguf.o: tinynn/tinynn_gguf.c tinynn/tinynn_gguf.h
 	$(CC) $(CFLAGS) $(GGML_INC) -c $< -o $@
 
-tinynn/libtinynn_ggml.a: tinynn/tinynn_ggml.o tinynn/tinynn_gguf.o
-	ar $(ARFLAGS) $@ tinynn/tinynn_ggml.o tinynn/tinynn_gguf.o
+tinynn/tinynn_trace.o: tinynn/tinynn_trace.c tinynn/tinynn_trace.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+tinynn/libtinynn_ggml.a: tinynn/tinynn_ggml.o tinynn/tinynn_gguf.o tinynn/tinynn_trace.o
+	ar $(ARFLAGS) $@ tinynn/tinynn_ggml.o tinynn/tinynn_gguf.o tinynn/tinynn_trace.o
 
 # --- smoke test -------------------------------------------------------------
 # Builds tinynn/smoke.rb against the CPU shim. Requires `setup-ggml` to have

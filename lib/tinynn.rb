@@ -393,6 +393,14 @@ module TinyNN
   ffi_func :tnn_graph_reset,          [:ptr],                   :int
   ffi_func :tnn_compute_backward,     [:ptr],                   :int
   ffi_func :tnn_tensor_grad,          [:ptr, :ptr],             :ptr
+  # Chrome Trace Format emitter. See tinynn/tinynn_trace.h.
+  # When no trace file is open, begin/end are ~5ns no-ops.
+  ffi_func :tnn_trace_open,           [:str],                   :int
+  ffi_func :tnn_trace_close,          [],                       :void
+  ffi_func :tnn_trace_begin,          [:str],                   :long
+  ffi_func :tnn_trace_end,            [:str, :long],            :void
+  ffi_func :tnn_trace_mark,           [:str],                   :void
+  ffi_func :tnn_trace_active,         [],                       :int
   ffi_func :tnn_get_rows,         [:ptr, :ptr, :ptr],       :ptr
   ffi_func :tnn_get_rows_back,    [:ptr, :ptr, :ptr, :ptr], :ptr
   ffi_func :tnn_input_1d_i32,     [:ptr, :int],             :ptr
