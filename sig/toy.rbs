@@ -1,8 +1,12 @@
 # sig/toy.rbs — type signatures for the Toy:: surface.
 #
-# Documentation today (Steep can read it; Phuong–Hutter algorithm-card
-# emitter reads it as the source of truth). Future input to Spinel if
-# RBS-consumption lands upstream (see matz/spinel discussion).
+# Documentation today (Steep reads it; the Phuong–Hutter algorithm-card
+# emitter reads it as the source of truth). Spinel's `--rbs sig` flag
+# exists but currently introduces *more* analyzer warnings than it
+# clears (top-level Mat referenced from inside Toy:: doesn't resolve),
+# so the Makefile does not pass --rbs. Keep this file accurate against
+# lib/ — when Spinel's RBS reader matures, flipping the flag should be
+# a one-line change.
 #
 # Conventions:
 #   - Mat is a 2-D Float matrix with flat f64 storage. Where shape is
@@ -196,47 +200,6 @@ module Toy
   end
 
   # ========================================================================
-  # GPT-2 model: HF-shape (LayerNorm + bias on everything, tied embed).
-  # (Lives in lib/toy_gpt2.rb.)
-  # ========================================================================
-  class GPT2Config
-    attr_accessor vocab:    Integer
-    attr_accessor d_model:  Integer
-    attr_accessor n_heads:  Integer
-    attr_accessor d_ff:     Integer
-    attr_accessor n_layers: Integer
-    attr_accessor ctx:      Integer
-
-    def initialize: (Integer, Integer, Integer, Integer, Integer, Integer) -> void
-  end
-
-  class GPT2Block
-    attr_accessor ln1:  LayerNorm
-    attr_accessor ln2:  LayerNorm
-    attr_accessor attn: CausalSelfAttention
-    attr_accessor ffn:  FFN
-
-    def initialize:  (GPT2Config cfg) -> void
-    def forward:     (Mat x) -> Mat        # [T, D] → [T, D]
-    def param_count: () -> Integer
-  end
-
-  class GPT2
-    attr_accessor cfg:         GPT2Config
-    attr_accessor token_embed: Embedding
-    attr_accessor pos_embed:   Embedding
-    attr_accessor stack:       Array[GPT2Block]    # length cfg.n_layers
-    attr_accessor final_norm:  LayerNorm
-
-    def initialize: (GPT2Config cfg) -> void
-    # ids: token IDs (length T), start_pos: absolute position of row 0.
-    # Returns logits of shape [T, V].
-    def forward:     (Array[Integer] ids, Integer start_pos) -> Mat
-    def param_count: () -> Integer
-    def describe:    () -> String
-  end
-
-  # ========================================================================
   # SmolLM2 / Llama-family model.
   # (Lives in lib/toy_smollm2.rb.)
   # ========================================================================
@@ -303,6 +266,59 @@ module Toy
 end
 
 # ============================================================================
+# GPT-2 model — HF-shape (LayerNorm with γ+β, biases on every Linear,
+# learned absolute position embeddings, tied input/output embed).
+# Top-level (not inside Toy::) because lib/gpt2.rb declares them at the
+# top level; the class is `GPT2LM`, not `GPT2`. Per-head Q/K/V parameters
+# live as Array<Mat> / Array<Array<Float>> rather than per-class
+# Linear/CausalSelfAttention objects — this mirrors the Block layout in
+# lib/transformer.rb so a future FFI cache can reuse the same shape.
+# ============================================================================
+class GPT2Block
+  attr_accessor ln1_gamma: Array[Float]
+  attr_accessor ln1_beta:  Array[Float]
+  attr_accessor ln2_gamma: Array[Float]
+  attr_accessor ln2_beta:  Array[Float]
+  attr_accessor w_q:       Array[Mat]            # length n_heads, each [D, Dh]
+  attr_accessor w_k:       Array[Mat]
+  attr_accessor w_v:       Array[Mat]
+  attr_accessor b_q:       Array[Array[Float]]
+  attr_accessor b_k:       Array[Array[Float]]
+  attr_accessor b_v:       Array[Array[Float]]
+  attr_accessor w_o:       Mat                    # [D, D]
+  attr_accessor w_ff1:     Mat                    # [D, Df]
+  attr_accessor w_ff2:     Mat                    # [Df, D]
+  attr_accessor b_o:       Array[Float]
+  attr_accessor b_ff1:     Array[Float]
+  attr_accessor b_ff2:     Array[Float]
+
+  def initialize: (Integer d_model, Integer d_head, Integer d_ff, Integer n_heads) -> void
+end
+
+class GPT2LM
+  attr_accessor vocab_size:     Integer
+  attr_accessor d_model:        Integer
+  attr_accessor d_ff:           Integer
+  attr_accessor n_heads:        Integer
+  attr_accessor d_head:         Integer
+  attr_accessor n_layers:       Integer
+  attr_accessor context_length: Integer
+  attr_accessor ln_eps:         Float
+  attr_accessor token_embed:    Mat                # [V, D]
+  attr_accessor pos_embed:      Mat                # [ctx, D]
+  attr_accessor ln_f_gamma:     Array[Float]
+  attr_accessor ln_f_beta:      Array[Float]
+  attr_accessor gpt2_blocks:    Array[GPT2Block]
+
+  def initialize: (Integer vocab_size, Integer d_model, Integer d_ff,
+                   Integer n_heads, Integer n_layers,
+                   Integer context_length) -> void
+  # ids: token IDs (length T); start_pos: absolute position of row 0.
+  # Returns logits of shape [T, V] (tied output embedding via x · token_embedᵀ).
+  def forward: (Array[Integer] token_ids, Integer start_pos) -> Mat
+end
+
+# ============================================================================
 # Tokenizer — GGUF-embedded BPE decoder. (lib/tokenizer.rb)
 # Declared here to pin Spinel's analyzer; cross-class polymorphism on
 # `length` was widening Mat#nrows to sp_RbVal in compiled artifacts.
@@ -316,11 +332,13 @@ class Tokenizer
   attr_reader present:    bool
 
   def initialize: (Array[String] vocab,
+                   Array[String] merges,
                    Integer bos_id, Integer eos_id,
                    Integer pad_id, Integer unk_id) -> void
 
   def token_at: (Integer id) -> String
   def decode:   (Array[Integer] ids) -> String
+  def encode:   (String text)        -> Array[Integer]
 
   def self.from_gguf: (String path) -> Tokenizer
 end
