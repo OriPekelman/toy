@@ -100,77 +100,24 @@ class ModelIndex
   # has its own convention; normalize so the output is readable.
   # Returns [source_kind_string, friendly_name_string].
   #
-  # basename / strip-suffix is inlined here (rather than split out into
-  # helper methods) because Spinel infers parameter types per-method
-  # without cross-procedure pinning — small helpers default to `int`
-  # arg and the union propagates. Inlining keeps everything in a
-  # single scope where `path` is pinned by string ops below.
-  # Manual substring-prefix test via bytes. Spinel's String[range]
-  # codegen treats a Range as a C int in some contexts, breaking
-  # equality; bytewise comparison sidesteps that.
-  def self.bytes_starts_with(hay_bytes, hay_len, needle)
-    nb = needle.bytes
-    nl = nb.length
-    return false if hay_len < nl
-    i = 0
-    while i < nl
-      return false if hay_bytes[i] != nb[i]
-      i = i + 1
-    end
-    true
-  end
-
-  # Friendly name + source-kind from an absolute path.
+  # `p = "" + path` is a type-pin: this self-method's `path` parameter
+  # has no callsite Spinel can use to deduce String, so it defaults
+  # to int. The concat against a String literal pins it. (Spinel
+  # commits b876243 and fe91c01 made the in-method String ops below
+  # work idiomatically; the param-inference workaround is what's left.)
   def self.classify_path(path)
     home = ENV["HOME"] || "/"
-    p = "" + path   # type-pin: String concat keeps Spinel from widening to int
-    pb = p.bytes
-    plen = pb.length
+    p = "" + path
+    slash = p.rindex("/")
+    bn = slash == nil ? p : p[(slash + 1)..(p.length - 1)]
+    bn_no_gguf = bn.end_with?(".gguf") ? bn[0..(bn.length - 6)] : bn
 
-    # Manual rindex("/") on bytes (0x2F).
-    slash = -1
-    si = plen - 1
-    while si >= 0
-      if pb[si] == 0x2F
-        slash = si
-        break
-      end
-      si = si - 1
-    end
-
-    # Basename (bytes after the last slash). Rebuild as String via chr.
-    bn = ""
-    bi = slash + 1
-    while bi < plen
-      bn = bn + pb[bi].chr
-      bi = bi + 1
-    end
-
-    # Strip ".gguf" (5 bytes: 0x2E 0x67 0x67 0x75 0x66) suffix.
-    bnb = bn.bytes
-    bnlen = bnb.length
-    has_gguf = bnlen >= 5 &&
-               bnb[bnlen - 5] == 0x2E && bnb[bnlen - 4] == 0x67 &&
-               bnb[bnlen - 3] == 0x67 && bnb[bnlen - 2] == 0x75 &&
-               bnb[bnlen - 1] == 0x66
-    if has_gguf
-      bn_no_gguf = ""
-      ki = 0
-      stop = bnlen - 5
-      while ki < stop
-        bn_no_gguf = bn_no_gguf + bnb[ki].chr
-        ki = ki + 1
-      end
-    else
-      bn_no_gguf = bn
-    end
-
-    if bytes_starts_with(pb, plen, home + "/.cache/huggingface/hub/")
+    if p.start_with?(home + "/.cache/huggingface/hub/")
       ["hf", bn_no_gguf]
-    elsif bytes_starts_with(pb, plen, home + "/.ollama/models/")
+    elsif p.start_with?(home + "/.ollama/models/")
       # blobs/sha256-<hash> — no friendly name without manifest crawl.
       ["ollama", bn]
-    elsif bytes_starts_with(pb, plen, home + "/.lmstudio/models/")
+    elsif p.start_with?(home + "/.lmstudio/models/")
       ["lmstudio", bn_no_gguf]
     else
       ["local", bn_no_gguf]

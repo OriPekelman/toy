@@ -115,20 +115,20 @@ Python converter; or `pip install uv` first.
 
 ## Supported models
 
-| Family            | Model              | Params | F32 | Q8_0 | CPU | CUDA F32 | CUDA Q8 |
-| ----------------- | ------------------ | ------ | --- | ---- | --- | -------- | ------- |
-| GPT-2             | DistilGPT-2        | 82M    | ✓   |      | ✓   | ✓        |         |
-| GPT-2             | GPT-2 small        | 124M   | ✓   |      | ✓   | ✓        |         |
-| Llama family      | SmolLM2-135M       | 135M   | ✓   | ✓    | ✓   | ✓        |         |
-| Llama family      | SmolLM2-360M       | 360M   | ✓   |      | ✓   | ✓        |         |
-| Llama family      | TinyLlama-1.1B     | 1.1B   | ✓   | ✓    | ✓   | ✓        |         |
-| Llama family      | Llama-3.2-1B       | 1B     | ✓   |      | ✓   | ✓        |         |
-| Llama family      | Llama-3.2-3B       | 3B     | ✓   |      | ✓   | ✓        |         |
-| Llama family      | Mistral-7B-v0.2    | 7B     | ✓   | ✓    | ✓   |          | ✓       |
-| Llama + QKV bias  | Qwen2.5-0.5B       | 0.5B   | ✓   | ✓    | ✓   | ✓        |         |
-| Llama + QKV bias  | Qwen2.5-1.5B       | 1.5B   | ✓   | ✓    | ✓   | ✓        | †       |
-| Llama + QKV bias  | Qwen2.5-3B         | 3B     | ✓   | ✓    | ✓   | ✓        | †       |
-| Llama + QKV bias  | Qwen2.5-7B         | 7B     | ✓   | ✓    | ✓   |          | ✓       |
+| Model              | Family            | Params | F32 | Q8_0 | CPU | CUDA F32 | CUDA Q8 |
+| ------------------ | ----------------- | ------ | --- | ---- | --- | -------- | ------- |
+| DistilGPT-2        | GPT-2             | 82M    | ✓   |      | ✓   | ✓        |         |
+| GPT-2 small        | GPT-2             | 124M   | ✓   |      | ✓   | ✓        |         |
+| SmolLM2-135M       | Llama family      | 135M   | ✓   | ✓    | ✓   | ✓        |         |
+| SmolLM2-360M       | Llama family      | 360M   | ✓   |      | ✓   | ✓        |         |
+| TinyLlama-1.1B     | Llama family      | 1.1B   | ✓   | ✓    | ✓   | ✓        |         |
+| Llama-3.2-1B       | Llama family      | 1B     | ✓   |      | ✓   | ✓        |         |
+| Llama-3.2-3B       | Llama family      | 3B     | ✓   |      | ✓   | ✓        |         |
+| Mistral-7B-v0.2    | Llama family      | 7B     | ✓   | ✓    | ✓   |          | ✓       |
+| Qwen2.5-0.5B       | Llama + QKV bias  | 0.5B   | ✓   | ✓    | ✓   | ✓        |         |
+| Qwen2.5-1.5B       | Llama + QKV bias  | 1.5B   | ✓   | ✓    | ✓   | ✓        | †       |
+| Qwen2.5-3B         | Llama + QKV bias  | 3B     | ✓   | ✓    | ✓   | ✓        | †       |
+| Qwen2.5-7B         | Llama + QKV bias  | 7B     | ✓   | ✓    | ✓   |          | ✓       |
 
 † Qwen2.5-1.5B/3B Q8 abort on CUDA at weight-load time: ggml-cuda's
 quantized matmul requires `d_ff` aligned to 512, and those models'
