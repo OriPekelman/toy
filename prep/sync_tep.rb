@@ -66,6 +66,24 @@ die "TEP_SRC has no lib/tep/tep_pg.o"       unless File.exist?("#{TEP_SRC}/lib/t
 # resolve their cflags + libs once and substitute. If a system lib is
 # missing, bail loudly — users can rerun after `apt install libpq-dev`
 # or equivalent, OR set TEP_PG_CFLAGS / TEP_SQLITE_CFLAGS by hand.
+#
+# Homebrew's libpq (and sqlite) are keg-only on macOS, so pkg-config
+# can't see them unless PKG_CONFIG_PATH is pointed at the formula's
+# lib/pkgconfig. Prepend those paths once when brew knows the prefix.
+if RUBY_PLATFORM.include?("darwin")
+  extra_pc = []
+  ["libpq", "sqlite"].each do |formula|
+    prefix = `brew --prefix #{formula} 2>/dev/null`.strip
+    next if prefix.empty?
+    pc_dir = "#{prefix}/lib/pkgconfig"
+    extra_pc << pc_dir if Dir.exist?(pc_dir)
+  end
+  unless extra_pc.empty?
+    existing = ENV["PKG_CONFIG_PATH"].to_s
+    ENV["PKG_CONFIG_PATH"] = (extra_pc + (existing.empty? ? [] : [existing])).join(":")
+  end
+end
+
 def pkgconfig(name, kind)
   flags = `pkg-config --#{kind} #{name} 2>/dev/null`.strip
   flags.empty? ? nil : flags

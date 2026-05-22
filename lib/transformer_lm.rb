@@ -72,12 +72,19 @@ class ToyLM
     end
 
     kv = SmolLM2KVFFICache.new
-    kv.set_weight_type(wtype)
 
     if is_native
+      # Native layout: mmap weights at their stored ggml type. Q8_0
+      # tensors stay quantized; matmul kernels read them in place.
+      kv.set_weight_type(wtype)
       @gguf_handle = TinyNN.tnn_gguf_load(path)
       kv.realize_for_mmap(@gguf_handle, cfg, @max_T, flags.untied, flags.qkv_bias)
     else
+      # Legacy layout: dequantize-to-F32 on copy. The
+      # tnn_gguf_copy_head_slice_to_persistent helper writes F32 bytes
+      # into the dst, so dst tensors must be F32-typed — there's no
+      # quantize-on-write code path yet. We deliberately do NOT call
+      # set_weight_type here; the default (F32) is what holds.
       kv.realize_for(@max_T, cfg.d_model, cfg.d_ff, cfg.n_heads, cfg.n_kv,
                      cfg.n_layers, cfg.vocab, cfg.rope_base, cfg.rms_eps,
                      flags.untied, flags.qkv_bias)

@@ -16,14 +16,14 @@
 # client-side (or wire in lib/tokenizer.rb if you need it
 # server-side). Same choice tep_demo/openai_api_smollm2 makes.
 #
-# Current status (2026-05-21): the Tep HTTP layer has a regression
-# on Spinel f5bc710 where handler bodies render as a static
-# placeholder instead of the value the handler returned. The
-# `tep_demo/openai_api_smollm2` and `tep_demo/hello` binaries are
-# also affected. This example will build cleanly but the response
-# body will be wrong until the upstream Tep+Spinel compatibility is
-# restored. The SHAPE here (how to wire the model into Tep) is
-# preserved as the reference. Track via the Tep repo.
+# Current status (2026-05-22): builds, but the Tep HTTP layer
+# segfaults at startup against the current Spinel — a regression
+# that also affects `tep_demo/openai_api_smollm2` and
+# `tep_demo/hello`. The SHAPE preserved here (model + Tep handler +
+# Tep.run!) is the reference for how to wire serving once the
+# upstream Tep+Spinel compatibility is restored. Until then, use
+# `tep_demo/openai_api_smollm2` against an older Spinel pin, or
+# call the decode loop directly (see `examples/01_inference.rb`).
 
 require_relative "../tep_demo/_tep_lib/tep"
 require_relative "../lib/toy"
@@ -33,6 +33,21 @@ require_relative "../lib/toy_smollm2_ffi_kv"
 
 GGUF = ENV["GGUF"] || "data/smollm2-135m-native.gguf"
 PORT = (ENV["PORT"] || "4567").to_i
+
+if !File.exist?(GGUF)
+  puts "example_serve: cannot find " + GGUF
+  puts ""
+  puts "Serving uses the mmap KV-cache path, which requires the"
+  puts "GGUF to be in native HF layout (toy.ggml_native=true)."
+  puts ""
+  puts "Build one from the HuggingFace checkpoint:"
+  puts ""
+  puts "  ./prep/convert_smollm2_to_gguf.py --ggml-native \\"
+  puts "      --out " + GGUF
+  puts ""
+  puts "Then re-run this example."
+  exit 1
+end
 
 cfg   = SmolLM2ConfigLoader.read(GGUF)
 flags = GGUFLoad.detect_smollm2_flags(GGUF)

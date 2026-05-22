@@ -8,11 +8,11 @@ runtime to install — `make`, run.
 
 | File | What it does | Runtime |
 |---|---|---|
-| `01_inference.rb`        | Load a GGUF, generate 16 tokens. Swap `GGUF=` for any supported model. | seconds |
-| `02_train_custom_gpt.rb` | Train a tiny GPT from scratch on TinyStories. Bumping EPOCHS makes a model that writes English. | seconds → minutes |
-| `03_finetune_lora.rb`    | LoRA / **QLoRA** fine-tune via the sequence-mode forward graph (CPU). Q8 base + F32 adapter works out of the box. | ~30 s |
+| `01_inference.rb`        | Load a GGUF, generate 16 tokens. Default points at `data/smollm2-135m-f32.gguf`. Swap `GGUF=` for any supported model. | seconds |
+| `02_train_custom_gpt.rb` | Train a tiny GPT from scratch on TinyStories. Bumping EPOCHS makes a model that writes English. | ~3 min default |
+| `03_finetune_lora.rb`    | LoRA / **QLoRA** fine-tune via the sequence-mode forward graph (CPU). Needs a native-layout GGUF — see prep step below. | ~30 s |
 | `03_finetune_lora_cuda.rb` | CUDA mirror of the above. F32 by default; pass `Q8=1` for QLoRA (Q8-stays-Q8 path via `realize_for_q8_copy`). | ~10 s on GB10 |
-| `04_serve_http.rb`       | HTTP API: `POST /generate` with `{prompt:[ids], n:int}`, get JSON `{ids:[...]}`. | server |
+| `04_serve_http.rb`       | HTTP API reference shape. **Currently segfaults at startup** — Tep/Spinel regression, see file header. | — |
 | `05_list_models.rb`      | Walk HF / Ollama / LM Studio / `./data` / `$TOY_MODEL_DIR` caches; print every GGUF with family + params + size. | < 1 s |
 
 ## First run — find or fetch a model
@@ -42,18 +42,26 @@ Re-run `example_list_models` and the new model appears. Set
 If you'd rather convert from HF format yourself:
 
 ```sh
-./prep/convert_smollm2_to_gguf.py        # → data/smollm2-135m-*.gguf
+./prep/convert_smollm2_to_gguf.py        # → data/smollm2-135m-f32.gguf  (legacy layout)
+./prep/convert_smollm2_to_gguf.py --ggml-native \
+    --out data/smollm2-135m-native.gguf  # mmap-ready layout for LoRA/serve
 ```
+
+The native build is what `03_finetune_lora.rb` and `04_serve_http.rb`
+load — the LoRA / serve paths mmap base weights in place, which
+needs the HF `[out, in]` layout (`toy.ggml_native=true`). The legacy
+build is what `01_inference.rb` and `02_train_custom_gpt.rb` consume.
 
 ## Inference
 
 ```sh
 make example_inference
-GGUF=data/qwen25-0.5b-native.gguf ./examples/example_inference
-# → ids: 9707 11 847 829 374 264 220 16 15 ...
+./examples/example_inference                      # uses data/smollm2-135m-f32.gguf
+GGUF=data/smollm2-135m-q8_0.gguf ./examples/example_inference
+# → ids: 6403 1980 253 655 28 665 436 253 1838 ...
 ```
 
-One binary, model bytes mmap'd from disk, KV-cache decode.
+One binary, model bytes loaded from disk, KV-cache decode.
 
 ## Training your own
 
@@ -99,6 +107,14 @@ of the BYO-pointer mmap region. One cudaMemcpy at load; full GPU
 training afterwards. Pass `Q8=1` to the CUDA example to switch paths.
 
 ## Serving
+
+> **Status:** `example_serve` currently segfaults at Tep startup
+> against the present Spinel — same regression that affects the
+> Tep demos. The example file is preserved as the reference shape
+> (handler + `Tep.run!`) for when upstream restores compatibility.
+> Track via the Tep repo.
+
+The intended shape:
 
 ```sh
 make example_serve

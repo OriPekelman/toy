@@ -36,6 +36,22 @@ LR        = (ENV["LR"]     || "0.001").to_f
 TOKENS    = [12092, 4845, 253, 1429]
 TARGET_ID = (ENV["TARGET_ID"] || "99").to_i
 
+if !File.exist?(GGUF)
+  puts "example_finetune: cannot find " + GGUF
+  puts ""
+  puts "LoRA fine-tune needs a native-layout GGUF — the base weights"
+  puts "are mmap'd in place, which only works when the converter wrote"
+  puts "them in HF [out, in] layout (toy.ggml_native=true)."
+  puts ""
+  puts "Build one from the HuggingFace checkpoint:"
+  puts ""
+  puts "  ./prep/convert_smollm2_to_gguf.py --ggml-native \\"
+  puts "      --out " + GGUF
+  puts ""
+  puts "Then re-run this example."
+  exit 1
+end
+
 cfg   = SmolLM2ConfigLoader.read(GGUF)
 flags = GGUFLoad.detect_smollm2_flags(GGUF)
 puts "config: vocab=" + cfg.vocab.to_s + " d=" + cfg.d_model.to_s +
