@@ -77,7 +77,6 @@ tinynn/ab_smoke_full_forward_skeleton
 tinynn/ab_smoke_full_forward_block
 tinynn/ab_smoke_kv_write
 tinynn/ab_smoke_kv_attn
-tinynn/ab_smoke_kv_attn_multi
 tinynn/full_forward_bench
 tinynn/full_forward_bench_cuda
 tinynn/forward_smoke
@@ -101,13 +100,7 @@ tinynn/bpe_debug
 tinynn/cuda_byo_smoke
 tinynn/cuda_kernel_read_smoke
 tinynn/ab_smoke_rope_ext_cuda
-tinynn/ab_smoke_kv_write_cuda
 tinynn/ab_smoke_soft_max_ext_cuda
-tinynn/ab_smoke_matmul_view_cuda
-tinynn/ab_smoke_mmap_matmul_cuda
-tinynn/ab_smoke_cuda_buffer_readback
-tinynn/ab_smoke_cpy_strided_cpu
-tinynn/ab_smoke_cpy_strided_cuda
 tinynn/ab_smoke_silu
 tinynn/ab_smoke_mul
 # But DO track tinynn/README.md (the FFI bridge doc)
@@ -160,11 +153,6 @@ tinynn/ab_smoke_train_step
 tinynn/ab_smoke_train_sgd
 tinynn/tok_roundtrip
 tinynn/tok_minimal
-tinynn/ab_smoke_train_micro
-tinynn/ab_smoke_train_micro2
-tinynn/ab_smoke_train_micro3
-tinynn/ab_smoke_train_micro4
-tinynn/ab_smoke_train_micro5
 tinynn/ab_smoke_lora_train
 demos/smollm2_lora_forward
 demos/smollm2_lora_train_step
@@ -185,19 +173,6 @@ demos/smollm2_lora_train_bench_cuda
 demos/smollm2_lora_grad_probe
 demos/smollm2_lora_grad_probe_cuda
 tinynn/ab_smoke_lora_train
-tinynn/ab_smoke_lora_train_cuda
-tinynn/ab_smoke_lora_train_rmsnorm
-tinynn/ab_smoke_lora_train_rmsnorm_cuda
-tinynn/ab_smoke_lora_train_rope
-tinynn/ab_smoke_lora_train_rope_cuda
-tinynn/ab_smoke_lora_train_softmax
-tinynn/ab_smoke_lora_train_softmax_cuda
-tinynn/ab_smoke_lora_train_view
-tinynn/ab_smoke_lora_train_view_cuda
-tinynn/ab_smoke_lora_train_concat
-tinynn/ab_smoke_lora_train_concat_cuda
-tinynn/ab_smoke_lora_train_ffn
-tinynn/ab_smoke_lora_train_ffn_cuda
 demos/smollm2_seq_parity
 demos/smollm2_seq_parity_t4
 demos/smollm2_seq_parity_cuda
