@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Observability / training
+
+- New `tinynn/tinynn_trace.{c,h}`: Chrome Trace Format emitter,
+  ~5ns per begin/end when off, opens in https://perfetto.dev.
+  Instrumented `tnn_realize{,_backward}`, `tnn_compute{,_backward}`,
+  `tnn_upload{,_from_float_array,_from_int_array}`, `tnn_download`.
+  `examples/03_finetune_lora.rb` and its CUDA mirror accept
+  `TRACE=path.json` to wrap each step.
+- New `tnn_scratch_sum_f32` and `tnn_scratch_sum_sq_f32` reducers
+  (mean / L2-norm without a Mat round-trip).
+- `examples/03_finetune_lora{,_cuda}.rb` accept `GRAD_DUMP=1` to
+  emit per-(layer, head, A/B) gradient stats as CSV.
+- **Finding** (`docs/p1-grad-bisection-2026-05-22.md`):
+  CPU and CUDA LoRA gradients agree to 0.32–0.42 % median across
+  steps 1–3; loss curves match to 3+ decimals. The underlying
+  ggml-cpu sched aliasing bug is still upstream but the local
+  workaround (`tnn_pin_all_graph_b_nodes`, wired into
+  `lib/llama_seq_forward_ffi.rb:1192`) prevents it from biting
+  prod LoRA training. Issue still wants filing against ggml-org/ggml.
+
 ### Inference / DevEx
 
 - `examples/example_inference` now speaks text end-to-end on GGUFs

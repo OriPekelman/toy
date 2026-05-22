@@ -18,6 +18,8 @@ GGUF      = ENV["GGUF"]    || "data/smollm2-135m-native.gguf"
 RANK      = (ENV["RANK"]   || "8").to_i
 STEPS     = (ENV["STEPS"]  || "20").to_i
 LR        = (ENV["LR"]     || "0.001").to_f
+TRACE     = ENV["TRACE"]   || ""
+GRAD_DUMP = ENV["GRAD_DUMP"] || ""
 
 TOKENS    = [12092, 4845, 253, 1429]
 TARGET_ID = (ENV["TARGET_ID"] || "99").to_i
@@ -61,8 +63,39 @@ m_hp.flat[3] = 1.0e-8
 m_hp.flat[4] = 0.0
 
 positions = [0, 1, 2, 3]
+
+if TRACE.length > 0
+  rc = TinyNNCuda.tnn_trace_open(TRACE)
+  if rc != 0
+    puts "trace_open failed: rc=" + rc.to_s
+  else
+    puts "tracing to " + TRACE
+  end
+end
+
+def dump_grad_row_cuda(sess, backend, step, layer, head, param_name, grad_tensor)
+  n = TinyNNCuda.tnn_tensor_nelements(grad_tensor)
+  TinyNNCuda.tnn_download(sess, grad_tensor)
+  mn  = TinyNNCuda.tnn_scratch_min_f32(sess, n)
+  mx  = TinyNNCuda.tnn_scratch_max_f32(sess, n)
+  sm  = TinyNNCuda.tnn_scratch_sum_f32(sess, n)
+  sq  = TinyNNCuda.tnn_scratch_sum_sq_f32(sess, n)
+  nan = TinyNNCuda.tnn_scratch_nan_count_f32(sess, n)
+  mean = sm / n.to_f
+  l2   = Math.sqrt(sq)
+  puts "GRAD," + backend + "," + step.to_s + "," + layer.to_s + "," +
+       head.to_s + "," + param_name + "," + n.to_s + "," +
+       mn.to_s + "," + mx.to_s + "," + mean.to_s + "," +
+       l2.to_s + "," + nan.to_s
+end
+
+if GRAD_DUMP.length > 0
+  puts "GRAD_HEADER,backend,step,layer,head,param,n,min,max,mean,l2,nan_count"
+end
+
 step = 1
 while step <= STEPS
+  _t_step = TinyNNCuda.tnn_trace_begin("step")
   m_hp.flat[5] = 1.0 / (1.0 - (0.9   ** step.to_f))
   m_hp.flat[6] = 1.0 / (1.0 - (0.999 ** step.to_f))
   if step == 1
@@ -77,5 +110,32 @@ while step <= STEPS
   TinyNNCuda.tnn_compute_backward(seq.sess)
   TinyNNCuda.tnn_download(seq.sess, t_loss)
   puts "step " + step.to_s.rjust(3) + ": CE=" + TinyNNCuda.tnn_scratch_get(seq.sess, 0).to_s
+
+  if GRAD_DUMP.length > 0
+    li = 0
+    while li < cfg.n_layers
+      blk = seq.seq_blocks_ffi[li]
+      hq = 0
+      while hq < cfg.n_heads
+        ga = TinyNNCuda.tnn_tensor_grad(seq.sess, blk.t_seq_w_lora_a_q[hq])
+        gb = TinyNNCuda.tnn_tensor_grad(seq.sess, blk.t_seq_w_lora_b_q[hq])
+        if ga != nil
+          dump_grad_row_cuda(seq.sess, "cuda", step, li, hq, "A", ga)
+        end
+        if gb != nil
+          dump_grad_row_cuda(seq.sess, "cuda", step, li, hq, "B", gb)
+        end
+        hq = hq + 1
+      end
+      li = li + 1
+    end
+  end
+
+  TinyNNCuda.tnn_trace_end("step", _t_step)
   step = step + 1
+end
+
+if TRACE.length > 0
+  TinyNNCuda.tnn_trace_close
+  puts "trace closed: " + TRACE
 end

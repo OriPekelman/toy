@@ -162,6 +162,12 @@ module TinyNNCuda
   ffi_func :tnn_scratch_get,      [:ptr, :int],             :double
   ffi_func :tnn_scratch_set_i32,  [:ptr, :int, :int],       :void
   ffi_func :tnn_scratch_get_i32,  [:ptr, :int],             :int
+  ffi_func :tnn_scratch_min_f32,        [:ptr, :int], :double
+  ffi_func :tnn_scratch_max_f32,        [:ptr, :int], :double
+  ffi_func :tnn_scratch_sum_abs_f32,    [:ptr, :int], :double
+  ffi_func :tnn_scratch_sum_sq_f32,     [:ptr, :int], :double
+  ffi_func :tnn_scratch_sum_f32,        [:ptr, :int], :double
+  ffi_func :tnn_scratch_nan_count_f32,  [:ptr, :int], :int
   ffi_func :tnn_upload,           [:ptr, :ptr],             :int
   ffi_func :tnn_download,         [:ptr, :ptr],             :int
   ffi_func :tnn_upload_from_float_array, [:ptr, :ptr, :float_array, :size_t], :int

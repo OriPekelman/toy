@@ -30,6 +30,7 @@ RANK      = (ENV["RANK"]   || "8").to_i
 STEPS     = (ENV["STEPS"]  || "20").to_i
 LR        = (ENV["LR"]     || "0.001").to_f
 TRACE     = ENV["TRACE"]   || ""    # path to Chrome Trace JSON; empty disables
+GRAD_DUMP = ENV["GRAD_DUMP"] || ""  # path to CSV; empty disables. Writes per-(layer,head,param) grad stats after each step.
 
 # T=4 prompt; CE objective pushes every position's argmax toward
 # TARGET_ID. Real SFT (shifted next-token labels + a position mask)
@@ -99,6 +100,32 @@ if TRACE.length > 0
   end
 end
 
+# Helper: compute stats over the scratch buffer's first n f32 elements
+# (Mat-roundtrip is overkill — we just want min/max/mean/L2/nan-count
+# per tensor for the CPU/CUDA bisection). Caller must have just done
+# tnn_download(sess, tensor). Prints one CSV row to stdout (or whoever
+# captures it). Backend name is part of the row so a CSV merge is
+# trivial.
+def dump_grad_row(sess, backend, step, layer, head, param_name, grad_tensor)
+  n = TinyNN.tnn_tensor_nelements(grad_tensor)
+  TinyNN.tnn_download(sess, grad_tensor)
+  mn  = TinyNN.tnn_scratch_min_f32(sess, n)
+  mx  = TinyNN.tnn_scratch_max_f32(sess, n)
+  sm  = TinyNN.tnn_scratch_sum_f32(sess, n)
+  sq  = TinyNN.tnn_scratch_sum_sq_f32(sess, n)
+  nan = TinyNN.tnn_scratch_nan_count_f32(sess, n)
+  mean = sm / n.to_f
+  l2   = Math.sqrt(sq)
+  puts "GRAD," + backend + "," + step.to_s + "," + layer.to_s + "," +
+       head.to_s + "," + param_name + "," + n.to_s + "," +
+       mn.to_s + "," + mx.to_s + "," + mean.to_s + "," +
+       l2.to_s + "," + nan.to_s
+end
+
+if GRAD_DUMP.length > 0
+  puts "GRAD_HEADER,backend,step,layer,head,param,n,min,max,mean,l2,nan_count"
+end
+
 step = 1
 while step <= STEPS
   _t_step = TinyNN.tnn_trace_begin("step")
@@ -116,6 +143,27 @@ while step <= STEPS
   TinyNN.tnn_compute_backward(seq.sess)
   TinyNN.tnn_download(seq.sess, t_loss)
   puts "step " + step.to_s.rjust(3) + ": CE=" + TinyNN.tnn_scratch_get(seq.sess, 0).to_s
+
+  if GRAD_DUMP.length > 0
+    li = 0
+    while li < cfg.n_layers
+      blk = seq.seq_blocks_ffi[li]
+      hq = 0
+      while hq < cfg.n_heads
+        ga = TinyNN.tnn_tensor_grad(seq.sess, blk.t_seq_w_lora_a_q[hq])
+        gb = TinyNN.tnn_tensor_grad(seq.sess, blk.t_seq_w_lora_b_q[hq])
+        if ga != nil
+          dump_grad_row(seq.sess, "cpu", step, li, hq, "A", ga)
+        end
+        if gb != nil
+          dump_grad_row(seq.sess, "cpu", step, li, hq, "B", gb)
+        end
+        hq = hq + 1
+      end
+      li = li + 1
+    end
+  end
+
   TinyNN.tnn_trace_end("step", _t_step)
   step = step + 1
 end

@@ -1662,6 +1662,35 @@ double tnn_scratch_sum_abs_f32(void *sess, int n)
     return sum;
 }
 
+/* Sum of squares; for L2 norm take sqrt() on the Ruby side. */
+double tnn_scratch_sum_sq_f32(void *sess, int n)
+{
+    if (!sess || n <= 0) return 0.0;
+    tnn_session *s = (tnn_session *)sess;
+    double sum = 0.0;
+    int i = 0;
+    while (i < n) {
+        double v = (double)s->scratch[i];
+        sum += v * v;
+        i++;
+    }
+    return sum;
+}
+
+/* Plain sum (for mean = sum/n). */
+double tnn_scratch_sum_f32(void *sess, int n)
+{
+    if (!sess || n <= 0) return 0.0;
+    tnn_session *s = (tnn_session *)sess;
+    double sum = 0.0;
+    int i = 0;
+    while (i < n) {
+        sum += (double)s->scratch[i];
+        i++;
+    }
+    return sum;
+}
+
 /* Count of NaN-or-inf elements. NaN comparison: v != v is true iff NaN.
  * Inf: abs(v) > 1e30 is conservative (real f32 inf is 3.4e38). */
 int tnn_scratch_nan_count_f32(void *sess, int n)

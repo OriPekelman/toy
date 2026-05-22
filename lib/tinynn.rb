@@ -506,6 +506,8 @@ module TinyNN
   ffi_func :tnn_scratch_min_f32,        [:ptr, :int], :double
   ffi_func :tnn_scratch_max_f32,        [:ptr, :int], :double
   ffi_func :tnn_scratch_sum_abs_f32,    [:ptr, :int], :double
+  ffi_func :tnn_scratch_sum_sq_f32,     [:ptr, :int], :double
+  ffi_func :tnn_scratch_sum_f32,        [:ptr, :int], :double
   ffi_func :tnn_scratch_nan_count_f32,  [:ptr, :int], :int
 
   # a ** b where both are project Mats (row-major f64). Returns a Mat
