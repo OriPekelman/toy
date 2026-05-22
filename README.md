@@ -87,9 +87,13 @@ Then run a model:
 
 ```sh
 make example_inference
-GGUF=data/qwen25-0.5b-native.gguf ./examples/example_inference
-# → ids: 9707 11 847 829 374 264 220 16 15 ...
+GGUF=data/llama-3.2-1b-tok.gguf PROMPT="The capital of France is" ./examples/example_inference
+# → text: The capital of France is Paris. The capital of Germany is …
 ```
+
+`example_inference` speaks text when the GGUF was converted with
+`--with-tokenizer` (the `*-tok.gguf` variants). Without an embedded
+tokenizer it falls back to a fixed token-ID prompt and prints raw IDs.
 
 The [`examples/`](examples/README.md) directory has five focused entry
 points: inference, train-from-scratch, LoRA / QLoRA fine-tune, HTTP

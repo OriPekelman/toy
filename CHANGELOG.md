@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+### Inference / DevEx
+
+- `examples/example_inference` now speaks text end-to-end on GGUFs
+  converted with `--with-tokenizer`: encode `PROMPT`, generate,
+  decode the IDs back into text. Falls back to the hardcoded
+  five-ID SmolLM2 prompt + raw IDs when no tokenizer is embedded.
+- Verified Tokenizer round-trip on SmolLM2-135M, Llama-3.2-1B, and
+  Qwen2.5-0.5B via `tinynn/ab_smoke_tokenizer.rb`. Llama and Qwen
+  pass 5/5 representative English prompts; SmolLM2 fails 2/5 on
+  edge-case chunks like `?\n` and `.txt` — its merge dict produces
+  intermediate pieces not in the vocab and the encoder emits UNK.
+  Known limitation; tracked as T1.2.
+
+### RoPE scaling (FFI)
+
+- `tnn_rope_ext` and `tnn_rope_ext_back` widened with the full
+  YaRN/llama3 arg surface (freq_scale, ext_factor, attn_factor,
+  beta_fast, beta_slow, freq_factors). New
+  `tnn_rope_freq_factors_alloc` allocates the per-dim factors
+  tensor; values computed in
+  `Toy::RopeScaling.compute_llama3_freq_factors`.
+- `Toy::RopeScaling` value class + `Toy::SmolLM2Config.@rope_scaling`
+  field; `SmolLM2ConfigLoader` reads `llama.rope.scaling.*` from
+  GGUF and dispatches to `none / linear / llama3 / yarn`.
+- `prep/convert_smollm2_to_gguf.py` now propagates HF `rope_scaling.*`
+  metadata to GGUF. Without this our Llama-3.x GGUFs had no scaling
+  metadata; converter was the bottleneck.
+
 ## v0.1.0-pre-alpha — 2026-05-22
 
 **First tagged cut.** Not API-stable; expect breaking changes in any
