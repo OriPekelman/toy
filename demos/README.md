@@ -44,12 +44,16 @@ they can find `data/*.gguf`, prompts, BPE tables.
 | Source | Build | What |
 |---|---|---|
 | `train.rb` | `make train` | TinyStories from-scratch training via `Toy::Trainer` (CPU). Generate corpus first: `ruby prep/prep_tinystories.rb --max_lines 500`. |
+| `smollm2_seq_train_cuda.rb` | `make smollm2_seq_train_cuda` | Sequence-mode LoRA-Q training on CUDA — one forward+backward+opt_step over T positions. |
+| `smollm2_seq_full_finetune_cuda.rb` | `make smollm2_seq_full_finetune_cuda` | Full fine-tune on CUDA (every per-block weight + optional embedding via `EMBED=1`). |
+| `smollm2_seq_qlora_cuda.rb` | `make smollm2_seq_qlora_cuda` | QLoRA: Q8 base + F32 LoRA on CUDA. |
+| `smollm2_lora_sft_multi_cuda.rb` / `smollm2_lora_sft_multipos_cuda.rb` | (make targets) | KV-decode multi-target / multi-position SFT smokes (F1.2 step 6). |
 
-CPU training is wired up; CUDA training is a planned effort —
-backward kernels (RMS-norm-back, RoPE-back, attention-back) and a
-backward-graph driver are needed. See
-[`../docs/roadmap/finetuning.md`](../docs/roadmap/finetuning.md) for
-the roadmap.
+CPU LoRA training is wired up but currently slow due to the
+ggml-cpu sched-aliasing workaround (`tnn_pin_all_graph_b_nodes`);
+CUDA is the practical training path. See
+[`../docs/archive/f3-full-finetune-2026-05-21.md`](../docs/archive/f3-full-finetune-2026-05-21.md)
+for the full-finetune design notes.
 
 ## Quickstart
 

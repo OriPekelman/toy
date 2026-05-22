@@ -84,7 +84,6 @@ module Sampler
       return logits
     end
     seen = ctx.generated_ids
-    delta = (p - 1.0)
     i = 0
     while i < seen.length
       tid = seen[i]
@@ -95,7 +94,6 @@ module Sampler
         else
           logits.flat[tid] = v * p
         end
-        delta = delta + 0.0   # silence unused-var warning
       end
       i = i + 1
     end
@@ -111,7 +109,7 @@ module Sampler
     n = logits.ncols
     # Find the k-th largest by k passes of argmax. O(k*n); fine for
     # k ≤ ~100 at vocab=150K. For bigger k a real partial-sort would
-    # be better, but Phase 0 doesn't need it.
+    # be better; current sizes don't need it.
     kept = [0]
     kept.pop
     snapshot = [0.0]
@@ -198,9 +196,10 @@ module Sampler
       probs[j] = probs[j] * inv_sum
       j = j + 1
     end
-    # Sort indices by descending prob (selection-sort with mark; O(n^2),
-    # acceptable at Phase 0 — vocab ≤ 200K and we typically prune via
-    # top_k first.)
+    # Sort indices by descending prob (selection-sort with mark; O(n^2)).
+    # Acceptable because vocab ≤ 200K and we typically prune via top_k
+    # first; a partial-sort would help if top_p were used solo at full
+    # vocab.
     order = [0]
     order.pop
     taken = [false]

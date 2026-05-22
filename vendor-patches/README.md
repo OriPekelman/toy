@@ -19,6 +19,7 @@ eventually — see each patch's commit message for the discussion notes.
 | `0003-cuda-buffer_from_ptr-copy-mode.patch`     | `src/ggml-cuda/ggml-cuda.cu` | Adds `GGML_CUDA_BYO_PTR_MODE=copy` for non-unified-memory SKUs that need a one-time host→device copy. UVA path (GB10 / DGX Spark / Jetson) stays zero-copy. |
 | `0004-cuda-cpy-strided.patch`                   | `src/ggml-cuda/cpy.cu`       | Guard `cpy_scalar_transpose` dispatch behind a contiguous-dst check. Without it, KV-cache writes that go into a strided `view_2d` (the canonical pattern) silently miswrite. F32 KV-cache CUDA path was broken before this. |
 | `0005-concat-backward.patch`                    | `src/ggml.c`                 | Adds `case GGML_OP_CONCAT` to `ggml_compute_backward`. Without it autograd aborts on SmolLM2 attention (per-head concat before the O projection). Required for F1.2 LoRA training. |
+| `0006-getrows-back-large-vocab.patch`           | `src/ggml-cuda/getrows.cu`   | Chunks the `get_rows_back` kernel launch. The original code set `gridDim.y = vocab`; CUDA caps that at 65535 so Qwen-class vocabs (V=151936) aborted training with "invalid argument". Required for F3 with embedding training on Qwen-class models. |
 
 ## How the application works
 
@@ -65,8 +66,10 @@ For the concat-backward case where the change was an uncommitted edit
 ## Upstream-ability
 
 Each patch has a doc:
-- `docs/design/concat-back-patch-2026-05-21.md` (0005)
+- `docs/archive/concat-back-patch-2026-05-21.md` (0005)
 - `docs/cuda-byo-pointer-design.md` (0001-0003)
-- `docs/design/ggml-cpy-patch-2026-05-18.md` (0004 — referenced in memory)
+- `docs/archive/ggml-cpy-patch-2026-05-18.md` (0004 — referenced from memory; not separately archived)
+- `vendor-patches/0006-getrows-back-large-vocab.patch` carries its own
+  rationale in the commit message.
 
 When the F1/F2/F3 work stabilises, propose each as a separate ggml-org/ggml PR.

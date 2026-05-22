@@ -1,11 +1,11 @@
-# Phase 0.6 — CPU/CUDA mirror deduplication
+# Phase 0.6 — CPU/CUDA mirror deduplication (completed)
 
-**Status:** **IN FLIGHT 2026-05-21** — was deferred from 2026-05-21
-morning; un-deferred the same evening once re-trigger condition #1
-fired (M3 added ~1100 LOC of mirror duplication on top of the
-existing ~1800 LOC).
-**Date:** 2026-05-20 (initial scoping); 2026-05-21 (deferred);
-2026-05-21 (un-deferred).
+**Status:** **COMPLETED 2026-05-22.** Both the seq pair
+(`llama_seq_forward_ffi*`) and the KV-cache pair
+(`toy_smollm2_ffi_kv*`) are generated from the CPU source via
+`prep/gen_cuda_mirror.rb`; `make verify-mirrors` is the CI gate.
+**Date:** 2026-05-20 (initial scoping); 2026-05-21 (deferred and
+re-triggered same day); 2026-05-22 (KV-pair migration landed).
 
 ## What un-deferred this
 

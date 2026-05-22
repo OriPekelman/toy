@@ -11,7 +11,7 @@ runtime to install — `make`, run.
 | `01_inference.rb`        | Load a GGUF, generate 16 tokens. Swap `GGUF=` for any supported model. | seconds |
 | `02_train_custom_gpt.rb` | Train a tiny GPT from scratch on TinyStories. Bumping EPOCHS makes a model that writes English. | seconds → minutes |
 | `03_finetune_lora.rb`    | LoRA / **QLoRA** fine-tune via the sequence-mode forward graph (CPU). Q8 base + F32 adapter works out of the box. | ~30 s |
-| `03_finetune_lora_cuda.rb` | CUDA mirror of the above (F32 base today; CUDA QLoRA pending a vendor patch). | ~10 s on GB10 |
+| `03_finetune_lora_cuda.rb` | CUDA mirror of the above. F32 by default; pass `Q8=1` for QLoRA (Q8-stays-Q8 path via `realize_for_q8_copy`). | ~10 s on GB10 |
 | `04_serve_http.rb`       | HTTP API: `POST /generate` with `{prompt:[ids], n:int}`, get JSON `{ids:[...]}`. | server |
 | `05_list_models.rb`      | Walk HF / Ollama / LM Studio / `./data` / `$TOY_MODEL_DIR` caches; print every GGUF with family + params + size. | < 1 s |
 
@@ -93,9 +93,10 @@ Both build on the same sequence-mode forward graph
 in one compute, AdamW state in persistent memory. The LoRA-Q rank-8
 adapters add ~5 MB on top of an mmap'd base.
 
-CUDA QLoRA (Q8 base on GPU) is pending a vendor patch for the
-ggml-cuda BYO-pointer buffer's quantized-tensor padding. Use the
-CPU example for QLoRA today.
+CUDA QLoRA (Q8 base on GPU) goes through `realize_for_q8_copy` —
+weights live in the standard CUDA buffer (correct padding) instead
+of the BYO-pointer mmap region. One cudaMemcpy at load; full GPU
+training afterwards. Pass `Q8=1` to the CUDA example to switch paths.
 
 ## Serving
 

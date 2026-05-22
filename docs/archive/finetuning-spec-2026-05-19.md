@@ -1,6 +1,10 @@
-# Fine-tuning design
+# Fine-tuning design (original spec; archived)
 
-**Status:** draft, planning only
+**Status:** SHIPPED 2026-05-21/22. F1 (CPU LoRA), F2 (CUDA LoRA),
+            F3 (full FT on CUDA), F4 (QLoRA) all landed. Kept as
+            historical record of the original plan; for current
+            state see [`f3-full-finetune-2026-05-21.md`](f3-full-finetune-2026-05-21.md),
+            `CHANGELOG.md`, and the `demos/smollm2_seq_*` set.
 **Authors:** Ori Pekelman + Claude
 **Date:** 2026-05-19
 **Predecessor:** `lib/toy_trainer.rb` + `demos/train.rb` (CPU from-scratch, working);

@@ -27,21 +27,22 @@ Project-level READMEs sit next to their code: [`README.md`](../README.md),
 - [`cuda-byo-pointer-design.md`](cuda-byo-pointer-design.md) — CUDA
   side of the BYO-pointer mmap (UVA, the vendored ggml-cuda patch).
 
-## Roadmap (future work + deferred)
+## Roadmap (future work)
 
-- [`roadmap/finetuning.md`](roadmap/finetuning.md) — F1/F2/F3/F4 spec.
-  F1 (LoRA + AdamW) is shipped (CPU + CUDA via the seq-forward graph).
-  F3 (full fine-tune on CUDA) and F4 (QLoRA: Q8 base + F32 LoRA) are
-  the next two.
-- [`roadmap/phase-06-in-flight.md`](roadmap/phase-06-in-flight.md) —
-  CPU/CUDA mirror deduplication. Un-deferred 2026-05-21; the seq-mode
-  pair is now generated from the CPU source via
-  `prep/gen_cuda_mirror.rb`; older KV-cache pair migration pending.
 - [`roadmap/scout-small-models.md`](roadmap/scout-small-models.md) —
   next-target survey across modern small models.
 - [`roadmap/lowerer-design.md`](roadmap/lowerer-design.md) — a
   Roundhouse-style preprocessor for toy. Not built; recorded because
   there's a concrete external proposal.
+
+The fine-tuning spec (F1/F2/F3/F4) shipped end-to-end and moved to
+the archive — see
+[`archive/finetuning-spec-2026-05-19.md`](archive/finetuning-spec-2026-05-19.md)
+for the original plan and
+[`archive/f3-full-finetune-2026-05-21.md`](archive/f3-full-finetune-2026-05-21.md)
+for the full-FT update. Phase 0.6 (CPU/CUDA mirror dedup) likewise
+shipped and is in
+[`archive/phase-06-completed.md`](archive/phase-06-completed.md).
 
 ## Archive (where to find old context)
 
@@ -79,6 +80,12 @@ the timeline. Highlights:
   long-form story of getting GPT-2 to run identical-to-PyTorch.
 - [`archive/upstream-contrib-draft.md`](archive/upstream-contrib-draft.md) —
   unsent doc on HF→GGUF byte-equivalence (intended for ggml-org).
+- [`archive/phase-06-completed.md`](archive/phase-06-completed.md) —
+  CPU/CUDA mirror dedup: how `prep/gen_cuda_mirror.rb` came about.
+- [`archive/f3-full-finetune-2026-05-21.md`](archive/f3-full-finetune-2026-05-21.md) —
+  full fine-tune design (shipped; embeddings opt-in via `EMBED=1`).
+- [`archive/finetuning-spec-2026-05-19.md`](archive/finetuning-spec-2026-05-19.md) —
+  original F1/F2/F3/F4 finetuning spec.
 
 ## Archive — upstream issues we've filed
 
