@@ -4,6 +4,9 @@
   <img src="toy_logo.png" alt="toy" width="240" />
 </p>
 
+**v0.1.0-pre-alpha** — early signal. Not API-stable. See
+[`CHANGELOG.md`](CHANGELOG.md) for what's working today.
+
 A small transformer language model in Ruby. AOT-compiled to a native
 binary by [Spinel](https://github.com/matz/spinel) (matz's Ruby AOT
 compiler). Runs real HuggingFace models — from SmolLM2-135M to

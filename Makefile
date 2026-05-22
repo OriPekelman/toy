@@ -582,6 +582,11 @@ smollm2_seq_qlora_cuda:        demos/smollm2_seq_qlora_cuda
 demos/smollm2_seq_qlora_cuda: demos/smollm2_seq_qlora_cuda.rb lib/llama_seq_forward_ffi_cuda.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 
+# Training step-time bench. MODE=lora|ft; STEPS=N; GGUF=path.
+seq_train_bench_cuda:        demos/seq_train_bench_cuda
+demos/seq_train_bench_cuda: demos/seq_train_bench_cuda.rb lib/llama_seq_forward_ffi_cuda.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
+	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
+
 # Per-phase training-step bench (CPU + CUDA). Times graph_reset /
 # uploads / compute_backward / download separately. Doc:
 # docs/design/bench-train-2026-05-21.md.

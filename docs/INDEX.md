@@ -48,6 +48,10 @@ Project-level READMEs sit next to their code: [`README.md`](../README.md),
 Most archived docs are dated (`*-2026-05-XX.md`) so file order tracks
 the timeline. Highlights:
 
+- [`archive/bench-gx10-2026-05-22.md`](archive/bench-gx10-2026-05-22.md) —
+  perf snapshot before the v0.1-pre-alpha tag: inference tok/s across
+  model sizes, sequence-mode training step time, memory footprint.
+
 - [`archive/arc-close-2026-05-21.md`](archive/arc-close-2026-05-21.md) —
   closing memo for the F1.1 / Phase 0.6 / Phase 0.7 arc. Good starting
   point if you're picking up where 2026-05-21 left off.
