@@ -24,7 +24,9 @@ dyt.flat[3] = 0.3
 sess = TinyNN.tnn_session_new(0)
 tdy  = TinyNN.tnn_input_2d_f32(sess, dyt.nrows, dyt.ncols)
 tpos = TinyNN.tnn_input_1d_i32_ctx(sess, 1)
-tdx  = TinyNN.tnn_rope_ext_back(sess, tdy, tpos, D_HEAD, ROPE_BASE)
+tdx  = TinyNN.tnn_rope_ext_back(sess, tdy, tpos, D_HEAD,
+                                ROPE_BASE, 1.0, 0.0, 1.0, 32.0, 1.0,
+                                TinyNN.tnn_null_ptr)
 
 if tdx == nil
   puts "rope_back: FAIL — tnn_rope_ext_back returned NULL"

@@ -80,7 +80,8 @@ class LlamaSeqForwardFFICacheCuda
                 :seq_blocks_ffi,
                 :seq_t, :seq_d_model, :seq_d_ff, :seq_n_heads, :seq_n_kv,
                 :seq_d_head, :seq_group_size, :seq_n_layers, :seq_vocab_size,
-                :seq_rope_base, :seq_rms_eps, :seq_realized,
+                :seq_rope_base, :seq_rope_scaling, :t_seq_rope_freq_factors,
+                :seq_rms_eps, :seq_realized,
                 :t_seq_token_ids, :t_seq_positions,
                 :t_seq_x_embed, :t_seq_x_final, :t_seq_logits,
                 :seq_gguf_handle_keepalive,
@@ -123,7 +124,9 @@ class LlamaSeqForwardFFICacheCuda
     @seq_group_size = 0
     @seq_n_layers   = 0
     @seq_vocab_size = 0
-    @seq_rope_base  = 10000.0
+    @seq_rope_base            = 10000.0
+    @seq_rope_scaling         = Toy::RopeScaling.none
+    @t_seq_rope_freq_factors  = TinyNNCuda.tnn_null_ptr
     @seq_rms_eps    = 1.0e-5
     @sess                  = TinyNNCuda.tnn_null_ptr
     @t_seq_token_embed     = TinyNNCuda.tnn_null_ptr
@@ -201,11 +204,20 @@ class LlamaSeqForwardFFICacheCuda
     @seq_group_size = cfg.n_heads / cfg.n_kv
     @seq_n_layers   = cfg.n_layers
     @seq_vocab_size = cfg.vocab
-    @seq_rope_base  = cfg.rope_base
+    @seq_rope_base    = cfg.rope_base
+    @seq_rope_scaling = cfg.rope_scaling
     @seq_rms_eps    = cfg.rms_eps
 
     @seq_gguf_handle_keepalive = gguf_handle
     @sess                  = TinyNNCuda.tnn_session_new(1)
+
+    # llama3 / LongRoPE: allocate the freq_factors tensor in ctx_w
+    # before finalize_weights. Values uploaded post-finalize.
+    if @seq_rope_scaling.kind == :llama3
+      @t_seq_rope_freq_factors = TinyNNCuda.tnn_rope_freq_factors_alloc(@sess, cfg.d_model / cfg.n_heads)
+    else
+      @t_seq_rope_freq_factors = TinyNNCuda.tnn_null_ptr
+    end
     @seq_has_untied_output = untied
     @seq_has_qkv_bias      = qkv_bias
 
@@ -347,6 +359,16 @@ class LlamaSeqForwardFFICacheCuda
 
     TinyNNCuda.tnn_finalize_weights(@sess)
 
+    # Upload llama3-style RoPE freq_factors once the backend buffer
+    # exists. Per-model constant; never re-uploaded.
+    if @seq_rope_scaling.kind == :llama3
+      ff = Toy::RopeScaling.compute_llama3_freq_factors(
+        @seq_d_head, @seq_rope_base,
+        @seq_rope_scaling.orig_max_pos, @seq_rope_scaling.factor,
+        @seq_rope_scaling.low_freq_factor, @seq_rope_scaling.high_freq_factor)
+      TinyNNCuda.tnn_upload_from_float_array(@sess, @t_seq_rope_freq_factors, ff, ff.length)
+    end
+
     # Load all weight bytes from the GGUF into the now-allocated
     # backend buffers. Verbatim copy keeps Q8 as Q8.
     TinyNNCuda.tnn_gguf_copy_verbatim_to_persistent(gguf_handle, eidx, @sess, @t_seq_token_embed)
@@ -461,11 +483,20 @@ class LlamaSeqForwardFFICacheCuda
     @seq_group_size = cfg.n_heads / cfg.n_kv
     @seq_n_layers   = cfg.n_layers
     @seq_vocab_size = cfg.vocab
-    @seq_rope_base  = cfg.rope_base
+    @seq_rope_base    = cfg.rope_base
+    @seq_rope_scaling = cfg.rope_scaling
     @seq_rms_eps    = cfg.rms_eps
 
     @seq_gguf_handle_keepalive = gguf_handle
     @sess                  = TinyNNCuda.tnn_session_new(1)
+
+    # llama3 / LongRoPE: allocate the freq_factors tensor in ctx_w
+    # before finalize_weights. Values uploaded post-finalize.
+    if @seq_rope_scaling.kind == :llama3
+      @t_seq_rope_freq_factors = TinyNNCuda.tnn_rope_freq_factors_alloc(@sess, cfg.d_model / cfg.n_heads)
+    else
+      @t_seq_rope_freq_factors = TinyNNCuda.tnn_null_ptr
+    end
     @seq_has_untied_output = untied
     @seq_has_qkv_bias      = qkv_bias
 
@@ -661,6 +692,14 @@ class LlamaSeqForwardFFICacheCuda
 
     TinyNNCuda.tnn_finalize_weights(@sess)
 
+    if @seq_rope_scaling.kind == :llama3
+      ff = Toy::RopeScaling.compute_llama3_freq_factors(
+        @seq_d_head, @seq_rope_base,
+        @seq_rope_scaling.orig_max_pos, @seq_rope_scaling.factor,
+        @seq_rope_scaling.low_freq_factor, @seq_rope_scaling.high_freq_factor)
+      TinyNNCuda.tnn_upload_from_float_array(@sess, @t_seq_rope_freq_factors, ff, ff.length)
+    end
+
     # Zero-init persistent AdamW moments. Same contract as F1.2 step 6b
     # on SmolLM2KVFFICache — m and v start at 0 per the AdamW update rule.
     if @seq_lora_q_adamw_enabled
@@ -706,11 +745,20 @@ class LlamaSeqForwardFFICacheCuda
     @seq_group_size = cfg.n_heads / cfg.n_kv
     @seq_n_layers   = cfg.n_layers
     @seq_vocab_size = cfg.vocab
-    @seq_rope_base  = cfg.rope_base
+    @seq_rope_base    = cfg.rope_base
+    @seq_rope_scaling = cfg.rope_scaling
     @seq_rms_eps    = cfg.rms_eps
 
     @seq_gguf_handle_keepalive = gguf_handle
     @sess                  = TinyNNCuda.tnn_session_new(1)
+
+    # llama3 / LongRoPE: allocate the freq_factors tensor in ctx_w
+    # before finalize_weights. Values uploaded post-finalize.
+    if @seq_rope_scaling.kind == :llama3
+      @t_seq_rope_freq_factors = TinyNNCuda.tnn_rope_freq_factors_alloc(@sess, cfg.d_model / cfg.n_heads)
+    else
+      @t_seq_rope_freq_factors = TinyNNCuda.tnn_null_ptr
+    end
     @seq_has_untied_output = untied
     @seq_has_qkv_bias      = qkv_bias
 
@@ -859,6 +907,14 @@ class LlamaSeqForwardFFICacheCuda
     end
 
     TinyNNCuda.tnn_finalize_weights(@sess)
+
+    if @seq_rope_scaling.kind == :llama3
+      ff = Toy::RopeScaling.compute_llama3_freq_factors(
+        @seq_d_head, @seq_rope_base,
+        @seq_rope_scaling.orig_max_pos, @seq_rope_scaling.factor,
+        @seq_rope_scaling.low_freq_factor, @seq_rope_scaling.high_freq_factor)
+      TinyNNCuda.tnn_upload_from_float_array(@sess, @t_seq_rope_freq_factors, ff, ff.length)
+    end
 
     # Post-finalize: load every writable weight from the GGUF.
     if @ft_train_embeddings_enabled
@@ -1197,7 +1253,13 @@ class LlamaSeqForwardFFICacheCuda
       # on contiguous tensors. At T=1 this is a no-op (1 == 1).
       t_k_pre3 = TinyNNCuda.tnn_reshape_3d(@sess, t_k_pre, @seq_d_head, 1, @seq_t)
       t_k3     = TinyNNCuda.tnn_rope_ext(@sess, t_k_pre3, @t_seq_positions,
-                                       @seq_d_head, @seq_rope_base)
+                                       @seq_d_head, @seq_rope_base,
+                                       @seq_rope_scaling.freq_scale,
+                                       @seq_rope_scaling.ext_factor,
+                                       @seq_rope_scaling.attn_factor,
+                                       @seq_rope_scaling.beta_fast,
+                                       @seq_rope_scaling.beta_slow,
+                                       @t_seq_rope_freq_factors)
       t_k      = TinyNNCuda.tnn_reshape_2d(@sess, t_k3, @seq_d_head, @seq_t)
       t_k_per_kv.push(t_k)
 
@@ -1262,7 +1324,13 @@ class LlamaSeqForwardFFICacheCuda
     # Same rope-shape lift as the K path; see comment in build_seq_block.
     t_q_pre3 = TinyNNCuda.tnn_reshape_3d(@sess, t_q_pre, @seq_d_head, 1, @seq_t)
     t_q3     = TinyNNCuda.tnn_rope_ext(@sess, t_q_pre3, @t_seq_positions,
-                                     @seq_d_head, @seq_rope_base)
+                                     @seq_d_head, @seq_rope_base,
+                                     @seq_rope_scaling.freq_scale,
+                                     @seq_rope_scaling.ext_factor,
+                                     @seq_rope_scaling.attn_factor,
+                                     @seq_rope_scaling.beta_fast,
+                                     @seq_rope_scaling.beta_slow,
+                                     @t_seq_rope_freq_factors)
     t_q      = TinyNNCuda.tnn_reshape_2d(@sess, t_q3, @seq_d_head, @seq_t)
 
     # scores ne=[T_keys, T_queries]. Same shape as decode_step's

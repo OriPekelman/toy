@@ -450,6 +450,61 @@ module GGUFLoad
 end
 
 module SmolLM2ConfigLoader
+  # Read rope_scaling.* metadata from the GGUF and pick a RopeScaling
+  # variant. GGUF keys (when present):
+  #   llama.rope.scaling.type          (str: "linear", "yarn", "llama3", "longrope")
+  #   llama.rope.scaling.factor        (f32)
+  #   llama.rope.scaling.original_context_length        (u32)
+  #   llama.rope.scaling.low_freq_factor                (f32, llama3)
+  #   llama.rope.scaling.high_freq_factor               (f32, llama3)
+  #   llama.rope.scaling.attn_factor   (f32, yarn)
+  #   llama.rope.scaling.beta_fast     (f32, yarn)
+  #   llama.rope.scaling.beta_slow     (f32, yarn)
+  #
+  # Returns Toy::RopeScaling.none when the type key is missing (gguf
+  # accessors return -1/0 sentinels). LongRoPE not yet supported —
+  # falls back to .none with a warning.
+  def self.read_rope_scaling(handle)
+    kind_str = TinyNN.tnn_gguf_get_str(handle, "llama.rope.scaling.type")
+    if kind_str == nil
+      return Toy::RopeScaling.none
+    end
+    if kind_str == "linear"
+      f = TinyNN.tnn_gguf_get_f32(handle, "llama.rope.scaling.factor")
+      puts "rope_scaling: linear (factor=" + f.to_s + ")"
+      return Toy::RopeScaling.linear(f)
+    end
+    if kind_str == "llama3"
+      f    = TinyNN.tnn_gguf_get_f32(handle, "llama.rope.scaling.factor")
+      lo   = TinyNN.tnn_gguf_get_f32(handle, "llama.rope.scaling.low_freq_factor")
+      hi   = TinyNN.tnn_gguf_get_f32(handle, "llama.rope.scaling.high_freq_factor")
+      omp  = TinyNN.tnn_gguf_get_u32(handle, "llama.rope.scaling.original_context_length")
+      if omp < 0
+        omp = TinyNN.tnn_gguf_get_u32(handle, "llama.context_length")
+      end
+      puts "rope_scaling: llama3 (factor=" + f.to_s +
+           " low=" + lo.to_s + " high=" + hi.to_s +
+           " orig_max=" + omp.to_s + ")"
+      return Toy::RopeScaling.llama3(f, lo, hi, omp)
+    end
+    if kind_str == "yarn"
+      f   = TinyNN.tnn_gguf_get_f32(handle, "llama.rope.scaling.factor")
+      omp = TinyNN.tnn_gguf_get_u32(handle, "llama.rope.scaling.original_context_length")
+      af  = TinyNN.tnn_gguf_get_f32(handle, "llama.rope.scaling.attn_factor")
+      bf  = TinyNN.tnn_gguf_get_f32(handle, "llama.rope.scaling.beta_fast")
+      bs  = TinyNN.tnn_gguf_get_f32(handle, "llama.rope.scaling.beta_slow")
+      if af == 0.0; af = 1.0; end
+      if bf == 0.0; bf = 32.0; end
+      if bs == 0.0; bs = 1.0; end
+      puts "rope_scaling: yarn (factor=" + f.to_s + " orig_max=" + omp.to_s +
+           " attn_factor=" + af.to_s + ")"
+      return Toy::RopeScaling.new(:yarn, 1.0 / f, omp, f, 1.0, 4.0, 1.0, af, bf, bs)
+    end
+    # longrope and any unknown kind: fall back, with a warning.
+    puts "rope_scaling: unsupported type '" + kind_str + "' — using no-scaling (likely degraded long-context quality)"
+    Toy::RopeScaling.none
+  end
+
   def self.read(path)
     handle = TinyNN.tnn_gguf_load(path)
     if handle == nil
@@ -465,8 +520,11 @@ module SmolLM2ConfigLoader
     ctx       = TinyNN.tnn_gguf_get_u32(handle, "llama.context_length")
     rope_base = TinyNN.tnn_gguf_get_f32(handle, "llama.rope.freq_base")
     rms_eps   = TinyNN.tnn_gguf_get_f32(handle, "llama.attention.layer_norm_rms_epsilon")
+    scaling   = read_rope_scaling(handle)
     TinyNN.tnn_gguf_free(handle)
-    Toy::SmolLM2Config.new(vocab, d_model, n_head, n_kv, d_ff, n_layer,
-                           ctx, rope_base, rms_eps)
+    cfg = Toy::SmolLM2Config.new(vocab, d_model, n_head, n_kv, d_ff, n_layer,
+                                 ctx, rope_base, rms_eps)
+    cfg.rope_scaling = scaling
+    cfg
   end
 end

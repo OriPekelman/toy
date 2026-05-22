@@ -89,6 +89,7 @@ class SmolLM2KVFFICacheCuda
                 :kv_blocks_ffi,
                 :max_T, :d_model, :d_ff, :n_heads, :n_kv, :d_head,
                 :group_size, :n_layers, :vocab_size, :rope_base,
+                :rope_scaling, :t_rope_freq_factors,
                 :rms_eps, :realized,
                 # Phase 3: ggml type for 2D linear weights. Default
                 # 0 = GGML_TYPE_F32 (legacy). 8 = GGML_TYPE_Q8_0. Set
@@ -120,6 +121,8 @@ class SmolLM2KVFFICacheCuda
     @n_layers   = 0
     @vocab_size = 0
     @rope_base  = 10000.0
+    @rope_scaling        = Toy::RopeScaling.none
+    @t_rope_freq_factors = TinyNNCuda.tnn_null_ptr
     @rms_eps    = 1.0e-5
     @sess               = TinyNNCuda.tnn_null_ptr
     @t_token_embed      = TinyNNCuda.tnn_null_ptr
@@ -199,13 +202,24 @@ class SmolLM2KVFFICacheCuda
     @group_size = cfg.n_heads / cfg.n_kv
     @n_layers   = cfg.n_layers
     @vocab_size = cfg.vocab
-    @rope_base  = cfg.rope_base
-    @rms_eps    = cfg.rms_eps
+    @rope_base    = cfg.rope_base
+    @rope_scaling = cfg.rope_scaling
+    @rms_eps      = cfg.rms_eps
 
     @gguf_handle_keepalive = gguf_handle   # prevent GC; mmap must outlive @sess
     @sess              = TinyNNCuda.tnn_session_new(1)
     @has_untied_output = untied
     @has_qkv_bias      = qkv_bias
+
+    # llama3 / LongRoPE: allocate the (d_head/2)-elem freq_factors
+    # tensor in ctx_w before finalize_weights. We compute and upload
+    # the values after finalize (see below). For all other rope_scaling
+    # kinds the FFI call still needs a pointer — pass tnn_null_ptr.
+    if @rope_scaling.kind == :llama3
+      @t_rope_freq_factors = TinyNNCuda.tnn_rope_freq_factors_alloc(@sess, @d_head)
+    else
+      @t_rope_freq_factors = TinyNNCuda.tnn_null_ptr
+    end
 
     # Wire the GGUF's mmap region into the session as the source of
     # weight bytes. Subsequent tnn_input_*_persistent_mmap calls
@@ -418,6 +432,18 @@ class SmolLM2KVFFICacheCuda
     # Mmap'd tensors don't need finalization — they were allocated
     # against weights_buf_mmap inline.
     TinyNNCuda.tnn_finalize_weights(@sess)
+
+    # Upload llama3-style RoPE freq_factors once the backend buffer
+    # for @t_rope_freq_factors exists (post-finalize). The values are
+    # a per-model constant — never re-uploaded across rebuild cycles.
+    if @rope_scaling.kind == :llama3
+      ff = Toy::RopeScaling.compute_llama3_freq_factors(
+        @d_head, @rope_base,
+        @rope_scaling.orig_max_pos, @rope_scaling.factor,
+        @rope_scaling.low_freq_factor, @rope_scaling.high_freq_factor)
+      TinyNNCuda.tnn_upload_from_float_array(@sess, @t_rope_freq_factors,
+                                         ff, ff.length)
+    end
 
     # F1.2 step 6b: zero-init persistent Adam moments. AdamW's update
     # rule assumes m = v = 0 at step 0 (otherwise the first step picks
@@ -729,7 +755,13 @@ class SmolLM2KVFFICacheCuda
       if hkv == 0
         t_k_pre = trace_tap(tag + "k_pre", t_k_pre)
       end
-      t_k_rot = TinyNNCuda.tnn_rope_ext(@sess, t_k_pre, t_pos, @d_head, @rope_base)
+      t_k_rot = TinyNNCuda.tnn_rope_ext(@sess, t_k_pre, t_pos, @d_head,
+                                    @rope_base, @rope_scaling.freq_scale,
+                                    @rope_scaling.ext_factor,
+                                    @rope_scaling.attn_factor,
+                                    @rope_scaling.beta_fast,
+                                    @rope_scaling.beta_slow,
+                                    @t_rope_freq_factors)
       if hkv == 0
         t_k_rot = trace_tap(tag + "k_rot", t_k_rot)
       end
@@ -834,7 +866,13 @@ class SmolLM2KVFFICacheCuda
     if tap_this_head
       t_q_pre = trace_tap(tag + "q_pre", t_q_pre)
     end
-    t_q     = TinyNNCuda.tnn_rope_ext(@sess, t_q_pre, t_pos, @d_head, @rope_base)
+    t_q     = TinyNNCuda.tnn_rope_ext(@sess, t_q_pre, t_pos, @d_head,
+                                  @rope_base, @rope_scaling.freq_scale,
+                                  @rope_scaling.ext_factor,
+                                  @rope_scaling.attn_factor,
+                                  @rope_scaling.beta_fast,
+                                  @rope_scaling.beta_slow,
+                                  @t_rope_freq_factors)
     if tap_this_head
       t_q = trace_tap(tag + "q_rot", t_q)
     end

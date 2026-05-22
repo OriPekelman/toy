@@ -249,10 +249,24 @@ def main():
     rope_theta  = float(cfg.get("rope_theta", 10000.0))
     rms_eps     = float(cfg.get("rms_norm_eps", 1e-5))
     d_head      = n_embd // n_head
+    # rope_scaling.* propagation. HF config carries one of:
+    #   {"rope_type":"llama3", "factor":32.0, "low_freq_factor":1.0,
+    #    "high_freq_factor":4.0, "original_max_position_embeddings":8192}
+    #   {"rope_type":"linear", "factor":2.0}
+    #   {"rope_type":"yarn",   "factor":..., "attn_factor":..., ...}
+    # We emit the matching llama.rope.scaling.* GGUF keys so the Ruby
+    # loader (SmolLM2ConfigLoader.read_rope_scaling) can dispatch.
+    rope_scaling = cfg.get("rope_scaling")
+    if isinstance(rope_scaling, dict):
+        # HF uses both "type" (older) and "rope_type" (newer Llama-3).
+        rs_kind = rope_scaling.get("rope_type") or rope_scaling.get("type")
+    else:
+        rs_kind = None
 
     print(f"      vocab={n_vocab} ctx={n_ctx} d={n_embd} d_head={d_head} "
           f"heads={n_head} n_kv={n_kv} layers={n_layer} d_ff={n_ff} "
-          f"rope_base={rope_theta} rms_eps={rms_eps}")
+          f"rope_base={rope_theta} rms_eps={rms_eps} "
+          f"rope_scaling={rs_kind or 'none'}")
 
     # safe_open in numpy framework chokes on bfloat16 (SmolLM2's storage
     # dtype). Read raw bytes, then decode bf16 → f32 manually: bf16 is
@@ -309,6 +323,27 @@ def main():
     w.add_rope_freq_base(rope_theta)
     w.add_rope_dimension_count(d_head)
     w.add_layer_norm_rms_eps(rms_eps)
+    # rope_scaling.* emission. Skipped silently when the HF config has
+    # no rope_scaling block (SmolLM2, Qwen2.5-short-ctx, etc.).
+    if rs_kind in ("linear", "yarn", "llama3"):
+        w.add_string("llama.rope.scaling.type", rs_kind)
+        rs_factor = float(rope_scaling["factor"])
+        w.add_float32("llama.rope.scaling.factor", rs_factor)
+        orig_max = rope_scaling.get("original_max_position_embeddings")
+        if orig_max is not None:
+            w.add_uint32("llama.rope.scaling.original_context_length", int(orig_max))
+        if rs_kind == "llama3":
+            w.add_float32("llama.rope.scaling.low_freq_factor",
+                          float(rope_scaling.get("low_freq_factor", 1.0)))
+            w.add_float32("llama.rope.scaling.high_freq_factor",
+                          float(rope_scaling.get("high_freq_factor", 4.0)))
+        elif rs_kind == "yarn":
+            w.add_float32("llama.rope.scaling.attn_factor",
+                          float(rope_scaling.get("attn_factor", 1.0)))
+            w.add_float32("llama.rope.scaling.beta_fast",
+                          float(rope_scaling.get("beta_fast", 32.0)))
+            w.add_float32("llama.rope.scaling.beta_slow",
+                          float(rope_scaling.get("beta_slow", 1.0)))
     w.add_file_type(gguf.LlamaFileType.ALL_F32)  # file_type metadata is informational
     w.add_uint32("llama.vocab_size", n_vocab)
     # Layout flag. When set, the loader knows 2D linear weights are in

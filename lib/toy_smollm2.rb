@@ -16,21 +16,120 @@
 require_relative "toy"
 
 module Toy
+  # RoPE-scaling parameters extracted from a model's GGUF metadata.
+  # FFI rope_ext callsites read every field; per-kind dispatch:
+  #
+  #   :none     — pass freq_scale=1.0, no freq_factors. Identical to
+  #               the pre-B1 behavior.
+  #   :linear   — freq_scale = 1/factor; no freq_factors.
+  #   :yarn     — uses every scalar (factor, ext_factor, attn_factor,
+  #               beta_fast, beta_slow, orig_max_pos); no freq_factors.
+  #   :llama3   — per-dim freq_factors tensor built once at session
+  #               setup via TinyNN.tnn_rope_freq_factors_llama3.
+  #
+  # The constructor takes every field positionally to keep Spinel's
+  # type analyzer happy — no default args (which would widen RbVal
+  # across the compiled program). Use .none / .linear / .llama3
+  # builders to construct the common cases.
+  class RopeScaling
+    attr_accessor :kind,
+                  :freq_scale, :orig_max_pos,
+                  :factor, :low_freq_factor, :high_freq_factor,
+                  :ext_factor, :attn_factor, :beta_fast, :beta_slow
+
+    def initialize(kind,
+                   freq_scale, orig_max_pos,
+                   factor, low_freq_factor, high_freq_factor,
+                   ext_factor, attn_factor, beta_fast, beta_slow)
+      @kind             = kind
+      @freq_scale       = freq_scale
+      @orig_max_pos     = orig_max_pos
+      @factor           = factor
+      @low_freq_factor  = low_freq_factor
+      @high_freq_factor = high_freq_factor
+      @ext_factor       = ext_factor
+      @attn_factor      = attn_factor
+      @beta_fast        = beta_fast
+      @beta_slow        = beta_slow
+    end
+
+    # No-scaling — used by SmolLM2, GPT-2, Qwen2-short-context, and any
+    # GGUF without rope_scaling.* metadata.
+    def self.none
+      Toy::RopeScaling.new(:none, 1.0, 0, 1.0, 1.0, 4.0, 0.0, 1.0, 32.0, 1.0)
+    end
+
+    # Linear / NTK / dynamic scaling — single factor. freq_scale =
+    # 1/factor (ggml's convention).
+    def self.linear(factor)
+      Toy::RopeScaling.new(:linear, 1.0 / factor, 0,
+                           factor, 1.0, 4.0, 0.0, 1.0, 32.0, 1.0)
+    end
+
+    # Llama-3 style. orig_max_pos = original_max_position_embeddings
+    # (e.g. 8192 for L3.2). The model passes freq_base + d_head to
+    # compute_llama3_freq_factors at session setup; we just carry the
+    # formula's inputs.
+    def self.llama3(factor, low_freq, high_freq, orig_max_pos)
+      Toy::RopeScaling.new(:llama3, 1.0, orig_max_pos,
+                           factor, low_freq, high_freq,
+                           0.0, 1.0, 32.0, 1.0)
+    end
+
+    # Compute the (d_head/2)-element per-dim freq_factors array for
+    # llama3-style scaling. Mirrors llama.cpp's
+    # llm_build_inp_rope_factors_llama3:
+    #   wavelen_i = 2π * freq_base^(2i / d_head)
+    #   if wavelen_i < orig_max / high_freq:  f = 1.0
+    #   elif wavelen_i > orig_max / low_freq: f = factor
+    #   else: smooth interp between the two endpoints
+    # Returns Array[Float] of length d_head/2. Caller uploads into a
+    # persistent tensor via tnn_upload_from_float_array.
+    def self.compute_llama3_freq_factors(d_head, freq_base,
+                                         orig_max_pos, factor,
+                                         low_freq, high_freq)
+      n = d_head / 2
+      omp_f         = orig_max_pos.to_f
+      low_wavelen   = omp_f / low_freq
+      high_wavelen  = omp_f / high_freq
+      out = [0.0]; out.pop  # type-pin Array[Float]
+      i = 0
+      while i < n
+        freq    = 1.0 / (freq_base ** ((2.0 * i.to_f) / d_head.to_f))
+        wavelen = 2.0 * Math::PI / freq
+        if wavelen < high_wavelen
+          out.push(1.0)
+        elsif wavelen > low_wavelen
+          out.push(factor)
+        else
+          smooth = (omp_f / wavelen - low_freq) / (high_freq - low_freq)
+          out.push((1.0 - smooth) * factor + smooth * 1.0)
+        end
+        i = i + 1
+      end
+      out
+    end
+  end
+
   class SmolLM2Config
     attr_accessor :vocab, :d_model, :n_heads, :n_kv, :d_ff,
-                  :n_layers, :ctx, :rope_base, :rms_eps
+                  :n_layers, :ctx, :rope_base, :rms_eps,
+                  :rope_scaling
 
     def initialize(vocab, d_model, n_heads, n_kv, d_ff, n_layers,
                    ctx, rope_base, rms_eps)
-      @vocab     = vocab
-      @d_model   = d_model
-      @n_heads   = n_heads
-      @n_kv      = n_kv
-      @d_ff      = d_ff
-      @n_layers  = n_layers
-      @ctx       = ctx
-      @rope_base = rope_base
-      @rms_eps   = rms_eps
+      @vocab        = vocab
+      @d_model      = d_model
+      @n_heads      = n_heads
+      @n_kv         = n_kv
+      @d_ff         = d_ff
+      @n_layers     = n_layers
+      @ctx          = ctx
+      @rope_base    = rope_base
+      @rms_eps      = rms_eps
+      # Default to no scaling. Callers set @rope_scaling after .new
+      # (the GGUF loader does this in SmolLM2ConfigLoader.read).
+      @rope_scaling = Toy::RopeScaling.none
     end
 
     # Convenience: the default that matches SmolLM2-135M on HF.

@@ -118,8 +118,22 @@ void  *tnn_diag_mask_inf(void *sess, void *a, int n_past);
 /* --- Llama-family ops --- */
 void  *tnn_silu(void *sess, void *a);                    /* SiLU: x * sigmoid(x). SwiGLU activation. */
 void  *tnn_mul (void *sess, void *a, void *b);           /* elementwise multiply c = a * b */
-void  *tnn_rope_ext(void *sess, void *a, void *pos, int n_dims, double freq_base);
-                                                         /* RoPE (NEOX/rotate_half mode); pos is int32[T] */
+void  *tnn_rope_ext(void *sess, void *a, void *pos, int n_dims,
+                    double freq_base, double freq_scale,
+                    double ext_factor, double attn_factor,
+                    double beta_fast, double beta_slow,
+                    void *freq_factors);
+                                                         /* RoPE (NEOX/rotate_half mode); pos is int32[T].
+                                                          * freq_factors is a (n_dims/2) f32 tensor or NULL.
+                                                          * For linear/dynamic: freq_scale = 1/factor, others default.
+                                                          * For YaRN: all six scalars matter.
+                                                          * For llama3-style: pass freq_factors built via
+                                                          * tnn_rope_freq_factors_llama3. */
+void  *tnn_rope_freq_factors_alloc(void *sess, int n_dims);
+                                                         /* Allocate a (n_dims/2)-elem F32 persistent tensor
+                                                          * in ctx_w. Ruby fills it via the standard upload
+                                                          * path. Math for llama3 lives in
+                                                          * Toy::RopeScaling.compute_llama3_freq_factors. */
 void  *tnn_input_1d_i32_ctx(void *sess, int n);          /* int32 vector in session ctx (positions for RoPE) */
 void  *tnn_concat(void *sess, void *a, void *b, int dim);
                                                          /* concat a and b along the given ne axis */
@@ -159,7 +173,10 @@ void  *tnn_rms_norm_back(void *sess, void *x, void *dy, double eps);
  * new compute tensor representing dx. */
 void  *tnn_silu_back(void *sess, void *x, void *dy);
 void  *tnn_rope_ext_back(void *sess, void *dy, void *pos, int n_dims,
-                         double freq_base);
+                         double freq_base, double freq_scale,
+                         double ext_factor, double attn_factor,
+                         double beta_fast, double beta_slow,
+                         void *freq_factors);
 
 /* Phase F0.4 — autograd via ggml_build_backward_expand. Mark loss +
  * params, build the forward graph (tnn_realize), then call build_backward

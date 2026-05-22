@@ -684,25 +684,55 @@ void *tnn_mul(void *sess, void *a, void *b)
  *   freq_base: theta base. 10000 (Llama-1/2), 100000 (SmolLM2),
  *              1000000 (Qwen2 long-context)
  *
- * Other ggml_rope_ext params get sensible defaults (no YaRN scaling). */
-void *tnn_rope_ext(void *sess, void *a, void *pos, int n_dims, double freq_base)
+ * Pass freq_scale=1.0, ext_factor=0.0, attn_factor=1.0, beta_fast=32.0,
+ * beta_slow=1.0, freq_factors=NULL for the no-scaling (vanilla GPT-2 /
+ * SmolLM2 / Qwen2-short-context) default. YaRN tunes the scalars;
+ * llama3 + LongRoPE supply freq_factors via tnn_rope_freq_factors_*. */
+void *tnn_rope_ext(void *sess, void *a, void *pos, int n_dims,
+                   double freq_base, double freq_scale,
+                   double ext_factor, double attn_factor,
+                   double beta_fast, double beta_slow,
+                   void *freq_factors)
 {
     if (!sess || !a || !pos) return NULL;
     tnn_session *s = (tnn_session *)sess;
     const int mode = 2;   /* GGML_ROPE_TYPE_NEOX — matches HF llama rotate_half */
+    /* n_ctx_orig is only consulted when ext_factor != 0 (YaRN). Pass
+     * 0 when no YaRN is in play; callers using YaRN encode orig_ctx
+     * via the freq_factors path or pass it via attn_factor scaling. */
+    const int n_ctx_orig = 0;
     return (void *)ggml_rope_ext(s->ctx,
                                   (struct ggml_tensor *)a,
                                   (struct ggml_tensor *)pos,
-                                  NULL,                /* no per-dim freq scaling */
+                                  (struct ggml_tensor *)freq_factors,
                                   n_dims,
                                   mode,
-                                  0,                   /* n_ctx_orig (YaRN, unused) */
+                                  n_ctx_orig,
                                   (float)freq_base,
-                                  1.0f,                /* freq_scale */
-                                  0.0f,                /* ext_factor (no YaRN) */
-                                  1.0f,                /* attn_factor */
-                                  32.0f,               /* beta_fast (YaRN default) */
-                                  1.0f);               /* beta_slow (YaRN default) */
+                                  (float)freq_scale,
+                                  (float)ext_factor,
+                                  (float)attn_factor,
+                                  (float)beta_fast,
+                                  (float)beta_slow);
+}
+
+/* Allocate a persistent (n_dims/2)-element F32 tensor in ctx_w to hold
+ * RoPE freq_factors for llama3-style or LongRoPE scaling. Must be
+ * called BEFORE tnn_finalize_weights, like any other persistent.
+ *
+ * The values are computed by the Ruby side (see
+ * Toy::RopeScaling.compute_llama3_freq_factors) and uploaded via the
+ * standard tnn_upload_from_float_array path after finalize. Doing the
+ * math in Ruby (i) keeps the C wrapper simple, (ii) avoids the
+ * "write to t->data with no_alloc=true" trap, and (iii) makes the
+ * scaling formula trivially testable from MRI without recompiling. */
+void *tnn_rope_freq_factors_alloc(void *sess, int n_dims)
+{
+    if (!sess || n_dims <= 0) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    if (s->weights_finalized) return NULL;
+    return (void *)ggml_new_tensor_1d(s->ctx_w, GGML_TYPE_F32,
+                                      (int64_t)(n_dims / 2));
 }
 
 /* Allocate a 1-D int32 tensor in the *session* context. Used to hold
@@ -780,28 +810,32 @@ void *tnn_silu_back(void *sess, void *x, void *dy)
 }
 
 /* Backward for RoPE-NEOX. Same arg convention as tnn_rope_ext but
- * also takes dy (gradient of the rope_ext output). Returns dx. The
- * YaRN-related params are pinned to no-scaling defaults to match
- * tnn_rope_ext. */
+ * also takes dy (gradient of the rope_ext output). Returns dx.
+ * Callers must pass the same YaRN/scaling args used in the forward;
+ * mismatch silently corrupts gradients. */
 void *tnn_rope_ext_back(void *sess, void *dy, void *pos, int n_dims,
-                        double freq_base)
+                        double freq_base, double freq_scale,
+                        double ext_factor, double attn_factor,
+                        double beta_fast, double beta_slow,
+                        void *freq_factors)
 {
     if (!sess || !dy || !pos) return NULL;
     tnn_session *s = (tnn_session *)sess;
     const int mode = 2;   /* GGML_ROPE_TYPE_NEOX */
+    const int n_ctx_orig = 0;
     return (void *)ggml_rope_ext_back(s->ctx,
                                        (struct ggml_tensor *)dy,
                                        (struct ggml_tensor *)pos,
-                                       NULL,                /* freq factors */
+                                       (struct ggml_tensor *)freq_factors,
                                        n_dims,
                                        mode,
-                                       0,                   /* n_ctx_orig */
+                                       n_ctx_orig,
                                        (float)freq_base,
-                                       1.0f,                /* freq_scale */
-                                       0.0f,                /* ext_factor */
-                                       1.0f,                /* attn_factor */
-                                       32.0f,               /* beta_fast */
-                                       1.0f);               /* beta_slow */
+                                       (float)freq_scale,
+                                       (float)ext_factor,
+                                       (float)attn_factor,
+                                       (float)beta_fast,
+                                       (float)beta_slow);
 }
 
 void *tnn_get_rows(void *sess, void *table, void *idx)

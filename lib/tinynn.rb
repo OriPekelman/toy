@@ -359,7 +359,10 @@ module TinyNN
   # Llama-family ops
   ffi_func :tnn_silu,             [:ptr, :ptr],             :ptr
   ffi_func :tnn_mul,              [:ptr, :ptr, :ptr],       :ptr
-  ffi_func :tnn_rope_ext,         [:ptr, :ptr, :ptr, :int, :double], :ptr
+  ffi_func :tnn_rope_ext,         [:ptr, :ptr, :ptr, :int,
+                                   :double, :double, :double, :double,
+                                   :double, :double, :ptr], :ptr
+  ffi_func :tnn_rope_freq_factors_alloc, [:ptr, :int], :ptr
   ffi_func :tnn_input_1d_i32_ctx, [:ptr, :int],             :ptr
   ffi_func :tnn_concat,           [:ptr, :ptr, :ptr, :int], :ptr
   ffi_func :tnn_null_ptr,         [],                       :ptr
@@ -378,7 +381,9 @@ module TinyNN
   ffi_func :tnn_rms_norm_back,    [:ptr, :ptr, :ptr, :double], :ptr
   ffi_func :tnn_softmax_back,     [:ptr, :ptr, :ptr],       :ptr
   ffi_func :tnn_silu_back,        [:ptr, :ptr, :ptr],       :ptr
-  ffi_func :tnn_rope_ext_back,    [:ptr, :ptr, :ptr, :int, :double], :ptr
+  ffi_func :tnn_rope_ext_back,    [:ptr, :ptr, :ptr, :int,
+                                   :double, :double, :double, :double,
+                                   :double, :double, :ptr], :ptr
   # Phase F0.4 — autograd
   ffi_func :tnn_sum,                  [:ptr, :ptr],             :ptr
   ffi_func :tnn_set_loss,             [:ptr],                   :void
