@@ -122,7 +122,7 @@ module Sampler
     pass = 0
     while pass < k
       best_i = -1
-      best_v = -1.0e30
+      best_v = NEG_INF_SCORE
       j = 0
       while j < n
         v = snapshot[j]
@@ -137,7 +137,7 @@ module Sampler
         return logits
       end
       kept.push(best_i)
-      snapshot[best_i] = -1.0e30
+      snapshot[best_i] = NEG_INF_SCORE
       pass = pass + 1
     end
     # Build keep-set as a flag array
@@ -156,7 +156,7 @@ module Sampler
     j = 0
     while j < n
       if !keep[j]
-        logits.flat[j] = -1.0e30
+        logits.flat[j] = NEG_INF_SCORE
       end
       j = j + 1
     end
@@ -173,7 +173,7 @@ module Sampler
     # softmax in place into a copy
     probs = [0.0]
     probs.pop
-    max_v = -1.0e30
+    max_v = NEG_INF_SCORE
     j = 0
     while j < n
       v = logits.flat[j]
@@ -249,7 +249,7 @@ module Sampler
     j = 0
     while j < n
       if !keep[j]
-        logits.flat[j] = -1.0e30
+        logits.flat[j] = NEG_INF_SCORE
       end
       j = j + 1
     end
@@ -284,7 +284,7 @@ module Sampler
   def self.multinomial(logits, ctx)
     n = logits.ncols
     # softmax
-    max_v = -1.0e30
+    max_v = NEG_INF_SCORE
     j = 0
     while j < n
       v = logits.flat[j]

@@ -21,6 +21,32 @@
 # true.  Off by default to keep the toy zero-dep; flip on to use the
 # bridge and accelerate at real-LLM scale (see tinynn/README.md).
 USE_FFI_MATMUL = false
+
+# GeLU tanh-approximation constants (the GPT-2 formula; identical to
+# torch.nn.functional.gelu(..., approximate='tanh'). Defined here so
+# the forward, backward, and any per-tensor variant agree byte-for-byte.
+#
+#   gelu(x) = 0.5 * x * (1 + tanh( GELU_C * (x + GELU_K * x^3) ))
+#
+GELU_C  = 0.7978845608028654   # sqrt(2/π)
+GELU_K  = 0.044715             # cubic coefficient
+GELU_DK = 0.134145             # 3 * GELU_K  (derivative of cubic term)
+
+# RMSNorm / LayerNorm default epsilon. Matches Llama / SmolLM2 /
+# GPT-2 conventions. Individual instances can override via their
+# own @eps ivar; this is the fallback used by the row-level helpers.
+RMS_EPS_DEFAULT = 1.0e-5
+
+# Numerical floor for probabilities going into log() in cross_entropy.
+# 1e-12 is safely above the F32 / F64 underflow threshold and
+# matches PyTorch's "label smoothing" default clip.
+LOG_PROB_FLOOR = 1.0e-12
+
+# Causal-mask sentinel: attention scores set to this become ~0 after
+# softmax (Math.exp(-1e30) underflows cleanly to 0.0). Avoid -Infinity
+# because (Float::INFINITY - Float::INFINITY) is NaN if downstream
+# code rescales or subtracts max.
+NEG_INF_SCORE = -1.0e30
 # tinynn is always required so FFNFFICache is defined (it lives in
 # lib/tinynn.rb). The require itself doesn't run any FFI code; only
 # feed_forward_ffi's USE_FFI_MATMUL-gated branch does. With
@@ -550,7 +576,7 @@ class TransformerLM
   # RMSNorm: y_j = gamma_j * x_j / sqrt(mean(x²) + eps),  per row.
   # Returns a NormResult holding the normed Mat and the per-row rms.
   def rms_norm(x, gamma)
-    eps = 1.0e-5
+    eps = RMS_EPS_DEFAULT
     d = gamma.length
     t = x.nrows
     rms = Array.new(t, 0.0)
@@ -620,7 +646,7 @@ class TransformerLM
       first_masked = query_offset + i + 1
       j = first_masked
       while j < n
-        scores.flat[i * n + j] = -1.0e30
+        scores.flat[i * n + j] = NEG_INF_SCORE
         j += 1
       end
       i += 1
@@ -692,12 +718,11 @@ class TransformerLM
   def feed_forward(h, block)
     pre = h.matmul(block.w_ff1)
     hidden = Mat.new(pre.nrows, pre.ncols)
-    c = 0.7978845608028654   # sqrt(2/pi)
     n = pre.nrows * pre.ncols
     i = 0
     while i < n
       x = pre.flat[i]
-      u = c * (x + 0.044715 * x * x * x)
+      u = GELU_C * (x + GELU_K * x * x * x)
       hidden.flat[i] = 0.5 * x * (1.0 + Math.tanh(u))
       i += 1
     end
@@ -840,8 +865,8 @@ class TransformerLM
       target = token_ids[i + 1]
       target_logit = logits.flat[base + target]
       pt = Math.exp(target_logit - mx) / sum
-      if pt < 1.0e-12
-        pt = 1.0e-12
+      if pt < LOG_PROB_FLOOR
+        pt = LOG_PROB_FLOOR
       end
       total_loss -= Math.log(pt)
 
@@ -964,18 +989,18 @@ class TransformerLM
     d_w_ff2  = ff_cache.hidden.t_matmul(d_ff_out)
     d_hidden = d_ff_out.matmul_t(block.w_ff2)
 
-    # GeLU' (tanh approximation):
-    #   gelu(x) = 0.5 x (1 + t),                t = tanh(u),  u = c (x + 0.044715 x³)
-    #   gelu'(x) = 0.5 (1 + t) + 0.5 x (1 - t²) · c (1 + 0.134145 x²)
+    # GeLU' (tanh approximation; see top-of-file GELU_* constants):
+    #   gelu(x)  = 0.5 x (1 + t),                t = tanh(u),  u = C (x + K x³)
+    #   gelu'(x) = 0.5 (1 + t) + 0.5 x (1 - t²) · C (1 + DK x²)
+    # where C = sqrt(2/π), K = 0.044715, DK = 3 K = 0.134145.
     d_pre = Mat.new(d_hidden.nrows, d_hidden.ncols)
-    c = 0.7978845608028654
     n = d_hidden.nrows * d_hidden.ncols
     i = 0
     while i < n
       x     = ff_cache.pre.flat[i]
-      u     = c * (x + 0.044715 * x * x * x)
+      u     = GELU_C * (x + GELU_K * x * x * x)
       t     = Math.tanh(u)
-      du_dx = c * (1.0 + 0.134145 * x * x)
+      du_dx = GELU_C * (1.0 + GELU_DK * x * x)
       deriv = 0.5 * (1.0 + t) + 0.5 * x * (1.0 - t * t) * du_dx
       d_pre.flat[i] = d_hidden.flat[i] * deriv
       i += 1

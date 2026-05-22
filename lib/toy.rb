@@ -33,7 +33,7 @@ module Toy
 
     def initialize(d)
       @d     = d
-      @eps   = 1.0e-5
+      @eps   = RMS_EPS_DEFAULT
       @gamma = Array.new(d, 1.0)
       @beta  = Array.new(d, 0.0)
     end
@@ -359,7 +359,7 @@ module Toy
     # literal pins Spinel's type inference.
     def initialize(d)
       @d     = d
-      @eps   = 1.0e-5
+      @eps   = RMS_EPS_DEFAULT
       @gamma = Array.new(d, 1.0)
     end
 
@@ -819,7 +819,7 @@ module Toy
     while i < t
       j = i + 1
       while j < n
-        scores.flat[i * n + j] = -1.0e30
+        scores.flat[i * n + j] = NEG_INF_SCORE
         j += 1
       end
       i += 1
@@ -860,15 +860,15 @@ module Toy
   end
 
   # GeLU (tanh approximation — HF's gelu_new). Returns a fresh Mat.
-  #   y = 0.5 x (1 + tanh( sqrt(2/π) (x + 0.044715 x^3) ))
+  # See lib/transformer.rb for GELU_C / GELU_K / GELU_DK constants
+  # used here.
   def self.gelu_new(x)
     n   = x.nrows * x.ncols
     out = Mat.new(x.nrows, x.ncols)
-    c = 0.7978845608028654       # sqrt(2/π)
     i = 0
     while i < n
       v = x.flat[i]
-      u = c * (v + 0.044715 * v * v * v)
+      u = GELU_C * (v + GELU_K * v * v * v)
       out.flat[i] = 0.5 * v * (1.0 + Math.tanh(u))
       i += 1
     end

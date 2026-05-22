@@ -74,7 +74,7 @@ class GPT2LM
     @d_head         = d_model / n_heads
     @n_layers       = n_layers
     @context_length = context_length
-    @ln_eps         = 1.0e-5
+    @ln_eps         = RMS_EPS_DEFAULT  # LayerNorm epsilon; same value
 
     @token_embed = Mat.new(vocab_size, d_model)
     @pos_embed   = Mat.new(context_length, d_model)
@@ -260,19 +260,18 @@ class GPT2LM
     proj
   end
 
-  # FFN: gelu(h · W_ff1 + b_ff1) · W_ff2 + b_ff2. GPT-2's gelu_new is
-  # the tanh approximation: 0.5 x (1 + tanh(c (x + 0.044715 x³))),
-  # c = sqrt(2 / pi).
+  # FFN: gelu_new(h · W_ff1 + b_ff1) · W_ff2 + b_ff2.
+  # GeLU is the tanh approximation; constants GELU_C / GELU_K live in
+  # lib/transformer.rb.
   def feed_forward(h, block)
     pre = h.matmul(block.w_ff1)
     add_bias!(pre, block.b_ff1)
     hidden = Mat.new(pre.nrows, pre.ncols)
-    c = 0.7978845608028654
     n = pre.nrows * pre.ncols
     i = 0
     while i < n
       x = pre.flat[i]
-      u = c * (x + 0.044715 * x * x * x)
+      u = GELU_C * (x + GELU_K * x * x * x)
       hidden.flat[i] = 0.5 * x * (1.0 + Math.tanh(u))
       i += 1
     end
