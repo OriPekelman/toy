@@ -29,6 +29,9 @@ Project-level READMEs sit next to their code: [`README.md`](../README.md),
 
 ## Roadmap (future work)
 
+- [`roadmap/modern-llm-primitives-2026-05-22.md`](roadmap/modern-llm-primitives-2026-05-22.md) —
+  what's missing to run Qwen3, DeepSeek V3, Llama 3.3/4, Gemma 2/3,
+  Mixtral, Phi-3, GLM-4. Three priority bindings unblock most of it.
 - [`roadmap/scout-small-models.md`](roadmap/scout-small-models.md) —
   next-target survey across modern small models.
 - [`roadmap/lowerer-design.md`](roadmap/lowerer-design.md) — a

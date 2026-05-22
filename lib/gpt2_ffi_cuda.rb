@@ -1,14 +1,20 @@
-# GPT2FullForwardFFICacheCuda — CUDA mirror of `lib/gpt2_ffi.rb`.
+# Persistent ggml graph for GPT2LM inference. Mirrors the existing
+# FullForwardFFICache in lib/tinynn.rb (which is RMSNorm + no-bias),
+# but with the additions GPT-2 needs:
 #
-# Mechanically the same as gpt2_ffi.rb modulo:
-#   * `TinyNN` → `TinyNNCuda`
-#   * Class names suffixed `Cuda` (Spinel collapses same-named classes
-#     across modules; the suffix prevents that)
-#   * `require_relative "tinynn"` → `..."tinynn_cuda"`
+#   - LayerNorm (gamma + beta) instead of RMSNorm
+#   - Bias terms after every Linear: q/k/v/o, ff_up/ff_down
+#   - All biases are 1-D tensors that ggml_add broadcasts across T
+#     via ggml_can_repeat(bias, activation) — no extra op needed.
 #
-# Phase 0 replaces both files with one generic `TransformerLM` taking
-# a backend flag; see `docs/design/arch-struct.md`. Until then, any
-# change here MUST be mirrored to gpt2_ffi.rb (and vice versa).
+# Single persistent session holds all weights in ctx_w; one compute
+# graph at a fixed T_SEQ; per-step inputs are token_ids only. Pad to
+# T_SEQ if the actual sequence is shorter.
+#
+# No KV cache yet — each forward recomputes attention over the full
+# T_SEQ. Per-step cost is constant in prompt length but linear in
+# T_SEQ. The KV-cache version reuses the same persistent weights and
+# only rebuilds the compute graph (cheap — metadata only).
 
 require_relative "transformer"
 require_relative "gpt2"
