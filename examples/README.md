@@ -12,7 +12,7 @@ runtime to install — `make`, run.
 | `02_train_custom_gpt.rb` | Train a tiny GPT from scratch on TinyStories. Bumping EPOCHS makes a model that writes English. | ~3 min default |
 | `03_finetune_lora.rb`    | LoRA / **QLoRA** fine-tune via the sequence-mode forward graph (CPU). Needs a native-layout GGUF — see prep step below. | ~30 s |
 | `03_finetune_lora_cuda.rb` | CUDA mirror of the above. F32 by default; pass `Q8=1` for QLoRA (Q8-stays-Q8 path via `realize_for_q8_copy`). | ~10 s on GB10 |
-| `04_serve_http.rb`       | HTTP API reference shape. **Currently segfaults at startup** — Tep/Spinel regression, see file header. | — |
+| `04_serve_http.rb`       | HTTP API reference shape. **Currently segfaults at startup** — Spinel codegen bug (matz/spinel#647), see file header. | — |
 | `05_list_models.rb`      | Walk HF / Ollama / LM Studio / `./data` / `$TOY_MODEL_DIR` caches; print every GGUF with family + params + size. | < 1 s |
 
 ## First run — find or fetch a model
@@ -108,11 +108,14 @@ training afterwards. Pass `Q8=1` to the CUDA example to switch paths.
 
 ## Serving
 
-> **Status:** `example_serve` currently segfaults at Tep startup
-> against the present Spinel — same regression that affects the
-> Tep demos. The example file is preserved as the reference shape
-> (handler + `Tep.run!`) for when upstream restores compatibility.
-> Track via the Tep repo.
+> **Status:** `example_serve` segfaults at startup on the current
+> Spinel — codegen bug filed as
+> [matz/spinel#647](https://github.com/matz/spinel/issues/647).
+> Tep itself is fine: `tep_demo/hello` works end-to-end. The
+> crash is `CFG_VOCAB = cfg.vocab` at top level hoisting above
+> the `cfg = ...` assignment. A local-var workaround (see the
+> file header) recovers it; we keep the constant form so the
+> regression check stays sharp.
 
 The intended shape:
 

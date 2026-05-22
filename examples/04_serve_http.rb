@@ -16,14 +16,17 @@
 # client-side (or wire in lib/tokenizer.rb if you need it
 # server-side). Same choice tep_demo/openai_api_smollm2 makes.
 #
-# Current status (2026-05-22): builds, but the Tep HTTP layer
-# segfaults at startup against the current Spinel — a regression
-# that also affects `tep_demo/openai_api_smollm2` and
-# `tep_demo/hello`. The SHAPE preserved here (model + Tep handler +
-# Tep.run!) is the reference for how to wire serving once the
-# upstream Tep+Spinel compatibility is restored. Until then, use
-# `tep_demo/openai_api_smollm2` against an older Spinel pin, or
-# call the decode loop directly (see `examples/01_inference.rb`).
+# Current status (2026-05-22): segfaults at startup on Spinel 8ff3a4e.
+# Tep itself is fine (`tep_demo/hello` works end-to-end on the same
+# Spinel). The crash is a Spinel codegen bug — `CFG_VOCAB = cfg.vocab`
+# at top level hoists the const init above the `cfg = ...` assignment,
+# so it reads from a zero-init struct and the call chain SIGSEGVs
+# through FFI. Filed as matz/spinel#647.
+#
+# Workaround if you want to test the serve shape today: replace the
+# `CFG_VOCAB = cfg.vocab` line with `cfg_vocab = cfg.vocab` (a local),
+# then reference `cfg_vocab` in the handler. The example as written
+# preserves the constant form intentionally as a regression check.
 
 require_relative "../tep_demo/_tep_lib/tep"
 require_relative "../lib/toy"
