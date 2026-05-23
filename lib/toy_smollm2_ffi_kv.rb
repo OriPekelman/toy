@@ -225,7 +225,7 @@ class SmolLM2KVFFICache
     @d_ff       = cfg.d_ff
     @n_heads    = cfg.n_heads
     @n_kv       = cfg.n_kv
-    @d_head     = cfg.d_model / cfg.n_heads
+    @d_head     = cfg.head_dim
     @group_size = cfg.n_heads / cfg.n_kv
     @n_layers   = cfg.n_layers
     @vocab_size = cfg.vocab

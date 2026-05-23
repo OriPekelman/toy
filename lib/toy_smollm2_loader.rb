@@ -526,11 +526,20 @@ module SmolLM2ConfigLoader
     ctx       = TinyNN.tnn_gguf_get_u32(handle, "llama.context_length")
     rope_base = TinyNN.tnn_gguf_get_f32(handle, "llama.rope.freq_base")
     rms_eps   = TinyNN.tnn_gguf_get_f32(handle, "llama.attention.layer_norm_rms_epsilon")
+    # M1.1: prefer explicit head_dim (llama.attention.key_length) when
+    # present. Qwen3 sets head_dim=128 explicitly even though
+    # hidden_size/num_heads = 64. Returns -1 when key absent; we treat
+    # that as "use the default" (d_model / n_heads, computed in
+    # SmolLM2Config.initialize).
+    head_dim = TinyNN.tnn_gguf_get_u32(handle, "llama.attention.key_length")
     scaling   = read_rope_scaling(handle)
     TinyNN.tnn_gguf_free(handle)
     cfg = Toy::SmolLM2Config.new(vocab, d_model, n_head, n_kv, d_ff, n_layer,
                                  ctx, rope_base, rms_eps)
     cfg.rope_scaling = scaling
+    if head_dim > 0
+      cfg.head_dim = head_dim
+    end
     cfg
   end
 end

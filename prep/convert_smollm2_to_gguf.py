@@ -248,7 +248,13 @@ def main():
     n_ff        = cfg["intermediate_size"]
     rope_theta  = float(cfg.get("rope_theta", 10000.0))
     rms_eps     = float(cfg.get("rms_norm_eps", 1e-5))
-    d_head      = n_embd // n_head
+    # M1.1: prefer explicit head_dim when HF sets it (Qwen3 does:
+    # head_dim=128 with hidden_size=1024 / num_heads=16 = 64 — the
+    # computed value is half the actual). Fall back to the computed
+    # value for models that don't set the field (SmolLM2, Llama-3.x,
+    # Qwen2.5 all match hidden_size/num_heads).
+    d_head      = int(cfg.get("head_dim", n_embd // n_head))
+    tie_embed   = bool(cfg.get("tie_word_embeddings", False))
     # rope_scaling.* propagation. HF config carries one of:
     #   {"rope_type":"llama3", "factor":32.0, "low_freq_factor":1.0,
     #    "high_freq_factor":4.0, "original_max_position_embeddings":8192}
@@ -322,6 +328,12 @@ def main():
     w.add_head_count_kv(n_kv)
     w.add_rope_freq_base(rope_theta)
     w.add_rope_dimension_count(d_head)
+    # M1.1: explicit head_dim. Mirrors llama.cpp's convention of
+    # `llama.attention.key_length` (and `value_length`, equal for
+    # all models we target). Qwen3 needs this because head_dim is
+    # NOT hidden_size/num_heads.
+    w.add_uint32("llama.attention.key_length", d_head)
+    w.add_uint32("llama.attention.value_length", d_head)
     w.add_layer_norm_rms_eps(rms_eps)
     # rope_scaling.* emission. Skipped silently when the HF config has
     # no rope_scaling block (SmolLM2, Qwen2.5-short-ctx, etc.).
@@ -381,9 +393,17 @@ def main():
     # HF orientation [V, D] so the Ruby side can do matmul_t against
     # x_final the same way as the tied case (token_embed.weight is
     # also [V, D] and we already matmul_t against it).
-    if "lm_head.weight" in blobs:
+    # M1.1: tie_word_embeddings handling. Some models (Qwen3) ship an
+    # lm_head.weight tensor in their safetensors for compat with
+    # frameworks that don't auto-tie, but the HF config sets
+    # tie_word_embeddings=true. Trust the config flag, not the tensor
+    # presence — emitting output.weight in tied mode would give us
+    # two copies and the inference path would diverge from HF.
+    if "lm_head.weight" in blobs and not tie_embed:
         print(f"      lm_head.weight present (untied embeddings)")
         add("output.weight", take("lm_head.weight"))               # [V, D]
+    elif tie_embed:
+        print(f"      tie_word_embeddings=true (skipping lm_head)")
 
     # Qwen2 / Qwen2.5 has biases on q_proj / k_proj / v_proj (o_proj
     # has none). Detect once via block 0; the architecture is uniform

@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+### M1.1 — explicit head_dim + tied-embeddings handling (partial)
+
+- `Toy::SmolLM2Config` gains `head_dim` field (defaults to
+  `d_model / n_heads`; loader overrides from GGUF).
+- `SmolLM2ConfigLoader.read` reads `llama.attention.key_length`
+  (llama.cpp convention) when present; falls back to the computed
+  value for SmolLM2 / Llama-3.x / Qwen2.5 (all match
+  hidden_size/num_heads).
+- `lib/toy_smollm2_ffi_kv.rb` and `lib/llama_seq_forward_ffi.rb`
+  now read `cfg.head_dim` everywhere they used to compute
+  `cfg.d_model / cfg.n_heads`. Behaviour unchanged for models
+  whose explicit head_dim matches the computed one.
+- `prep/convert_smollm2_to_gguf.py` emits
+  `llama.attention.key_length` + `llama.attention.value_length`
+  GGUF keys (one value, written twice — every model on the
+  roadmap has K-dim == V-dim).
+- Converter also handles `tie_word_embeddings: true` correctly:
+  skips emitting `output.weight` even when `lm_head.weight` is
+  in the safetensors. Trusts the config flag (as llama.cpp does).
+
+Qwen3-0.6B converts with the right head_dim=128 and tied
+embeddings, but inference still crashes in
+`sp_ToyLM_decode_step`. M1.1 stays open; root cause appears to
+be deeper than the converter / loader layer (suspect ToyLM /
+decode-step assumes specific shape invariants).
+
+Bench passes (±2% across all metrics). Existing models —
+SmolLM2, Llama-3.2, Qwen2.5 — produce identical text.
+
 ### M1 — Qwen3 dense plumbing (QK-norm, partial)
 
 - `SmolLM2KVBlockFFI` now carries `t_q_norm_gamma` + `t_k_norm_gamma`

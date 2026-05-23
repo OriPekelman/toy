@@ -114,7 +114,15 @@ module Toy
   class SmolLM2Config
     attr_accessor :vocab, :d_model, :n_heads, :n_kv, :d_ff,
                   :n_layers, :ctx, :rope_base, :rms_eps,
-                  :rope_scaling
+                  :rope_scaling,
+                  # M1.1: explicit head_dim. Qwen3 sets head_dim=128 in
+                  # its HF config even though hidden_size/num_heads=64;
+                  # if we computed from those we'd get the wrong d_head
+                  # and Q/K/V projections would be half-sized. Default
+                  # = d_model / n_heads (set in initialize); the GGUF
+                  # loader overrides via cfg.head_dim = … when the
+                  # `llama.attention.key_length` key is present.
+                  :head_dim
 
     def initialize(vocab, d_model, n_heads, n_kv, d_ff, n_layers,
                    ctx, rope_base, rms_eps)
@@ -127,6 +135,9 @@ module Toy
       @ctx          = ctx
       @rope_base    = rope_base
       @rms_eps      = rms_eps
+      # Default head_dim: hidden_size / num_heads. Override via
+      # cfg.head_dim = N when the GGUF carries an explicit key.
+      @head_dim     = n_heads > 0 ? d_model / n_heads : 0
       # Default to no scaling. Callers set @rope_scaling after .new
       # (the GGUF loader does this in SmolLM2ConfigLoader.read).
       @rope_scaling = Toy::RopeScaling.none
