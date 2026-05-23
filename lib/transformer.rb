@@ -57,6 +57,11 @@ NEG_INF_SCORE = -1.0e30
 # lib/tinynn.rb). Set USE_FFI_MATMUL=true to enable FFI dispatch.
 require_relative "tinynn"
 
+# One-shot diagnostic: when MAT_SHAPES_ON=true, every matmul prints
+# its shape triple on stdout (post-process with sort | uniq -c). Off
+# by default; the const must exist for Spinel to resolve the read.
+MAT_SHAPES_ON = (ENV["MAT_SHAPES"] || "") == "1"
+
 # ============================================================================
 #   Mat: 2D float matrix, flat-storage. Indexed as flat[i * ncols + j].
 # ============================================================================
@@ -93,9 +98,11 @@ class Mat
   # (m × n) · (n × p) → (m × p) — using local accumulator (faster than
   # repeated indexed writes since each += would re-load the receiver).
   def matmul(other)
+    _trace = TinyNN.tnn_trace_begin("Mat.matmul")
     m = @nrows
     n = @ncols
     p = other.ncols
+    if MAT_SHAPES_ON; puts "MAT_SHAPE matmul " + m.to_s + " " + n.to_s + " " + p.to_s; end
     out = Mat.new(m, p)
     i = 0
     while i < m
@@ -112,14 +119,17 @@ class Mat
       end
       i += 1
     end
+    TinyNN.tnn_trace_end("Mat.matmul", _trace)
     out
   end
 
   # self · otherᵀ where other has the same column count as self.
   def matmul_t(other)
+    _trace = TinyNN.tnn_trace_begin("Mat.matmul_t")
     m = @nrows
     n = @ncols
     p = other.nrows                # other is (p × n) so otherᵀ is (n × p)
+    if MAT_SHAPES_ON; puts "MAT_SHAPE matmul_t " + m.to_s + " " + n.to_s + " " + p.to_s; end
     out = Mat.new(m, p)
     i = 0
     while i < m
@@ -136,14 +146,17 @@ class Mat
       end
       i += 1
     end
+    TinyNN.tnn_trace_end("Mat.matmul_t", _trace)
     out
   end
 
   # selfᵀ · other where self is (n × m) and other is (n × p) → (m × p)
   def t_matmul(other)
+    _trace = TinyNN.tnn_trace_begin("Mat.t_matmul")
     n = @nrows
     m = @ncols
     p = other.ncols
+    if MAT_SHAPES_ON; puts "MAT_SHAPE t_matmul " + n.to_s + " " + m.to_s + " " + p.to_s; end
     out = Mat.new(m, p)
     i = 0
     while i < m
@@ -160,6 +173,7 @@ class Mat
       end
       i += 1
     end
+    TinyNN.tnn_trace_end("Mat.t_matmul", _trace)
     out
   end
 
@@ -183,6 +197,7 @@ class Mat
   # mismatch). add! (mutating, suffix-banged) is unaffected since
   # method NAME (not signature) is what collides.
   def plus(other)
+    _trace = TinyNN.tnn_trace_begin("Mat.plus")
     out = Mat.new(@nrows, @ncols)
     n = @nrows * @ncols
     i = 0
@@ -190,26 +205,31 @@ class Mat
       out.flat[i] = @flat[i] + other.flat[i]
       i += 1
     end
+    TinyNN.tnn_trace_end("Mat.plus", _trace)
     out
   end
 
   def add!(other)
+    _trace = TinyNN.tnn_trace_begin("Mat.add!")
     n = @nrows * @ncols
     i = 0
     while i < n
       @flat[i] += other.flat[i]
       i += 1
     end
+    TinyNN.tnn_trace_end("Mat.add!", _trace)
     self
   end
 
   def scale!(s)
+    _trace = TinyNN.tnn_trace_begin("Mat.scale!")
     n = @nrows * @ncols
     i = 0
     while i < n
       @flat[i] = @flat[i] * s
       i += 1
     end
+    TinyNN.tnn_trace_end("Mat.scale!", _trace)
     self
   end
 

@@ -7,9 +7,11 @@
 #include <string.h>
 #include <time.h>
 
-/* The ring is fixed-size for predictable memory. 65536 * 24 bytes =
- * 1.5 MB — small enough to keep the process footprint clean. */
-#define TNN_TRACE_BUF_SIZE 65536
+/* The ring is fixed-size for predictable memory. 1048576 * 24 bytes =
+ * 24 MB. Sized for "one full native-Mat training run under trace"
+ * which is ~6 Mat-ops × ~100/step × ~hundreds of steps. FFI workloads
+ * use far fewer events; this just sets the ceiling. */
+#define TNN_TRACE_BUF_SIZE (1024 * 1024)
 
 typedef struct {
     const char *name;

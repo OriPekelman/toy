@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### Bench harness + Lowerer evidence
+
+- `bench/` directory with three Spinel-compiled benches —
+  `lora_step.rb` (training step ms), `inference.rb` (toks/sec), and
+  `tokenizer.rb` (encode μs/token). Each emits `BENCH metric value`
+  lines on stdout; the orchestrator at `bench/check.rb` runs them
+  and compares to `bench/baselines.csv`, exiting 1 on any metric
+  past its per-metric tolerance.
+- `make bench` runs the gate; `make bench-update` rewrites the
+  baselines; `make bench-report` runs without gating (handy for
+  local exploration). Suggested use: invoke before pushing
+  perf-sensitive changes; the CSV diffs cleanly in git so
+  re-baselining is a normal commit.
+- `docs/roadmap/lowerer-evidence-2026-05-23.md`: trace-driven
+  evidence on whether the full Lowerer pays for itself.
+  Measured `example_train` (native-Mat path) — 82.7 % of step
+  wallclock is in three matmul methods, 51 % of all matmul
+  calls share one (N, P) inner-dim pair. But the comparable
+  alternative (FFI the matmul through ggml) gives 10–100×
+  for an order of magnitude less code than the ~500-LOC
+  Lowerer. Verdict: split the Lowerer's three claimed benefits
+  into proportionate tools (P2 to FFI Mat ops; D1 standalone
+  card emitter; Spinel landmines wait for upstream).
+- `lib/transformer.rb`: six hot `Mat` methods (`matmul`,
+  `matmul_t`, `t_matmul`, `plus`, `add!`, `scale!`) wrapped with
+  `tnn_trace_begin/end`. Zero-cost when off (1.44 s baseline →
+  1.44 s with traces present but inactive on a 87-sequence
+  training run); 12 % overhead when on. `MAT_SHAPES=1` env
+  enables a shape histogram printf for Lowerer-style evidence
+  runs.
+
 ### Toolchain
 
 - Bumped Spinel to master `d59926a`. Two changes affect us directly:

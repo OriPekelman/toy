@@ -1,0 +1,7 @@
+metric,value,unit,direction,tolerance_pct
+lora_step_ms,74.867040,ms,lower,15.0
+lora_steady_state_ms,69.361225,ms,lower,15.0
+infer_toks_per_sec,86.546073,tok/s,higher,15.0
+infer_step_ms,11.554539,ms,lower,15.0
+tokenizer_encode_us_per_tok,1.138768,us/tok,lower,15.0
+tokenizer_encode_toks_per_sec,878142.224070,tok/s,higher,15.0

@@ -814,6 +814,23 @@ clean:
 distclean: clean
 	rm -rf $(GGML_DIR)/build $(GGML_DIR)/build-cuda
 
+# --- Perf regression gate -----------------------------------------------------
+# Runs each bench/*.rb (LoRA step, inference, tokenizer) and compares the
+# emitted BENCH lines against bench/baselines.csv. Exit 1 on any metric that
+# regresses past its per-metric tolerance. `bench-update` re-records the
+# current values as the new baseline.
+#
+# Run before pushing perf-sensitive changes; baselines.csv lives in the repo
+# so anyone can re-run on the same hardware and compare.
+bench: tinynn/libtinynn_ggml.a
+	ruby bench/check.rb
+
+bench-update: tinynn/libtinynn_ggml.a
+	ruby bench/check.rb --update
+
+bench-report: tinynn/libtinynn_ggml.a
+	ruby bench/check.rb --report
+
 .PHONY: all clean distclean setup-ggml setup-ggml-cuda smoke \
         ab-smoke ab-smoke-add ab-smoke-gelu ab-smoke-rms-norm \
         ab-smoke-softmax ab-smoke-transpose ab-smoke-scale ab-smoke-silu \
@@ -822,4 +839,5 @@ distclean: clean
         gpt2 smollm2 smollm2_kv smollm2_kv_cuda \
         tinyllama tinyllama_kv tinyllama_kv_cuda \
         train algorithm_cards \
-        examples gen-mirrors verify-mirrors
+        examples gen-mirrors verify-mirrors \
+        bench bench-update bench-report
