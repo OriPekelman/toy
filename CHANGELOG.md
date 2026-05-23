@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Toolchain
+
+- Bumped Spinel to master `d59926a`. Two changes affect us directly:
+  - `0adca86` (matz/spinel#647): `examples/example_serve` no longer
+    segfaults at startup. The bug was a Spinel codegen ordering issue
+    on top-level `CONST = recv.method` when `recv` was a local;
+    we'd kept the buggy form intentionally as a regression check.
+    Confirmed: it loads the model, binds the port, accepts requests.
+  - `97bf268` (rbs_extract): `--rbs sig` Mat-in-`Toy::` resolution
+    now works. Warning overhead dropped from +45 (was unusable) to
+    +3 (acceptable). `sig/toy.rbs` header reflects this.
+  - The Hash#[missing] → 0 codegen behavior (T1.2's root cause)
+    still requires the `has_key?` guards we landed yesterday;
+    Spinel's matz/spinel#521 fix narrowed the symptoms but the
+    structural workaround stays.
+
 ### Observability / training
 
 - New `tinynn/tinynn_trace.{c,h}`: Chrome Trace Format emitter,
@@ -122,11 +138,6 @@ Full details: `docs/archive/bench-gx10-2026-05-22.md`.
 
 ### Known issues
 
-- `examples/example_serve` segfaults at startup on current main. The
-  underlying capabilities (Tep + the KV-cache cache + the generate
-  loop) all work independently and via `tep_demo/openai_api_smollm2`;
-  the specific binding sequence in this example crashes during
-  static init. Tracked for follow-up.
 - CPU LoRA training requires `tnn_pin_all_graph_b_nodes` to work
   around a ggml-cpu scheduler aliasing bug on long backward chains
   (filed upstream as `ggml-org/ggml#1501`). Current cache classes

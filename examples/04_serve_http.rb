@@ -16,17 +16,10 @@
 # client-side (or wire in lib/tokenizer.rb if you need it
 # server-side). Same choice tep_demo/openai_api_smollm2 makes.
 #
-# Current status (2026-05-22): segfaults at startup on Spinel 8ff3a4e.
-# Tep itself is fine (`tep_demo/hello` works end-to-end on the same
-# Spinel). The crash is a Spinel codegen bug — `CFG_VOCAB = cfg.vocab`
-# at top level hoists the const init above the `cfg = ...` assignment,
-# so it reads from a zero-init struct and the call chain SIGSEGVs
-# through FFI. Filed as matz/spinel#647.
-#
-# Workaround if you want to test the serve shape today: replace the
-# `CFG_VOCAB = cfg.vocab` line with `cfg_vocab = cfg.vocab` (a local),
-# then reference `cfg_vocab` in the handler. The example as written
-# preserves the constant form intentionally as a regression check.
+# Status (2026-05-23): the startup segfault on `CFG_VOCAB = cfg.vocab`
+# was fixed by Spinel commit 0adca86 ("defer top-level CONST init
+# when RHS reads a main local", matz/spinel#647). Builds and runs
+# end-to-end on Spinel master at d59926a or later.
 
 require_relative "../tep_demo/_tep_lib/tep"
 require_relative "../lib/toy"

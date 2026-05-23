@@ -108,14 +108,11 @@ training afterwards. Pass `Q8=1` to the CUDA example to switch paths.
 
 ## Serving
 
-> **Status:** `example_serve` segfaults at startup on the current
-> Spinel — codegen bug filed as
-> [matz/spinel#647](https://github.com/matz/spinel/issues/647).
-> Tep itself is fine: `tep_demo/hello` works end-to-end. The
-> crash is `CFG_VOCAB = cfg.vocab` at top level hoisting above
-> the `cfg = ...` assignment. A local-var workaround (see the
-> file header) recovers it; we keep the constant form so the
-> regression check stays sharp.
+> **Status:** working on Spinel master (commit `0adca86` and later)
+> after [matz/spinel#647](https://github.com/matz/spinel/issues/647)
+> landed. Token-IDs in / token-IDs out by design; for text I/O wire
+> in `lib/tokenizer.rb` server-side (same path
+> `examples/01_inference.rb` uses, or see `tep_demo/openai_api_*`).
 
 The intended shape:
 

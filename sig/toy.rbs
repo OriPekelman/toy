@@ -1,12 +1,13 @@
 # sig/toy.rbs — type signatures for the Toy:: surface.
 #
-# Documentation today (Steep reads it; the Phuong–Hutter algorithm-card
-# emitter reads it as the source of truth). Spinel's `--rbs sig` flag
-# exists but currently introduces *more* analyzer warnings than it
-# clears (top-level Mat referenced from inside Toy:: doesn't resolve),
-# so the Makefile does not pass --rbs. Keep this file accurate against
-# lib/ — when Spinel's RBS reader matures, flipping the flag should be
-# a one-line change.
+# Used by Steep (typecheck), the Phuong–Hutter algorithm-card emitter
+# (source of truth), and Spinel's `--rbs sig` flag (analyzer-arbitration
+# hint). The Makefile doesn't pass --rbs by default — it adds a few
+# polymorphic-dispatch warnings on GPT2LM's Array<Mat> accessors that
+# we'd want to silence first — but feeding the file in costs 3 extra
+# warnings (was 45 before matz/spinel#97bf268 fixed Mat-in-Toy::
+# resolution), so enabling it per-build is now reasonable. Keep this
+# file accurate against lib/.
 #
 # Conventions:
 #   - Mat is a 2-D Float matrix with flat f64 storage. Where shape is
