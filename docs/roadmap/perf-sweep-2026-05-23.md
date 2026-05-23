@@ -204,6 +204,27 @@ If we have a focused week:
 Multi-token / speculative decode is the next tier — better tooling
 needed before we commit to it.
 
+**Update 2026-05-23**: items 1 + 2 + the per-op tracing (P6) all
+landed in this sweep.
+
+  - **P4 (flash_attn_ext binding)**: tnn_flash_attn_ext + Ruby/CUDA
+    FFI bind. ab_smoke_flash_attn validates parity vs the
+    scale→softmax→matmul triplet (max |Δ| = 3.8e-6). Backward
+    blocked on upstream ggml (the impl aborts). Integration into
+    SmolLM2KVFFICache deferred to P4.1.
+  - **P5 (Q8_0 KV binding)**: tnn_input_2d_persistent_typed already
+    supported Q8_0 for weights; ab_smoke_q8_kv exercises it for
+    the KV-cache shape (max |Δ| = 2.1e-3 on varied input).
+    Integration deferred to P5.1 (K layout flip needed for
+    block-aligned writes).
+  - **P6 (per-op timing)**: TRACE_OPS=1 emits one Chrome-Trace
+    event per ggml node. Confirmed OUT_PROD + MUL_MAT dominate
+    backward; MUL_MAT dominates CUDA forward.
+
+The integration tasks (#107, #108) are the actual perf-unlock; the
+binding work landed first so the integration has a known-good
+primitive to call into.
+
 ## Out-of-scope for this sweep
 
 - **GPU kernel hand-tuning**: ggml-cuda's kernels are good; we
