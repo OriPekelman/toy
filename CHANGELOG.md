@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### M1.1 — Qwen3-0.6B works end-to-end (head_dim + o_proj fix)
+
+Final fix for the `sp_ToyLM_decode_step` crash: `t_w_o` was
+allocated as `(d_model, d_model)`, but the output projection
+actually maps `[n_heads * d_head] → [d_model]`. For SmolLM2 /
+Llama / Qwen2.5, `n_heads * d_head == d_model`, so the shape was
+right by accident. Qwen3-0.6B has `n_heads * d_head = 2048 ≠
+d_model = 1024`, and the matmul aliased the wrong memory region.
+
+Fix in both realize paths: `tnn_input_2d_persistent_mmap(@sess,
+@d_model, @n_heads * @d_head, ...)`.
+
+Now produces coherent text:
+  prompt: "The capital of France is"
+  output: "The capital of France is located in the city of Paris..."
+
+Existing models unchanged (n_heads*d_head==d_model is an
+invariant of the older configs).
+
 ### M1.1 — explicit head_dim + tied-embeddings handling (partial)
 
 - `Toy::SmolLM2Config` gains `head_dim` field (defaults to

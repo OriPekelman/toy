@@ -432,7 +432,11 @@ class SmolLM2KVFFICache
       gate_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_gate.weight")
       up_idx   = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_up.weight")
       down_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_down.weight")
-      blk.t_w_o    = TinyNN.tnn_input_2d_persistent_mmap(@sess, @d_model, @d_model,
+      # M1.1: o_proj maps [n_heads * d_head] → [d_model]. For models
+      # where d_head = d_model / n_heads (SmolLM2 / Llama / Qwen2.5)
+      # these are equal; for Qwen3 with explicit head_dim=128 they
+      # differ (n_heads * d_head = 2048, d_model = 1024).
+      blk.t_w_o    = TinyNN.tnn_input_2d_persistent_mmap(@sess, @d_model, @n_heads * @d_head,
                        TinyNN.tnn_gguf_tensor_type(gguf_handle, o_idx),
                        TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, o_idx))
       blk.t_w_gate = TinyNN.tnn_input_2d_persistent_mmap(@sess, @d_ff, @d_model,
@@ -778,7 +782,7 @@ class SmolLM2KVFFICache
         hkv = hkv + 1
       end
 
-      blk.t_w_o    = alloc_2d_w(d_model, d_model)
+      blk.t_w_o    = alloc_2d_w(d_model, @n_heads * @d_head)
       blk.t_w_gate = alloc_2d_w(d_ff,    d_model)
       blk.t_w_up   = alloc_2d_w(d_ff,    d_model)
       blk.t_w_down = alloc_2d_w(d_model, d_ff)
