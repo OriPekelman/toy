@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### T1.3 — SentencePiece tokenizer (Llama-1/2 / Mistral / TinyLlama)
+
+- `lib/tokenizer.rb` auto-detects SentencePiece vs byte-level BPE
+  by checking `vocab[3] == "<0x00>"` (the first byte-fallback
+  token in any SPM vocab). Sets `@spm = true` and dispatches
+  `encode` / `decode` to SPM-specific paths.
+- SPM encode: prepend `▁` (U+2581), replace ASCII spaces with `▁`,
+  char-split, byte-fallback any char not in vocab via `<0xHH>`
+  tokens, then run the same merge-loop BPE as the GPT-2 path.
+- SPM decode: collapse `<0xHH>` byte-fallback runs back to UTF-8
+  bytes (with robust byte-level hex parsing to dodge a Spinel
+  `String#[Range]` quirk), and convert `▁` → ASCII space (stripping
+  the leading boundary marker so the round-trip is lossless).
+- Converter detects the tokenizer flavor at conversion time
+  (same `vocab[3] == "<0x00>"` heuristic) and emits the right
+  `tokenizer.ggml.model` value (`"llama"` for SPM, `"gpt2"` for
+  byte-level) plus the right `tokenizer.ggml.pre` hint.
+- Verified:
+    TinyLlama-1.1B: "The capital of France is Paris, which is
+                     known for its beautiful architecture, museums,
+                     and cultural events"
+    Mistral-7B-v0.2: "The capital of France is Paris."
+- `tinynn/ab_smoke_tokenizer.rb` extended to include
+  TinyLlama-1.1B-tok in the round-trip matrix. Now 20/20 PASS
+  across SmolLM2 / Llama-3.2 / Qwen2.5 / TinyLlama on five
+  representative English prompts.
+
 ### M1.1 — Qwen3-0.6B works end-to-end (head_dim + o_proj fix)
 
 Final fix for the `sp_ToyLM_decode_step` crash: `t_w_o` was

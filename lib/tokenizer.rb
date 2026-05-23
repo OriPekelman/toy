@@ -21,7 +21,7 @@
 require_relative "gguf_kv"
 
 class Tokenizer
-  attr_reader :vocab_size, :bos_id, :eos_id, :pad_id, :unk_id, :present
+  attr_reader :vocab_size, :bos_id, :eos_id, :pad_id, :unk_id, :present, :spm
 
   def initialize(vocab, merges, bos_id, eos_id, pad_id, unk_id)
     @vocab      = vocab
@@ -32,6 +32,12 @@ class Tokenizer
     @pad_id     = pad_id
     @unk_id     = unk_id
     @present    = (vocab.length > 0)
+    # T1.3: SentencePiece vs GPT-2 byte-level BPE. Detected by
+    # checking vocab[3] == "<0x00>" (the first byte-fallback token).
+    # SPM models (Llama-1/2, Mistral, TinyLlama) use U+2581 (▁) for
+    # leading space and emit <0xHH> tokens for chars not in vocab.
+    # GPT-2 models (SmolLM2, Llama-3, Qwen) use the Ġ byte-map.
+    @spm = (vocab.length > 3 && vocab[3] == "<0x00>")
 
     # Inverse vocab: token-string → id.
     @vocab_inv = {}
@@ -143,6 +149,9 @@ class Tokenizer
       puts "Tokenizer.decode: vocab not loaded (re-convert with --with-tokenizer)"
       return ""
     end
+    if @spm
+      return decode_spm(ids)
+    end
     build_byte_tables
     chained = ""
     i = 0
@@ -171,12 +180,78 @@ class Tokenizer
     out
   end
 
+  # T1.3: SentencePiece decode. Concatenate token strings; replace ▁
+  # with space; collapse byte-fallback <0xHH> sequences into UTF-8
+  # bytes. Llama-1/2 / Mistral / TinyLlama use this path.
+  #
+  # SPM tokenizers prepend a leading ▁ to encode the first word's
+  # boundary (Llama-2 / Mistral convention — encoding "X" gives
+  # ["▁X"]). On decode, we strip exactly one leading ▁ at the start
+  # of the output so the round-trip is lossless. After the first
+  # piece, ▁ in the middle of a token (e.g. "▁the") becomes a
+  # regular space.
+  def decode_spm(ids)
+    out = ""
+    first_emit = true
+    i = 0
+    while i < ids.length
+      tid = ids[i]
+      if tid == @bos_id || tid == @eos_id || tid == @pad_id
+        i = i + 1
+        next
+      end
+      piece = token_at(tid)
+      # Byte-fallback token: "<0xHH>". Hex parse via byte indexing
+      # because Spinel's String#[Range] can mis-slice on multi-char
+      # ranges (memory feedback_spinel_type_inference_landmines).
+      pb = piece.bytes
+      if pb.length == 6 && pb[0] == 60 && pb[1] == 48 && pb[2] == 120 && pb[5] == 62
+        out = out + ((hex_digit_value(pb[3]) << 4) | hex_digit_value(pb[4])).chr
+        first_emit = false
+      else
+        # Walk UTF-8 bytes; collapse 0xE2 0x96 0x81 (▁) into ASCII
+        # space, but skip the very first ▁ if it's a leading-space
+        # encoding marker.
+        bi = 0
+        while bi < pb.length
+          if bi + 2 < pb.length && pb[bi] == 226 && pb[bi + 1] == 150 && pb[bi + 2] == 129
+            if first_emit
+              # Drop the leading ▁
+            else
+              out = out + " "
+            end
+            first_emit = false
+            bi = bi + 3
+          else
+            out = out + pb[bi].chr
+            first_emit = false
+            bi = bi + 1
+          end
+        end
+      end
+      i = i + 1
+    end
+    out
+  end
+
+  # ASCII hex char → 0..15. Caller has already verified it's a hex
+  # digit (because the surrounding token matches <0x..>).
+  def hex_digit_value(b)
+    if b >= 48 && b <= 57; return b - 48; end           # '0'..'9'
+    if b >= 65 && b <= 70; return b - 65 + 10; end      # 'A'..'F'
+    if b >= 97 && b <= 102; return b - 97 + 10; end     # 'a'..'f'
+    0
+  end
+
   # Encode text → IDs. Pre-tokenize via regex; for each chunk, run the
   # byte→char map then BPE merge loop; lookup pieces in vocab.
   def encode(text)
     if !@present
       puts "Tokenizer.encode: vocab not loaded (re-convert with --with-tokenizer)"
       return []
+    end
+    if @spm
+      return encode_spm(text)
     end
     build_byte_tables
     ids = [0]
@@ -249,6 +324,100 @@ class Tokenizer
         pi = pi + 1
       end
       ci = ci + 1
+    end
+    ids
+  end
+
+  # T1.3: SentencePiece encode. Llama-1/2 / Mistral / TinyLlama. Differs
+  # from GPT-2 byte-level BPE in two ways:
+  #   - leading space is encoded as ▁ (U+2581), not Ġ
+  #   - chars not in vocab fall back to per-UTF-8-byte <0xHH> tokens
+  #     instead of going through a fixed byte-to-char map
+  # Algorithm: prepend ▁; replace each space with ▁; split into chars;
+  # byte-fallback any char missing from vocab; then run the BPE merge
+  # loop (identical to the GPT-2 path, same has_key? rule for Spinel).
+  def encode_spm(text)
+    ids = [0]; ids.pop
+    # Prepend ▁ + replace spaces with ▁. Bytewise to dodge encoding
+    # concerns under Spinel; ▁ = U+2581 = 0xE2 0x96 0x81 in UTF-8.
+    sp = "\xE2\x96\x81"
+    text_bytes = text.bytes
+    pre = sp + ""   # leading ▁
+    tb = 0
+    while tb < text_bytes.length
+      b = text_bytes[tb]
+      if b == 0x20         # ASCII space → ▁
+        pre = pre + sp
+      else
+        pre = pre + b.chr
+      end
+      tb = tb + 1
+    end
+
+    pieces = pre.chars
+    # Byte-fallback for any char not in vocab. UTF-8 chars are
+    # decomposed into per-byte <0xHH> piece strings; those ARE in
+    # vocab (positions 3..258).
+    pi = 0
+    expanded = [""]; expanded.pop
+    while pi < pieces.length
+      ch = pieces[pi]
+      if @vocab_inv.has_key?(ch)
+        expanded.push(ch)
+      else
+        cbytes = ch.bytes
+        cbi = 0
+        while cbi < cbytes.length
+          hex = cbytes[cbi].to_s(16).upcase
+          if hex.length == 1; hex = "0" + hex; end
+          expanded.push("<0x" + hex + ">")
+          cbi = cbi + 1
+        end
+      end
+      pi = pi + 1
+    end
+    pieces = expanded
+
+    # BPE merge loop. Same form as the GPT-2 path; merges use a
+    # space-delimited "a b" key. has_key? guards against Spinel's
+    # hash-missing-returns-0 (memory feedback #9).
+    while true
+      best_rank = 999999999
+      best_idx = -1
+      k = 0
+      while k < pieces.length - 1
+        key = pieces[k] + " " + pieces[k + 1]
+        if @merge_rank.has_key?(key)
+          r = @merge_rank[key]
+          if r < best_rank
+            best_rank = r
+            best_idx = k
+          end
+        end
+        k = k + 1
+      end
+      if best_idx < 0; break; end
+      pieces[best_idx] = pieces[best_idx] + pieces[best_idx + 1]
+      pieces.delete_at(best_idx + 1)
+    end
+
+    # Vocab lookup with the never-mask rule from T1.2.
+    pi = 0
+    while pi < pieces.length
+      piece = pieces[pi]
+      if @vocab_inv.has_key?(piece)
+        ids.push(@vocab_inv[piece])
+      else
+        if !@warned_unk
+          puts "WARN: tokenizer(spm): piece " + piece.inspect +
+               " not in vocab — emitting UNK"
+          @warned_unk = true
+        end
+        if @unk_id != nil && @unk_id >= 0
+          ids.push(@unk_id)
+        end
+      end
+      pi = pi + 1
     end
     ids
   end

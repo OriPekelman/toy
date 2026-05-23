@@ -112,18 +112,21 @@ def embed_tokenizer(w: "gguf.GGUFWriter", repo_id: str, cache: str) -> None:
         else:
             merges.append(m)
 
-    # GGUF tokenizer model identifier. For tiktoken-style byte-BPE
-    # (the Llama-3 / Qwen / SmolLM2 family) llama.cpp uses "gpt2"
-    # (it's the same byte-level BPE algorithm). SentencePiece would
-    # be "llama". We default to "gpt2" since that's our main family;
-    # SentencePiece support is a follow-up.
-    w.add_tokenizer_model("gpt2")
+    # T1.3: detect SentencePiece vs byte-level BPE. The two algorithms
+    # differ in their space marker (▁ vs Ġ) and byte-fallback
+    # convention. We look at vocab[3] — for SPM-style vocabs that's
+    # the first byte-fallback token "<0x00>"; for GPT-2 byte-level it
+    # would be a meaningful merge-derived token.
+    is_spm = (n_vocab > 3 and tokens[3] == "<0x00>")
+    tokenizer_kind = "llama" if is_spm else "gpt2"
+    w.add_tokenizer_model(tokenizer_kind)
 
-    # Pre-tokenizer hint. "llama-bpe" tells consumers to use the
-    # cl100k_base-style pre-tokenizer regex (Llama-3 / Qwen). Mistral
-    # / TinyLlama would want "default" but they're SentencePiece;
-    # noting in TODO.
-    w.add_string("tokenizer.ggml.pre", "llama-bpe")
+    # Pre-tokenizer hint. "llama-bpe" = cl100k_base-style regex
+    # (Llama-3 / Qwen / SmolLM2 / Qwen3). "default" = SentencePiece
+    # metaspace replacement (Llama-1/2 / Mistral / TinyLlama).
+    pre_kind = "default" if is_spm else "llama-bpe"
+    w.add_string("tokenizer.ggml.pre", pre_kind)
+    print(f"    tokenizer kind = {tokenizer_kind} ({pre_kind})")
 
     w.add_token_list(tokens)
     w.add_token_types(token_type)

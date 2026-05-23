@@ -22,9 +22,10 @@ SAMPLES = ["Once upon a time",
            "Q: What is 2 + 2?\nA: ",
            "I/O bound: read('foo.txt')"]
 
-MODELS = ["data/smollm2-135m-tok.gguf",
-          "data/llama-3.2-1b-tok.gguf",
-          "data/qwen25-0.5b-tok.gguf"]
+MODELS = ["data/smollm2-135m-tok.gguf",   # byte-level BPE (GPT-2 style)
+          "data/llama-3.2-1b-tok.gguf",    # byte-level BPE (Llama-3)
+          "data/qwen25-0.5b-tok.gguf",     # byte-level BPE (Qwen2)
+          "data/tinyllama-1.1b-tok.gguf"]  # SentencePiece (Llama-1/2 style)
 
 total_pass = 0
 total_fail = 0
