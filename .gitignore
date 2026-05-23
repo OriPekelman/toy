@@ -187,3 +187,4 @@ demos/seq_train_bench_cuda
 # Bench-suite compiled binaries (sources in bench/*.rb; baselines in
 # bench/baselines.csv are committed)
 bench/build/
+examples/example_train_from_scratch

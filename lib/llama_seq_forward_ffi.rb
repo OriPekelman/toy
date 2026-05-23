@@ -926,6 +926,245 @@ class LlamaSeqForwardFFICache
     @seq_realized = true
   end
 
+  # P2-α: from-scratch training entry. Allocates the same persistent
+  # tensor layout as realize_for_full_finetune (embeddings + per-block
+  # weights, all trainable F32 in ctx_w), then random-initialises
+  # every weight via Ruby-side Gaussian upload — no GGUF needed.
+  #
+  # Force-enables `@ft_train_embeddings_enabled` so the existing
+  # full-FT machinery allocates persistent F32 embeddings instead
+  # of the mmap branch. Caller doesn't need to call
+  # enable_full_finetune_embeddings! first.
+  #
+  # Currently Llama-arch only (RMSNorm + GQA + RoPE + SwiGLU). Other
+  # architectures (GPT-2 LN, MHA + biases) need a separate trainer
+  # cache class; deferred until we actually need GPT-2 from-scratch.
+  def realize_for_random_init(cfg, t_seq, untied, qkv_bias, seed, init_scale)
+    @ft_train_embeddings_enabled = true   # forces persistent-F32 alloc of embeddings
+    @seq_full_finetune_enabled   = true   # build_training_step gates on this
+
+    @seq_t          = t_seq
+    @seq_d_model    = cfg.d_model
+    @seq_d_ff       = cfg.d_ff
+    @seq_n_heads    = cfg.n_heads
+    @seq_n_kv       = cfg.n_kv
+    @seq_d_head     = cfg.head_dim
+    @seq_group_size = cfg.n_heads / cfg.n_kv
+    @seq_n_layers   = cfg.n_layers
+    @seq_vocab_size = cfg.vocab
+    @seq_rope_base    = cfg.rope_base
+    @seq_rope_scaling = cfg.rope_scaling
+    @seq_rms_eps    = cfg.rms_eps
+
+    @sess                  = TinyNN.tnn_session_new(0)
+    @seq_has_untied_output = untied
+    @seq_has_qkv_bias      = qkv_bias
+
+    if @seq_rope_scaling.kind == :llama3
+      @t_seq_rope_freq_factors = TinyNN.tnn_rope_freq_factors_alloc(@sess, cfg.head_dim)
+    else
+      @t_seq_rope_freq_factors = TinyNN.tnn_null_ptr
+    end
+
+    # Globals — all trainable persistent F32.
+    @t_seq_token_embed = TinyNN.tnn_input_2d_f32_persistent(@sess,
+                           @seq_vocab_size, @seq_d_model)
+    ft_add_global_2d(@t_seq_token_embed, @seq_vocab_size, @seq_d_model)
+
+    @t_seq_final_norm_gamma = TinyNN.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
+    ft_add_global_1d(@t_seq_final_norm_gamma)
+
+    if untied
+      @t_seq_output = TinyNN.tnn_input_2d_f32_persistent(@sess,
+                        @seq_vocab_size, @seq_d_model)
+      ft_add_global_2d(@t_seq_output, @seq_vocab_size, @seq_d_model)
+    end
+
+    # Per-block weights — identical structure to realize_for_full_finetune.
+    @seq_blocks_ffi = [LlamaSeqBlockFFI.new]
+    li_init = 1
+    while li_init < @seq_n_layers
+      @seq_blocks_ffi.push(LlamaSeqBlockFFI.new)
+      li_init = li_init + 1
+    end
+
+    li = 0
+    while li < @seq_n_layers
+      blk = @seq_blocks_ffi[li]
+
+      blk.t_seq_rn1_gamma = TinyNN.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
+      blk.t_seq_rn2_gamma = TinyNN.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
+      ft_add_1d(blk, blk.t_seq_rn1_gamma)
+      ft_add_1d(blk, blk.t_seq_rn2_gamma)
+
+      blk.t_seq_w_q = [TinyNN.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model)]
+      hq = 1
+      while hq < @seq_n_heads
+        blk.t_seq_w_q.push(TinyNN.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model))
+        hq = hq + 1
+      end
+      hq2 = 0
+      while hq2 < @seq_n_heads
+        ft_add_2d(blk, blk.t_seq_w_q[hq2], @seq_d_head, @seq_d_model)
+        hq2 = hq2 + 1
+      end
+
+      blk.t_seq_w_k = [TinyNN.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model)]
+      blk.t_seq_w_v = [TinyNN.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model)]
+      hkv = 1
+      while hkv < @seq_n_kv
+        blk.t_seq_w_k.push(TinyNN.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model))
+        blk.t_seq_w_v.push(TinyNN.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model))
+        hkv = hkv + 1
+      end
+      hkv2 = 0
+      while hkv2 < @seq_n_kv
+        ft_add_2d(blk, blk.t_seq_w_k[hkv2], @seq_d_head, @seq_d_model)
+        ft_add_2d(blk, blk.t_seq_w_v[hkv2], @seq_d_head, @seq_d_model)
+        hkv2 = hkv2 + 1
+      end
+
+      blk.t_seq_w_o    = TinyNN.tnn_input_2d_f32_persistent(@sess, @seq_d_model, @seq_n_heads * @seq_d_head)
+      blk.t_seq_w_gate = TinyNN.tnn_input_2d_f32_persistent(@sess, @seq_d_ff,    @seq_d_model)
+      blk.t_seq_w_up   = TinyNN.tnn_input_2d_f32_persistent(@sess, @seq_d_ff,    @seq_d_model)
+      blk.t_seq_w_down = TinyNN.tnn_input_2d_f32_persistent(@sess, @seq_d_model, @seq_d_ff)
+      ft_add_2d(blk, blk.t_seq_w_o,    @seq_d_model, @seq_n_heads * @seq_d_head)
+      ft_add_2d(blk, blk.t_seq_w_gate, @seq_d_ff,    @seq_d_model)
+      ft_add_2d(blk, blk.t_seq_w_up,   @seq_d_ff,    @seq_d_model)
+      ft_add_2d(blk, blk.t_seq_w_down, @seq_d_model, @seq_d_ff)
+
+      wi = 0
+      while wi < blk.ft_weights.length
+        TinyNN.tnn_set_param(blk.ft_weights[wi])
+        wi = wi + 1
+      end
+
+      li = li + 1
+    end
+
+    # Mark globals as params too (gated on @ft_train_embeddings_enabled).
+    gi = 0
+    while gi < @ft_globals_weights.length
+      TinyNN.tnn_set_param(@ft_globals_weights[gi])
+      gi = gi + 1
+    end
+
+    TinyNN.tnn_finalize_weights(@sess)
+
+    if @seq_rope_scaling.kind == :llama3
+      ff = Toy::RopeScaling.compute_llama3_freq_factors(
+        @seq_d_head, @seq_rope_base,
+        @seq_rope_scaling.orig_max_pos, @seq_rope_scaling.factor,
+        @seq_rope_scaling.low_freq_factor, @seq_rope_scaling.high_freq_factor)
+      TinyNN.tnn_upload_from_float_array(@sess, @t_seq_rope_freq_factors, ff, ff.length)
+    end
+
+    # Random-init every weight + zero biases + ones gammas.
+    upload_random_init!(seed, init_scale, qkv_bias, untied)
+    ft_zero_init_adam(qkv_bias)
+    ft_zero_init_adam_globals
+
+    build_forward_in_current_ctx
+    TinyNN.tnn_realize(@sess, @t_seq_logits)
+    @seq_realized = true
+  end
+
+  # Fill every persistent weight tensor with N(0, std) values.
+  # Norm gammas → 1.0, biases (if present) → 0.0, matmul weights →
+  # N(0, init_scale/sqrt(fan_in)). Token embedding uses GPT-2-style
+  # N(0, 0.02). All values computed in Ruby, uploaded in bulk via
+  # tnn_upload_from_float_array.
+  def upload_random_init!(seed, init_scale, qkv_bias, untied)
+    state = [seed]
+
+    # Token embed + (optional) untied output: N(0, 0.02).
+    upload_gaussian(@t_seq_token_embed, @seq_vocab_size * @seq_d_model, 0.02, state)
+    upload_constant(@t_seq_final_norm_gamma, @seq_d_model, 1.0)
+    if untied
+      upload_gaussian(@t_seq_output, @seq_vocab_size * @seq_d_model, 0.02, state)
+    end
+
+    inv_sqrt_d   = init_scale / Math.sqrt(@seq_d_model.to_f)
+    inv_sqrt_dff = init_scale / Math.sqrt(@seq_d_ff.to_f)
+
+    li = 0
+    while li < @seq_n_layers
+      blk = @seq_blocks_ffi[li]
+      upload_constant(blk.t_seq_rn1_gamma, @seq_d_model, 1.0)
+      upload_constant(blk.t_seq_rn2_gamma, @seq_d_model, 1.0)
+
+      hq = 0
+      while hq < @seq_n_heads
+        upload_gaussian(blk.t_seq_w_q[hq], @seq_d_head * @seq_d_model, inv_sqrt_d, state)
+        hq = hq + 1
+      end
+      hkv = 0
+      while hkv < @seq_n_kv
+        upload_gaussian(blk.t_seq_w_k[hkv], @seq_d_head * @seq_d_model, inv_sqrt_d, state)
+        upload_gaussian(blk.t_seq_w_v[hkv], @seq_d_head * @seq_d_model, inv_sqrt_d, state)
+        hkv = hkv + 1
+      end
+
+      upload_gaussian(blk.t_seq_w_o,    @seq_d_model * @seq_n_heads * @seq_d_head, inv_sqrt_d, state)
+      upload_gaussian(blk.t_seq_w_gate, @seq_d_ff    * @seq_d_model, inv_sqrt_d, state)
+      upload_gaussian(blk.t_seq_w_up,   @seq_d_ff    * @seq_d_model, inv_sqrt_d, state)
+      upload_gaussian(blk.t_seq_w_down, @seq_d_model * @seq_d_ff,    inv_sqrt_dff, state)
+      li = li + 1
+    end
+  end
+
+  # Box-Muller from a xorshift64-driven uniform stream. state is a
+  # one-element Array<Integer> so the mutable PRNG state survives
+  # across calls without using class variables. Always emits exactly
+  # `n` Gaussian-distributed F32 values via tnn_upload_from_float_array.
+  def upload_gaussian(tensor, n, std, state)
+    buf = [0.0]; buf.pop
+    pair = 0
+    saved = 0.0
+    i = 0
+    while i < n
+      if pair == 0
+        u1 = xorshift_uniform!(state)
+        u2 = xorshift_uniform!(state)
+        if u1 < 1.0e-300; u1 = 1.0e-300; end
+        r = Math.sqrt(-2.0 * Math.log(u1))
+        theta = 2.0 * Math::PI * u2
+        z0 = r * Math.cos(theta) * std
+        z1 = r * Math.sin(theta) * std
+        buf.push(z0)
+        saved = z1
+        pair = 1
+      else
+        buf.push(saved)
+        pair = 0
+      end
+      i = i + 1
+    end
+    TinyNN.tnn_upload_from_float_array(@sess, tensor, buf, n)
+  end
+
+  def upload_constant(tensor, n, v)
+    buf = [0.0]; buf.pop
+    i = 0
+    while i < n
+      buf.push(v)
+      i = i + 1
+    end
+    TinyNN.tnn_upload_from_float_array(@sess, tensor, buf, n)
+  end
+
+  # xorshift64 → uniform in (0, 1). Mutates state[0].
+  def xorshift_uniform!(state)
+    x = state[0]
+    x = x ^ (x << 13)
+    x = x & 0xFFFFFFFFFFFFFFFF
+    x = x ^ (x >> 7)
+    x = x ^ (x << 17)
+    x = x & 0xFFFFFFFFFFFFFFFF
+    state[0] = x
+    (x.to_f / 18446744073709551616.0) + 1.0e-300
+  end
+
   # Append (weight, m, v) to the block's parallel arrays. Allocates
   # Adam m and v of the same shape as `weight` as a side effect.
   def ft_add_2d(blk, weight, rows, cols)

@@ -87,6 +87,10 @@ examples/example_list_models: examples/05_list_models.rb lib/model_index.rb lib/
 	$(SPINEL) $< -o $@
 example_list_models: examples/example_list_models
 
+examples/example_train_from_scratch: examples/06_train_from_scratch.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
+	$(SPINEL) $< -o $@
+example_train_from_scratch: examples/example_train_from_scratch
+
 examples: example_inference example_train example_finetune example_finetune_cuda example_serve example_list_models
 
 # Phase 0.6 — CUDA-mirror generator. The CPU file is the source of
