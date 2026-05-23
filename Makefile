@@ -814,6 +814,14 @@ clean:
 distclean: clean
 	rm -rf $(GGML_DIR)/build $(GGML_DIR)/build-cuda
 
+# --- Algorithm-card drift gate -----------------------------------------------
+# Sanity-check that every Toy:: class with both `def forward` and
+# `def algorithm` keeps the two in lock-step. Catches the common
+# drift case where someone changes the forward without updating the
+# card (or vice versa). Pure-Ruby, runs in a fraction of a second.
+check-cards:
+	ruby prep/card_drift_check.rb
+
 # --- Perf regression gate -----------------------------------------------------
 # Runs each bench/*.rb (LoRA step, inference, tokenizer) and compares the
 # emitted BENCH lines against bench/baselines.csv. Exit 1 on any metric that
@@ -840,4 +848,4 @@ bench-report: tinynn/libtinynn_ggml.a
         tinyllama tinyllama_kv tinyllama_kv_cuda \
         train algorithm_cards \
         examples gen-mirrors verify-mirrors \
-        bench bench-update bench-report
+        bench bench-update bench-report check-cards

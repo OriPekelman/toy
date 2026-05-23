@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### D1 — algorithm-card drift detector (instead of auto-emitter)
+
+- `prep/card_drift_check.rb`: a Ripper-walker tripwire that
+  verifies each `Toy::` class with both `def forward` and
+  `def algorithm` keeps the two in lock-step. Run via
+  `make check-cards`. Pure-Ruby stdlib, no extra deps.
+- D1 was originally scoped as an auto-emitter that would delete
+  the 209 LOC of hand-written `def algorithm` methods. Closer
+  reading of those methods showed they're not 1:1 with the
+  unrolled forward code — `FFN`'s 5-line forward becomes a
+  curated 2-step card that fuses `matmul + add_bias + gelu`. An
+  auto-emitter would produce faithful-but-ugly output that
+  wouldn't actually replace the cards.
+- The drift detector matches the real failure mode: forward
+  changes, card doesn't (or vice versa). Catches the common
+  `gelu` / `silu` / `⊙` activation-mismatch + the
+  matmul-presence collapse case. Validated by deliberate-drift
+  test (deleting `gelu(...)` from FFN's card → tool fails).
+- For the original "delete the 209 LOC" goal (re-trigger
+  condition (a) from task #95): an auto-emitter is still possible
+  if/when we add a third architecture and feel the cost, but the
+  drift detector covers the maintenance-during-edits case today.
+
 ### P2 — measured, not viable (skipped)
 
 - `docs/roadmap/p2-ffi-matmul-2026-05-23.md`: planned to FFI-wrap
