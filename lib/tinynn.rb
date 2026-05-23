@@ -351,6 +351,12 @@ module TinyNN
   ffi_func :tnn_backend_name,     [:ptr],                   :str
   ffi_func :tnn_input_2d_f32,     [:ptr, :int, :int],       :ptr
   ffi_func :tnn_matmul,           [:ptr, :ptr, :ptr],       :ptr
+  # M2: MoE primitives. See tinynn_ggml.h for shape conventions.
+  ffi_func :tnn_mul_mat_id,       [:ptr, :ptr, :ptr, :ptr], :ptr
+  ffi_func :tnn_add_id,           [:ptr, :ptr, :ptr, :ptr], :ptr
+  ffi_func :tnn_argsort,          [:ptr, :ptr, :int],       :ptr
+  ffi_func :tnn_top_k,            [:ptr, :ptr, :int],       :ptr
+  ffi_func :tnn_input_3d_f32_persistent, [:ptr, :int, :int, :int], :ptr
   ffi_func :tnn_add,              [:ptr, :ptr, :ptr],       :ptr
   ffi_func :tnn_gelu,             [:ptr, :ptr],             :ptr
   ffi_func :tnn_rms_norm,         [:ptr, :ptr, :ptr, :double], :ptr

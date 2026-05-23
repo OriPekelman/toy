@@ -413,6 +413,17 @@ void *tnn_input_1d_f32_persistent(void *sess, int n)
     return (void *)ggml_new_tensor_1d(s->ctx_w, GGML_TYPE_F32, (int64_t)n);
 }
 
+/* M2: 3-D persistent F32 tensor — needed for MoE expert stacks,
+ * shape [d_in, d_out, n_experts]. Same lifecycle as the 2-D variant. */
+void *tnn_input_3d_f32_persistent(void *sess, int ne0, int ne1, int ne2)
+{
+    if (!sess || ne0 <= 0 || ne1 <= 0 || ne2 <= 0) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    if (s->weights_finalized) return NULL;
+    return (void *)ggml_new_tensor_3d(s->ctx_w, GGML_TYPE_F32,
+                                       (int64_t)ne0, (int64_t)ne1, (int64_t)ne2);
+}
+
 /* Allocate the backend buffer for all persistent tensors in ctx_w.
  * Must be called AFTER declaring all persistent tensors and BEFORE
  * any tnn_realize/compute. After this, the persistent tensors have
@@ -451,6 +462,43 @@ void *tnn_matmul(void *sess, void *a, void *b)
     return (void *)ggml_mul_mat(s->ctx,
                                  (struct ggml_tensor *)a,
                                  (struct ggml_tensor *)b);
+}
+
+/* M2 MoE primitives. Thin wrappers — ggml does the work; we just expose
+ * the entry points through the FFI. See tinynn_ggml.h for shape docs. */
+void *tnn_mul_mat_id(void *sess, void *as, void *b, void *ids)
+{
+    if (!sess || !as || !b || !ids) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_mul_mat_id(s->ctx,
+                                   (struct ggml_tensor *)as,
+                                   (struct ggml_tensor *)b,
+                                   (struct ggml_tensor *)ids);
+}
+
+void *tnn_add_id(void *sess, void *a, void *b, void *ids)
+{
+    if (!sess || !a || !b || !ids) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_add_id(s->ctx,
+                               (struct ggml_tensor *)a,
+                               (struct ggml_tensor *)b,
+                               (struct ggml_tensor *)ids);
+}
+
+void *tnn_argsort(void *sess, void *a, int descending)
+{
+    if (!sess || !a) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    enum ggml_sort_order order = descending ? GGML_SORT_ORDER_DESC : GGML_SORT_ORDER_ASC;
+    return (void *)ggml_argsort(s->ctx, (struct ggml_tensor *)a, order);
+}
+
+void *tnn_top_k(void *sess, void *a, int k)
+{
+    if (!sess || !a || k <= 0) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_top_k(s->ctx, (struct ggml_tensor *)a, k);
 }
 
 void *tnn_matmul_axb(void *sess, void *a, void *b)

@@ -64,6 +64,7 @@ void  *tnn_input_2d_f32_persistent(void *sess, int rows, int cols);
  * memory-design plan: keep quantized weights quantized in memory. */
 void  *tnn_input_2d_persistent_typed(void *sess, int rows, int cols, int ggml_type);
 void  *tnn_input_1d_f32_persistent(void *sess, int n);
+void  *tnn_input_3d_f32_persistent(void *sess, int ne0, int ne1, int ne2);  /* M2 MoE */
 
 /* Phase 2 BYO-pointer: attach an mmap'd file region to the session.
  * Subsequent calls to tnn_input_*_persistent_mmap allocate tensors
@@ -101,6 +102,26 @@ int    tnn_switch_b(void *sess);
 /* Compute the secondary graph (graph_b). Must be preceded by tnn_switch_b. */
 int    tnn_compute_b(void *sess);
 void  *tnn_matmul(void *sess, void *a, void *b);        /* A * B^T (ggml-native) */
+
+/* --- M2: MoE primitives --------------------------------------------------- */
+/* Sparse expert matmul. `as` is a 3-D weight tensor stacked across experts
+ * (ne = [d_in, d_out, n_experts]). `b` is the input [d_in, T]. `ids` is
+ * the per-token expert-index tensor (int32, [n_used, T]). Returns a tensor
+ * of shape [d_out, n_used, T] — one matmul per selected expert per token. */
+void  *tnn_mul_mat_id(void *sess, void *as, void *b, void *ids);
+
+/* Gather-add: dst[i0, i1, i2] = a[i0, i1, i2] + b[i0, ids[i1, i2]].
+ * Used to fold per-expert biases into routed activations. */
+void  *tnn_add_id(void *sess, void *a, void *b, void *ids);
+
+/* argsort along ne[0]. order=0 ascending, 1 descending. Returns int32 index
+ * tensor of the same shape as input. */
+void  *tnn_argsort(void *sess, void *a, int descending);
+
+/* Top-K indices along ne[0]. Implemented in ggml as argsort + view. Result
+ * is int32, shape [k, ...]. Order: descending values, but the k indices
+ * themselves are not internally sorted (per ggml.h's note). */
+void  *tnn_top_k(void *sess, void *a, int k);
 void  *tnn_matmul_axb(void *sess, void *a, void *b);    /* A * B  (transposes B internally) */
 void  *tnn_add(void *sess, void *a, void *b);           /* element-wise A + B (same shape) */
 void  *tnn_gelu(void *sess, void *a);                   /* element-wise GeLU (tanh approx) */
