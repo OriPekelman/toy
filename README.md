@@ -4,13 +4,13 @@
   <img src="toy_logo.png" alt="toy" width="240" />
 </p>
 
-**v0.1.0-pre-alpha** — early signal. Not API-stable. See
+**v0.2.0-pre-alpha** — early signal. Not API-stable. See
 [`CHANGELOG.md`](CHANGELOG.md) for what's working today.
 
 A small transformer language model in Ruby. AOT-compiled to a native
 binary by [Spinel](https://github.com/matz/spinel) (matz's Ruby AOT
 compiler). Runs real HuggingFace models — from SmolLM2-135M to
-Qwen2.5-7B — at output-identical fidelity to PyTorch.
+Mistral-7B and Qwen3 — at output-identical fidelity to PyTorch.
 
 It does these things end-to-end, each as a single native binary:
 
@@ -92,8 +92,11 @@ GGUF=data/llama-3.2-1b-tok.gguf PROMPT="The capital of France is" ./examples/exa
 ```
 
 `example_inference` speaks text when the GGUF was converted with
-`--with-tokenizer` (the `*-tok.gguf` variants). Without an embedded
-tokenizer it falls back to a fixed token-ID prompt and prints raw IDs.
+`--with-tokenizer` (the `*-tok.gguf` variants). The tokenizer
+auto-detects byte-level BPE (GPT-2 / Llama-3 / Qwen) vs
+SentencePiece (Llama-1/2 / Mistral / TinyLlama). Without an
+embedded tokenizer it falls back to a fixed token-ID prompt and
+prints raw IDs.
 
 The [`examples/`](examples/README.md) directory has five focused entry
 points: inference, train-from-scratch, LoRA / QLoRA fine-tune, HTTP
@@ -117,6 +120,26 @@ Python converter; or `pip install uv` first.
   (one per concrete validation run).
 - [`tinynn/`](tinynn/README.md) — the C/CUDA shim over ggml.
 
+## Reproducibility gates
+
+Three local-runnable gates catch regressions before they ship.
+Run before pushing perf-sensitive or model-shape changes.
+
+- `make bench` — three Spinel-compiled benches (LoRA training step,
+  inference toks/sec, tokenizer encode µs/tok). Each emits
+  `BENCH metric value` lines; the orchestrator compares to
+  `bench/baselines.csv` and exits non-zero past a per-metric
+  tolerance (±15 % default). `make bench-update` re-baselines.
+- `make check-cards` — Ripper-based drift detector. Verifies every
+  `Toy::` class with both `def forward` and `def algorithm` keeps
+  the two in lock-step (activation-token mismatches + matmul-
+  presence collapse). Catches the case where someone changes
+  forward without updating the algorithm card or vice versa.
+- `TRACE=path.json ./examples/example_finetune` — Chrome Trace
+  Format observability primitive on the FFI hot path. ~5 ns per
+  begin/end pair when off (zero-overhead measured), 12 % when on.
+  Open the output in https://perfetto.dev .
+
 ## Supported models
 
 | Model              | Family            | Params | F32 | Q8_0 | CPU | CUDA F32 | CUDA Q8 |
@@ -128,17 +151,26 @@ Python converter; or `pip install uv` first.
 | TinyLlama-1.1B     | Llama family      | 1.1B   | ✓   | ✓    | ✓   | ✓        |         |
 | Llama-3.2-1B       | Llama family      | 1B     | ✓   |      | ✓   | ✓        |         |
 | Llama-3.2-3B       | Llama family      | 3B     | ✓   |      | ✓   | ✓        |         |
-| Mistral-7B-v0.2    | Llama family      | 7B     | ✓   | ✓    | ✓   |          | ✓       |
+| Mistral-7B-v0.2    | Llama + SPM tok   | 7B     | ✓   | ✓    | ✓   |          | ✓       |
 | Qwen2.5-0.5B       | Llama + QKV bias  | 0.5B   | ✓   | ✓    | ✓   | ✓        |         |
 | Qwen2.5-1.5B       | Llama + QKV bias  | 1.5B   | ✓   | ✓    | ✓   | ✓        | †       |
 | Qwen2.5-3B         | Llama + QKV bias  | 3B     | ✓   | ✓    | ✓   | ✓        | †       |
 | Qwen2.5-7B         | Llama + QKV bias  | 7B     | ✓   | ✓    | ✓   |          | ✓       |
+| Qwen3-0.6B         | Qwen3 + QK-norm   | 0.6B   | ✓   |      | ✓   | ✓        |         |
 
 † Qwen2.5-1.5B/3B Q8 abort on CUDA at weight-load time: ggml-cuda's
 quantized matmul requires `d_ff` aligned to 512, and those models'
 `d_ff` (8960, 11008) aren't. F32 path works for all sizes.
 
-Next targets: Qwen3 dense, Qwen3 MoE, GLM-4.7-Flash — see
-[`docs/architecture.md`](docs/architecture.md).
+Both byte-level BPE and SentencePiece tokenizers are supported in
+text mode (auto-detected from the GGUF vocab). RoPE scaling
+(YaRN / llama3-style / linear) propagates through the converter
+and loader, so Llama-3.x and Qwen3 long-context configurations
+work without extra wiring.
+
+Next targets: Qwen3-4B / 14B / 32B (dense), Qwen3 MoE
+(`MUL_MAT_ID`-gated), Gemma 2/3 (sliding-window attention), DeepSeek
+V3 (MLA). See
+[`docs/roadmap/modern-llm-primitives-2026-05-22.md`](docs/roadmap/modern-llm-primitives-2026-05-22.md).
 
 A toy you can read top-to-bottom that happens to run real models.

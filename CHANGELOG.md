@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased
+## v0.2.0-pre-alpha — 2026-05-23
+
+**Headline.** Three new model families work end-to-end as
+text → text: Qwen3-0.6B (dense), Mistral-7B-Instruct-v0.2, and
+TinyLlama-1.1B. RoPE scaling (YaRN / llama3 / linear) lands.
+The tokenizer now handles both byte-level BPE (GPT-2 / Llama-3 /
+Qwen) and SentencePiece (Llama-1/2 / Mistral). A bench harness +
+card-drift detector + Chrome-Trace-format observability primitive
+ship as reusable infrastructure.
+
+Still pre-alpha: no API stability commitments, and we'll happily
+break shapes when something deserves it. See the sections below
+for the full inventory.
 
 ### T1.3 — SentencePiece tokenizer (Llama-1/2 / Mistral / TinyLlama)
 
