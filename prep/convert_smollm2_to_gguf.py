@@ -337,6 +337,14 @@ def main():
     # NOT hidden_size/num_heads.
     w.add_uint32("llama.attention.key_length", d_head)
     w.add_uint32("llama.attention.value_length", d_head)
+    # M3: sliding-window attention. Phi-3-mini-4k sets sliding_window=2048;
+    # Gemma 2 sets sliding_window=4096 on local layers; Mistral / Qwen
+    # leave it null. We emit a single global value; per-layer alternating
+    # (Gemma 2) is M3.2 follow-up.
+    sw_cfg = cfg.get("sliding_window")
+    if isinstance(sw_cfg, int) and sw_cfg > 0:
+        w.add_uint32("llama.attention.sliding_window", sw_cfg)
+        print(f"      sliding_window = {sw_cfg}")
     w.add_layer_norm_rms_eps(rms_eps)
     # rope_scaling.* emission. Skipped silently when the HF config has
     # no rope_scaling block (SmolLM2, Qwen2.5-short-ctx, etc.).

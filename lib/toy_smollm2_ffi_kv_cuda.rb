@@ -100,6 +100,12 @@ class SmolLM2KVFFICacheCuda
                 # Detect by presence of "blk.0.attn_q_norm.weight" in
                 # the GGUF. Always false on Qwen2.5 / Llama-family.
                 :has_qk_norm,
+                # M3: SWA window. 0 = no sliding window (full causal).
+                # >0 = attend only to the last `swa_window` positions
+                # in the K/V cache. Phi-3-mini-4k sets this to 2048;
+                # Gemma 2 local layers set it to 4096. Realize-time
+                # parameter (set via realize_for_mmap or post-init).
+                :swa_window,
                 :kv_blocks_ffi,
                 :max_T, :d_model, :d_ff, :n_heads, :n_kv, :d_head,
                 :group_size, :n_layers, :vocab_size, :rope_base,
@@ -145,6 +151,7 @@ class SmolLM2KVFFICacheCuda
     @has_untied_output  = false
     @has_qkv_bias       = false
     @has_qk_norm        = false
+    @swa_window         = 0
     @kv_blocks_ffi      = [SmolLM2KVBlockFFICuda.new]
     @weight_type   = 0                # GGML_TYPE_F32; legacy default
     @gguf_handle_keepalive = TinyNNCuda.tnn_null_ptr  # set by realize_for_mmap
@@ -213,7 +220,7 @@ class SmolLM2KVFFICacheCuda
     @d_ff       = cfg.d_ff
     @n_heads    = cfg.n_heads
     @n_kv       = cfg.n_kv
-    @d_head     = cfg.d_model / cfg.n_heads
+    @d_head     = cfg.head_dim
     @group_size = cfg.n_heads / cfg.n_kv
     @n_layers   = cfg.n_layers
     @vocab_size = cfg.vocab
@@ -420,7 +427,11 @@ class SmolLM2KVFFICacheCuda
       gate_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_gate.weight")
       up_idx   = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_up.weight")
       down_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_down.weight")
-      blk.t_w_o    = TinyNNCuda.tnn_input_2d_persistent_mmap(@sess, @d_model, @d_model,
+      # M1.1: o_proj maps [n_heads * d_head] → [d_model]. For models
+      # where d_head = d_model / n_heads (SmolLM2 / Llama / Qwen2.5)
+      # these are equal; for Qwen3 with explicit head_dim=128 they
+      # differ (n_heads * d_head = 2048, d_model = 1024).
+      blk.t_w_o    = TinyNNCuda.tnn_input_2d_persistent_mmap(@sess, @d_model, @n_heads * @d_head,
                        TinyNNCuda.tnn_gguf_tensor_type(gguf_handle, o_idx),
                        TinyNNCuda.tnn_gguf_tensor_file_offset(gguf_handle, o_idx))
       blk.t_w_gate = TinyNNCuda.tnn_input_2d_persistent_mmap(@sess, @d_ff, @d_model,
@@ -711,7 +722,7 @@ class SmolLM2KVFFICacheCuda
         hkv = hkv + 1
       end
 
-      blk.t_w_o    = alloc_2d_w(d_model, d_model)
+      blk.t_w_o    = alloc_2d_w(d_model, @n_heads * @d_head)
       blk.t_w_gate = alloc_2d_w(d_ff,    d_model)
       blk.t_w_up   = alloc_2d_w(d_ff,    d_model)
       blk.t_w_down = alloc_2d_w(d_model, d_ff)
@@ -912,10 +923,26 @@ class SmolLM2KVFFICacheCuda
       t_q = trace_tap(tag + "q_rot", t_q)
     end
 
+    # M3: sliding-window attention. When @swa_window > 0, restrict
+    # the K/V view to the last `min(pos+1, swa_window)` positions.
+    # Mathematically equivalent to a -inf mask elsewhere; cheaper to
+    # implement as a view-with-offset.
+    if @swa_window > 0 && (pos + 1) > @swa_window
+      hist_start = pos + 1 - @swa_window
+      hist_count = @swa_window
+    else
+      hist_start = 0
+      hist_count = pos + 1
+    end
     t_K_hist = TinyNNCuda.tnn_view_2d(@sess, blk.t_K[hkv],
-                                    @d_head, pos + 1, bytes_d_head, 0)
+                                    @d_head, hist_count, bytes_d_head,
+                                    hist_start * bytes_d_head)
+    # V is stored as [d_head, max_T] — row-major with stride max_T. The
+    # window over time is the column range [hist_start, hist_start + hist_count)
+    # within each row. The offset is hist_start * sizeof(f32).
     t_V_hist = TinyNNCuda.tnn_view_2d(@sess, blk.t_V[hkv],
-                                    pos + 1, @d_head, bytes_max_T, 0)
+                                    hist_count, @d_head, bytes_max_T,
+                                    hist_start * 4)
 
     t_scores = TinyNNCuda.tnn_matmul(@sess, t_K_hist, t_q)
     if tap_this_head

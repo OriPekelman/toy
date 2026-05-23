@@ -95,6 +95,12 @@ class SmolLM2KVFFICache
                 # Detect by presence of "blk.0.attn_q_norm.weight" in
                 # the GGUF. Always false on Qwen2.5 / Llama-family.
                 :has_qk_norm,
+                # M3: SWA window. 0 = no sliding window (full causal).
+                # >0 = attend only to the last `swa_window` positions
+                # in the K/V cache. Phi-3-mini-4k sets this to 2048;
+                # Gemma 2 local layers set it to 4096. Realize-time
+                # parameter (set via realize_for_mmap or post-init).
+                :swa_window,
                 :kv_blocks_ffi,
                 :max_T, :d_model, :d_ff, :n_heads, :n_kv, :d_head,
                 :group_size, :n_layers, :vocab_size, :rope_base,
@@ -143,6 +149,7 @@ class SmolLM2KVFFICache
     @has_untied_output  = false
     @has_qkv_bias       = false
     @has_qk_norm        = false
+    @swa_window         = 0
     @kv_blocks_ffi      = [SmolLM2KVBlockFFI.new]
     # CUDA-MIRROR-SKIP-BEGIN: trace-tap is CPU-only diagnostic
     # --- trace-tap diagnostics (zero cost when off) ---
@@ -983,10 +990,26 @@ class SmolLM2KVFFICache
       t_q = trace_tap(tag + "q_rot", t_q)
     end
 
+    # M3: sliding-window attention. When @swa_window > 0, restrict
+    # the K/V view to the last `min(pos+1, swa_window)` positions.
+    # Mathematically equivalent to a -inf mask elsewhere; cheaper to
+    # implement as a view-with-offset.
+    if @swa_window > 0 && (pos + 1) > @swa_window
+      hist_start = pos + 1 - @swa_window
+      hist_count = @swa_window
+    else
+      hist_start = 0
+      hist_count = pos + 1
+    end
     t_K_hist = TinyNN.tnn_view_2d(@sess, blk.t_K[hkv],
-                                    @d_head, pos + 1, bytes_d_head, 0)
+                                    @d_head, hist_count, bytes_d_head,
+                                    hist_start * bytes_d_head)
+    # V is stored as [d_head, max_T] — row-major with stride max_T. The
+    # window over time is the column range [hist_start, hist_start + hist_count)
+    # within each row. The offset is hist_start * sizeof(f32).
     t_V_hist = TinyNN.tnn_view_2d(@sess, blk.t_V[hkv],
-                                    pos + 1, @d_head, bytes_max_T, 0)
+                                    hist_count, @d_head, bytes_max_T,
+                                    hist_start * 4)
 
     t_scores = TinyNN.tnn_matmul(@sess, t_K_hist, t_q)
     if tap_this_head

@@ -200,7 +200,7 @@ class LlamaSeqForwardFFICacheCuda
     @seq_d_ff       = cfg.d_ff
     @seq_n_heads    = cfg.n_heads
     @seq_n_kv       = cfg.n_kv
-    @seq_d_head     = cfg.d_model / cfg.n_heads
+    @seq_d_head     = cfg.head_dim
     @seq_group_size = cfg.n_heads / cfg.n_kv
     @seq_n_layers   = cfg.n_layers
     @seq_vocab_size = cfg.vocab
@@ -214,7 +214,7 @@ class LlamaSeqForwardFFICacheCuda
     # llama3 / LongRoPE: allocate the freq_factors tensor in ctx_w
     # before finalize_weights. Values uploaded post-finalize.
     if @seq_rope_scaling.kind == :llama3
-      @t_seq_rope_freq_factors = TinyNNCuda.tnn_rope_freq_factors_alloc(@sess, cfg.d_model / cfg.n_heads)
+      @t_seq_rope_freq_factors = TinyNNCuda.tnn_rope_freq_factors_alloc(@sess, cfg.head_dim)
     else
       @t_seq_rope_freq_factors = TinyNNCuda.tnn_null_ptr
     end
@@ -479,7 +479,7 @@ class LlamaSeqForwardFFICacheCuda
     @seq_d_ff       = cfg.d_ff
     @seq_n_heads    = cfg.n_heads
     @seq_n_kv       = cfg.n_kv
-    @seq_d_head     = cfg.d_model / cfg.n_heads
+    @seq_d_head     = cfg.head_dim
     @seq_group_size = cfg.n_heads / cfg.n_kv
     @seq_n_layers   = cfg.n_layers
     @seq_vocab_size = cfg.vocab
@@ -493,7 +493,7 @@ class LlamaSeqForwardFFICacheCuda
     # llama3 / LongRoPE: allocate the freq_factors tensor in ctx_w
     # before finalize_weights. Values uploaded post-finalize.
     if @seq_rope_scaling.kind == :llama3
-      @t_seq_rope_freq_factors = TinyNNCuda.tnn_rope_freq_factors_alloc(@sess, cfg.d_model / cfg.n_heads)
+      @t_seq_rope_freq_factors = TinyNNCuda.tnn_rope_freq_factors_alloc(@sess, cfg.head_dim)
     else
       @t_seq_rope_freq_factors = TinyNNCuda.tnn_null_ptr
     end
@@ -741,7 +741,7 @@ class LlamaSeqForwardFFICacheCuda
     @seq_d_ff       = cfg.d_ff
     @seq_n_heads    = cfg.n_heads
     @seq_n_kv       = cfg.n_kv
-    @seq_d_head     = cfg.d_model / cfg.n_heads
+    @seq_d_head     = cfg.head_dim
     @seq_group_size = cfg.n_heads / cfg.n_kv
     @seq_n_layers   = cfg.n_layers
     @seq_vocab_size = cfg.vocab
@@ -755,7 +755,7 @@ class LlamaSeqForwardFFICacheCuda
     # llama3 / LongRoPE: allocate the freq_factors tensor in ctx_w
     # before finalize_weights. Values uploaded post-finalize.
     if @seq_rope_scaling.kind == :llama3
-      @t_seq_rope_freq_factors = TinyNNCuda.tnn_rope_freq_factors_alloc(@sess, cfg.d_model / cfg.n_heads)
+      @t_seq_rope_freq_factors = TinyNNCuda.tnn_rope_freq_factors_alloc(@sess, cfg.head_dim)
     else
       @t_seq_rope_freq_factors = TinyNNCuda.tnn_null_ptr
     end
