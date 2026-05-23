@@ -1,0 +1,198 @@
+# Perf sweep — inference + fine-tune optimization candidates (2026-05-23)
+
+Used the Chrome Trace observability primitive (P1) and the bench
+harness to profile real workloads at meaningful scale, then identify
+where the bench-day budget would actually move the needle.
+
+## Headline finding
+
+**Both inference and LoRA fine-tune are bottlenecked by a single
+ggml call: `tnn_compute_backward` (training) or `tnn_compute`
+(inference).** That call accounts for 99.5%+ of step wallclock.
+Marginal optimizations have to land *inside* the ggml graph or
+*alongside* it (different graph shape, different kernel choice),
+not in our Ruby wrapper.
+
+This means the most productive next-step work is **binding ggml
+features we haven't yet bound** — flash attention, quantized KV
+cache, alternative attention shapes — rather than tweaking the
+graph builder.
+
+## Inference scaling on gx10 CPU
+
+`example_inference` wallclock for `PROMPT="The capital of France is"
+N_NEW=16` (21 total tokens):
+
+| model           | wall (s) | tok/s |
+|-----------------|---------:|------:|
+| SmolLM2-135M    | 0.46     | ~46   |
+| Qwen3-0.6B      | 1.05     | ~20   |
+| Llama-3.2-1B    | 1.74     | ~12   |
+| Qwen3-1.7B      | 1.96     | ~11   |
+| Qwen3-4B        | 4.72     | ~4.5  |
+
+Per-token cost scales roughly with parameter count, as expected.
+Load time (~100ms) eats into the smallest model's headline number
+but doesn't matter at 7B+.
+
+Trace shape (from `TRACE=… example_finetune` on SmolLM2-135M LoRA):
+
+```
+step (70.7 ms):
+  upload_int_array     (< 1 us)
+  upload_float_array   (~100 us)    ← labels, hyperparams
+  compute_backward     (~70.5 ms)   ← 99.7 %
+  download             (~1 us)
+```
+
+The inference trace is the same shape: realize-once + per-step
+upload, compute, download. Compute always dominates.
+
+## What's actually slow inside compute_backward
+
+We don't have ggml-level per-op timing wired up (would need
+`GGML_PERF=1` build + `ggml_graph_print` calls). But the workload
+shape tells us what's there:
+
+For **LoRA Q training** on SmolLM2-135M (T=4, 30 layers):
+- 30 × (per-block forward: Q/K/V matmul × n_heads, RoPE, scaled-dot
+  softmax, V matmul, O matmul, RMSNorm, SwiGLU FFN with 3 matmuls,
+  add+norm)
+- Cross-entropy loss on logits
+- 30 × backward of the same (matmul backward = 2 matmuls each)
+- AdamW step per param × ~9 heads × 2 (A+B) × 30 layers = 540 opt_step calls
+- = ~hundreds of ggml ops per step, dominated by matmul
+
+For **inference decoding** one token from a KV cache:
+- 30 × (Q/K/V matmul per head, RoPE, attention softmax over hist,
+  V matmul, O matmul, FFN matmuls)
+- + final RMSNorm + tied LM-head matmul
+
+Matmul dominates both. Per the ggml CPU kernel:
+- F32 matmul: AVX2 + OpenMP threads
+- Q8_0 matmul: dequant-on-the-fly into AVX2 lanes
+- Cache locality matters (large K/V history)
+
+## Ranked optimization candidates
+
+In rough order of impact per unit effort:
+
+### 1. Flash attention (`tnn_flash_attn_ext`) — **high impact, medium effort**
+
+ggml has `FLASH_ATTN_EXT` + `FLASH_ATTN_BACK`. Both unbound in
+our FFI. Fuses `softmax(Q · Kᵀ / √d) · V` into one kernel,
+streaming over K/V tiles. Memory bandwidth dominates this step
+at long context; flash attention is 2–4× on the CUDA backend
+for `T ≥ 1024`. On CPU it's a smaller win but still nonzero.
+
+Effort: 1–2 days. Bind C wrapper, integrate at the graph-build
+site (replace the current scaled-softmax-matmul triplet), validate
+against the existing path (bit-identical at small shapes; tolerance
+at large).
+
+Estimated: 2–4× decoder throughput at `ctx ≥ 4k`. Smaller at
+short contexts.
+
+### 2. Q8 KV cache — **medium impact, small effort**
+
+K and V are currently allocated as F32 (`tnn_input_2d_f32_persistent`).
+Allocating them as Q8_0 halves the memory bandwidth on every
+attention step. ggml supports Q8 KV natively; we just pass the
+right type at allocation time.
+
+Effort: ~half day. Add an opt-in flag on `SmolLM2KVFFICache`;
+validate output parity within numerical tolerance against the F32
+KV baseline.
+
+Estimated: 1.5–2× on long-context decode (where KV bandwidth is
+the wall). At short contexts the win is smaller because K/V
+fits in cache anyway.
+
+### 3. Multi-token decode / speculative decoding — **high impact, large effort**
+
+Currently `decode_step` processes one token at a time. The matmul
+overhead is per-token even though the weight matrix is the same.
+Multi-token decode (process N tokens in one forward) amortises
+this. Speculative decoding stacks a small draft model + verify
+loop on top.
+
+Effort: 3–7 days. Requires a "decode N tokens" graph shape (we
+have the sequence-mode forward but it's training-flavoured).
+
+Estimated: 2–5× decoder throughput for batches of 4–8 tokens.
+Speculative on top: 1.5–2× more (acceptance-rate dependent).
+
+### 4. ggml CPU sched aliasing fix (upstream) — **medium impact, zero effort
+   for us, depends on Matz / ggml community**
+
+`ggml-org/ggml#1501` (the LoRA-training divergence) is masked by
+our `tnn_pin_all_graph_b_nodes` workaround, which disables
+buffer-slot reuse. That probably costs ~10% in cache-friendliness
+on CPU. If upstream fixes the bug and we can drop the pin, that's
+"free" perf.
+
+Effort: zero (just wait + rebase). Optimization on a stick.
+
+Estimated: ~5–10% on CPU LoRA training.
+
+### 5. AdamW batching — **low impact, medium effort**
+
+Per-step we run `opt_step_adamw` ~540 times for SmolLM2-135M
+LoRA (per Q head per layer × A+B × momenta). Each is a small
+elementwise op. Batching them into a single multi-tensor opt
+step would reduce graph-traversal overhead. ggml has no direct
+batched op, so this would need a custom kernel.
+
+Effort: 2–3 days (C kernel + binding).
+
+Estimated: 5–10% on training step.
+
+### 6. Activation checkpointing — **specialized, only when memory-bound**
+
+Trades memory for compute. Worth it only when fitting a bigger
+model would unblock something; on gx10 (121 GB unified memory)
+we have plenty of headroom for 7B-class training. Defer until
+we want to train 13B+ from scratch.
+
+Estimated: 0% on speed but unblocks new model sizes.
+
+## Recommended next batch
+
+If we have a focused week:
+
+1. **Flash attention binding** — biggest decoder win, unblocks
+   long-context use cases for every model on the list.
+2. **Q8 KV cache** — easy companion win.
+3. (Wait on the upstream ggml fix; revisit when it lands.)
+
+Multi-token / speculative decode is the next tier — better tooling
+needed before we commit to it.
+
+## Out-of-scope for this sweep
+
+- **GPU kernel hand-tuning**: ggml-cuda's kernels are good; we
+  don't have headroom to write better ones from scratch.
+- **AVX-512 / SVE on CPU**: ggml's CPU kernels auto-dispatch.
+- **Distributed multi-GPU**: gx10 is single-GPU.
+- **Mixed precision (BF16/FP16)**: ggml-cpu doesn't fully support
+  BF16 compute; ggml-cuda does, but we'd need a separate weight
+  path. Worth investigating once the simpler wins are in.
+
+## What the tracing primitive itself enabled
+
+The Chrome Trace observability primitive (P1) didn't surface new
+hot spots that we didn't already know about, because the FFI
+boundary is too coarse — everything bottoms out in
+`tnn_compute_backward` or `tnn_compute`. The next iteration of the
+primitive would need either:
+
+- ggml-level per-op timing instrumentation (cheap when `GGML_PERF`
+  is enabled, but it changes the build), or
+- Sampling inside the C side at fixed intervals (statistical
+  profile of which ggml op is currently executing).
+
+Without one of those, our tracing is great for diagnostic /
+correctness work (confirming workflow shape, catching shape
+regressions, debugging) but not for picking optimizations.
+**Next iteration of the tracing primitive: ggml per-op timing.**
+Tracked as task #104 (to-do).
