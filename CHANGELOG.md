@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Model coverage audit (2026-05-23)
+
+- Re-converted `data/tinyllama-1.1b-tok.gguf` and
+  `data/mistral-7b-instruct-v0.2-tok.gguf` with `--with-tokenizer`.
+  Both load + run inference, but **text-mode I/O fails** because
+  their tokenizers are SentencePiece (Llama-2 vocab), not the
+  byte-level BPE our `lib/tokenizer.rb` handles. T1.2's "never mask"
+  rule caught it cleanly: `WARN: tokenizer: piece "Ġ" not in vocab
+  — emitting UNK` ⇒ Mistral output `"The<unk>capital<unk>of<unk>..."`.
+- Tracked as T1.3 (new task). Adds tokenizer-flavor detection from
+  `tokenizer.ggml.model` and a SentencePiece encoder path.
+- **Current text-I/O coverage** (works end-to-end):
+  SmolLM2-135M, Llama-3.2-1B, Qwen2.5-0.5B. All byte-level BPE.
+- **Inference-only** (text I/O blocked on T1.3): TinyLlama-1.1B,
+  Mistral-7B-v0.2. ID-mode `example_inference` (no PROMPT) still
+  works fine.
+
 ### D1 — algorithm-card drift detector (instead of auto-emitter)
 
 - `prep/card_drift_check.rb`: a Ripper-walker tripwire that
