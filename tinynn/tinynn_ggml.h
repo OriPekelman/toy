@@ -134,6 +134,35 @@ void  *tnn_layer_norm(void *sess, void *x, void *gamma_row, void *beta_row, doub
                                                             For HF-style models (GPT-2 / GPT-Neo / TinyStories). */
 void  *tnn_softmax(void *sess, void *a);                /* per-row softmax along ne[0] */
 void  *tnn_diag_mask_inf(void *sess, void *a, int n_past);
+
+/* Flash attention forward (ggml_flash_attn_ext). P4.
+ *
+ * Fuses softmax(Q · Kᵀ / √d_head + mask) · V into one streaming kernel.
+ * Significant win on long contexts (memory-bandwidth dominated) and on
+ * the CUDA backend (purpose-built kernel). Drop-in replacement for the
+ * scale → softmax → matmul triplet that builds attention output.
+ *
+ * Shapes (ggml ne[0..3]):
+ *   q    [d_head, T_q, n_head,    batch]
+ *   k    [d_head, T_k, n_head_kv, batch]
+ *   v    [d_head, T_k, n_head_kv, batch]
+ *   mask [T_k,    T_q, 1,         1    ]  type=F16, contiguous, optional (pass NULL)
+ *   out  [d_head, n_head, T_q, batch]
+ *
+ * scale         : 1/sqrt(d_head) typically.
+ * max_bias      : 0.0 disables ALiBi; >0 requires non-NULL mask.
+ * logit_softcap : 0.0 disables; >0 applies tanh(x / softcap) * softcap
+ *                 (Gemma 2 / Grok / Olmo). Cap NaN safe in ggml's impl.
+ *
+ * GQA (n_head_kv < n_head) is supported — ggml broadcasts K/V across
+ * head groups internally.
+ *
+ * Backward is NOT supported in current vendored ggml
+ * (ggml_flash_attn_back has GGML_ABORT). Use this for INFERENCE only;
+ * training stays on the existing scale/softmax/matmul triplet. */
+void  *tnn_flash_attn_ext(void *sess, void *q, void *k, void *v, void *mask,
+                            double scale, double max_bias, double logit_softcap);
+
                                                          /* set elements above the diagonal (off by n_past) to -inf */
 
 /* --- Llama-family ops --- */

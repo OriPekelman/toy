@@ -278,6 +278,9 @@ tinynn/ab_smoke_rms_norm: tinynn/ab_smoke_rms_norm.rb lib/transformer.rb lib/tin
 tinynn/ab_smoke_softmax: tinynn/ab_smoke_softmax.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) tinynn/ab_smoke_softmax.rb -o tinynn/ab_smoke_softmax
 
+tinynn/ab_smoke_flash_attn: tinynn/ab_smoke_flash_attn.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
+	$(SPINEL) tinynn/ab_smoke_flash_attn.rb -o tinynn/ab_smoke_flash_attn
+
 tinynn/ab_smoke_transpose: tinynn/ab_smoke_transpose.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) tinynn/ab_smoke_transpose.rb -o tinynn/ab_smoke_transpose
 

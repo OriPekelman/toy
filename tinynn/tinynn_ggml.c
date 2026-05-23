@@ -829,6 +829,23 @@ void *tnn_softmax(void *sess, void *a)
     return (void *)ggml_soft_max(s->ctx, (struct ggml_tensor *)a);
 }
 
+void *tnn_flash_attn_ext(void *sess, void *q, void *k, void *v, void *mask,
+                          double scale, double max_bias, double logit_softcap)
+{
+    if (!sess || !q || !k || !v) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    /* mask may be NULL when no causal/sequence mask is wanted (e.g. fully
+     * dense T_q=1 decode with no padding). ggml's impl handles NULL. */
+    return (void *)ggml_flash_attn_ext(s->ctx,
+                                        (struct ggml_tensor *)q,
+                                        (struct ggml_tensor *)k,
+                                        (struct ggml_tensor *)v,
+                                        (struct ggml_tensor *)mask,
+                                        (float)scale,
+                                        (float)max_bias,
+                                        (float)logit_softcap);
+}
+
 void *tnn_transpose(void *sess, void *a)
 {
     if (!sess || !a) return NULL;

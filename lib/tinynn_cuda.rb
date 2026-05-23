@@ -109,6 +109,9 @@ module TinyNNCuda
   ffi_func :tnn_rms_norm,         [:ptr, :ptr, :ptr, :double], :ptr
   ffi_func :tnn_softmax,          [:ptr, :ptr],             :ptr
   ffi_func :tnn_diag_mask_inf,    [:ptr, :ptr, :int],       :ptr
+  # P4: ggml_flash_attn_ext (forward only). See tinynn_ggml.h.
+  ffi_func :tnn_flash_attn_ext,   [:ptr, :ptr, :ptr, :ptr, :ptr,
+                                   :double, :double, :double], :ptr
   # Llama-family ops
   ffi_func :tnn_silu,             [:ptr, :ptr],             :ptr
   ffi_func :tnn_mul,              [:ptr, :ptr, :ptr],       :ptr
