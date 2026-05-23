@@ -32,6 +32,27 @@ tnn_cuda_buffer_from_ptr_internal(void *host_ptr, size_t size, int device) {
 
 #define TNN_SCRATCH_BYTES (16 * 1024 * 1024)   /* 16 MiB: 4M f32 */
 
+/* P6: per-op timing via sched eval callback. Routes one Chrome-Trace
+ * duration event per ggml node when tnn_trace_op_capture_active().
+ * Cost when off: one capture-flag load + early return per node.
+ *
+ * Semantics from ggml_backend_sched_eval_callback (ggml-backend.h):
+ *   ask=true  → return true to request a post call, false to skip.
+ *   ask=false → return true to continue compute, false to ABORT.
+ * We never abort: returning true on post is unconditional. */
+static bool tnn_sched_op_eval_cb(struct ggml_tensor *t, bool ask, void *user_data) {
+    (void)user_data;
+    if (ask) {
+        if (!tnn_trace_op_capture_active()) return false;
+        tnn_trace_op_record_begin();
+        return true;
+    }
+    if (tnn_trace_op_capture_active()) {
+        tnn_trace_op_record_end(ggml_op_name(t->op));
+    }
+    return true;
+}
+
 /* Engine: persistent across the program's lifetime. Holds the backend
  * objects + scheduler. Cached per (prefer_cuda) flavor so multiple
  * session_new calls share one backend init. */
@@ -80,6 +101,10 @@ static tnn_engine *tnn_engine_get(int prefer_cuda)
      * Older path (KV-cache decode, T=1) used 16384; we leave headroom. */
     e->sched = ggml_backend_sched_new(backends, NULL, n_backends,
                                        65536, false, true);
+    /* P6: per-op eval callback. Installed unconditionally; the callback
+     * itself early-outs when capture is off, so the overhead in the
+     * common (untraced) case is one branch per ggml node. */
+    ggml_backend_sched_set_eval_callback(e->sched, tnn_sched_op_eval_cb, NULL);
 
     *slot = e;
     return e;

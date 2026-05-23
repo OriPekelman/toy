@@ -30,6 +30,7 @@ RANK      = (ENV["RANK"]   || "8").to_i
 STEPS     = (ENV["STEPS"]  || "20").to_i
 LR        = (ENV["LR"]     || "0.001").to_f
 TRACE     = ENV["TRACE"]   || ""    # path to Chrome Trace JSON; empty disables
+TRACE_OPS = ENV["TRACE_OPS"] || ""  # "1" → also record per-ggml-op duration events (P6)
 GRAD_DUMP = ENV["GRAD_DUMP"] || ""  # path to CSV; empty disables. Writes per-(layer,head,param) grad stats after each step.
 
 # T=4 prompt; CE objective pushes every position's argmax toward
@@ -97,6 +98,10 @@ if TRACE.length > 0
     puts "trace_open failed: rc=" + rc.to_s + " (TRACE=" + TRACE + ")"
   else
     puts "tracing to " + TRACE
+    if TRACE_OPS == "1"
+      TinyNN.tnn_trace_set_op_capture(1)
+      puts "per-op trace enabled (TRACE_OPS=1)"
+    end
   end
 end
 

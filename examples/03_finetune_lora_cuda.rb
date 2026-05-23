@@ -19,6 +19,7 @@ RANK      = (ENV["RANK"]   || "8").to_i
 STEPS     = (ENV["STEPS"]  || "20").to_i
 LR        = (ENV["LR"]     || "0.001").to_f
 TRACE     = ENV["TRACE"]   || ""
+TRACE_OPS = ENV["TRACE_OPS"] || ""
 GRAD_DUMP = ENV["GRAD_DUMP"] || ""
 
 TOKENS    = [12092, 4845, 253, 1429]
@@ -70,6 +71,10 @@ if TRACE.length > 0
     puts "trace_open failed: rc=" + rc.to_s
   else
     puts "tracing to " + TRACE
+    if TRACE_OPS == "1"
+      TinyNNCuda.tnn_trace_set_op_capture(1)
+      puts "per-op trace enabled (TRACE_OPS=1, CUDA timings reflect enqueue latency)"
+    end
   end
 end
 

@@ -28,6 +28,12 @@ static struct {
     int64_t         epoch_us;
 } g_trace = {0, NULL, NULL, 0, 0, 0};
 
+/* P6 per-op capture state. Flag is independent of g_trace.active so a
+ * caller can set it before tnn_trace_open and have it honoured once
+ * the trace opens. tnn_trace_op_capture_active() ANDs both. */
+static int     g_op_capture       = 0;
+static int64_t g_op_pending_start = 0;
+
 static int64_t now_us(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -84,6 +90,38 @@ void tnn_trace_end(const char *name, int64_t start_ts) {
     g_trace.buf[slot].name   = name;
     g_trace.buf[slot].ts_us  = start_ts - g_trace.epoch_us;
     g_trace.buf[slot].dur_us = end_ts - start_ts;
+    g_trace.head = slot + 1;
+}
+
+void tnn_trace_set_op_capture(int en) {
+    g_op_capture = en ? 1 : 0;
+}
+
+int tnn_trace_op_capture_active(void) {
+    return g_op_capture && g_trace.active;
+}
+
+void tnn_trace_op_record_begin(void) {
+    if (!g_op_capture || !g_trace.active) return;
+    g_op_pending_start = now_us();
+}
+
+void tnn_trace_op_record_end(const char *op_name) {
+    if (!g_op_capture || !g_trace.active) return;
+    int slot = g_trace.head;
+    if (slot >= TNN_TRACE_BUF_SIZE) {
+        if (!g_trace.wrap_warned) {
+            fprintf(stderr, "[tnn-trace] event buffer full at %d "
+                            "events; further events dropped.\n",
+                    TNN_TRACE_BUF_SIZE);
+            g_trace.wrap_warned = 1;
+        }
+        return;
+    }
+    int64_t end_ts = now_us();
+    g_trace.buf[slot].name   = op_name;
+    g_trace.buf[slot].ts_us  = g_op_pending_start - g_trace.epoch_us;
+    g_trace.buf[slot].dur_us = end_ts - g_op_pending_start;
     g_trace.head = slot + 1;
 }
 

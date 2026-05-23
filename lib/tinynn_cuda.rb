@@ -158,6 +158,8 @@ module TinyNNCuda
   ffi_func :tnn_trace_end,            [:str, :long],                :void
   ffi_func :tnn_trace_mark,           [:str],                       :void
   ffi_func :tnn_trace_active,         [],                           :int
+  ffi_func :tnn_trace_set_op_capture, [:int],                       :void
+  ffi_func :tnn_trace_op_capture_active, [],                        :int
   ffi_func :tnn_set_loss,             [:ptr],                       :void
   ffi_func :tnn_sum,                  [:ptr, :ptr],                 :ptr
   ffi_func :tnn_cross_entropy_loss,   [:ptr, :ptr, :ptr],           :ptr

@@ -50,9 +50,45 @@ upload, compute, download. Compute always dominates.
 
 ## What's actually slow inside compute_backward
 
-We don't have ggml-level per-op timing wired up (would need
-`GGML_PERF=1` build + `ggml_graph_print` calls). But the workload
-shape tells us what's there:
+**Updated with P6 empirical data.** As of 2026-05-23 the trace
+primitive supports per-ggml-op duration events via
+`TRACE_OPS=1`. Measured on SmolLM2-135M LoRA, T=4, 30 layers,
+2 training steps:
+
+```
+total compute_backward: ~913 ms (2 steps × ~457 ms)
+events: 21,562
+
+OP                  count     tot_us    pct   avg_us
+OUT_PROD             5378     318148   11.6%   59.2   ← matmul-back grad-W
+MUL_MAT              3302     197692    7.2%   59.9   ← forward + back grad-X
+ADD                  2868     123118    4.5%   42.9
+OPT_STEP_ADAMW       1080      48949    1.8%   45.3
+ROPE / ROPE_BACK     1434      62541    2.3%   ~44
+DIAG_MASK_INF / ZERO 1080      45683    1.7%   ~42
+SOFT_MAX / _BACK     1080      42629    1.6%   ~39
+MUL                   422      20682    0.8%   49.0
+CONCAT                480      18999    0.7%   39.6
+... (≈70% accounted; rest is RMS_NORM, VIEW, RESHAPE, etc.)
+```
+
+Confirms the architectural prediction: **OUT_PROD + MUL_MAT
+together account for ~19% of measured per-op wall time**, the
+largest single category. That's the matmul tile in
+`grad_W = grad_y · xᵀ` (OUT_PROD) and `grad_X = grad_y · Wᵀ`
+(MUL_MAT). The 5,378 OUT_PROD count is roughly 2× the 3,302
+MUL_MAT — consistent with backward needing one OUT_PROD per
+weight matrix plus the forward MUL_MATs being replayed for
+some grad chains.
+
+**Caveat**: P6 instrumentation costs ~5× slowdown when
+`TRACE_OPS=1` (the eval callback disables some kernel fusion).
+Per-op `avg_us` values above are *inflated* relative to the
+no-trace run. Use the relative proportions — not absolute
+microseconds — to rank ops.
+
+The original architectural sketch of what's in the graph (for
+reference):
 
 For **LoRA Q training** on SmolLM2-135M (T=4, 30 layers):
 - 30 × (per-block forward: Q/K/V matmul × n_heads, RoPE, scaled-dot
@@ -194,5 +230,11 @@ primitive would need either:
 Without one of those, our tracing is great for diagnostic /
 correctness work (confirming workflow shape, catching shape
 regressions, debugging) but not for picking optimizations.
-**Next iteration of the tracing primitive: ggml per-op timing.**
-Tracked as task #104 (to-do).
+
+**Update 2026-05-23**: ggml per-op timing is now shipped (P6 /
+task #106). The sched eval-callback emits one Chrome-Trace
+duration event per ggml node when `TRACE_OPS=1` is set
+alongside `TRACE=…`. Opt-in via env var; off-path overhead is
+within timing noise. See `tinynn_trace.h` for caveats (5×
+slowdown when on; CUDA timings reflect enqueue latency rather
+than kernel duration).

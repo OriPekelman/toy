@@ -20,7 +20,8 @@ N_LAYERS = 2
 CONTEXT  = 64
 EPOCHS   = (ENV["EPOCHS"] || "1").to_i
 LR       = 0.001
-TRACE    = ENV["TRACE"] || ""
+TRACE     = ENV["TRACE"] || ""
+TRACE_OPS = ENV["TRACE_OPS"] || ""
 
 vocab      = read_vocab("data/ts_vocab.txt")
 sequences  = read_sequences("data/ts_seqs.txt")
@@ -43,7 +44,15 @@ trainer.step!(prompt_ids); trainer.reset_optimizer!; trainer.step_idx = 0
 
 if TRACE.length > 0
   rc = TinyNN.tnn_trace_open(TRACE)
-  if rc == 0; puts "tracing to " + TRACE; else; puts "trace_open rc=" + rc.to_s; end
+  if rc == 0
+    puts "tracing to " + TRACE
+    if TRACE_OPS == "1"
+      TinyNN.tnn_trace_set_op_capture(1)
+      puts "per-op trace enabled (TRACE_OPS=1)"
+    end
+  else
+    puts "trace_open rc=" + rc.to_s
+  end
 end
 
 t0 = Time.now
