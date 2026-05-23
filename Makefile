@@ -281,6 +281,9 @@ tinynn/ab_smoke_softmax: tinynn/ab_smoke_softmax.rb lib/transformer.rb lib/tinyn
 tinynn/ab_smoke_flash_attn: tinynn/ab_smoke_flash_attn.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) tinynn/ab_smoke_flash_attn.rb -o tinynn/ab_smoke_flash_attn
 
+tinynn/ab_smoke_q8_kv: tinynn/ab_smoke_q8_kv.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
+	$(SPINEL) tinynn/ab_smoke_q8_kv.rb -o tinynn/ab_smoke_q8_kv
+
 tinynn/ab_smoke_transpose: tinynn/ab_smoke_transpose.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) tinynn/ab_smoke_transpose.rb -o tinynn/ab_smoke_transpose
 

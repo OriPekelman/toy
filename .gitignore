@@ -78,6 +78,7 @@ tinynn/ab_smoke_full_forward_block
 tinynn/ab_smoke_kv_write
 tinynn/ab_smoke_kv_attn
 tinynn/ab_smoke_flash_attn
+tinynn/ab_smoke_q8_kv
 tinynn/full_forward_bench
 tinynn/full_forward_bench_cuda
 tinynn/forward_smoke
