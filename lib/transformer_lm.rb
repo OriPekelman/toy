@@ -78,7 +78,7 @@ class ToyLM
       # tensors stay quantized; matmul kernels read them in place.
       kv.set_weight_type(wtype)
       @gguf_handle = TinyNN.tnn_gguf_load(path)
-      kv.realize_for_mmap(@gguf_handle, cfg, @max_T, flags.untied, flags.qkv_bias)
+      kv.realize_for_mmap(@gguf_handle, cfg, @max_T, flags.untied, flags.qkv_bias, flags.qk_norm)
     else
       # Legacy layout: dequantize-to-F32 on copy. The
       # tnn_gguf_copy_head_slice_to_persistent helper writes F32 bytes

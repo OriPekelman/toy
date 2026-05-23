@@ -49,7 +49,7 @@ cfg   = SmolLM2ConfigLoader.read(GGUF)
 flags = GGUFLoad.detect_smollm2_flags(GGUF)
 gguf  = TinyNN.tnn_gguf_load(GGUF)
 KV    = SmolLM2KVFFICache.new
-KV.realize_for_mmap(gguf, cfg, 512, flags.untied, flags.qkv_bias)
+KV.realize_for_mmap(gguf, cfg, 512, flags.untied, flags.qkv_bias, flags.qk_norm)
 CFG_VOCAB = cfg.vocab
 puts "loaded " + GGUF + " — vocab=" + CFG_VOCAB.to_s
 

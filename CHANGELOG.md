@@ -2,7 +2,30 @@
 
 ## Unreleased
 
-### Model coverage audit (2026-05-23)
+### M1 — Qwen3 dense plumbing (QK-norm, partial)
+
+- `SmolLM2KVBlockFFI` now carries `t_q_norm_gamma` + `t_k_norm_gamma`
+  (1D `[d_head]` shared across heads, per block). `SmolLM2KVFFICache`
+  carries `@has_qk_norm` flag.
+- `GGUFLoad.detect_smollm2_flags` detects QK-norm by presence of
+  `blk.0.attn_q_norm.weight` (Qwen3-only; Qwen2.5 / Llama return false).
+  `SmolLM2Flags` gains a `qk_norm` field.
+- `realize_for_mmap` signature widened: `(gguf, cfg, max_T, untied,
+  qkv_bias, qk_norm)`. Allocates the QK-norm gammas as mmap'd
+  1D F32 tensors when set. Graph builder applies `tnn_rms_norm` to
+  Q and K with the per-block gamma BEFORE `tnn_rope_ext`.
+- `prep/convert_smollm2_to_gguf.py` propagates Qwen3's
+  `self_attn.q_norm.weight` / `k_norm.weight` HF tensors to
+  `attn_q_norm.weight` / `attn_k_norm.weight` GGUF tensors.
+- Existing Qwen2.5 / SmolLM2 / Llama-3.2 / TinyLlama unchanged
+  (no QK-norm path triggered). Bench passes within ±5%.
+- Qwen3-0.6B converts and loads, but **inference is not yet
+  correct**. Root cause: Qwen3 sets `head_dim = 128` explicitly in
+  HF config, not `hidden_size / num_heads = 64`. Our converter
+  computes the wrong head_dim and the Q/K/V projections come out
+  half-sized. Tracked as M1.1 (next task). QK-norm itself appears
+  correctly wired — the head_dim mismatch alone explains the
+  garbage output.
 
 - Re-converted `data/tinyllama-1.1b-tok.gguf` and
   `data/mistral-7b-instruct-v0.2-tok.gguf` with `--with-tokenizer`.

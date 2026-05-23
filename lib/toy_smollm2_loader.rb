@@ -98,22 +98,28 @@ module GGUFLoad
   # Ruby Mat-backed model. Returns has_untied_output + has_qkv_bias so
   # the caller can build the FFI cache directly.
   class SmolLM2Flags
-    attr_accessor :untied, :qkv_bias
-    def initialize(untied, qkv_bias)
+    attr_accessor :untied, :qkv_bias, :qk_norm
+    def initialize(untied, qkv_bias, qk_norm)
       @untied   = untied
       @qkv_bias = qkv_bias
+      @qk_norm  = qk_norm
     end
   end
 
   def self.detect_smollm2_flags(path)
     handle = TinyNN.tnn_gguf_load(path)
     if handle == nil
-      return SmolLM2Flags.new(false, false)
+      return SmolLM2Flags.new(false, false, false)
     end
     untied   = TinyNN.tnn_gguf_find_index(handle, "output.weight")       >= 0
     qkv_bias = TinyNN.tnn_gguf_find_index(handle, "blk.0.attn_q.bias")   >= 0
+    # M1: Qwen3 QK-norm — presence of attn_q_norm/attn_k_norm tensors
+    # signals "apply RMSNorm to Q,K before RoPE". Qwen2.5 / Llama don't
+    # have these (returns -1 / false). Detection is by tensor existence,
+    # not metadata flag — there's no canonical GGUF key for this yet.
+    qk_norm  = TinyNN.tnn_gguf_find_index(handle, "blk.0.attn_q_norm.weight") >= 0
     TinyNN.tnn_gguf_free(handle)
-    SmolLM2Flags.new(untied, qkv_bias)
+    SmolLM2Flags.new(untied, qkv_bias, qk_norm)
   end
 
   # Inference-only loader: stream GGUF weights directly into the FFI

@@ -422,6 +422,15 @@ def main():
             add(f"{out}.attn_k.bias", take(f"{hf}.self_attn.k_proj.bias"))
             add(f"{out}.attn_v.bias", take(f"{hf}.self_attn.v_proj.bias"))
 
+        # M1: Qwen3 added per-head QK-norm (RMSNorm on Q and K with a
+        # shared [d_head] gamma applied BEFORE RoPE). HF tensors live
+        # at self_attn.q_norm.weight / k_norm.weight; ggml convention
+        # is attn_q_norm / attn_k_norm. Only emit when present (Qwen2.x
+        # and Llama don't have these).
+        if f"{hf}.self_attn.q_norm.weight" in blobs:
+            add(f"{out}.attn_q_norm.weight", take(f"{hf}.self_attn.q_norm.weight"))
+            add(f"{out}.attn_k_norm.weight", take(f"{hf}.self_attn.k_norm.weight"))
+
         # SwiGLU FFN (all transposed)
         #   gate_proj / up_proj: HF [d_ff, D]  →  ours [D, d_ff]
         #   down_proj:           HF [D, d_ff] →  ours [d_ff, D]

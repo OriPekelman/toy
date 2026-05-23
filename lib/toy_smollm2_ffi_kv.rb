@@ -35,6 +35,11 @@ class SmolLM2KVBlockFFI
   attr_accessor :t_rn1_gamma, :t_rn2_gamma,
                 :t_w_q, :t_w_k, :t_w_v, :t_w_o,
                 :t_b_q, :t_b_k, :t_b_v,
+                # M1: per-block QK-norm (Qwen3). RMSNorm on Q and K with
+                # a shared [d_head] gamma applied to every head before
+                # RoPE. Allocated only when has_qk_norm is set. The
+                # null-ptr seed lets graph-builder code branch cleanly.
+                :t_q_norm_gamma, :t_k_norm_gamma,
                 :t_w_gate, :t_w_up, :t_w_down,
                 :t_K, :t_V,
                 # F1.2: optional LoRA adapters on Q projection (one
@@ -57,6 +62,8 @@ class SmolLM2KVBlockFFI
   def initialize
     @t_rn1_gamma = TinyNN.tnn_null_ptr
     @t_rn2_gamma = TinyNN.tnn_null_ptr
+    @t_q_norm_gamma = TinyNN.tnn_null_ptr
+    @t_k_norm_gamma = TinyNN.tnn_null_ptr
     @t_w_q  = [TinyNN.tnn_null_ptr]
     @t_w_k  = [TinyNN.tnn_null_ptr]
     @t_w_v  = [TinyNN.tnn_null_ptr]
@@ -81,6 +88,13 @@ end
 class SmolLM2KVFFICache
   attr_accessor :sess, :t_token_embed, :t_final_norm_gamma,
                 :t_output, :has_untied_output, :has_qkv_bias,
+                # M1: Qwen3 added per-block QK-norm. When true, the
+                # graph builder applies tnn_rms_norm to Q and K with
+                # blk.t_q_norm_gamma / blk.t_k_norm_gamma (shape
+                # [d_head], shared across heads) BEFORE tnn_rope_ext.
+                # Detect by presence of "blk.0.attn_q_norm.weight" in
+                # the GGUF. Always false on Qwen2.5 / Llama-family.
+                :has_qk_norm,
                 :kv_blocks_ffi,
                 :max_T, :d_model, :d_ff, :n_heads, :n_kv, :d_head,
                 :group_size, :n_layers, :vocab_size, :rope_base,
@@ -128,6 +142,7 @@ class SmolLM2KVFFICache
     @t_output           = TinyNN.tnn_null_ptr
     @has_untied_output  = false
     @has_qkv_bias       = false
+    @has_qk_norm        = false
     @kv_blocks_ffi      = [SmolLM2KVBlockFFI.new]
     # CUDA-MIRROR-SKIP-BEGIN: trace-tap is CPU-only diagnostic
     # --- trace-tap diagnostics (zero cost when off) ---
@@ -204,7 +219,7 @@ class SmolLM2KVFFICache
   #   kv = SmolLM2KVFFICache.new
   #   kv.realize_for_mmap(gguf, cfg, MAX_T, flags.untied, flags.qkv_bias)
   #   # weights are already in place; no load_weights call needed.
-  def realize_for_mmap(gguf_handle, cfg, max_T, untied, qkv_bias)
+  def realize_for_mmap(gguf_handle, cfg, max_T, untied, qkv_bias, qk_norm)
     @max_T      = max_T
     @d_model    = cfg.d_model
     @d_ff       = cfg.d_ff
@@ -222,6 +237,7 @@ class SmolLM2KVFFICache
     @sess              = TinyNN.tnn_session_new(0)
     @has_untied_output = untied
     @has_qkv_bias      = qkv_bias
+    @has_qk_norm       = qk_norm
 
     # llama3 / LongRoPE: allocate the (d_head/2)-elem freq_factors
     # tensor in ctx_w before finalize_weights. We compute and upload
@@ -279,6 +295,17 @@ class SmolLM2KVFFICache
                           TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, rn1_idx))
       blk.t_rn2_gamma = TinyNN.tnn_input_1d_persistent_mmap(@sess, @d_model, 0,
                           TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, rn2_idx))
+
+      # M1: Qwen3 QK-norm gammas (shape [d_head], shared across heads).
+      # Tensor names follow llama.cpp: blk.X.attn_q_norm.weight etc.
+      if @has_qk_norm
+        qn_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_q_norm.weight")
+        kn_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_k_norm.weight")
+        blk.t_q_norm_gamma = TinyNN.tnn_input_1d_persistent_mmap(@sess, @d_head, 0,
+                               TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, qn_idx))
+        blk.t_k_norm_gamma = TinyNN.tnn_input_1d_persistent_mmap(@sess, @d_head, 0,
+                               TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, kn_idx))
+      end
 
       # Q per-head — each head is a contiguous slice of the full
       # [n_heads*d_head, d_model] tensor in HF-native row-major.
@@ -822,6 +849,11 @@ class SmolLM2KVFFICache
       if hkv == 0
         t_k_pre = trace_tap(tag + "k_pre", t_k_pre)
       end
+      # M1: Qwen3 QK-norm — RMSNorm K with the per-block gamma before
+      # rope. Shared gamma across heads (shape [d_head]).
+      if @has_qk_norm
+        t_k_pre = TinyNN.tnn_rms_norm(@sess, t_k_pre, blk.t_k_norm_gamma, @rms_eps)
+      end
       t_k_rot = TinyNN.tnn_rope_ext(@sess, t_k_pre, t_pos, @d_head,
                                     @rope_base, @rope_scaling.freq_scale,
                                     @rope_scaling.ext_factor,
@@ -932,6 +964,9 @@ class SmolLM2KVFFICache
     end
     if tap_this_head
       t_q_pre = trace_tap(tag + "q_pre", t_q_pre)
+    end
+    if @has_qk_norm
+      t_q_pre = TinyNN.tnn_rms_norm(@sess, t_q_pre, blk.t_q_norm_gamma, @rms_eps)
     end
     t_q     = TinyNN.tnn_rope_ext(@sess, t_q_pre, t_pos, @d_head,
                                   @rope_base, @rope_scaling.freq_scale,
