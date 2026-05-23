@@ -11,7 +11,7 @@
 require_relative "../lib/tokenizer"
 
 GGUF   = ENV["GGUF"]  || "data/smollm2-135m-tok.gguf"
-ITERS  = (ENV["ITERS"] || "100").to_i
+ITERS  = (ENV["ITERS"] || "2000").to_i
 
 CORPUS = "Once upon a time there was a quick brown fox who jumped over " +
          "the lazy dog. He was a clever fox, and he knew that the dog " +

@@ -102,10 +102,16 @@ architectural-tax to the rest of the codebase.
 Skip the full Lowerer. Instead, pursue the three benefits separately
 with proportionate tools:
 
-1. **Perf** → FFI-wrap `Mat#matmul`, `Mat#matmul_t`, `Mat#t_matmul`
+1. ~~**Perf** → FFI-wrap `Mat#matmul`, `Mat#matmul_t`, `Mat#t_matmul`
    (and the cache classes). Estimated 5-10× on `example_train`
    wallclock, ~100 LOC, no architectural change. Tracked as
-   **P2** (new task).
+   **P2** (new task).~~ **MEASURED 2026-05-23: estimate was wrong**
+   — session-per-op FFI is 1.7× *slower* at training-toy shapes
+   (32×8) because session lifecycle (~180 µs) dwarfs the matmul
+   (~77 µs). See `p2-ffi-matmul-2026-05-23.md`. The 38× number
+   cited above is for whole-graph FFI (the cache pattern), not
+   per-op. Real workloads already use cache pattern via
+   `lib/llama_seq_forward_ffi.rb` etc.; nothing to do on those.
 2. **Spinel landmine relief** → wait for upstream Spinel RBS
    maturation; chase items only when they re-bite. The pattern is
    already documented in the memory file.

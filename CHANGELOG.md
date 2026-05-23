@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### P2 — measured, not viable (skipped)
+
+- `docs/roadmap/p2-ffi-matmul-2026-05-23.md`: planned to FFI-wrap
+  `Mat#matmul` for a 5–10× win on `example_train`. Measured the
+  actual cost: session-per-op FFI is **1.7× SLOWER** than pure-Ruby
+  at training-toy shapes (32×8 matmul). 5 000 calls × ~180 µs
+  session lifecycle overhead = ~0.9 s deficit vs the 1.3 s
+  pure-Ruby baseline.
+- Lesson: the 38× FFI gain on LLM-shape inference is for
+  *whole-graph* FFI (one `tnn_compute` per step), not per-op FFI.
+  At toy shapes, per-op FFI loses on session overhead; break-even
+  is around `m*k*n ~ 100 000`. Real workloads (LoRA, KV decode,
+  full FT) route through whole-graph FFI cache classes already
+  and are unaffected.
+- If we later want fast `example_train`, build a
+  `TransformerLMTrainerFFI` mirror of `LlamaSeqForwardFFICache`
+  for the custom-GPT shape (~500 LOC, ~5–20× expected). Queued
+  as P2-α; not currently prioritised.
+
 ### Bench harness + Lowerer evidence
 
 - `bench/` directory with three Spinel-compiled benches —
