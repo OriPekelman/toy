@@ -44,8 +44,16 @@ extern "C" {
 } while (0)
 #endif
 
-void  *tnn_session_new(int prefer_cuda);     /* 0 = CPU only, 1 = CUDA if compiled in */
+void  *tnn_session_new(int backend_kind);    /* 0 = CPU, 1 = CUDA, 2 = Metal — falls
+                                              * back to CPU if the requested GPU
+                                              * backend archive isn't linked in */
 void   tnn_session_free(void *sess);
+
+/* Idempotent teardown of cached engines (CPU + CUDA + Metal). Call
+ * before main returns when targeting Metal — its static destructor
+ * asserts on undrained residency sets otherwise. Safe to call on
+ * any backend; no-op when caches are empty. */
+void   tnn_shutdown_engines(void);
 
 const char *tnn_backend_name(void *sess);
 int    tnn_link_check(void);                 /* returns 73 */

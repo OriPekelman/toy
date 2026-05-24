@@ -19,6 +19,15 @@ __attribute__((weak)) ggml_backend_t tnn_backend_cuda_init_internal(void) {
     return NULL;
 }
 
+/* Metal backend init: same weak-default / strong-override pattern as
+ * CUDA. The strong definition lives in tinynn/tinynn_backend_metal.m,
+ * compiled only into libtinynn_ggml_metal.a (macOS-only). Builds
+ * without the Metal archive get this NULL weak default and fall
+ * through to the CPU backend. */
+__attribute__((weak)) ggml_backend_t tnn_backend_metal_init_internal(void) {
+    return NULL;
+}
+
 /* Weak hook: returns a CUDA-side ggml_backend_cuda_buffer_from_ptr
  * wrapping the given host region (typically an mmap'd GGUF). The
  * CPU-only build leaves this NULL; the CUDA archive
@@ -54,30 +63,45 @@ static bool tnn_sched_op_eval_cb(struct ggml_tensor *t, bool ask, void *user_dat
 }
 
 /* Engine: persistent across the program's lifetime. Holds the backend
- * objects + scheduler. Cached per (prefer_cuda) flavor so multiple
+ * objects + scheduler. Cached per backend flavor so multiple
  * session_new calls share one backend init. */
 typedef struct {
-    ggml_backend_t       backend;        /* CUDA or CPU */
-    ggml_backend_t       cpu_backend;    /* sched fallback when primary is CUDA */
+    ggml_backend_t       backend;        /* CUDA / Metal / CPU */
+    ggml_backend_t       cpu_backend;    /* sched fallback when primary is GPU */
     ggml_backend_sched_t sched;
     const char          *backend_name;
 } tnn_engine;
 
-static tnn_engine *g_engine_cpu  = NULL;
-static tnn_engine *g_engine_cuda = NULL;
+static tnn_engine *g_engine_cpu   = NULL;
+static tnn_engine *g_engine_cuda  = NULL;
+static tnn_engine *g_engine_metal = NULL;
 
-static tnn_engine *tnn_engine_get(int prefer_cuda)
+/* backend_kind: 0 = CPU, 1 = CUDA, 2 = Metal.
+ * Falls back to CPU if the requested GPU backend isn't linked into
+ * the binary (weak init stub returns NULL). The original name was
+ * `prefer_cuda` (binary); kept as an int for source compat — Ruby
+ * callers pass the integer directly.
+ */
+static tnn_engine *tnn_engine_get(int backend_kind)
 {
-    tnn_engine **slot = prefer_cuda ? &g_engine_cuda : &g_engine_cpu;
+    tnn_engine **slot;
+    switch (backend_kind) {
+        case 1:  slot = &g_engine_cuda;  break;
+        case 2:  slot = &g_engine_metal; break;
+        default: slot = &g_engine_cpu;   break;
+    }
     if (*slot) return *slot;
 
     ggml_backend_load_all();
     tnn_engine *e = (tnn_engine *)calloc(1, sizeof(tnn_engine));
     if (!e) return NULL;
 
-    if (prefer_cuda) {
+    if (backend_kind == 1) {
         e->backend = tnn_backend_cuda_init_internal();
         if (e->backend) e->backend_name = "cuda";
+    } else if (backend_kind == 2) {
+        e->backend = tnn_backend_metal_init_internal();
+        if (e->backend) e->backend_name = "metal";
     }
     if (!e->backend) {
         e->backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, NULL);
@@ -108,6 +132,28 @@ static tnn_engine *tnn_engine_get(int prefer_cuda)
 
     *slot = e;
     return e;
+}
+
+/* Explicit teardown of every cached engine. Idempotent. Programs that
+ * want a clean exit (notably Metal — its ggml backend asserts in the
+ * static destructor if a residency set wasn't drained beforehand)
+ * should call this before main() returns. CUDA + CPU don't strictly
+ * need it but tolerate the call. After tnn_shutdown_engines the
+ * caches are NULL, so a fresh tnn_session_new will re-init the
+ * backend from scratch — handy if your program wants to release the
+ * GPU between phases. */
+void tnn_shutdown_engines(void)
+{
+    tnn_engine **slots[] = { &g_engine_cpu, &g_engine_cuda, &g_engine_metal };
+    for (int i = 0; i < 3; ++i) {
+        tnn_engine *e = *slots[i];
+        if (!e) continue;
+        if (e->sched)        ggml_backend_sched_free(e->sched);
+        if (e->cpu_backend)  ggml_backend_free(e->cpu_backend);
+        if (e->backend)      ggml_backend_free(e->backend);
+        free(e);
+        *slots[i] = NULL;
+    }
 }
 
 /* Session: per "compute frame" — owns its ctx + graph + scratch, but
@@ -155,9 +201,9 @@ typedef struct {
     int                     scratch_overflow_warned; /* once-per-session diag */
 } tnn_session;
 
-void *tnn_session_new(int prefer_cuda)
+void *tnn_session_new(int backend_kind)
 {
-    tnn_engine *e = tnn_engine_get(prefer_cuda);
+    tnn_engine *e = tnn_engine_get(backend_kind);
     if (!e) return NULL;
 
     tnn_session *s = (tnn_session *)calloc(1, sizeof(tnn_session));

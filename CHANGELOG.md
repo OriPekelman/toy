@@ -1,5 +1,61 @@
 # Changelog
 
+## v0.3.0-pre-alpha — 2026-05-24
+
+**Headline.** Metal backend (issue #2). SmolLM2-135M runs end-to-end
+on Apple Silicon GPUs with bit-identical output to the CPU path. Same
+FFI surface as CPU + CUDA, same graph builder, same generated mirror
+classes — the only switch is `tnn_session_new(2)`. Validated on M2;
+expected to work on M1 / M3 / M4 / M5.
+
+### B-Metal — third backend
+
+- New `setup-ggml-metal` Makefile target. Builds with
+  `GGML_METAL_EMBED_LIBRARY=ON` so the .metal shaders are baked into
+  the static archive as raw bytes — the Metal driver JIT-compiles
+  them on first device load (~15 s one-time per binary, then cached).
+  Works with Command Line Tools alone; no full Xcode required.
+- `tinynn/tinynn_backend_metal.m` (Objective-C). Strong
+  `tnn_backend_metal_init_internal()` calling `ggml_backend_metal_init`,
+  mirroring the CUDA backend's archive-isolation pattern. Plus
+  `tnn_force_exit` — a flush-then-`_exit` trampoline that skips
+  `__cxa_finalize` so ggml-metal's static-destructor residency-set
+  assert doesn't fire on short-lived programs.
+- `tinynn/tinynn_ggml.c` engine cache extended to ternary
+  (CPU / CUDA / Metal) via `tnn_engine_get(backend_kind)`. The
+  `prefer_cuda` integer is now `backend_kind` with 0/1/2 semantics;
+  callers pass `2` to opt into Metal. Adds `tnn_shutdown_engines()`
+  for explicit teardown (CPU + CUDA tolerate the call as well).
+- `lib/tinynn_metal.rb` — `TinyNNMetal` FFI module mirroring the full
+  CPU surface, plus Ruby helpers (`upload_int_array`,
+  `download_row_major`, …) the generated mirrors call. Links
+  Foundation / Metal / MetalKit frameworks.
+- `lib/transformer_lm_metal.rb` + `lib/toy_smollm2_ffi_kv_metal.rb` +
+  the rest of the `_metal.rb` mirror set. The KV-cache decode runs on
+  GPU; the loader takes the copy-load (non-mmap) path because
+  ggml-metal doesn't expose a public `buffer_from_pointer` — the
+  scheduler crashes when fed CPU-resident weight tensors as kernel
+  inputs. Multi-GB models pay the copy cost on Metal until upstream
+  adds the BYO-pointer API.
+- `prep/gen_cuda_mirror.rb` generalized: emits both `*_cuda.rb` and
+  `*_metal.rb` from the same CPU source via a per-backend
+  substitution table (`--backend cuda|metal` to target one).
+- `examples/01_inference_metal.rb` + `make example_inference_metal`
+  — end-to-end smoke. Output for SmolLM2-135M F32 with the five-ID
+  fallback prompt is bit-identical to the CPU path.
+- `docs/coverage.md` gains a Metal column. Today the Metal mirror is
+  intentionally a thin surface; the `0/26` Metal-bound count is the
+  follow-up to-do list, not a regression signal.
+
+### Known gaps (Metal)
+
+- Zero-copy mmap: blocked on a public `ggml_backend_metal_buffer_from_ptr`
+  upstream. Workaround: copy-load (current default).
+- GPT-2-family validation: `lib/gpt2_ffi_*_metal.rb` mirrors exist
+  (generated), but no binary has been built against them yet.
+- Quantized weights: untested on Metal. Should work — same kernel
+  coverage upstream — but no smoke yet.
+
 ## v0.2.0-pre-alpha — 2026-05-23
 
 **Headline.** Three new model families work end-to-end as

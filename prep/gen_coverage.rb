@@ -152,16 +152,23 @@ UNARY_OPS = %w[GELU SILU RELU GELU_QUICK TANH ELU SIGMOID HARDSIGMOID HARDSWISH 
 # Main
 # ---------------------------------------------------------------------------
 
-ggml_h        = File.join(ROOT, "vendor/ggml/include/ggml.h")
-tinynn_c      = File.join(ROOT, "tinynn/tinynn_ggml.c")
-tinynn_rb     = File.join(ROOT, "lib/tinynn.rb")
-tinynn_cuda_rb= File.join(ROOT, "lib/tinynn_cuda.rb")
-out_path      = File.join(ROOT, "docs/coverage.md")
+ggml_h          = File.join(ROOT, "vendor/ggml/include/ggml.h")
+tinynn_c        = File.join(ROOT, "tinynn/tinynn_ggml.c")
+tinynn_rb       = File.join(ROOT, "lib/tinynn.rb")
+tinynn_cuda_rb  = File.join(ROOT, "lib/tinynn_cuda.rb")
+tinynn_metal_rb = File.join(ROOT, "lib/tinynn_metal.rb")
+out_path        = File.join(ROOT, "docs/coverage.md")
 
-ops      = parse_ggml_ops(ggml_h)
-wrappers = parse_tnn_wrappers(tinynn_c)
-cpu_ffi  = parse_ffi_funcs(tinynn_rb)
-cuda_ffi = parse_ffi_funcs(tinynn_cuda_rb)
+ops       = parse_ggml_ops(ggml_h)
+wrappers  = parse_tnn_wrappers(tinynn_c)
+cpu_ffi   = parse_ffi_funcs(tinynn_rb)
+cuda_ffi  = parse_ffi_funcs(tinynn_cuda_rb)
+# Metal mirror is intentionally a thin subset (issue #2). Whatever
+# tnn_* bindings it declares are reported here; ops absent from the
+# mirror but present in the C wrapper are not "drift" — they're just
+# not yet wired into the Ruby Metal surface. See the Metal column note
+# under "Parity drift" below.
+metal_ffi = File.exist?(tinynn_metal_rb) ? parse_ffi_funcs(tinynn_metal_rb) : Set.new
 
 # Reverse index: ggml_func -> [tnn_wrappers that call it]
 ggml_to_tnn = Hash.new { |h, k| h[k] = [] }
@@ -169,12 +176,12 @@ wrappers.each do |tnn_name, ggml_funcs|
   ggml_funcs.each { |g| ggml_to_tnn[g] << tnn_name }
 end
 
-def row_for(op_name, ggml_to_tnn, cpu_ffi, cuda_ffi, ops_set)
+def row_for(op_name, ggml_to_tnn, cpu_ffi, cuda_ffi, metal_ffi, ops_set)
   cands = candidate_c_funcs(op_name)
   if cands.empty?
     return {
       op: op_name, wrapper: nil,
-      cpu: "n/a", cuda: "n/a", backward: "—",
+      cpu: "n/a", cuda: "n/a", metal: "n/a", backward: "—",
       note: "internal dispatch op (no public ggml_<x>() constructor)",
     }
   end
@@ -207,15 +214,17 @@ def row_for(op_name, ggml_to_tnn, cpu_ffi, cuda_ffi, ops_set)
       "no tnn_ wrapper"
     return {
       op: op_name, wrapper: nil,
-      cpu: incidental_only ? "via" : "missing",
-      cuda: incidental_only ? "via" : "missing",
+      cpu:   incidental_only ? "via" : "missing",
+      cuda:  incidental_only ? "via" : "missing",
+      metal: incidental_only ? "via" : "missing",
       backward: "—",
       note: note,
     }
   end
 
-  cpu_present  = cpu_ffi.include?(hit_tnn)
-  cuda_present = cuda_ffi.include?(hit_tnn)
+  cpu_present   = cpu_ffi.include?(hit_tnn)
+  cuda_present  = cuda_ffi.include?(hit_tnn)
+  metal_present = metal_ffi.include?(hit_tnn)
 
   # Backward column semantics:
   #   "yes"      — explicit tnn_<x>_back wrapper exists (we call it
@@ -234,8 +243,9 @@ def row_for(op_name, ggml_to_tnn, cpu_ffi, cuda_ffi, ops_set)
 
   {
     op: op_name, wrapper: hit_tnn,
-    cpu: cpu_present ? "yes" : "no",
-    cuda: cuda_present ? "yes" : "no",
+    cpu:   cpu_present   ? "yes" : "no",
+    cuda:  cuda_present  ? "yes" : "no",
+    metal: metal_present ? "yes" : "no",
     backward: back_status, note: "",
   }
 end
@@ -248,12 +258,12 @@ rows = ops.flat_map do |op|
   if op == "GGML_OP_UNARY"
     UNARY_OPS.map do |u|
       virt = "GGML_OP_" + u
-      r = row_for(virt, ggml_to_tnn, cpu_ffi, cuda_ffi, ops_set)
+      r = row_for(virt, ggml_to_tnn, cpu_ffi, cuda_ffi, metal_ffi, ops_set)
       r[:note] = "unary sub-op (dispatches via GGML_OP_UNARY)" if r[:note] == "" || r[:note] == "no tnn_ wrapper"
       r
     end
   else
-    [row_for(op, ggml_to_tnn, cpu_ffi, cuda_ffi, ops_set)]
+    [row_for(op, ggml_to_tnn, cpu_ffi, cuda_ffi, metal_ffi, ops_set)]
   end
 end
 
@@ -267,10 +277,11 @@ bound_count    = main_rows.count { |r| r[:cpu] == "yes" }
 via_count      = main_rows.count { |r| r[:cpu] == "via" }
 missing_count  = main_rows.count { |r| r[:cpu] == "missing" }
 notapp_count   = main_rows.count { |r| r[:cpu] == "n/a" }
-parity_drift   = main_rows.count { |r| r[:cpu] == "yes" && r[:cuda] != "yes" }
-back_count     = main_rows.count { |r| r[:backward] == "yes" }
-back_auto      = main_rows.count { |r| r[:backward] == "autodiff" }
-back_possible  = main_rows.count { |r| r[:backward] != "—" }
+parity_drift       = main_rows.count { |r| r[:cpu] == "yes" && r[:cuda]  != "yes" }
+parity_drift_metal = main_rows.count { |r| r[:cpu] == "yes" && r[:metal] != "yes" }
+back_count         = main_rows.count { |r| r[:backward] == "yes" }
+back_auto          = main_rows.count { |r| r[:backward] == "autodiff" }
+back_possible      = main_rows.count { |r| r[:backward] != "—" }
 
 # ---------------------------------------------------------------------------
 # Emit markdown
@@ -286,14 +297,15 @@ md << <<~MD
 
   This is the canonical "what we support" matrix. One row per ggml op
   (`enum ggml_op` in `vendor/ggml/include/ggml.h`), with columns for the
-  CPU + CUDA FFI bindings and backward support. Models built on top of
-  these ops are tracked separately in `docs/models-verified.md`.
+  CPU + CUDA + Metal FFI bindings and backward support. Models built on
+  top of these ops are tracked separately in `docs/models-verified.md`.
 
   ## Summary
 
   - **#{bound_count} of #{main_rows.size}** ops have a dedicated `tnn_*` wrapper bound on the CPU side (#{(100.0 * bound_count / main_rows.size).round}%).
   - **#{via_count}** more are composed inside other wrappers (status `via`) — usable in graphs we build but no standalone entry point.
   - **#{parity_drift}** bound ops are CPU-only (no CUDA binding) — see "Parity drift" below.
+  - **#{parity_drift_metal}** bound ops are not bound on Metal — the Metal mirror (`lib/tinynn_metal.rb`) is an intentionally thin smoke surface today, see "Metal mirror" below.
   - **#{back_count}** ops with a `*_BACK` enum case have an explicit backward wrapper; **#{back_auto}** more are emitted automatically by ggml's autodiff (`ggml_build_backward_expand`) without needing a wrapper.
   - **#{missing_count}** ops have no wrapper at all (and aren't composed by another).
   - **#{notapp_count}** ops are dispatch-internal (no public `ggml_<x>()` constructor — e.g. `UNARY`, `MAP_CUSTOM1`).
@@ -312,8 +324,8 @@ md << <<~MD
 
   ## Op coverage
 
-  | Op | tnn wrapper | CPU | CUDA | Back | Note |
-  |----|-------------|:---:|:----:|:----:|------|
+  | Op | tnn wrapper | CPU | CUDA | Metal | Back | Note |
+  |----|-------------|:---:|:----:|:-----:|:----:|------|
 MD
 
 main_rows.each do |r|
@@ -321,6 +333,7 @@ main_rows.each do |r|
   md << (r[:wrapper] ? "`#{r[:wrapper]}`" : "—") << " | "
   md << r[:cpu]      << " | "
   md << r[:cuda]     << " | "
+  md << r[:metal]    << " | "
   md << r[:backward] << " | "
   md << r[:note]     << " |\n"
 end
@@ -340,6 +353,21 @@ else
   md << "| Op | tnn wrapper |\n|----|-------------|\n"
   drift_rows.each { |r| md << "| `#{r[:op]}` | `#{r[:wrapper]}` |\n" }
 end
+
+md << <<~MD
+
+  ## Metal mirror
+
+  The Metal FFI surface (`lib/tinynn_metal.rb`) is intentionally a thin
+  smoke binding today — just enough to prove `ggml_backend_metal_init`
+  + a forward matmul on Apple Silicon. Op count below is *not* a
+  regression signal; it's the to-do list for whoever wires real model
+  inference on Metal (issue #2 follow-up).
+
+MD
+metal_drift = main_rows.select { |r| r[:cpu] == "yes" && r[:metal] != "yes" }
+md << "_Metal-bound ops_: **#{main_rows.count { |r| r[:metal] == 'yes' }}** of #{main_rows.count { |r| r[:cpu] == 'yes' }} CPU-bound.\n"
+md << "_Not yet on Metal_: #{metal_drift.size}.\n"
 
 md << <<~MD
 

@@ -5,14 +5,15 @@ hand-edit — run `make coverage` to regenerate.
 
 This is the canonical "what we support" matrix. One row per ggml op
 (`enum ggml_op` in `vendor/ggml/include/ggml.h`), with columns for the
-CPU + CUDA FFI bindings and backward support. Models built on top of
-these ops are tracked separately in `docs/models-verified.md`.
+CPU + CUDA + Metal FFI bindings and backward support. Models built on
+top of these ops are tracked separately in `docs/models-verified.md`.
 
 ## Summary
 
 - **26 of 98** ops have a dedicated `tnn_*` wrapper bound on the CPU side (27%).
 - **3** more are composed inside other wrappers (status `via`) — usable in graphs we build but no standalone entry point.
 - **0** bound ops are CPU-only (no CUDA binding) — see "Parity drift" below.
+- **26** bound ops are not bound on Metal — the Metal mirror (`lib/tinynn_metal.rb`) is an intentionally thin smoke surface today, see "Metal mirror" below.
 - **5** ops with a `*_BACK` enum case have an explicit backward wrapper; **1** more are emitted automatically by ggml's autodiff (`ggml_build_backward_expand`) without needing a wrapper.
 - **65** ops have no wrapper at all (and aren't composed by another).
 - **4** ops are dispatch-internal (no public `ggml_<x>()` constructor — e.g. `UNARY`, `MAP_CUSTOM1`).
@@ -31,106 +32,106 @@ Backend caveats not captured by the table:
 
 ## Op coverage
 
-| Op | tnn wrapper | CPU | CUDA | Back | Note |
-|----|-------------|:---:|:----:|:----:|------|
-| `GGML_OP_DUP` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_ADD` | `tnn_add` | yes | yes | — |  |
-| `GGML_OP_ADD_ID` | `tnn_add_id` | yes | yes | — |  |
-| `GGML_OP_ADD1` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_ACC` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_SUB` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_MUL` | `tnn_mul` | yes | yes | — |  |
-| `GGML_OP_DIV` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_SQR` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_SQRT` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_LOG` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_SIN` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_COS` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_SUM` | `tnn_sum` | yes | yes | — |  |
-| `GGML_OP_SUM_ROWS` | `tnn_sum_rows` | yes | yes | — |  |
-| `GGML_OP_CUMSUM` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_MEAN` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_ARGMAX` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_COUNT_EQUAL` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_REPEAT` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_CONCAT` | `tnn_concat` | yes | yes | — |  |
-| `GGML_OP_NORM` | — | via | via | — | composed inside other wrappers (no dedicated tnn_) |
-| `GGML_OP_RMS_NORM` | `tnn_rms_norm` | yes | yes | yes |  |
-| `GGML_OP_GROUP_NORM` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_L2_NORM` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_MUL_MAT` | — | via | via | — | composed inside other wrappers (no dedicated tnn_) |
-| `GGML_OP_MUL_MAT_ID` | `tnn_mul_mat_id` | yes | yes | — |  |
-| `GGML_OP_OUT_PROD` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_SCALE` | `tnn_scale` | yes | yes | — |  |
-| `GGML_OP_SET` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_CPY` | `tnn_cpy` | yes | yes | — |  |
-| `GGML_OP_CONT` | — | via | via | — | composed inside other wrappers (no dedicated tnn_) |
-| `GGML_OP_RESHAPE` | `tnn_reshape_2d` | yes | yes | — |  |
-| `GGML_OP_VIEW` | `tnn_view_1d` | yes | yes | — |  |
-| `GGML_OP_PERMUTE` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_TRANSPOSE` | `tnn_transpose` | yes | yes | — |  |
-| `GGML_OP_GET_ROWS` | `tnn_get_rows` | yes | yes | yes |  |
-| `GGML_OP_SET_ROWS` | `tnn_set_rows` | yes | yes | — |  |
-| `GGML_OP_DIAG` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_DIAG_MASK_INF` | `tnn_diag_mask_inf` | yes | yes | — |  |
-| `GGML_OP_DIAG_MASK_ZERO` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_SOFT_MAX` | `tnn_soft_max_ext` | yes | yes | yes |  |
-| `GGML_OP_ROPE` | `tnn_rope_ext` | yes | yes | yes |  |
-| `GGML_OP_CLAMP` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_CONV_TRANSPOSE_1D` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_IM2COL` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_IM2COL_3D` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_CONV_2D` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_CONV_3D` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_CONV_2D_DW` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_CONV_TRANSPOSE_2D` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_POOL_1D` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_POOL_2D` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_UPSCALE` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_PAD` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_PAD_REFLECT_1D` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_ROLL` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_ARANGE` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_TIMESTEP_EMBEDDING` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_ARGSORT` | `tnn_argsort` | yes | yes | — |  |
-| `GGML_OP_TOP_K` | `tnn_top_k` | yes | yes | — |  |
-| `GGML_OP_LEAKY_RELU` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_TRI` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_FILL` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_FLASH_ATTN_EXT` | `tnn_flash_attn_ext` | yes | yes | — |  |
-| `GGML_OP_SSM_CONV` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_SSM_SCAN` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_WIN_PART` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_WIN_UNPART` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_GET_REL_POS` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_ADD_REL_POS` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_RWKV_WKV6` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_GATED_LINEAR_ATTN` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_RWKV_WKV7` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_SOLVE_TRI` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_GATED_DELTA_NET` | — | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_GELU` | `tnn_gelu` | yes | yes | — | unary sub-op (dispatches via GGML_OP_UNARY) |
-| `GGML_OP_SILU` | `tnn_silu` | yes | yes | yes | unary sub-op (dispatches via GGML_OP_UNARY) |
-| `GGML_OP_RELU` | — | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
-| `GGML_OP_GELU_QUICK` | — | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
-| `GGML_OP_TANH` | — | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
-| `GGML_OP_ELU` | — | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
-| `GGML_OP_SIGMOID` | — | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
-| `GGML_OP_HARDSIGMOID` | — | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
-| `GGML_OP_HARDSWISH` | — | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
-| `GGML_OP_ABS` | — | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
-| `GGML_OP_SGN` | — | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
-| `GGML_OP_NEG` | — | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
-| `GGML_OP_STEP` | — | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
-| `GGML_OP_EXP` | — | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
-| `GGML_OP_MAP_CUSTOM1` | — | n/a | n/a | — | internal dispatch op (no public ggml_<x>() constructor) |
-| `GGML_OP_MAP_CUSTOM2` | — | n/a | n/a | — | internal dispatch op (no public ggml_<x>() constructor) |
-| `GGML_OP_MAP_CUSTOM3` | — | n/a | n/a | — | internal dispatch op (no public ggml_<x>() constructor) |
-| `GGML_OP_CUSTOM` | — | n/a | n/a | — | internal dispatch op (no public ggml_<x>() constructor) |
-| `GGML_OP_CROSS_ENTROPY_LOSS` | `tnn_cross_entropy_loss` | yes | yes | autodiff |  |
-| `GGML_OP_OPT_STEP_ADAMW` | `tnn_opt_step_adamw` | yes | yes | — |  |
-| `GGML_OP_OPT_STEP_SGD` | `tnn_opt_step_sgd` | yes | yes | — |  |
-| `GGML_OP_GLU` | — | missing | missing | — | no tnn_ wrapper |
+| Op | tnn wrapper | CPU | CUDA | Metal | Back | Note |
+|----|-------------|:---:|:----:|:-----:|:----:|------|
+| `GGML_OP_DUP` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_ADD` | `tnn_add` | yes | yes | no | — |  |
+| `GGML_OP_ADD_ID` | `tnn_add_id` | yes | yes | no | — |  |
+| `GGML_OP_ADD1` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_ACC` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_SUB` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_MUL` | `tnn_mul` | yes | yes | no | — |  |
+| `GGML_OP_DIV` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_SQR` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_SQRT` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_LOG` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_SIN` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_COS` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_SUM` | `tnn_sum` | yes | yes | no | — |  |
+| `GGML_OP_SUM_ROWS` | `tnn_sum_rows` | yes | yes | no | — |  |
+| `GGML_OP_CUMSUM` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_MEAN` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_ARGMAX` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_COUNT_EQUAL` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_REPEAT` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_CONCAT` | `tnn_concat` | yes | yes | no | — |  |
+| `GGML_OP_NORM` | — | via | via | via | — | composed inside other wrappers (no dedicated tnn_) |
+| `GGML_OP_RMS_NORM` | `tnn_rms_norm` | yes | yes | no | yes |  |
+| `GGML_OP_GROUP_NORM` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_L2_NORM` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_MUL_MAT` | — | via | via | via | — | composed inside other wrappers (no dedicated tnn_) |
+| `GGML_OP_MUL_MAT_ID` | `tnn_mul_mat_id` | yes | yes | no | — |  |
+| `GGML_OP_OUT_PROD` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_SCALE` | `tnn_scale` | yes | yes | no | — |  |
+| `GGML_OP_SET` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_CPY` | `tnn_cpy` | yes | yes | no | — |  |
+| `GGML_OP_CONT` | — | via | via | via | — | composed inside other wrappers (no dedicated tnn_) |
+| `GGML_OP_RESHAPE` | `tnn_reshape_2d` | yes | yes | no | — |  |
+| `GGML_OP_VIEW` | `tnn_view_1d` | yes | yes | no | — |  |
+| `GGML_OP_PERMUTE` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_TRANSPOSE` | `tnn_transpose` | yes | yes | no | — |  |
+| `GGML_OP_GET_ROWS` | `tnn_get_rows` | yes | yes | no | yes |  |
+| `GGML_OP_SET_ROWS` | `tnn_set_rows` | yes | yes | no | — |  |
+| `GGML_OP_DIAG` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_DIAG_MASK_INF` | `tnn_diag_mask_inf` | yes | yes | no | — |  |
+| `GGML_OP_DIAG_MASK_ZERO` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_SOFT_MAX` | `tnn_soft_max_ext` | yes | yes | no | yes |  |
+| `GGML_OP_ROPE` | `tnn_rope_ext` | yes | yes | no | yes |  |
+| `GGML_OP_CLAMP` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_CONV_TRANSPOSE_1D` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_IM2COL` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_IM2COL_3D` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_CONV_2D` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_CONV_3D` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_CONV_2D_DW` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_CONV_TRANSPOSE_2D` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_POOL_1D` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_POOL_2D` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_UPSCALE` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_PAD` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_PAD_REFLECT_1D` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_ROLL` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_ARANGE` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_TIMESTEP_EMBEDDING` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_ARGSORT` | `tnn_argsort` | yes | yes | no | — |  |
+| `GGML_OP_TOP_K` | `tnn_top_k` | yes | yes | no | — |  |
+| `GGML_OP_LEAKY_RELU` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_TRI` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_FILL` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_FLASH_ATTN_EXT` | `tnn_flash_attn_ext` | yes | yes | no | — |  |
+| `GGML_OP_SSM_CONV` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_SSM_SCAN` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_WIN_PART` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_WIN_UNPART` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_GET_REL_POS` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_ADD_REL_POS` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_RWKV_WKV6` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_GATED_LINEAR_ATTN` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_RWKV_WKV7` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_SOLVE_TRI` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_GATED_DELTA_NET` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_GELU` | `tnn_gelu` | yes | yes | no | — | unary sub-op (dispatches via GGML_OP_UNARY) |
+| `GGML_OP_SILU` | `tnn_silu` | yes | yes | no | yes | unary sub-op (dispatches via GGML_OP_UNARY) |
+| `GGML_OP_RELU` | — | missing | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
+| `GGML_OP_GELU_QUICK` | — | missing | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
+| `GGML_OP_TANH` | — | missing | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
+| `GGML_OP_ELU` | — | missing | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
+| `GGML_OP_SIGMOID` | — | missing | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
+| `GGML_OP_HARDSIGMOID` | — | missing | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
+| `GGML_OP_HARDSWISH` | — | missing | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
+| `GGML_OP_ABS` | — | missing | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
+| `GGML_OP_SGN` | — | missing | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
+| `GGML_OP_NEG` | — | missing | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
+| `GGML_OP_STEP` | — | missing | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
+| `GGML_OP_EXP` | — | missing | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
+| `GGML_OP_MAP_CUSTOM1` | — | n/a | n/a | n/a | — | internal dispatch op (no public ggml_<x>() constructor) |
+| `GGML_OP_MAP_CUSTOM2` | — | n/a | n/a | n/a | — | internal dispatch op (no public ggml_<x>() constructor) |
+| `GGML_OP_MAP_CUSTOM3` | — | n/a | n/a | n/a | — | internal dispatch op (no public ggml_<x>() constructor) |
+| `GGML_OP_CUSTOM` | — | n/a | n/a | n/a | — | internal dispatch op (no public ggml_<x>() constructor) |
+| `GGML_OP_CROSS_ENTROPY_LOSS` | `tnn_cross_entropy_loss` | yes | yes | no | autodiff |  |
+| `GGML_OP_OPT_STEP_ADAMW` | `tnn_opt_step_adamw` | yes | yes | no | — |  |
+| `GGML_OP_OPT_STEP_SGD` | `tnn_opt_step_sgd` | yes | yes | no | — |  |
+| `GGML_OP_GLU` | — | missing | missing | missing | — | no tnn_ wrapper |
 
 ## Parity drift
 
@@ -138,6 +139,17 @@ Ops where CPU has an FFI binding but CUDA does not. Drift > 0 is a
 regression — run `make coverage-check` in CI to catch it.
 
 _None — full CPU/CUDA parity on bound ops._
+
+## Metal mirror
+
+The Metal FFI surface (`lib/tinynn_metal.rb`) is intentionally a thin
+smoke binding today — just enough to prove `ggml_backend_metal_init`
++ a forward matmul on Apple Silicon. Op count below is *not* a
+regression signal; it's the to-do list for whoever wires real model
+inference on Metal (issue #2 follow-up).
+
+_Metal-bound ops_: **0** of 26 CPU-bound.
+_Not yet on Metal_: 26.
 
 ## Tnn surface not directly tied to a ggml op
 
@@ -147,7 +159,7 @@ helpers, trace primitive, etc. Listed here for completeness; not
 covered by the table above.
 
 <details>
-<summary>71 infrastructure / helper wrappers</summary>
+<summary>72 infrastructure / helper wrappers</summary>
 
 - `tnn_adam_step_scratch`
 - `tnn_add_to_graph`
@@ -206,6 +218,7 @@ covered by the table above.
 - `tnn_set_loss`
 - `tnn_set_output`
 - `tnn_set_param`
+- `tnn_shutdown_engines`
 - `tnn_softmax`
 - `tnn_switch_a`
 - `tnn_switch_b`

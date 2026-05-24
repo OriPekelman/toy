@@ -1,17 +1,21 @@
 # toy build system.
 #
 # Demo / training Ruby drivers live in demos/ and compile to native
-# binaries via Spinel. CUDA / ggml acceleration is opt-in:
+# binaries via Spinel. GPU acceleration is opt-in:
 #
 #   make                   # demos/train_minimal + demos/train_tinystories
 #   make setup-ggml        # one-time clone + CPU build of vendored ggml
 #   make setup-ggml-cuda   # one-time clone + CUDA build (needs CUDA toolkit)
+#   make setup-ggml-metal  # one-time Metal build (macOS only)
 #   make smoke             # tinynn FFI smoke test (4x3 ggml matmul demo)
 #   make distilgpt2_demo_text  # → demos/distilgpt2_demo_text
 #
 # Vendored ggml lives at vendor/ggml/ (gitignored).
 # The CUDA build expects sm_121 (NVIDIA GB10); override with
 # GGML_CUDA_ARCH=NN on the command line.
+# The Metal build uses GGML_METAL_EMBED_LIBRARY=ON so it works with
+# Command Line Tools only (the xcrun metal / metallib compilers ship
+# only with full Xcode). Kernels get JIT-compiled at first device load.
 
 SPINEL_DIR  ?= $(HOME)/sites/spinel
 SPINEL      ?= $(SPINEL_DIR)/spinel
@@ -67,7 +71,8 @@ example_inference: examples/example_inference
 # two FFI binding files. See docs/coverage.md for the matrix.
 coverage: docs/coverage.md
 docs/coverage.md: prep/gen_coverage.rb vendor/ggml/include/ggml.h \
-                  tinynn/tinynn_ggml.c lib/tinynn.rb lib/tinynn_cuda.rb
+                  tinynn/tinynn_ggml.c lib/tinynn.rb lib/tinynn_cuda.rb \
+                  lib/tinynn_metal.rb
 	ruby prep/gen_coverage.rb
 coverage-check:
 	ruby prep/gen_coverage.rb --check
@@ -89,6 +94,18 @@ example_finetune: examples/example_finetune
 examples/example_finetune_cuda: examples/03_finetune_lora_cuda.rb lib/llama_seq_forward_ffi_cuda.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 example_finetune_cuda: examples/example_finetune_cuda
+
+# Metal mirror of example_inference (macOS only). Uses TinyNNMetal.
+# Same -Wl,-u trick as CUDA so the Metal backend init survives
+# weak-symbol resolution. macOS expects a leading underscore on
+# external symbols, hence `-Wl,-u,_tnn_metal_force_link`.
+# Frameworks (Foundation/Metal/MetalKit) are linked via -framework.
+examples/example_inference_metal: examples/01_inference_metal.rb lib/arch.rb lib/transformer_lm_metal.rb lib/toy_smollm2_ffi_kv_metal.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn_metal.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_metal.a
+ifneq ($(UNAME_S),Darwin)
+	@echo "example_inference_metal: macOS-only"; exit 1
+endif
+	$(SPINEL) --cc='cc -Wl,-u,_tnn_metal_force_link -framework Foundation -framework Metal -framework MetalKit' $< -o $@
+example_inference_metal: examples/example_inference_metal
 
 examples/example_serve: examples/04_serve_http.rb tep_demo/_tep_lib/tep.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
@@ -200,6 +217,25 @@ setup-ggml-cuda: $(GGML_DIR)/.patched
 	  -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
 	  -DCMAKE_CUDA_ARCHITECTURES=$(GGML_CUDA_ARCH) -DGGML_NATIVE=OFF
 	cd $(GGML_DIR) && PATH=$(CUDA_DIR)/bin:$$PATH $(CMAKE_ENV) cmake --build build-cuda -j$(NJOBS)
+
+# Metal build (macOS only). GGML_METAL_EMBED_LIBRARY=ON bakes the
+# .metal shader source into the static archive as raw bytes; the
+# Metal driver JIT-compiles it on first device load. This lets the
+# whole pipeline work with the Command Line Tools (xcrun metal /
+# metallib are full-Xcode-only). On a Mac with full Xcode you can
+# flip GGML_METAL_EMBED_LIBRARY=OFF for AOT-compiled kernels.
+setup-ggml-metal: $(GGML_DIR)/.patched
+ifneq ($(UNAME_S),Darwin)
+	@echo "setup-ggml-metal: Metal is macOS-only (uname -s = $(UNAME_S))"; exit 1
+endif
+	cd $(GGML_DIR) && $(CMAKE_ENV) cmake -B build-metal \
+	  -DBUILD_SHARED_LIBS=OFF -DGGML_STATIC=ON \
+	  -DGGML_CUDA=OFF -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON \
+	  -DGGML_VULKAN=OFF -DGGML_OPENCL=OFF -DGGML_BLAS=OFF \
+	  -DGGML_OPENMP=OFF -DGGML_ACCELERATE=OFF \
+	  -DGGML_BUILD_EXAMPLES=OFF -DGGML_BUILD_TESTS=OFF \
+	  -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+	cd $(GGML_DIR) && $(CMAKE_ENV) cmake --build build-metal -j$(NJOBS)
 
 # --- tinynn shim (CPU build) ------------------------------------------------
 GGML_INC := -I$(GGML_DIR)/include -I$(GGML_DIR)/src
@@ -803,6 +839,17 @@ tinynn/tinynn_backend_cuda.o: tinynn/tinynn_backend_cuda.c
 tinynn/libtinynn_ggml_cuda.a: tinynn/tinynn_backend_cuda.o
 	ar $(ARFLAGS) $@ $<
 
+# Metal backend mirror — same archive-isolation pattern as CUDA. The
+# source is .m (Objective-C) since the Metal frameworks are ObjC; we
+# compile with -fobjc-arc off (the file holds no ObjC objects of its
+# own, just a C function calling into ggml-metal). Header search adds
+# the Metal build dir so ggml-metal.h is reachable.
+tinynn/tinynn_backend_metal.o: tinynn/tinynn_backend_metal.m
+	$(CC) $(CFLAGS) -x objective-c $(GGML_INC) -c $< -o $@
+
+tinynn/libtinynn_ggml_metal.a: tinynn/tinynn_backend_metal.o
+	ar $(ARFLAGS) $@ $<
+
 tinynn/ab_smoke_cuda: tinynn/ab_smoke_cuda.rb lib/transformer.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) tinynn/ab_smoke_cuda.rb -o tinynn/ab_smoke_cuda
 
@@ -829,6 +876,8 @@ clean:
 	      demos/distilgpt2_demo_ffi_cuda demos/distilgpt2_demo_kv_cuda \
 	      tinynn/tinynn_ggml.o tinynn/libtinynn_ggml.a \
 	      tinynn/tinynn_backend_cuda.o tinynn/libtinynn_ggml_cuda.a \
+	      tinynn/tinynn_backend_metal.o tinynn/libtinynn_ggml_metal.a \
+	      examples/example_inference_metal \
 	      tinynn/smoke tinynn/ab_smoke tinynn/ab_smoke_cuda tinynn/ab_smoke_all_cuda \
 	      tinynn/ab_smoke_add tinynn/ab_smoke_gelu tinynn/ab_smoke_rms_norm \
 	      tinynn/ab_smoke_softmax tinynn/ab_smoke_transpose tinynn/ab_smoke_scale \
@@ -839,7 +888,7 @@ clean:
 	      tinynn/persistent_bench_cuda tinynn/persistent_bench_big
 
 distclean: clean
-	rm -rf $(GGML_DIR)/build $(GGML_DIR)/build-cuda
+	rm -rf $(GGML_DIR)/build $(GGML_DIR)/build-cuda $(GGML_DIR)/build-metal
 
 # --- Algorithm-card drift gate -----------------------------------------------
 # Sanity-check that every Toy:: class with both `def forward` and
@@ -866,7 +915,8 @@ bench-update: tinynn/libtinynn_ggml.a
 bench-report: tinynn/libtinynn_ggml.a
 	ruby bench/check.rb --report
 
-.PHONY: all clean distclean setup-ggml setup-ggml-cuda smoke \
+.PHONY: all clean distclean setup-ggml setup-ggml-cuda setup-ggml-metal smoke \
+        example_inference_metal \
         ab-smoke ab-smoke-add ab-smoke-gelu ab-smoke-rms-norm \
         ab-smoke-softmax ab-smoke-transpose ab-smoke-scale ab-smoke-silu \
         ab-smoke-mul ab-smoke-pipeline ab-smoke-big ab-smoke-cuda \

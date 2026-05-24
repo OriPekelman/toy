@@ -167,6 +167,7 @@ demos/smollm2_lora_train_adamw_cuda
 demos/smollm2_lora_sft_multi_cuda
 demos/smollm2_lora_sft_multipos_cuda
 examples/example_inference
+examples/example_inference_metal
 examples/example_train
 examples/example_finetune_cuda
 examples/example_serve

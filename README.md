@@ -4,7 +4,7 @@
   <img src="toy_logo.png" alt="toy" width="240" />
 </p>
 
-**v0.2.0-pre-alpha** — early signal. Not API-stable. See
+**v0.3.0-pre-alpha** — early signal. Not API-stable. See
 [`CHANGELOG.md`](CHANGELOG.md) for what's working today.
 
 A small transformer language model in Ruby. AOT-compiled to a native
@@ -14,8 +14,8 @@ Mistral-7B and Qwen3 — at output-identical fidelity to PyTorch.
 
 It does these things end-to-end, each as a single native binary:
 
-- **Run pretrained models** — KV-cache decode (CPU + CUDA) on F32 or Q8,
-  zero-copy mmap from the GGUF on disk.
+- **Run pretrained models** — KV-cache decode (CPU + CUDA + Metal) on
+  F32 or Q8, zero-copy mmap from the GGUF on disk.
 - **Reuse models already on the machine** — auto-discovers GGUFs in
   the HuggingFace, Ollama, LM Studio, and project-local caches.
 - **Train from scratch** — `Toy::Trainer` over a `TransformerLM` (CPU).
@@ -106,6 +106,13 @@ compiles to a single native binary.
 For CUDA + larger models: `make setup-ggml-cuda` then `*_cuda`
 example variants.
 
+For Apple Silicon via Metal: `make setup-ggml-metal` then
+`make example_inference_metal`. Works with Command Line Tools alone
+(the metal shaders embed into the static archive and JIT-compile on
+first device load, ~15 s one-time per binary). Inference output is
+bit-identical to the CPU path on the validated models. See
+[`docs/coverage.md`](docs/coverage.md) Metal column for op surface.
+
 Requires Ruby, [Spinel](https://github.com/matz/spinel) at
 `~/sites/spinel`, and a C compiler. `uv` installs itself for the
 Python converter; or `pip install uv` first.
@@ -118,7 +125,7 @@ Python converter; or `pip install uv` first.
 - [`tep_demo/`](tep_demo/README.md) — OpenAI-compatible HTTP API.
 - [`demos/`](demos/README.md) — per-model and per-feature drivers
   (one per concrete validation run).
-- [`tinynn/`](tinynn/README.md) — the C/CUDA shim over ggml.
+- [`tinynn/`](tinynn/README.md) — the C / CUDA / Metal shim over ggml.
 
 ## Reproducibility gates
 
@@ -142,25 +149,35 @@ Run before pushing perf-sensitive or model-shape changes.
 
 ## Supported models
 
-| Model              | Family            | Params | F32 | Q8_0 | CPU | CUDA F32 | CUDA Q8 |
-| ------------------ | ----------------- | ------ | --- | ---- | --- | -------- | ------- |
-| DistilGPT-2        | GPT-2             | 82M    | ✓   |      | ✓   | ✓        |         |
-| GPT-2 small        | GPT-2             | 124M   | ✓   |      | ✓   | ✓        |         |
-| SmolLM2-135M       | Llama family      | 135M   | ✓   | ✓    | ✓   | ✓        |         |
-| SmolLM2-360M       | Llama family      | 360M   | ✓   |      | ✓   | ✓        |         |
-| TinyLlama-1.1B     | Llama family      | 1.1B   | ✓   | ✓    | ✓   | ✓        |         |
-| Llama-3.2-1B       | Llama family      | 1B     | ✓   |      | ✓   | ✓        |         |
-| Llama-3.2-3B       | Llama family      | 3B     | ✓   |      | ✓   | ✓        |         |
-| Mistral-7B-v0.2    | Llama + SPM tok   | 7B     | ✓   | ✓    | ✓   |          | ✓       |
-| Qwen2.5-0.5B       | Llama + QKV bias  | 0.5B   | ✓   | ✓    | ✓   | ✓        |         |
-| Qwen2.5-1.5B       | Llama + QKV bias  | 1.5B   | ✓   | ✓    | ✓   | ✓        | †       |
-| Qwen2.5-3B         | Llama + QKV bias  | 3B     | ✓   | ✓    | ✓   | ✓        | †       |
-| Qwen2.5-7B         | Llama + QKV bias  | 7B     | ✓   | ✓    | ✓   |          | ✓       |
-| Qwen3-0.6B         | Qwen3 + QK-norm   | 0.6B   | ✓   |      | ✓   | ✓        |         |
+| Model              | Family            | Params | F32 | Q8_0 | CPU | CUDA F32 | CUDA Q8 | Metal F32 |
+| ------------------ | ----------------- | ------ | --- | ---- | --- | -------- | ------- | --------- |
+| DistilGPT-2        | GPT-2             | 82M    | ✓   |      | ✓   | ✓        |         | ‡         |
+| GPT-2 small        | GPT-2             | 124M   | ✓   |      | ✓   | ✓        |         | ‡         |
+| SmolLM2-135M       | Llama family      | 135M   | ✓   | ✓    | ✓   | ✓        |         | ✓         |
+| SmolLM2-360M       | Llama family      | 360M   | ✓   |      | ✓   | ✓        |         | ‡         |
+| TinyLlama-1.1B     | Llama family      | 1.1B   | ✓   | ✓    | ✓   | ✓        |         | ‡         |
+| Llama-3.2-1B       | Llama family      | 1B     | ✓   |      | ✓   | ✓        |         | ‡         |
+| Llama-3.2-3B       | Llama family      | 3B     | ✓   |      | ✓   | ✓        |         | ‡         |
+| Mistral-7B-v0.2    | Llama + SPM tok   | 7B     | ✓   | ✓    | ✓   |          | ✓       |           |
+| Qwen2.5-0.5B       | Llama + QKV bias  | 0.5B   | ✓   | ✓    | ✓   | ✓        |         | ‡         |
+| Qwen2.5-1.5B       | Llama + QKV bias  | 1.5B   | ✓   | ✓    | ✓   | ✓        | †       | ‡         |
+| Qwen2.5-3B         | Llama + QKV bias  | 3B     | ✓   | ✓    | ✓   | ✓        | †       | ‡         |
+| Qwen2.5-7B         | Llama + QKV bias  | 7B     | ✓   | ✓    | ✓   |          | ✓       |           |
+| Qwen3-0.6B         | Qwen3 + QK-norm   | 0.6B   | ✓   |      | ✓   | ✓        |         | ‡         |
 
 † Qwen2.5-1.5B/3B Q8 abort on CUDA at weight-load time: ggml-cuda's
 quantized matmul requires `d_ff` aligned to 512, and those models'
 `d_ff` (8960, 11008) aren't. F32 path works for all sizes.
+
+‡ Metal: validated end-to-end only on SmolLM2-135M F32 (bit-identical
+to the CPU path). Other Llama-family models should work — same FFI
+surface, same graph builder, same ggml-metal kernel coverage — but
+haven't been smoked yet. GPT-2-family hasn't been wired (no
+`lib/gpt2_ffi_*_metal.rb` mirror has been built into a binary yet
+even though the mirror files exist). Quantized weights on Metal are
+untested. The current Metal path uses copy-load rather than mmap
+(ggml-metal doesn't expose a public buffer-from-pointer API), so
+multi-GB models pay the copy cost.
 
 Both byte-level BPE and SentencePiece tokenizers are supported in
 text mode (auto-detected from the GGUF vocab). RoPE scaling
