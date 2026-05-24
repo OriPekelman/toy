@@ -238,6 +238,10 @@ void  *tnn_rope_ext_back(void *sess, void *dy, void *pos, int n_dims,
  * params, build the forward graph (tnn_realize), then call build_backward
  * → compute_backward → tensor_grad to retrieve gradients. */
 void  *tnn_sum            (void *sess, void *a);
+/* Per-row sum along ne[0]. Input ne=[a,b,c,d] → output ne=[1,b,c,d].
+ * Useful for collapsing the K axis of MoE outputs after a transpose
+ * (since ggml has no axis-1 sum primitive). */
+void  *tnn_sum_rows       (void *sess, void *a);
 /* CE loss wrapper. b is the labels probability distribution
  * (one-hot for hard targets, label-smoothed otherwise). Returns a
  * scalar loss tensor. */

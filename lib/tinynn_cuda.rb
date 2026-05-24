@@ -165,6 +165,7 @@ module TinyNNCuda
   ffi_func :tnn_trace_op_capture_active, [],                        :int
   ffi_func :tnn_set_loss,             [:ptr],                       :void
   ffi_func :tnn_sum,                  [:ptr, :ptr],                 :ptr
+  ffi_func :tnn_sum_rows,             [:ptr, :ptr],                 :ptr
   ffi_func :tnn_cross_entropy_loss,   [:ptr, :ptr, :ptr],           :ptr
   ffi_func :tnn_opt_step_sgd,         [:ptr, :ptr, :ptr, :ptr],     :ptr
   ffi_func :tnn_pin_all_graph_b_nodes,[:ptr],                       :int

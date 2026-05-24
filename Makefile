@@ -284,6 +284,9 @@ tinynn/ab_smoke_flash_attn: tinynn/ab_smoke_flash_attn.rb lib/transformer.rb lib
 tinynn/ab_smoke_q8_kv: tinynn/ab_smoke_q8_kv.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) tinynn/ab_smoke_q8_kv.rb -o tinynn/ab_smoke_q8_kv
 
+tinynn/ab_smoke_moe_ffn: tinynn/ab_smoke_moe_ffn.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
+	$(SPINEL) tinynn/ab_smoke_moe_ffn.rb -o tinynn/ab_smoke_moe_ffn
+
 tinynn/ab_smoke_transpose: tinynn/ab_smoke_transpose.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) tinynn/ab_smoke_transpose.rb -o tinynn/ab_smoke_transpose
 

@@ -395,6 +395,7 @@ module TinyNN
                                    :double, :double, :ptr], :ptr
   # Phase F0.4 — autograd
   ffi_func :tnn_sum,                  [:ptr, :ptr],             :ptr
+  ffi_func :tnn_sum_rows,             [:ptr, :ptr],             :ptr
   ffi_func :tnn_set_loss,             [:ptr],                   :void
   ffi_func :tnn_build_backward,       [:ptr],                   :int
   ffi_func :tnn_extend_backward_graph,[:ptr, :ptr],             :int

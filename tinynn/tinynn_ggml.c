@@ -1037,6 +1037,13 @@ void *tnn_sum(void *sess, void *a)
     return (void *)ggml_sum(s->ctx, (struct ggml_tensor *)a);
 }
 
+void *tnn_sum_rows(void *sess, void *a)
+{
+    if (!sess || !a) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_sum_rows(s->ctx, (struct ggml_tensor *)a);
+}
+
 /* Cross-entropy loss against a probability-distribution label tensor.
  * Wraps ggml_cross_entropy_loss: returns a scalar. The label tensor
  * has the same shape as the logits and should be a probability dist
