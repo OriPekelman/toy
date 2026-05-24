@@ -56,6 +56,11 @@ class ToyLMCuda
     end
 
     kv = SmolLM2KVFFICacheCuda.new
+    # P5.1: KV_Q8=1 opts into Q8_0 storage for the K cache. See the CPU
+    # mirror in lib/transformer_lm.rb for the full rationale.
+    if (ENV["KV_Q8"] || "") == "1"
+      kv.enable_kv_q8!
+    end
 
     if is_native
       @gguf_handle = TinyNNCuda.tnn_gguf_load(path)
