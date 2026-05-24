@@ -4,7 +4,7 @@
   <img src="toy_logo.png" alt="toy" width="240" />
 </p>
 
-**v0.3.0-pre-alpha** — early signal. Not API-stable. See
+**v0.4.0-pre-alpha** — early signal. Not API-stable. See
 [`CHANGELOG.md`](CHANGELOG.md) for what's working today.
 
 A small transformer language model in Ruby. AOT-compiled to a native

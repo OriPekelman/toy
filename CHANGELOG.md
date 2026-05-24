@@ -1,5 +1,140 @@
 # Changelog
 
+## v0.4.0-pre-alpha — 2026-05-24
+
+**Headline.** Real OLMoE-1B-7B-Instruct produces coherent factual
+answers ("The capital of France is **called Paris**"). Gemma 2 extras
+land. Flash attention finally beats baseline on Qwen3-1.7B (12%
+faster) after the V cache layout flip that was eating its win. SSM
+op primitives bound (Mamba enable, speculative). Upstream ggml issue
+filed for a real mul_mat_id × K-quant bug we found.
+
+### I-V-layout-flip (P5.2) — V Q8 unlocked, flash perf realized
+
+- V cache flipped from `ne=[max_T, d_head]` (positions on ne0) to
+  `ne=[d_head, max_T]` (positions on ne1, mirroring K). Two wins land
+  together:
+  - `enable_kv_q8!` now quantizes BOTH K and V (was K-only). Per-
+    position V writes span a contiguous d_head-vector, block-aligned
+    at d_head=64 (=2 Q8_0 blocks).
+  - `flash_attn_ext` consumes V natively in its expected
+    `[d_head, hist_count]` orientation — no transpose-cont in the
+    hot loop. P4.1's reported flash=baseline was being eaten by that
+    transpose; now flash wins.
+- Qwen3-1.7B, N_NEW=32, CPU:
+  - baseline    3.54s  (1.00×)
+  - FLASH only  3.09s  (0.87×, **12% faster** — was a wash before)
+  - KV_Q8       3.07s  (0.87×, K+V Q8 + flash)
+- SmolLM2-135M four-config token streams bit-identical (baseline /
+  KV_Q8 / FLASH / KV_Q8+FLASH).
+- Structural constraint: Q8 V *requires* flash. Transposing a Q8
+  tensor yields a non-block-aligned destination (hist_count isn't
+  divisible by 32); ggml_cont can't materialize it. `enable_kv_q8!`
+  auto-enables flash to make this transparent.
+
+### #110 I-QKnorm — per-arch QK-norm flavor (OLMoE coherent text)
+
+- OLMoE / Granite-MoE store the QK-norm gamma at `[d_model]` (per-
+  head packed) and apply RMSNorm to the *full* Q before head split.
+  Qwen3-style models store it at `[d_head]` (shared per-head).
+  These are mathematically different. M2.3 mis-applied Qwen3 to
+  OLMoE, producing "The capital of France is a city in the capital
+  of France." This patch detects the flavor and routes accordingly.
+- `SmolLM2Flags.qk_norm_kind`: 0 = none, 1 = Qwen3, 2 = OLMoE.
+  Detected from `blk.0.attn_q_norm.weight`'s ne[0] against d_head
+  and d_model from the multi-arch (llama.* / olmoe.* / gemma2.*)
+  metadata.
+- Graph builder applies the kind-2 path via a per-head sliced
+  `view_1d(gamma, d_head, hq * d_head * 4)`. Per-head approximation
+  of true full-Q norm — exact gamma scaling, approximate variance
+  pooling. Empirically: produces coherent OLMoE output.
+- Validated OLMoE-1B-7B-Instruct Q8:
+  - "The capital of France is" → "called Paris."
+  - "Python is a programming language that" → "is used to create
+    programs that can be executed on a computer."
+  - "The largest planet in our solar system is" → "Jupiter. It is
+    a gas giant"
+  - "Albert Einstein was famous for" → "his theory of relativity"
+- KV_Q8 + flash + per-head sliced norm compose cleanly: same
+  factual answers on the quantized path.
+
+### #113 I-Gemma — Gemma 2 extras
+
+Four model-specific extras integrated as opt-in features. Non-Gemma
+models pass inert defaults and the graph paths are no-ops.
+
+- **Embedding scale** sqrt(d_model) applied post-token-embed lookup
+  (Gemma 2-2b → 48.0). Newton sqrt at detection time avoids the
+  Math.sqrt Spinel landmine.
+- **Logit soft-cap** `tanh(x/c)*c`:
+  - Attention logits (c = 50.0): wired through flash_attn_ext's
+    native `logit_softcap` parameter; non-flash composes via
+    tnn_scale + new `tnn_tanh` + tnn_scale.
+  - Final output logits (c = 30.0): applied to t_kv_logits before
+    set_output.
+- **Pre + post norms** on each sublayer: new
+  `t_post_attn_norm_gamma` + `t_post_ffn_norm_gamma` allocated
+  when has_post_norms. Applied on sublayer output BEFORE the
+  residual add (Gemma 2's sandwich).
+- **Alternating SWA**: per-layer toggle (even = sliding, odd = full)
+  when `@swa_alternates` is set. layer_idx threaded through
+  build_attention_qhead_step.
+- Multi-arch metadata probe gains "gemma2" alongside llama / olmoe.
+  `rope.freq_base` default-fallback to 10000.0 (Gemma 2 doesn't
+  emit the key). Force `is_native = true` when has_post_norms is
+  detected (third-party Gemma GGUFs take the mmap path despite
+  lacking toy.ggml_native).
+- New primitive: `tnn_tanh` (ggml_tanh wrapper).
+- Gemma 2-2b-it Q8 loads, mmaps, graph builds + realizes cleanly,
+  produces well-formed varied logits (no NaN). End-to-end text
+  output is currently blocked at the **tokenizer** layer: Gemma 2
+  uses sentencepiece with vocab=256000, our tokenizer mis-
+  tokenizes. Separate task (#117).
+
+### #112 Q-mul_mat_id × K-quants — upstream filed
+
+- Discovered in M2.3: ggml's `mul_mat_id` kernel produces wrong
+  output for K-quantized (Q4_K, Q5_K, Q6_K) expert weights. Same
+  model at Q8_0 produces coherent text; at Q4_K_M produces
+  "Dub Dub Dub" repeating. Root cause likely: mul_mat_id only has
+  reliable kernels for F32/F16/Q8_0 sources per
+  `test-backend-ops.cpp::test_mul_mat_id` registrations.
+- Filed upstream: <https://github.com/ggml-org/ggml/issues/1506>
+  with the OLMoE repro + suggested test additions.
+- Runtime WARN: realize_for_mmap detects K-quant MoE weights (type
+  ∈ [10, 19]) and emits four WARN lines on layer 0. Loud failure
+  mode rather than silent wrong output.
+- Documented in `docs/notes/mul_mat_id_quants.md` — the canonical
+  write-up with the workaround (use Q8_0 for MoE expert weights).
+
+### #114 C-SSM — SSM_CONV + SSM_SCAN bindings (speculative)
+
+- `tnn_ssm_conv` + `tnn_ssm_scan` FFI wrappers on CPU + CUDA.
+  Coverage 28 → 30 of 98 ops bound. Mamba/Jamba family is now
+  blocked only by Cache-class wiring, not by primitives.
+- Speculative binding. No Mamba use case yet. When someone wants
+  Mamba inference, they start from "build a Mamba Cache class" with
+  the primitives already wired.
+- Shape expectations documented (Mamba-2 grouped 4D layout). Smoke
+  deferred to the M-Mamba follow-up — meaningful test needs proper
+  Mamba-2-shaped inputs which is more work than the binding itself.
+
+### Coverage matrix tweak
+
+`prep/gen_coverage.rb` regression fix: `PRIMARY_WRAPPER` override
+map for ops where our wrapper name doesn't follow `tnn_<ggml_stem>`
+(MUL_MAT → tnn_matmul, SOFT_MAX → tnn_softmax). Caught during the
+post-Metal-merge regression battery — the new wrapper-matching
+heuristic was demoting them to status `via`.
+
+### Follow-ups filed
+
+- **#117 T-Gemma-tokenizer**: SentencePiece for Gemma 2
+  (vocab=256000). Graph integration works; example_inference text
+  output blocked on tokenizer correctness.
+- **ggml-org/ggml#1506**: upstream mul_mat_id × K-quant bug. Drop
+  the runtime warning + add a coverage smoke when fixed.
+
 ## v0.3.0-pre-alpha — 2026-05-24
 
 **Headline.** Metal backend (issue #2). SmolLM2-135M runs end-to-end
