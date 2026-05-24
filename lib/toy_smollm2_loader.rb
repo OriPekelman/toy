@@ -275,21 +275,20 @@ module GGUFLoad
     # Zero-init K/V buffers (matches the Mat-mediated path's kv_zero_*
     # uploads — without this the persistent K/V tensors contain
     # garbage from the backend's initial allocation).
-    kv_zero_k = Mat.new(kv_cache.max_T, d_head)
-    kv_zero_v = Mat.new(d_head, kv_cache.max_T)
+    # P5.2: K and V share layout ne=[d_head, max_T] now, so the
+    # zero-init Mat is shared too. Same Q8 skip rule for both.
+    kv_zero = Mat.new(kv_cache.max_T, d_head)
     li = 0
     while li < kv_cache.n_layers
       blk_f = kv_cache.kv_blocks_ffi[li]
       hkv = 0
       while hkv < n_kv
-        # P5.1: skip K zero-init when K is Q8_0. upload_row_major
-        # writes F32 bytes that don't match Q8's block layout. K is
-        # only read at written positions, so unset trailing positions
-        # are never observed.
         if kv_cache.kv_type_k != 8
-          TinyNN.upload_row_major(sess, blk_f.t_K[hkv], kv_zero_k)
+          TinyNN.upload_row_major(sess, blk_f.t_K[hkv], kv_zero)
         end
-        TinyNN.upload_row_major(sess, blk_f.t_V[hkv], kv_zero_v)
+        if kv_cache.kv_type_v != 8
+          TinyNN.upload_row_major(sess, blk_f.t_V[hkv], kv_zero)
+        end
         hkv = hkv + 1
       end
       li = li + 1
@@ -441,21 +440,20 @@ module GGUFLoad
     end
 
     # Zero-init K/V buffers (same as the legacy path).
-    kv_zero_k = Mat.new(kv_cache.max_T, d_head)
-    kv_zero_v = Mat.new(d_head, kv_cache.max_T)
+    # P5.2: K and V share layout ne=[d_head, max_T] now, so the
+    # zero-init Mat is shared too. Same Q8 skip rule for both.
+    kv_zero = Mat.new(kv_cache.max_T, d_head)
     li = 0
     while li < kv_cache.n_layers
       blk_f = kv_cache.kv_blocks_ffi[li]
       hkv = 0
       while hkv < n_kv
-        # P5.1: skip K zero-init when K is Q8_0. upload_row_major
-        # writes F32 bytes that don't match Q8's block layout. K is
-        # only read at written positions, so unset trailing positions
-        # are never observed.
         if kv_cache.kv_type_k != 8
-          TinyNN.upload_row_major(sess, blk_f.t_K[hkv], kv_zero_k)
+          TinyNN.upload_row_major(sess, blk_f.t_K[hkv], kv_zero)
         end
-        TinyNN.upload_row_major(sess, blk_f.t_V[hkv], kv_zero_v)
+        if kv_cache.kv_type_v != 8
+          TinyNN.upload_row_major(sess, blk_f.t_V[hkv], kv_zero)
+        end
         hkv = hkv + 1
       end
       li = li + 1

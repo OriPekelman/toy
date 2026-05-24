@@ -129,13 +129,15 @@ class SmolLM2KVFFICacheCuda
                 # via #set_weight_type before #realize_for to keep
                 # quantized weights quantized in memory.
                 :weight_type,
-                # P5.1: KV cache dtype. 0 = F32 (legacy), 8 = Q8_0
-                # (opt-in via enable_kv_q8!). When 8, K is allocated
-                # Q8_0 and per-position writes go through ggml_cpy
-                # which quantizes. V stays F32 in this phase — its
-                # layout makes per-position Q8 writes non-block-
-                # aligned. P5.2 will tackle the V flip + Q8.
-                :kv_type_k,
+                # P5.1+P5.2: KV cache dtype. 0 = F32 (legacy), 8 = Q8_0.
+                # `enable_kv_q8!` sets both to Q8_0; finer-grained
+                # control is reserved for future debugging. Per-position
+                # writes go through ggml_cpy which quantizes f32→Q8 at
+                # the destination view. P5.2 flipped V's layout to
+                # match K (`ne=[d_head, max_T]`, positions on ne1), so
+                # both write paths span contiguous d_head-vectors —
+                # block-aligned for Q8 at d_head=64 (=2 blocks of 32).
+                :kv_type_k, :kv_type_v,
                 # P4.1: opt into ggml_flash_attn_ext in the attention
                 # step (default false → existing scale→softmax→matmul
                 # triplet). When true, each Q head's attention is one
@@ -187,6 +189,7 @@ class SmolLM2KVFFICacheCuda
     @kv_blocks_ffi      = [SmolLM2KVBlockFFICuda.new]
     @weight_type   = 0                # GGML_TYPE_F32; legacy default
     @kv_type_k     = 0                # GGML_TYPE_F32; opt in via enable_kv_q8!
+    @kv_type_v     = 0                # GGML_TYPE_F32; opt in via enable_kv_q8!
     @use_flash_attn = false            # opt in via enable_flash_attn!
     @is_moe         = false
     @n_experts      = 0
@@ -206,8 +209,22 @@ class SmolLM2KVFFICacheCuda
   # write path uses ggml_cpy which quantizes on f32→Q8 destination;
   # the read path (attention matmul) dequantizes block-by-block
   # inside ggml's kernel. Cuts K-cache memory & bandwidth ~4×.
+  # P5.1+P5.2: opt into Q8_0 for the K and V caches. Halves K and V
+  # memory + bandwidth (3.75× smaller at d_head=64).
+  #
+  # Auto-enables flash attention. Reason: the non-flash V matmul
+  # requires a transpose-cont of V_hist, which is structurally
+  # impossible for Q8_0 (transposing flips the d_head and hist_count
+  # axes; hist_count generally isn't a multiple of 32, so the
+  # contiguous Q8 destination can't be allocated). flash_attn_ext
+  # consumes V in its natural [d_head, hist_count] orientation,
+  # which dodges the transpose entirely — so Q8 V works there.
+  #
+  # Inference-only. flash_attn's backward aborts in vendored ggml.
   def enable_kv_q8!
-    @kv_type_k = 8   # GGML_TYPE_Q8_0
+    @kv_type_k      = 8   # GGML_TYPE_Q8_0
+    @kv_type_v      = 8
+    @use_flash_attn = true
   end
 
   # P4.1: opt into ggml_flash_attn_ext for inference. Per-Q-head it
@@ -451,17 +468,21 @@ class SmolLM2KVFFICacheCuda
                      @d_head, @d_model, k_type, k_off_base)]
       blk.t_w_v = [TinyNNCuda.tnn_input_2d_persistent_mmap(@sess,
                      @d_head, @d_model, v_type, v_off_base)]
-      # P5.1: K alloc switches dtype when @kv_type_k != 0. Layout is
-      # unchanged — ne=[d_head, max_T] still — so the existing view-
-      # by-position arithmetic still works once bytes_d_head reflects
-      # the Q8_0 row size instead of d_head*4. V stays F32; see the
-      # struct comment on :kv_type_k.
+      # P5.1+P5.2: K and V allocs both follow @kv_type_*. Layout is
+      # `ne=[d_head, max_T]` for both — positions on ne1, d_head on
+      # ne0. Per-position writes span a contiguous d_head-vector
+      # which is Q8-block-aligned at d_head=64 (=2 blocks of 32).
+      # See the struct comment on :kv_type_k / :kv_type_v.
       if @kv_type_k == 8
         blk.t_K = [TinyNNCuda.tnn_input_2d_persistent_typed(@sess, max_T, @d_head, 8)]
       else
-        blk.t_K = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess, max_T,  @d_head)]
+        blk.t_K = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess, max_T, @d_head)]
       end
-      blk.t_V   = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess, @d_head, max_T)]
+      if @kv_type_v == 8
+        blk.t_V = [TinyNNCuda.tnn_input_2d_persistent_typed(@sess, max_T, @d_head, 8)]
+      else
+        blk.t_V = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess, max_T, @d_head)]
+      end
       hkv = 1
       while hkv < @n_kv
         blk.t_w_k.push(TinyNNCuda.tnn_input_2d_persistent_mmap(@sess,
@@ -473,9 +494,13 @@ class SmolLM2KVFFICacheCuda
         if @kv_type_k == 8
           blk.t_K.push(TinyNNCuda.tnn_input_2d_persistent_typed(@sess, max_T, @d_head, 8))
         else
-          blk.t_K.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess, max_T,  @d_head))
+          blk.t_K.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess, max_T, @d_head))
         end
-        blk.t_V.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess, @d_head, max_T))
+        if @kv_type_v == 8
+          blk.t_V.push(TinyNNCuda.tnn_input_2d_persistent_typed(@sess, max_T, @d_head, 8))
+        else
+          blk.t_V.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess, max_T, @d_head))
+        end
         hkv = hkv + 1
       end
 
@@ -634,18 +659,21 @@ class SmolLM2KVFFICacheCuda
     # blocks. The K cache is read only at positions [0, pos+1], and
     # every position is written before it's read, so unset trailing
     # positions are never observed — zero-init is paranoia and safe
-    # to skip for Q8. V stays F32 in this phase, so its zero-init runs.
-    kv_zero_k = Mat.new(max_T, @d_head)
-    kv_zero_v = Mat.new(@d_head, max_T)
+    # to skip for Q8. P5.2 flipped V to mirror K's layout, so V's
+    # zero-init Mat now has the same shape as K's, and the same Q8
+    # skip rule applies.
+    kv_zero = Mat.new(max_T, @d_head)
     li = 0
     while li < @n_layers
       blk_f = @kv_blocks_ffi[li]
       hkv = 0
       while hkv < @n_kv
         if @kv_type_k != 8
-          TinyNNCuda.upload_row_major(@sess, blk_f.t_K[hkv], kv_zero_k)
+          TinyNNCuda.upload_row_major(@sess, blk_f.t_K[hkv], kv_zero)
         end
-        TinyNNCuda.upload_row_major(@sess, blk_f.t_V[hkv], kv_zero_v)
+        if @kv_type_v != 8
+          TinyNNCuda.upload_row_major(@sess, blk_f.t_V[hkv], kv_zero)
+        end
         hkv = hkv + 1
       end
       li = li + 1
@@ -824,7 +852,8 @@ class SmolLM2KVFFICacheCuda
       end
 
       # K, V (and the persistent K/V buffers): n_kv per-head. Linear
-      # weights quantizable; K/V cache buffers and biases stay F32.
+      # weights quantizable; K/V cache buffers follow @kv_type_*
+      # (P5.1 K, P5.2 V); biases stay F32.
       blk.t_w_k = [alloc_2d_w(d_head, d_model)]
       blk.t_w_v = [alloc_2d_w(d_head, d_model)]
       # P5.1: Q8 K alloc when enabled (see realize_for_mmap parallel path).
@@ -833,7 +862,12 @@ class SmolLM2KVFFICacheCuda
       else
         blk.t_K = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess, max_T, d_head)]
       end
-      blk.t_V   = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess, d_head, max_T)]
+      # P5.2: V now mirrors K's layout (ne=[d_head, max_T]).
+      if @kv_type_v == 8
+        blk.t_V = [TinyNNCuda.tnn_input_2d_persistent_typed(@sess, max_T, d_head, 8)]
+      else
+        blk.t_V = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess, max_T, d_head)]
+      end
       if qkv_bias
         # K bias: 1-D (broadcasts over [d_head, 1] k matmul result).
         # V bias: 1-D too (the V matmul is now ordered weight-first, so
@@ -848,9 +882,13 @@ class SmolLM2KVFFICacheCuda
         if @kv_type_k == 8
           blk.t_K.push(TinyNNCuda.tnn_input_2d_persistent_typed(@sess, max_T, d_head, 8))
         else
-          blk.t_K.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess, max_T,  d_head))
+          blk.t_K.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess, max_T, d_head))
         end
-        blk.t_V.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess, d_head, max_T))
+        if @kv_type_v == 8
+          blk.t_V.push(TinyNNCuda.tnn_input_2d_persistent_typed(@sess, max_T, d_head, 8))
+        else
+          blk.t_V.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess, max_T, d_head))
+        end
         if qkv_bias
           blk.t_b_k.push(TinyNNCuda.tnn_input_1d_f32_persistent(@sess, d_head))
           blk.t_b_v.push(TinyNNCuda.tnn_input_1d_f32_persistent(@sess, d_head))
@@ -878,11 +916,11 @@ class SmolLM2KVFFICacheCuda
     max_T   = @max_T
     bytes_d_head = d_head * 4
     bytes_max_T  = max_T * 4
-    # P5.1: row size for the K cache. F32 → d_head*4; Q8_0 →
-    # ggml_row_size(Q8_0, d_head) (block size 32, type size 34 →
-    # 68 bytes at d_head=64). V stays F32 so bytes_d_head is still
-    # the F32 value for its read/write sites.
+    # P5.1+P5.2: row size for K and V. F32 → d_head*4; Q8_0 →
+    # ggml_row_size(Q8_0, d_head) (block 32 × 34 bytes; 68 at d_head=64).
+    # V is in the same layout as K post-P5.2 so the math is symmetric.
     bytes_d_head_k = @kv_type_k == 8 ? TinyNNCuda.tnn_row_size(8, d_head) : bytes_d_head
+    bytes_d_head_v = @kv_type_v == 8 ? TinyNNCuda.tnn_row_size(8, d_head) : bytes_d_head
 
     # Inputs: token id + RoPE position. Both length 1.
     t_token_id  = TinyNNCuda.tnn_input_1d_i32(@sess, 1)
@@ -895,7 +933,7 @@ class SmolLM2KVFFICacheCuda
     while li < @n_layers
       t_x = build_block_step(t_x, @kv_blocks_ffi[li], t_pos, pos,
                               scale, eps, bytes_d_head, bytes_d_head_k,
-                              bytes_max_T, li)
+                              bytes_d_head_v, bytes_max_T, li)
       li = li + 1
     end
 
@@ -914,7 +952,8 @@ class SmolLM2KVFFICacheCuda
   end
 
   def build_block_step(t_x, blk, t_pos, pos, scale, eps,
-                        bytes_d_head, bytes_d_head_k, bytes_max_T, layer_idx)
+                        bytes_d_head, bytes_d_head_k, bytes_d_head_v,
+                        bytes_max_T, layer_idx)
     # Layer-tag prefix for tap names (e.g. "L00."). String concat of an
     # int needs explicit .to_s; ljust pads so all names align in output.
     tag = "L" + layer_idx.to_s + "."
@@ -965,17 +1004,16 @@ class SmolLM2KVFFICacheCuda
         t_v_new = trace_tap(tag + "v_new", t_v_new)
       end
 
-      # P5.1: K slot stride uses bytes_d_head_k (F32 → d_head*4, Q8_0 →
-      # type-aware row size from tnn_row_size). cpy quantizes f32→Q8
-      # automatically when the destination type differs.
+      # P5.1+P5.2: K and V both use the same per-position write pattern.
+      # bytes_d_head_{k,v} reflect each cache's dtype (F32 → d_head*4,
+      # Q8_0 → type-aware row size from tnn_row_size). cpy quantizes
+      # f32 source → Q8 destination automatically when types differ.
       t_K_slot = TinyNNCuda.tnn_view_2d(@sess, blk.t_K[hkv],
                                       @d_head, 1, bytes_d_head_k, pos * bytes_d_head_k)
       t_cpy_k = TinyNNCuda.tnn_cpy(@sess, t_k_rot, t_K_slot)
       t_V_slot = TinyNNCuda.tnn_view_2d(@sess, blk.t_V[hkv],
-                                      1, @d_head, bytes_max_T, pos * 4)
-      # Re-interpret [d_head, 1] as [1, d_head] (same contiguous bytes).
-      t_v_row = TinyNNCuda.tnn_view_2d(@sess, t_v_new, 1, @d_head, 4, 0)
-      t_cpy_v = TinyNNCuda.tnn_cpy(@sess, t_v_row, t_V_slot)
+                                      @d_head, 1, bytes_d_head_v, pos * bytes_d_head_v)
+      t_cpy_v = TinyNNCuda.tnn_cpy(@sess, t_v_new, t_V_slot)
       TinyNNCuda.tnn_add_to_graph(@sess, t_cpy_k)
       TinyNNCuda.tnn_add_to_graph(@sess, t_cpy_v)
       hkv = hkv + 1
@@ -984,13 +1022,13 @@ class SmolLM2KVFFICacheCuda
     # --- per-Q-head attention ---
     t_head_out0 = build_attention_qhead_step(t_h, blk, 0, t_pos, pos,
                                               scale, bytes_d_head, bytes_d_head_k,
-                                              bytes_max_T, tag, true)
+                                              bytes_d_head_v, bytes_max_T, tag, true)
     t_head_outs = [t_head_out0]
     hq = 1
     while hq < @n_heads
       t_head_outs.push(build_attention_qhead_step(t_h, blk, hq, t_pos, pos,
                                                     scale, bytes_d_head, bytes_d_head_k,
-                                                    bytes_max_T, tag, false))
+                                                    bytes_d_head_v, bytes_max_T, tag, false))
       hq = hq + 1
     end
 
@@ -1076,8 +1114,8 @@ class SmolLM2KVFFICacheCuda
   # "L<i>." layer prefix; `tap_this_head` is true only for head 0 so we
   # don't multiply taps by n_heads in trace mode.
   def build_attention_qhead_step(t_h, blk, hq, t_pos, pos, scale,
-                                  bytes_d_head, bytes_d_head_k, bytes_max_T,
-                                  tag, tap_this_head)
+                                  bytes_d_head, bytes_d_head_k, bytes_d_head_v,
+                                  bytes_max_T, tag, tap_this_head)
     hkv = hq / @group_size
 
     t_q_raw = TinyNNCuda.tnn_matmul(@sess, blk.t_w_q[hq], t_h)   # ne=[d_head, 1]
@@ -1125,32 +1163,27 @@ class SmolLM2KVFFICacheCuda
       hist_start = 0
       hist_count = pos + 1
     end
-    # P5.1: K stride uses bytes_d_head_k (F32 → d_head*4, Q8_0 →
-    # type-aware). ggml_mul_mat dequantizes Q8 source on the fly.
+    # P5.1+P5.2: K and V views share the same byte-stride math.
+    # ggml_mul_mat dequantizes Q8 source on the fly when reads happen.
     t_K_hist = TinyNNCuda.tnn_view_2d(@sess, blk.t_K[hkv],
                                     @d_head, hist_count, bytes_d_head_k,
                                     hist_start * bytes_d_head_k)
-    # V is stored as [d_head, max_T] — row-major with stride max_T. The
-    # window over time is the column range [hist_start, hist_start + hist_count)
-    # within each row. The offset is hist_start * sizeof(f32).
+    # P5.2: V is now ne=[d_head, max_T] (positions on ne1, mirror of K).
+    # The history view at [d_head, hist_count] is what flash_attn_ext
+    # expects natively — no transpose-cont in the flash path now.
     t_V_hist = TinyNNCuda.tnn_view_2d(@sess, blk.t_V[hkv],
-                                    hist_count, @d_head, bytes_max_T,
-                                    hist_start * 4)
+                                    @d_head, hist_count, bytes_d_head_v,
+                                    hist_start * bytes_d_head_v)
 
     if @use_flash_attn
-      # P4.1: fused softmax(Q·Kᵀ·scale + mask)·V via ggml_flash_attn_ext.
-      # Reshape Q/K/V to the 3D shapes flash_attn_ext expects (ne[3]
-      # defaults to 1 so we don't need a fourth dim). V's current
-      # layout has positions on ne0 → tnn_transpose materializes the
-      # [d_head, hist_count] form flash expects; this adds one
-      # ggml_cont per Q-head per layer. P5.2 (V layout flip) removes
-      # that cost.
-      t_q_3d = TinyNNCuda.tnn_reshape_3d(@sess, t_q, @d_head, 1, 1)
-      t_K_3d = TinyNNCuda.tnn_reshape_3d(@sess, t_K_hist, @d_head, hist_count, 1)
-      # t_V_hist is [hist_count, d_head] (current V layout); transpose
-      # to [d_head, hist_count], then add a third dim for n_kv=1.
-      t_V_T  = TinyNNCuda.tnn_transpose(@sess, t_V_hist)
-      t_V_3d = TinyNNCuda.tnn_reshape_3d(@sess, t_V_T, @d_head, hist_count, 1)
+      # P4.1+P5.2: fused softmax(Q·Kᵀ·scale + mask)·V via
+      # ggml_flash_attn_ext. Reshape Q/K/V to the 3D shapes
+      # flash_attn_ext expects (ne[3] defaults to 1 so we don't need
+      # a fourth dim). V's layout is already correct post-P5.2 — no
+      # transpose needed.
+      t_q_3d   = TinyNNCuda.tnn_reshape_3d(@sess, t_q,      @d_head, 1, 1)
+      t_K_3d   = TinyNNCuda.tnn_reshape_3d(@sess, t_K_hist, @d_head, hist_count, 1)
+      t_V_3d   = TinyNNCuda.tnn_reshape_3d(@sess, t_V_hist, @d_head, hist_count, 1)
       t_out_4d = TinyNNCuda.tnn_flash_attn_ext(@sess, t_q_3d, t_K_3d, t_V_3d, nil,
                                             scale, 0.0, 0.0)
       # Output ne=[d_head, n_head=1, T_q=1, batch=1]; collapse to 2D.
@@ -1170,7 +1203,14 @@ class SmolLM2KVFFICacheCuda
     if tap_this_head
       t_attn = trace_tap(tag + "softmax", t_attn)
     end
-    t_head = TinyNNCuda.tnn_matmul(@sess, t_V_hist, t_attn)
+    # P5.2: V is now [d_head, hist_count]; ggml_mul_mat needs the
+    # matching k axis (hist_count) on both inputs, so transpose V_hist
+    # (free view; tnn_transpose materializes via ggml_cont — one copy
+    # of d_head × hist_count × 4 bytes per Q-head per layer). Cheap
+    # at decode (typical hist_count ~ a few hundred) and uniform with
+    # how flash takes V — both paths see the same V layout now.
+    t_V_T  = TinyNNCuda.tnn_transpose(@sess, t_V_hist)
+    t_head = TinyNNCuda.tnn_matmul(@sess, t_V_T, t_attn)
     if tap_this_head
       t_head = trace_tap(tag + "head0", t_head)
     end
@@ -1208,8 +1248,9 @@ module SmolLM2KVCuda
       TinyNNCuda.upload_row_major(sess, kv_cache.t_output, model.output_proj)
     end
 
-    kv_zero_k = Mat.new(max_T,  d_head)
-    kv_zero_v = Mat.new(d_head, max_T)
+    # P5.2: K and V share the same layout ne=[d_head, max_T] now,
+    # so they share the same zero-init Mat.
+    kv_zero = Mat.new(max_T, d_head)
 
     li = 0
     while li < n
@@ -1236,11 +1277,13 @@ module SmolLM2KVCuda
           TinyNNCuda.tnn_upload_from_float_array(sess, blk_f.t_b_k[hkv], blk_n.attn.b_k[hkv], d_head)
           TinyNNCuda.tnn_upload_from_float_array(sess, blk_f.t_b_v[hkv], blk_n.attn.b_v[hkv], d_head)
         end
-        # P5.1: same Q8 skip rule as realize_for_mmap — see comment there.
+        # P5.1+P5.2: same Q8 skip rule as realize_for_mmap.
         if kv_cache.kv_type_k != 8
-          TinyNNCuda.upload_row_major(sess, blk_f.t_K[hkv], kv_zero_k)
+          TinyNNCuda.upload_row_major(sess, blk_f.t_K[hkv], kv_zero)
         end
-        TinyNNCuda.upload_row_major(sess, blk_f.t_V[hkv], kv_zero_v)
+        if kv_cache.kv_type_v != 8
+          TinyNNCuda.upload_row_major(sess, blk_f.t_V[hkv], kv_zero)
+        end
         hkv = hkv + 1
       end
 

@@ -225,6 +225,30 @@ The integration tasks (#107, #108) are the actual perf-unlock; the
 binding work landed first so the integration has a known-good
 primitive to call into.
 
+**Update 2026-05-24** (P5.2 V layout flip): The headline flash
+attention win finally materializes. The previous measurement showing
+"flash = baseline" on Qwen3-1.7B was bottlenecked by a transpose-cont
+of V per Q-head per layer per step (V cache was laid out positions-
+on-ne0, flash wants positions-on-ne1). P5.2 flipped V to mirror K's
+`ne=[d_head, max_T]`. Result on Qwen3-1.7B, N_NEW=32, CPU:
+
+|                | wall  | rel    | notes |
+|----------------|------:|-------:|-------|
+| baseline       | 3.54s | 1.00×  | F32 KV, no flash |
+| FLASH only     | 3.09s | 0.87×  | F32 KV, flash — was a wash before P5.2 |
+| KV_Q8 (K+V Q8) | 3.07s | 0.87×  | Q8 KV + flash (auto-required) |
+
+Token streams bit-identical across all three. The previous KV_Q8 row
+in this doc reported Q8-K-only + non-flash; we now have full Q8 KV +
+flash with comparable throughput AND ~3.75× smaller KV cache memory
+(V was the bigger chunk before — it stayed F32 until P5.2). At
+longer contexts where memory bandwidth dominates, the KV_Q8 win
+should grow further; needs a bench with N_NEW >> 100 to confirm.
+
+Side effect: Q8 V structurally requires flash (transposing Q8 with
+non-block-aligned `hist_count` is impossible). `enable_kv_q8!` now
+auto-enables flash. Documented in the cache class comment.
+
 ## Out-of-scope for this sweep
 
 - **GPU kernel hand-tuning**: ggml-cuda's kernels are good; we
