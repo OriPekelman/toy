@@ -164,6 +164,12 @@ module TinyNNCuda
   ffi_func :tnn_trace_active,         [],                           :int
   ffi_func :tnn_trace_set_op_capture, [:int],                       :void
   ffi_func :tnn_trace_op_capture_active, [],                        :int
+  # JSON Lines event stream. See tinynn/tinynn_events.h.
+  ffi_func :tnn_events_open,          [:str],                       :int
+  ffi_func :tnn_events_emit,          [:str],                       :void
+  ffi_func :tnn_events_close,         [],                           :void
+  ffi_func :tnn_events_active,        [],                           :int
+  ffi_func :tnn_events_now_seconds,   [],                           :double
   ffi_func :tnn_set_loss,             [:ptr],                       :void
   ffi_func :tnn_sum,                  [:ptr, :ptr],                 :ptr
   ffi_func :tnn_sum_rows,             [:ptr, :ptr],                 :ptr

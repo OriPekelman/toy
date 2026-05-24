@@ -414,6 +414,14 @@ module TinyNN
   ffi_func :tnn_trace_active,         [],                       :int
   ffi_func :tnn_trace_set_op_capture, [:int],                   :void
   ffi_func :tnn_trace_op_capture_active, [],                    :int
+  # JSON Lines event stream. See tinynn/tinynn_events.h and
+  # docs/events-schema.md. One file per run, line-buffered, opt-in
+  # via the caller passing a path (typically from ENV["TOY_EVENTS"]).
+  ffi_func :tnn_events_open,          [:str],                   :int
+  ffi_func :tnn_events_emit,          [:str],                   :void
+  ffi_func :tnn_events_close,         [],                       :void
+  ffi_func :tnn_events_active,        [],                       :int
+  ffi_func :tnn_events_now_seconds,   [],                       :double
   ffi_func :tnn_get_rows,         [:ptr, :ptr, :ptr],       :ptr
   ffi_func :tnn_get_rows_back,    [:ptr, :ptr, :ptr, :ptr], :ptr
   ffi_func :tnn_input_1d_i32,     [:ptr, :int],             :ptr

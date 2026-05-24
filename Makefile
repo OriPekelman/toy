@@ -213,8 +213,11 @@ tinynn/tinynn_gguf.o: tinynn/tinynn_gguf.c tinynn/tinynn_gguf.h
 tinynn/tinynn_trace.o: tinynn/tinynn_trace.c tinynn/tinynn_trace.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-tinynn/libtinynn_ggml.a: tinynn/tinynn_ggml.o tinynn/tinynn_gguf.o tinynn/tinynn_trace.o
-	ar $(ARFLAGS) $@ tinynn/tinynn_ggml.o tinynn/tinynn_gguf.o tinynn/tinynn_trace.o
+tinynn/tinynn_events.o: tinynn/tinynn_events.c tinynn/tinynn_events.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+tinynn/libtinynn_ggml.a: tinynn/tinynn_ggml.o tinynn/tinynn_gguf.o tinynn/tinynn_trace.o tinynn/tinynn_events.o
+	ar $(ARFLAGS) $@ tinynn/tinynn_ggml.o tinynn/tinynn_gguf.o tinynn/tinynn_trace.o tinynn/tinynn_events.o
 
 # --- smoke test -------------------------------------------------------------
 # Builds tinynn/smoke.rb against the CPU shim. Requires `setup-ggml` to have

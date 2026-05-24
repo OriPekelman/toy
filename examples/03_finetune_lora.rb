@@ -32,6 +32,8 @@ LR        = (ENV["LR"]     || "0.001").to_f
 TRACE     = ENV["TRACE"]   || ""    # path to Chrome Trace JSON; empty disables
 TRACE_OPS = ENV["TRACE_OPS"] || ""  # "1" → also record per-ggml-op duration events (P6)
 GRAD_DUMP = ENV["GRAD_DUMP"] || ""  # path to CSV; empty disables. Writes per-(layer,head,param) grad stats after each step.
+EVENTS    = ENV["TOY_EVENTS"] || "" # path to events.jsonl; empty disables. Schema: docs/events-schema.md.
+RUN_ID    = ENV["TOY_RUN_ID"] || "" # opaque run identifier; emitted in run_start. Empty → "anonymous".
 
 # T=4 prompt; CE objective pushes every position's argmax toward
 # TARGET_ID. Real SFT (shifted next-token labels + a position mask)
@@ -105,6 +107,42 @@ if TRACE.length > 0
   end
 end
 
+# Open the JSON Lines event stream (docs/events-schema.md, v1).
+# Emit run_start with the static metadata callers need to identify
+# this run: schema version, run_id, model shape, training config.
+# When TOY_EVENTS is unset the primitive is a no-op and we skip
+# event JSON construction entirely (one-branch overhead).
+if EVENTS.length > 0
+  rc = TinyNN.tnn_events_open(EVENTS)
+  if rc != 0
+    puts "events_open failed: rc=" + rc.to_s + " (TOY_EVENTS=" + EVENTS + ")"
+  else
+    puts "events → " + EVENTS
+    rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
+    rs  = "{\"kind\":\"run_start\",\"schema\":\"toy/v1\""
+    rs = rs + ",\"t\":" + TinyNN.tnn_events_now_seconds.to_s
+    rs = rs + ",\"run_id\":\"" + rid + "\""
+    rs = rs + ",\"phase\":\"train\""
+    rs = rs + ",\"model\":{\"arch\":\"llama\""
+    rs = rs + ",\"name\":\"" + GGUF + "\""
+    rs = rs + ",\"vocab\":"    + cfg.vocab.to_s
+    rs = rs + ",\"d_model\":"  + cfg.d_model.to_s
+    rs = rs + ",\"n_layers\":" + cfg.n_layers.to_s
+    rs = rs + ",\"n_heads\":"  + cfg.n_heads.to_s
+    rs = rs + ",\"n_kv\":"     + cfg.n_kv.to_s
+    rs = rs + ",\"d_head\":"   + cfg.head_dim.to_s
+    rs = rs + ",\"d_ff\":"     + cfg.d_ff.to_s
+    rs = rs + "}"
+    rs = rs + ",\"config\":{\"rank\":" + RANK.to_s
+    rs = rs + ",\"steps\":" + STEPS.to_s
+    rs = rs + ",\"lr\":"    + LR.to_s
+    rs = rs + ",\"target_id\":" + TARGET_ID.to_s
+    rs = rs + "}"
+    rs = rs + "}"
+    TinyNN.tnn_events_emit(rs)
+  end
+end
+
 # Helper: compute stats over the scratch buffer's first n f32 elements
 # (Mat-roundtrip is overkill — we just want min/max/mean/L2/nan-count
 # per tensor for the CPU/CUDA bisection). Caller must have just done
@@ -132,8 +170,10 @@ if GRAD_DUMP.length > 0
 end
 
 step = 1
+final_loss = 0.0
 while step <= STEPS
   _t_step = TinyNN.tnn_trace_begin("step")
+  step_wall_start = TinyNN.tnn_events_now_seconds
   m_hp.flat[5] = 1.0 / (1.0 - (0.9   ** step.to_f))
   m_hp.flat[6] = 1.0 / (1.0 - (0.999 ** step.to_f))
   if step == 1
@@ -147,7 +187,26 @@ while step <= STEPS
   TinyNN.upload_row_major(seq.sess, t_hp,     m_hp)
   TinyNN.tnn_compute_backward(seq.sess)
   TinyNN.tnn_download(seq.sess, t_loss)
-  puts "step " + step.to_s.rjust(3) + ": CE=" + TinyNN.tnn_scratch_get(seq.sess, 0).to_s
+  loss = TinyNN.tnn_scratch_get(seq.sess, 0)
+  final_loss = loss
+  puts "step " + step.to_s.rjust(3) + ": CE=" + loss.to_s
+
+  # Emit a `step` event per the v1 schema. ppl=exp(loss) is the LM
+  # convention but Math.exp under Spinel risks the polymorphic-
+  # dispatch landmine documented in the memory file — skip it from
+  # the producer side and let consumers compute ppl from loss.
+  if EVENTS.length > 0
+    step_wall_us = ((TinyNN.tnn_events_now_seconds - step_wall_start) * 1.0e6).to_i
+    es  = "{\"kind\":\"step\",\"phase\":\"train\""
+    es = es + ",\"t\":"        + TinyNN.tnn_events_now_seconds.to_s
+    es = es + ",\"step\":"     + step.to_s
+    es = es + ",\"loss\":"     + loss.to_s
+    es = es + ",\"lr\":"       + LR.to_s
+    es = es + ",\"tokens\":"   + TOKENS.length.to_s
+    es = es + ",\"wall_us\":"  + step_wall_us.to_s
+    es = es + "}"
+    TinyNN.tnn_events_emit(es)
+  end
 
   if GRAD_DUMP.length > 0
     li = 0
@@ -176,4 +235,16 @@ end
 if TRACE.length > 0
   TinyNN.tnn_trace_close
   puts "trace closed: " + TRACE
+end
+
+if EVENTS.length > 0 && TinyNN.tnn_events_active == 1
+  re  = "{\"kind\":\"run_end\""
+  re = re + ",\"t\":"           + TinyNN.tnn_events_now_seconds.to_s
+  re = re + ",\"reason\":\"completed\""
+  re = re + ",\"final_step\":"  + STEPS.to_s
+  re = re + ",\"final_loss\":"  + final_loss.to_s
+  re = re + ",\"exit_code\":0}"
+  TinyNN.tnn_events_emit(re)
+  TinyNN.tnn_events_close
+  puts "events closed: " + EVENTS
 end
