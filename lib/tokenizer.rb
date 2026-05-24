@@ -21,9 +21,12 @@
 require_relative "gguf_kv"
 
 class Tokenizer
-  attr_reader :vocab_size, :bos_id, :eos_id, :pad_id, :unk_id, :present, :spm
+  attr_reader :vocab_size, :bos_id, :eos_id, :pad_id, :unk_id, :present, :spm,
+              :spm_unigram, :add_bos
+  attr_accessor :add_bos
 
-  def initialize(vocab, merges, bos_id, eos_id, pad_id, unk_id)
+  def initialize(vocab, merges, bos_id, eos_id, pad_id, unk_id,
+                 model_name = "", add_bos = false)
     @vocab      = vocab
     @vocab_size = vocab.length
     @merges     = merges
@@ -31,13 +34,33 @@ class Tokenizer
     @eos_id     = eos_id
     @pad_id     = pad_id
     @unk_id     = unk_id
+    @add_bos    = add_bos
     @present    = (vocab.length > 0)
-    # T1.3: SentencePiece vs GPT-2 byte-level BPE. Detected by
-    # checking vocab[3] == "<0x00>" (the first byte-fallback token).
-    # SPM models (Llama-1/2, Mistral, TinyLlama) use U+2581 (▁) for
-    # leading space and emit <0xHH> tokens for chars not in vocab.
-    # GPT-2 models (SmolLM2, Llama-3, Qwen) use the Ġ byte-map.
-    @spm = (vocab.length > 3 && vocab[3] == "<0x00>")
+    # SPM (SentencePiece, marker U+2581 ▁) vs GPT-2 byte-level BPE.
+    # Detection: vocab heuristic OR model_name says "llama".
+    #
+    # The heuristic (vocab[3] == "<0x00>") is reliable for any
+    # historic SPM model — every SPM tokenizer in the wild puts
+    # <0x00> at index 3 (after <unk>/<s>/</s>). For Gemma 2 the
+    # special-tokens band is longer and <0x00> sits further in;
+    # the heuristic returns false for Gemma. The model_name "llama"
+    # picks Gemma 2 (and any future SPM model) up.
+    #
+    # We deliberately do NOT trust model_name alone — older project
+    # converters wrote "gpt2" for SPM models (Mistral's tokenizer
+    # GGUF is the canonical example), so authoritatively trusting
+    # model_name would flip Mistral to the wrong path. OR both
+    # signals: either says SPM, treat as SPM.
+    @spm = (vocab.length > 3 && vocab[3] == "<0x00>") || (model_name == "llama")
+    # T-Gemma (#117): SPM split into two encoding paths:
+    #   - BPE+scores (Mistral, Llama-1/2, TinyLlama): merges array
+    #     populated; encode via the existing merge-loop algorithm.
+    #   - Unigram (Gemma 2, newer SPM models): merges array empty;
+    #     pieces are scored individually and tokenization is greedy
+    #     longest-match (an approximation of the proper Viterbi
+    #     decode). The vocab IS the unigram model.
+    # Distinguish by the merges array being non-empty.
+    @spm_unigram = @spm && (merges.length == 0)
 
     # Inverse vocab: token-string → id.
     @vocab_inv = {}
@@ -250,6 +273,22 @@ class Tokenizer
       puts "Tokenizer.encode: vocab not loaded (re-convert with --with-tokenizer)"
       return []
     end
+    # T-Gemma (#117): prepend BOS only on the SPM-Unigram path
+    # (Gemma 2 needs it; without BOS at pos 0 the model produces
+    # degenerate output). Other paths (byte-level BPE for SmolLM2/
+    # Qwen3; BPE-SPM for Mistral/TinyLlama) preserve their existing
+    # tokenization to maintain bit-identical regression behavior on
+    # canonical prompts.
+    if @spm_unigram
+      ids = [0]; ids.pop
+      if @add_bos && @bos_id != nil && @bos_id >= 0
+        ids.push(@bos_id)
+      end
+      body = encode_spm_unigram(text)
+      bi = 0
+      while bi < body.length; ids.push(body[bi]); bi = bi + 1; end
+      return ids
+    end
     if @spm
       return encode_spm(text)
     end
@@ -422,6 +461,106 @@ class Tokenizer
     ids
   end
 
+  # T-Gemma (#117): SPM Unigram encode (Gemma 2 and similar models
+  # whose GGUF carries `tokenizer.ggml.tokens` + `tokenizer.ggml.scores`
+  # but NO `tokenizer.ggml.merges`). The vocab itself IS the model —
+  # no merge rules to apply.
+  #
+  # Algorithm: greedy longest-match over the prefixed string. For each
+  # cursor position, try the longest substring (up to MAX_PIECE_LEN
+  # bytes) that exists in vocab; emit its id; advance. Fall back to
+  # per-UTF-8-byte <0xHH> tokens for characters not covered.
+  #
+  # This is an APPROXIMATION of the proper Unigram tokenizer (which
+  # does Viterbi over piece scores to find the maximum-score
+  # segmentation). For Gemma 2's vocab=256000, greedy longest-match
+  # produces sensible tokenization for prose; rare-character cases
+  # may differ from the canonical SentencePiece library output by a
+  # token here or there.
+  #
+  # Spinel constraint: use Hash#has_key? not Hash#[]; the latter
+  # returns 0 for missing keys (landmine #9). String byte/char
+  # indexing via [i...j] is safe under Spinel — verified by the
+  # existing decode_spm code.
+  def encode_spm_unigram(text)
+    ids = [0]; ids.pop
+    # Prepend ▁ + replace each space with ▁. Same prefix shape as
+    # the BPE-SPM path.
+    sp = "\xE2\x96\x81"
+    text_bytes = text.bytes
+    prepared = sp + ""
+    tb = 0
+    while tb < text_bytes.length
+      b = text_bytes[tb]
+      if b == 0x20         # ASCII space → ▁
+        prepared = prepared + sp
+      else
+        prepared = prepared + b.chr
+      end
+      tb = tb + 1
+    end
+
+    # Greedy longest-match. Walk character-by-character (NOT byte-by-
+    # byte — multi-byte UTF-8 like ▁ must be intact for vocab lookup).
+    # Max piece length cap: 64 chars handles the longest pieces in
+    # known SPM vocabs comfortably.
+    chars      = prepared.chars
+    n          = chars.length
+    max_piece  = 64
+    pos        = 0
+    while pos < n
+      # Build the longest candidate substring (up to max_piece chars or
+      # end of input), then shrink until we find a hit in vocab.
+      jmax = pos + max_piece
+      if jmax > n; jmax = n; end
+      j      = jmax
+      hit_id = -1
+      hit_len = 0
+      while j > pos
+        piece = ""
+        k = pos
+        while k < j; piece = piece + chars[k]; k = k + 1; end
+        if @vocab_inv.has_key?(piece)
+          hit_id  = @vocab_inv[piece]
+          hit_len = j - pos
+          break
+        end
+        j = j - 1
+      end
+      if hit_id >= 0
+        ids.push(hit_id)
+        pos = pos + hit_len
+      else
+        # Byte-fallback: decompose the single character at `pos` into
+        # per-byte <0xHH> tokens. SPM vocabs include all 256 byte
+        # tokens for exactly this case.
+        ch = chars[pos]
+        cbytes = ch.bytes
+        cbi = 0
+        while cbi < cbytes.length
+          hex = cbytes[cbi].to_s(16).upcase
+          if hex.length == 1; hex = "0" + hex; end
+          tag = "<0x" + hex + ">"
+          if @vocab_inv.has_key?(tag)
+            ids.push(@vocab_inv[tag])
+          else
+            if !@warned_unk
+              puts "WARN: tokenizer(spm-unigram): byte-fallback " + tag +
+                   " not in vocab — emitting UNK"
+              @warned_unk = true
+            end
+            if @unk_id != nil && @unk_id >= 0
+              ids.push(@unk_id)
+            end
+          end
+          cbi = cbi + 1
+        end
+        pos = pos + 1
+      end
+    end
+    ids
+  end
+
   # Build from a GGUF file with embedded tokenizer metadata.
   def self.from_gguf(path)
     empty = [""]
@@ -435,6 +574,16 @@ class Tokenizer
     eos = GgufKV.tnn_gguf_get_u32(handle, "tokenizer.ggml.eos_token_id")
     pad = GgufKV.tnn_gguf_get_u32(handle, "tokenizer.ggml.padding_token_id")
     unk = GgufKV.tnn_gguf_get_u32(handle, "tokenizer.ggml.unknown_token_id")
+    # T-Gemma (#117): tokenizer.ggml.model is the authoritative kind
+    # ("llama" = SPM, "gpt2" = byte-level BPE). Older Llama-1/2
+    # GGUFs may omit it; the Tokenizer ctor falls back to a vocab
+    # heuristic when model_name is empty.
+    model_name = GgufKV.tnn_gguf_get_str(handle, "tokenizer.ggml.model")
+    if model_name == nil; model_name = ""; end
+    # add_bos_token: per-arch flag (Gemma 2 sets this to true).
+    # Returns -1 when the key is missing; treat as false.
+    add_bos_v = GgufKV.tnn_gguf_get_bool(handle, "tokenizer.ggml.add_bos_token")
+    add_bos   = (add_bos_v == 1)
     n_tok    = GgufKV.tnn_gguf_arr_n(handle, "tokenizer.ggml.tokens")
     n_merges = GgufKV.tnn_gguf_arr_n(handle, "tokenizer.ggml.merges")
 
@@ -469,6 +618,6 @@ class Tokenizer
     end
 
     GgufKV.tnn_gguf_free(handle)
-    Tokenizer.new(vocab, merges, bos, eos, pad, unk)
+    Tokenizer.new(vocab, merges, bos, eos, pad, unk, model_name, add_bos)
   end
 end

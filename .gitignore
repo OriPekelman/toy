@@ -80,6 +80,7 @@ tinynn/ab_smoke_kv_attn
 tinynn/ab_smoke_flash_attn
 tinynn/ab_smoke_q8_kv
 tinynn/ab_smoke_moe_ffn
+tinynn/ab_smoke_tokenizer
 tinynn/full_forward_bench
 tinynn/full_forward_bench_cuda
 tinynn/forward_smoke

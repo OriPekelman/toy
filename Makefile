@@ -62,7 +62,7 @@ all: demos/train demos/smollm2
 # --- examples/ getting-started entry points --------------------------------
 # Compact, one-file demos covering the main use cases. See
 # examples/README.md.
-examples/example_inference: examples/01_inference.rb lib/arch.rb lib/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
+examples/example_inference: examples/01_inference.rb lib/arch.rb lib/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/tokenizer.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 example_inference: examples/example_inference
 
