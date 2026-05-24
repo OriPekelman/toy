@@ -61,6 +61,10 @@ class ToyLMCuda
     if (ENV["KV_Q8"] || "") == "1"
       kv.enable_kv_q8!
     end
+    # P4.1: FLASH_ATTN=1 → ggml_flash_attn_ext for attention.
+    if (ENV["FLASH_ATTN"] || "") == "1"
+      kv.enable_flash_attn!
+    end
 
     if is_native
       @gguf_handle = TinyNNCuda.tnn_gguf_load(path)

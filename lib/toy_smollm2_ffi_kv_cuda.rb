@@ -123,6 +123,13 @@ class SmolLM2KVFFICacheCuda
                 # layout makes per-position Q8 writes non-block-
                 # aligned. P5.2 will tackle the V flip + Q8.
                 :kv_type_k,
+                # P4.1: opt into ggml_flash_attn_ext in the attention
+                # step (default false → existing scale→softmax→matmul
+                # triplet). When true, each Q head's attention is one
+                # fused kernel call. Backward NOT supported (flash_back
+                # aborts in vendored ggml), so this is INFERENCE only.
+                # Set via enable_flash_attn! BEFORE realize_for_*.
+                :use_flash_attn,
                 :gguf_handle_keepalive,
                 # F1.2: LoRA on Q projection. enable_lora_q!(r) sets
                 # both flags BEFORE realize. When enabled, each block
@@ -162,6 +169,7 @@ class SmolLM2KVFFICacheCuda
     @kv_blocks_ffi      = [SmolLM2KVBlockFFICuda.new]
     @weight_type   = 0                # GGML_TYPE_F32; legacy default
     @kv_type_k     = 0                # GGML_TYPE_F32; opt in via enable_kv_q8!
+    @use_flash_attn = false            # opt in via enable_flash_attn!
     @gguf_handle_keepalive = TinyNNCuda.tnn_null_ptr  # set by realize_for_mmap
     @lora_q_enabled = false
     @lora_q_rank    = 0
@@ -179,6 +187,19 @@ class SmolLM2KVFFICacheCuda
   # inside ggml's kernel. Cuts K-cache memory & bandwidth ~4×.
   def enable_kv_q8!
     @kv_type_k = 8   # GGML_TYPE_Q8_0
+  end
+
+  # P4.1: opt into ggml_flash_attn_ext for inference. Per-Q-head it
+  # replaces the (scale → softmax → matmul) triplet with one fused
+  # call. The V cache stays in its current [max_T, d_head] layout —
+  # we transpose-materialize it per step (cheap; one ggml_cont). A
+  # future cleanup (P5.2) flips V's layout to remove the transpose
+  # and unlock V Q8.
+  #
+  # Backward is unsupported in vendored ggml (flash_attn_back aborts),
+  # so this path is INFERENCE only. Call BEFORE realize_for_mmap.
+  def enable_flash_attn!
+    @use_flash_attn = true
   end
 
   # F1.2: enable per-Q-head LoRA on this session's forward graph. Call
@@ -1005,6 +1026,30 @@ class SmolLM2KVFFICacheCuda
     t_V_hist = TinyNNCuda.tnn_view_2d(@sess, blk.t_V[hkv],
                                     hist_count, @d_head, bytes_max_T,
                                     hist_start * 4)
+
+    if @use_flash_attn
+      # P4.1: fused softmax(Q·Kᵀ·scale + mask)·V via ggml_flash_attn_ext.
+      # Reshape Q/K/V to the 3D shapes flash_attn_ext expects (ne[3]
+      # defaults to 1 so we don't need a fourth dim). V's current
+      # layout has positions on ne0 → tnn_transpose materializes the
+      # [d_head, hist_count] form flash expects; this adds one
+      # ggml_cont per Q-head per layer. P5.2 (V layout flip) removes
+      # that cost.
+      t_q_3d = TinyNNCuda.tnn_reshape_3d(@sess, t_q, @d_head, 1, 1)
+      t_K_3d = TinyNNCuda.tnn_reshape_3d(@sess, t_K_hist, @d_head, hist_count, 1)
+      # t_V_hist is [hist_count, d_head] (current V layout); transpose
+      # to [d_head, hist_count], then add a third dim for n_kv=1.
+      t_V_T  = TinyNNCuda.tnn_transpose(@sess, t_V_hist)
+      t_V_3d = TinyNNCuda.tnn_reshape_3d(@sess, t_V_T, @d_head, hist_count, 1)
+      t_out_4d = TinyNNCuda.tnn_flash_attn_ext(@sess, t_q_3d, t_K_3d, t_V_3d, nil,
+                                            scale, 0.0, 0.0)
+      # Output ne=[d_head, n_head=1, T_q=1, batch=1]; collapse to 2D.
+      t_head = TinyNNCuda.tnn_reshape_2d(@sess, t_out_4d, @d_head, 1)
+      if tap_this_head
+        t_head = trace_tap(tag + "head0_flash", t_head)
+      end
+      return t_head
+    end
 
     t_scores = TinyNNCuda.tnn_matmul(@sess, t_K_hist, t_q)
     if tap_this_head

@@ -78,6 +78,12 @@ class ToyLM
     if (ENV["KV_Q8"] || "") == "1"
       kv.enable_kv_q8!
     end
+    # P4.1: FLASH_ATTN=1 opts into ggml_flash_attn_ext for the per-Q-head
+    # attention step. Inference only — vendored ggml's flash backward
+    # aborts.
+    if (ENV["FLASH_ATTN"] || "") == "1"
+      kv.enable_flash_attn!
+    end
 
     if is_native
       # Native layout: mmap weights at their stored ggml type. Q8_0
