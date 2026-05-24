@@ -653,6 +653,30 @@ void *tnn_tanh(void *sess, void *a)
     return (void *)ggml_tanh(s->ctx, (struct ggml_tensor *)a);
 }
 
+void *tnn_ssm_conv(void *sess, void *sx, void *c)
+{
+    if (!sess || !sx || !c) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_ssm_conv(s->ctx,
+                                  (struct ggml_tensor *)sx,
+                                  (struct ggml_tensor *)c);
+}
+
+void *tnn_ssm_scan(void *sess, void *state, void *x, void *dt,
+                    void *A, void *B, void *C, void *ids)
+{
+    if (!sess || !state || !x || !dt || !A || !B || !C || !ids) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_ssm_scan(s->ctx,
+                                  (struct ggml_tensor *)state,
+                                  (struct ggml_tensor *)x,
+                                  (struct ggml_tensor *)dt,
+                                  (struct ggml_tensor *)A,
+                                  (struct ggml_tensor *)B,
+                                  (struct ggml_tensor *)C,
+                                  (struct ggml_tensor *)ids);
+}
+
 void *tnn_gelu(void *sess, void *a)
 {
     if (!sess || !a) return NULL;

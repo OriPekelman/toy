@@ -10,12 +10,12 @@ top of these ops are tracked separately in `docs/models-verified.md`.
 
 ## Summary
 
-- **28 of 98** ops have a dedicated `tnn_*` wrapper bound on the CPU side (29%).
+- **30 of 98** ops have a dedicated `tnn_*` wrapper bound on the CPU side (31%).
 - **2** more are composed inside other wrappers (status `via`) — usable in graphs we build but no standalone entry point.
 - **0** bound ops are CPU-only (no CUDA binding) — see "Parity drift" below.
-- **1** bound ops are not bound on Metal — the Metal mirror (`lib/tinynn_metal.rb`) is an intentionally thin smoke surface today, see "Metal mirror" below.
+- **3** bound ops are not bound on Metal — the Metal mirror (`lib/tinynn_metal.rb`) is an intentionally thin smoke surface today, see "Metal mirror" below.
 - **5** ops with a `*_BACK` enum case have an explicit backward wrapper; **1** more are emitted automatically by ggml's autodiff (`ggml_build_backward_expand`) without needing a wrapper.
-- **64** ops have no wrapper at all (and aren't composed by another).
+- **62** ops have no wrapper at all (and aren't composed by another).
 - **4** ops are dispatch-internal (no public `ggml_<x>()` constructor — e.g. `UNARY`, `MAP_CUSTOM1`).
 
 Backend caveats not captured by the table:
@@ -99,8 +99,8 @@ Backend caveats not captured by the table:
 | `GGML_OP_TRI` | — | missing | missing | missing | — | no tnn_ wrapper |
 | `GGML_OP_FILL` | — | missing | missing | missing | — | no tnn_ wrapper |
 | `GGML_OP_FLASH_ATTN_EXT` | `tnn_flash_attn_ext` | yes | yes | yes | — |  |
-| `GGML_OP_SSM_CONV` | — | missing | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_SSM_SCAN` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_SSM_CONV` | `tnn_ssm_conv` | yes | yes | no | — |  |
+| `GGML_OP_SSM_SCAN` | `tnn_ssm_scan` | yes | yes | no | — |  |
 | `GGML_OP_WIN_PART` | — | missing | missing | missing | — | no tnn_ wrapper |
 | `GGML_OP_WIN_UNPART` | — | missing | missing | missing | — | no tnn_ wrapper |
 | `GGML_OP_GET_REL_POS` | — | missing | missing | missing | — | no tnn_ wrapper |
@@ -148,8 +148,8 @@ smoke binding today — just enough to prove `ggml_backend_metal_init`
 regression signal; it's the to-do list for whoever wires real model
 inference on Metal (issue #2 follow-up).
 
-_Metal-bound ops_: **27** of 28 CPU-bound.
-_Not yet on Metal_: 1.
+_Metal-bound ops_: **27** of 30 CPU-bound.
+_Not yet on Metal_: 3.
 
 ## Tnn surface not directly tied to a ggml op
 

@@ -108,6 +108,9 @@ module TinyNNCuda
   ffi_func :tnn_add,              [:ptr, :ptr, :ptr],       :ptr
   ffi_func :tnn_gelu,             [:ptr, :ptr],             :ptr
   ffi_func :tnn_tanh,             [:ptr, :ptr],             :ptr
+  # C-SSM (#114): state-space model primitives.
+  ffi_func :tnn_ssm_conv,         [:ptr, :ptr, :ptr],       :ptr
+  ffi_func :tnn_ssm_scan,         [:ptr, :ptr, :ptr, :ptr, :ptr, :ptr, :ptr, :ptr], :ptr
   ffi_func :tnn_rms_norm,         [:ptr, :ptr, :ptr, :double], :ptr
   ffi_func :tnn_softmax,          [:ptr, :ptr],             :ptr
   ffi_func :tnn_diag_mask_inf,    [:ptr, :ptr, :int],       :ptr

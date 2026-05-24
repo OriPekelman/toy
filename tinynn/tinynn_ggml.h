@@ -144,6 +144,38 @@ void  *tnn_matmul_axb(void *sess, void *a, void *b);    /* A * B  (transposes B 
 void  *tnn_add(void *sess, void *a, void *b);           /* element-wise A + B (same shape) */
 void  *tnn_gelu(void *sess, void *a);                   /* element-wise GeLU (tanh approx) */
 void  *tnn_tanh(void *sess, void *a);                   /* element-wise tanh — Gemma 2 logit soft-cap */
+
+/* State-space model primitives (Mamba / Jamba family). C-SSM (#114).
+ *
+ * Speculative binding. We haven't built a Mamba Cache class yet —
+ * these ops only become useful in a state-space graph. Bound now so
+ * the FFI surface includes them and future Mamba work can start
+ * from "graph building" rather than "primitive binding."
+ *
+ * Shape expectations (Mamba-2 layout per ggml HEAD as of 2026-05-24):
+ *
+ * ssm_conv:
+ *   sx : ne=[d_conv-1+n_t, d_inner, n_seq]   3D, F32
+ *   c  : ne=[d_conv,       d_inner]          2D, F32
+ *   ret: ne=[d_inner,      n_t, n_seq]
+ *
+ * ssm_scan (Mamba-2 grouped layout):
+ *   s   : ne=[d_state, head_dim, n_head, n_kv_ids]
+ *   x   : ne=[head_dim, n_head, n_seq_tokens, n_seqs]    4D
+ *   dt  : ne=[n_head,   n_seq_tokens, n_seqs]            3D
+ *   A   : ne=[1 or d_state, n_head]                      2D
+ *   B   : ne=[d_state, n_group, n_seq_tokens, n_seqs]    4D
+ *   C   : ne=[d_state, n_group, n_seq_tokens, n_seqs]    4D
+ *   ids : ne=[n_seqs]                                    1D I32
+ *   ret: concatenated y + new s as a 1D F32 tensor
+ *
+ * Both ops have ggml-cuda kernels. Metal: TBD. ggml's shape
+ * assertions are strict — read vendor/ggml/src/ggml.c::ggml_ssm_scan
+ * before wiring. A full smoke lives in a future Mamba Cache class
+ * (M-Mamba follow-up); this binding only exposes the wrappers. */
+void  *tnn_ssm_conv(void *sess, void *sx, void *c);
+void  *tnn_ssm_scan(void *sess, void *s, void *x, void *dt,
+                     void *A, void *B, void *C, void *ids);
 void  *tnn_rms_norm(void *sess, void *x, void *gamma_row, double eps);
                                                          /* RMSNorm(x) * gamma_row, last-dim normalize, broadcast over the leading dim.
                                                             x: (n1, n0) with ne0=feature, ne1=batch_or_T
