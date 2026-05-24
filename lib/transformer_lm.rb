@@ -72,6 +72,12 @@ class ToyLM
     end
 
     kv = SmolLM2KVFFICache.new
+    # P5.1: KV_Q8=1 opts into Q8_0 storage for the K cache. Must be set
+    # BEFORE realize_for(_mmap). Saves ~half the K-cache bytes &
+    # bandwidth; V stays F32 until P5.2 (layout flip needed for V Q8).
+    if (ENV["KV_Q8"] || "") == "1"
+      kv.enable_kv_q8!
+    end
 
     if is_native
       # Native layout: mmap weights at their stored ggml type. Q8_0

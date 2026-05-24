@@ -195,6 +195,7 @@ module TinyNNCuda
   ffi_func :tnn_input_1d_f32,     [:ptr, :int],             :ptr
   ffi_func :tnn_input_2d_f32_persistent, [:ptr, :int, :int],   :ptr
   ffi_func :tnn_input_2d_persistent_typed, [:ptr, :int, :int, :int], :ptr
+  ffi_func :tnn_row_size,                  [:int, :int],              :long
   ffi_func :tnn_input_1d_f32_persistent, [:ptr, :int],         :ptr
   # Phase 2 BYO-pointer mmap (CUDA path: ggml-cuda patched to expose
   # ggml_backend_cuda_buffer_from_ptr; weight tensors reference

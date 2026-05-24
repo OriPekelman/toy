@@ -114,6 +114,13 @@ class SmolLM2KVFFICache
                 # via #set_weight_type before #realize_for to keep
                 # quantized weights quantized in memory.
                 :weight_type,
+                # P5.1: KV cache dtype. 0 = F32 (legacy), 8 = Q8_0
+                # (opt-in via enable_kv_q8!). When 8, K is allocated
+                # Q8_0 and per-position writes go through ggml_cpy
+                # which quantizes. V stays F32 in this phase — its
+                # layout makes per-position Q8 writes non-block-
+                # aligned. P5.2 will tackle the V flip + Q8.
+                :kv_type_k,
                 :gguf_handle_keepalive,
                 # F1.2: LoRA on Q projection. enable_lora_q!(r) sets
                 # both flags BEFORE realize. When enabled, each block
@@ -166,10 +173,24 @@ class SmolLM2KVFFICache
     @trace_tensors.pop
     # CUDA-MIRROR-SKIP-END
     @weight_type   = 0                # GGML_TYPE_F32; legacy default
+    @kv_type_k     = 0                # GGML_TYPE_F32; opt in via enable_kv_q8!
     @gguf_handle_keepalive = TinyNN.tnn_null_ptr  # set by realize_for_mmap
     @lora_q_enabled = false
     @lora_q_rank    = 0
     @lora_q_adamw_enabled = false
+  end
+
+  # P5.1: opt into Q8_0 storage for the K cache. Must be called BEFORE
+  # realize_for_mmap. V stays F32 in this phase — its layout
+  # (positions along ne0) makes per-position Q8 writes non-block-
+  # aligned. K's layout (positions along ne1, d_head along ne0)
+  # writes whole d_head-vectors at a time, which for d_head=64
+  # spans exactly 2 Q8_0 blocks of 32 elements each → aligned. The
+  # write path uses ggml_cpy which quantizes on f32→Q8 destination;
+  # the read path (attention matmul) dequantizes block-by-block
+  # inside ggml's kernel. Cuts K-cache memory & bandwidth ~4×.
+  def enable_kv_q8!
+    @kv_type_k = 8   # GGML_TYPE_Q8_0
   end
 
   # F1.2: enable per-Q-head LoRA on this session's forward graph. Call
@@ -389,7 +410,16 @@ class SmolLM2KVFFICache
                      @d_head, @d_model, k_type, k_off_base)]
       blk.t_w_v = [TinyNN.tnn_input_2d_persistent_mmap(@sess,
                      @d_head, @d_model, v_type, v_off_base)]
-      blk.t_K   = [TinyNN.tnn_input_2d_f32_persistent(@sess, max_T,  @d_head)]
+      # P5.1: K alloc switches dtype when @kv_type_k != 0. Layout is
+      # unchanged — ne=[d_head, max_T] still — so the existing view-
+      # by-position arithmetic still works once bytes_d_head reflects
+      # the Q8_0 row size instead of d_head*4. V stays F32; see the
+      # struct comment on :kv_type_k.
+      if @kv_type_k == 8
+        blk.t_K = [TinyNN.tnn_input_2d_persistent_typed(@sess, max_T, @d_head, 8)]
+      else
+        blk.t_K = [TinyNN.tnn_input_2d_f32_persistent(@sess, max_T,  @d_head)]
+      end
       blk.t_V   = [TinyNN.tnn_input_2d_f32_persistent(@sess, @d_head, max_T)]
       hkv = 1
       while hkv < @n_kv
@@ -399,7 +429,11 @@ class SmolLM2KVFFICache
         blk.t_w_v.push(TinyNN.tnn_input_2d_persistent_mmap(@sess,
                          @d_head, @d_model, v_type,
                          v_off_base + hkv * v_stride))
-        blk.t_K.push(TinyNN.tnn_input_2d_f32_persistent(@sess, max_T,  @d_head))
+        if @kv_type_k == 8
+          blk.t_K.push(TinyNN.tnn_input_2d_persistent_typed(@sess, max_T, @d_head, 8))
+        else
+          blk.t_K.push(TinyNN.tnn_input_2d_f32_persistent(@sess, max_T,  @d_head))
+        end
         blk.t_V.push(TinyNN.tnn_input_2d_f32_persistent(@sess, @d_head, max_T))
         hkv = hkv + 1
       end
@@ -522,6 +556,12 @@ class SmolLM2KVFFICache
     end
 
     # Zero-init K/V cache buffers (same as realize_for + legacy load).
+    # P5.1: skip K zero-init when K is Q8_0. upload_row_major writes
+    # F32 row-major bytes which would corrupt a Q8 tensor's quantization
+    # blocks. The K cache is read only at positions [0, pos+1], and
+    # every position is written before it's read, so unset trailing
+    # positions are never observed — zero-init is paranoia and safe
+    # to skip for Q8. V stays F32 in this phase, so its zero-init runs.
     kv_zero_k = Mat.new(max_T, @d_head)
     kv_zero_v = Mat.new(@d_head, max_T)
     li = 0
@@ -529,7 +569,9 @@ class SmolLM2KVFFICache
       blk_f = @kv_blocks_ffi[li]
       hkv = 0
       while hkv < @n_kv
-        TinyNN.upload_row_major(@sess, blk_f.t_K[hkv], kv_zero_k)
+        if @kv_type_k != 8
+          TinyNN.upload_row_major(@sess, blk_f.t_K[hkv], kv_zero_k)
+        end
         TinyNN.upload_row_major(@sess, blk_f.t_V[hkv], kv_zero_v)
         hkv = hkv + 1
       end
@@ -767,7 +809,12 @@ class SmolLM2KVFFICache
       # weights quantizable; K/V cache buffers and biases stay F32.
       blk.t_w_k = [alloc_2d_w(d_head, d_model)]
       blk.t_w_v = [alloc_2d_w(d_head, d_model)]
-      blk.t_K   = [TinyNN.tnn_input_2d_f32_persistent(@sess, max_T,  d_head)]
+      # P5.1: Q8 K alloc when enabled (see realize_for_mmap parallel path).
+      if @kv_type_k == 8
+        blk.t_K = [TinyNN.tnn_input_2d_persistent_typed(@sess, max_T, d_head, 8)]
+      else
+        blk.t_K = [TinyNN.tnn_input_2d_f32_persistent(@sess, max_T, d_head)]
+      end
       blk.t_V   = [TinyNN.tnn_input_2d_f32_persistent(@sess, d_head, max_T)]
       if qkv_bias
         # K bias: 1-D (broadcasts over [d_head, 1] k matmul result).
@@ -780,7 +827,11 @@ class SmolLM2KVFFICache
       while hkv < n_kv
         blk.t_w_k.push(alloc_2d_w(d_head, d_model))
         blk.t_w_v.push(alloc_2d_w(d_head, d_model))
-        blk.t_K.push(TinyNN.tnn_input_2d_f32_persistent(@sess, max_T,  d_head))
+        if @kv_type_k == 8
+          blk.t_K.push(TinyNN.tnn_input_2d_persistent_typed(@sess, max_T, d_head, 8))
+        else
+          blk.t_K.push(TinyNN.tnn_input_2d_f32_persistent(@sess, max_T,  d_head))
+        end
         blk.t_V.push(TinyNN.tnn_input_2d_f32_persistent(@sess, d_head, max_T))
         if qkv_bias
           blk.t_b_k.push(TinyNN.tnn_input_1d_f32_persistent(@sess, d_head))
@@ -809,6 +860,11 @@ class SmolLM2KVFFICache
     max_T   = @max_T
     bytes_d_head = d_head * 4
     bytes_max_T  = max_T * 4
+    # P5.1: row size for the K cache. F32 → d_head*4; Q8_0 →
+    # ggml_row_size(Q8_0, d_head) (block size 32, type size 34 →
+    # 68 bytes at d_head=64). V stays F32 so bytes_d_head is still
+    # the F32 value for its read/write sites.
+    bytes_d_head_k = @kv_type_k == 8 ? TinyNN.tnn_row_size(8, d_head) : bytes_d_head
 
     # Inputs: token id + RoPE position. Both length 1.
     t_token_id  = TinyNN.tnn_input_1d_i32(@sess, 1)
@@ -820,7 +876,8 @@ class SmolLM2KVFFICache
     li = 0
     while li < @n_layers
       t_x = build_block_step(t_x, @kv_blocks_ffi[li], t_pos, pos,
-                              scale, eps, bytes_d_head, bytes_max_T, li)
+                              scale, eps, bytes_d_head, bytes_d_head_k,
+                              bytes_max_T, li)
       li = li + 1
     end
 
@@ -839,7 +896,7 @@ class SmolLM2KVFFICache
   end
 
   def build_block_step(t_x, blk, t_pos, pos, scale, eps,
-                        bytes_d_head, bytes_max_T, layer_idx)
+                        bytes_d_head, bytes_d_head_k, bytes_max_T, layer_idx)
     # Layer-tag prefix for tap names (e.g. "L00."). String concat of an
     # int needs explicit .to_s; ljust pads so all names align in output.
     tag = "L" + layer_idx.to_s + "."
@@ -890,8 +947,11 @@ class SmolLM2KVFFICache
         t_v_new = trace_tap(tag + "v_new", t_v_new)
       end
 
+      # P5.1: K slot stride uses bytes_d_head_k (F32 → d_head*4, Q8_0 →
+      # type-aware row size from tnn_row_size). cpy quantizes f32→Q8
+      # automatically when the destination type differs.
       t_K_slot = TinyNN.tnn_view_2d(@sess, blk.t_K[hkv],
-                                      @d_head, 1, bytes_d_head, pos * bytes_d_head)
+                                      @d_head, 1, bytes_d_head_k, pos * bytes_d_head_k)
       t_cpy_k = TinyNN.tnn_cpy(@sess, t_k_rot, t_K_slot)
       t_V_slot = TinyNN.tnn_view_2d(@sess, blk.t_V[hkv],
                                       1, @d_head, bytes_max_T, pos * 4)
@@ -905,14 +965,14 @@ class SmolLM2KVFFICache
 
     # --- per-Q-head attention ---
     t_head_out0 = build_attention_qhead_step(t_h, blk, 0, t_pos, pos,
-                                              scale, bytes_d_head, bytes_max_T,
-                                              tag, true)
+                                              scale, bytes_d_head, bytes_d_head_k,
+                                              bytes_max_T, tag, true)
     t_head_outs = [t_head_out0]
     hq = 1
     while hq < @n_heads
       t_head_outs.push(build_attention_qhead_step(t_h, blk, hq, t_pos, pos,
-                                                    scale, bytes_d_head, bytes_max_T,
-                                                    tag, false))
+                                                    scale, bytes_d_head, bytes_d_head_k,
+                                                    bytes_max_T, tag, false))
       hq = hq + 1
     end
 
@@ -952,7 +1012,7 @@ class SmolLM2KVFFICache
   # "L<i>." layer prefix; `tap_this_head` is true only for head 0 so we
   # don't multiply taps by n_heads in trace mode.
   def build_attention_qhead_step(t_h, blk, hq, t_pos, pos, scale,
-                                  bytes_d_head, bytes_max_T,
+                                  bytes_d_head, bytes_d_head_k, bytes_max_T,
                                   tag, tap_this_head)
     hkv = hq / @group_size
 
@@ -1001,9 +1061,11 @@ class SmolLM2KVFFICache
       hist_start = 0
       hist_count = pos + 1
     end
+    # P5.1: K stride uses bytes_d_head_k (F32 → d_head*4, Q8_0 →
+    # type-aware). ggml_mul_mat dequantizes Q8 source on the fly.
     t_K_hist = TinyNN.tnn_view_2d(@sess, blk.t_K[hkv],
-                                    @d_head, hist_count, bytes_d_head,
-                                    hist_start * bytes_d_head)
+                                    @d_head, hist_count, bytes_d_head_k,
+                                    hist_start * bytes_d_head_k)
     # V is stored as [d_head, max_T] — row-major with stride max_T. The
     # window over time is the column range [hist_start, hist_start + hist_count)
     # within each row. The offset is hist_start * sizeof(f32).
@@ -1086,7 +1148,10 @@ module SmolLM2KV
           TinyNN.tnn_upload_from_float_array(sess, blk_f.t_b_k[hkv], blk_n.attn.b_k[hkv], d_head)
           TinyNN.tnn_upload_from_float_array(sess, blk_f.t_b_v[hkv], blk_n.attn.b_v[hkv], d_head)
         end
-        TinyNN.upload_row_major(sess, blk_f.t_K[hkv], kv_zero_k)
+        # P5.1: same Q8 skip rule as realize_for_mmap — see comment there.
+        if kv_cache.kv_type_k != 8
+          TinyNN.upload_row_major(sess, blk_f.t_K[hkv], kv_zero_k)
+        end
         TinyNN.upload_row_major(sess, blk_f.t_V[hkv], kv_zero_v)
         hkv = hkv + 1
       end

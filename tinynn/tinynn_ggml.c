@@ -308,6 +308,12 @@ void *tnn_input_2d_persistent_typed(void *sess, int rows, int cols, int ggml_typ
                                        (int64_t)cols, (int64_t)rows);
 }
 
+long tnn_row_size(int ggml_type, int ne0)
+{
+    if (ne0 <= 0) return 0;
+    return (long)ggml_row_size((enum ggml_type)ggml_type, (int64_t)ne0);
+}
+
 /* Phase 2 BYO-pointer: register an mmap'd region as the backing
  * buffer for weight tensors created via tnn_input_*_persistent_mmap.
  * The session does NOT own the underlying memory — the caller (e.g.

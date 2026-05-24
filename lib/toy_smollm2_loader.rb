@@ -252,7 +252,13 @@ module GGUFLoad
       blk_f = kv_cache.kv_blocks_ffi[li]
       hkv = 0
       while hkv < n_kv
-        TinyNN.upload_row_major(sess, blk_f.t_K[hkv], kv_zero_k)
+        # P5.1: skip K zero-init when K is Q8_0. upload_row_major
+        # writes F32 bytes that don't match Q8's block layout. K is
+        # only read at written positions, so unset trailing positions
+        # are never observed.
+        if kv_cache.kv_type_k != 8
+          TinyNN.upload_row_major(sess, blk_f.t_K[hkv], kv_zero_k)
+        end
         TinyNN.upload_row_major(sess, blk_f.t_V[hkv], kv_zero_v)
         hkv = hkv + 1
       end
@@ -412,7 +418,13 @@ module GGUFLoad
       blk_f = kv_cache.kv_blocks_ffi[li]
       hkv = 0
       while hkv < n_kv
-        TinyNN.upload_row_major(sess, blk_f.t_K[hkv], kv_zero_k)
+        # P5.1: skip K zero-init when K is Q8_0. upload_row_major
+        # writes F32 bytes that don't match Q8's block layout. K is
+        # only read at written positions, so unset trailing positions
+        # are never observed.
+        if kv_cache.kv_type_k != 8
+          TinyNN.upload_row_major(sess, blk_f.t_K[hkv], kv_zero_k)
+        end
         TinyNN.upload_row_major(sess, blk_f.t_V[hkv], kv_zero_v)
         hkv = hkv + 1
       end

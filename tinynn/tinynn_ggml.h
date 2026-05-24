@@ -63,6 +63,12 @@ void  *tnn_input_2d_f32_persistent(void *sess, int rows, int cols);
  * ggml type (e.g. GGML_TYPE_Q8_0 = 8). Used by Phase 3 of the
  * memory-design plan: keep quantized weights quantized in memory. */
 void  *tnn_input_2d_persistent_typed(void *sess, int rows, int cols, int ggml_type);
+
+/* Row size in bytes for a given ggml type at the given element count
+ * (ne0). For F32 this is ne0 * 4. For Q8_0 (block 32 × 34 bytes) at
+ * d_head=64 this is 68. Used by callers that build view_2d offsets
+ * for typed tensors — F32 byte stride and Q8 byte stride differ. */
+long   tnn_row_size(int ggml_type, int ne0);
 void  *tnn_input_1d_f32_persistent(void *sess, int n);
 void  *tnn_input_3d_f32_persistent(void *sess, int ne0, int ne1, int ne2);  /* M2 MoE */
 

@@ -421,6 +421,7 @@ module TinyNN
   ffi_func :tnn_input_1d_f32,     [:ptr, :int],             :ptr
   ffi_func :tnn_input_2d_f32_persistent, [:ptr, :int, :int],   :ptr
   ffi_func :tnn_input_2d_persistent_typed, [:ptr, :int, :int, :int], :ptr
+  ffi_func :tnn_row_size,                  [:int, :int],              :long
   # Phase 2 BYO-pointer: attach an mmap'd region as the source of
   # weight bytes, then allocate persistent tensors that point at
   # offsets inside it (no copy).
