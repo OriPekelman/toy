@@ -5,22 +5,21 @@ seq=256, AdamW. **Hardware:** GB10 (`gx10`). **Question:** the
 `bench-vs-pytorch-heavy` ratio sits at **2.01×**. Where is that
 coming from?
 
-## The headline
+## The headline (initial hypothesis — refuted; see "Smoke result" below)
 
 Toy's matmul-class op count is **~5× PyTorch's** at this shape. Most
 of that comes from the **per-head** LoRA-Q decomposition (one A/B
 adapter per Q head × 12 heads × 28 layers) where PT/PEFT runs one
-full-dim adapter per layer. Each toy op is fast (~30-50 µs); the
-launch-overhead cost stacks.
+full-dim adapter per layer. We initially expected each toy op's
+launch overhead to compound this into wallclock — **a follow-up A/B
+smoke disproved that** (see below). The 5× op-count differential is
+real but does NOT translate to the 2× wallclock gap.
 
 | Side                | Matmul-class ops / step | Kernel-time / step |
 | ---                 | ---: | ---: |
 | **Toy** (OUT_PROD + MUL_MAT) | **3 503** | ~154 ms |
 | **PyTorch** (mm + addmm + bmm) |   **725** | ~83 ms (cuBLAS/CUTLASS) |
 | Ratio               | **4.8×**                | ~1.85×           |
-
-The per-op count is the dominant signal. Toy's mean dispatch time is
-not far from PT's; we just dispatch 5× as many.
 
 ## How to reproduce
 
@@ -43,6 +42,16 @@ docker run --rm --gpus all --ipc=host -v "$PWD":/w -w /w \
   python3 bench/ref_pytorch.py --workload profile_train --device cuda \
   --arch qwen25_1p5b --lora --train_t 256 --warmup 2 \
   --profile_steps 3 --profile_top 25
+```
+
+A/B smoke for the per-head-vs-fused question:
+
+```sh
+~/sites/spinel/spinel --cc='cc -Wl,-u,tnn_cuda_force_link' \
+  tinynn/ab_smoke_lora_fused_cuda.rb -o tinynn/ab_smoke_lora_fused_cuda
+./tinynn/ab_smoke_lora_fused_cuda
+T=4    ./tinynn/ab_smoke_lora_fused_cuda
+T=1024 ./tinynn/ab_smoke_lora_fused_cuda
 ```
 
 ## Toy op-mix (top by total time)
@@ -86,55 +95,66 @@ PT step wallclock is **120 ms** while its cumulative kernel time is
 orchestration via multiple CUDA streams. **Toy's per-op sum ≈ wallclock
 (270 vs 275 ms)**: ggml-cuda dispatches sequentially, no overlap.
 
-## Where the 2× actually comes from
+## Smoke result: HeadFuseLoRAQ does NOT help
 
-Three compounding effects, ranked by likely return on optimization:
+`tinynn/ab_smoke_lora_fused_cuda.rb` replaces N_HEADS independent
+`x @ A_h` matmuls (the toy per-head LoRA-A pattern) with one batched
+`mul_mat` (n_heads on `ne2`). Same total compute, different launch
+pattern. Three shapes:
 
-1. **Per-head LoRA-Q backward emits 12 small OUT_PROD/MUL_MAT pairs per
-   layer where PT emits 2**. With 28 layers × 12 heads × ~4 backward
-   ops per adapter = ~1 300 extra matmul-class ops/step. At a mean
-   ~30 µs of (mostly launch) overhead, that's ~40 ms/step — about
-   **a third of the gap**. Toy's per-head decomposition is a Spinel-
-   shape design choice; fusing the heads at LoRA-backward time
-   (concat the 12 adapters into one [d_model, r·n_heads] tensor before
-   the backward matmul) would eliminate most of these.
+| T | per-head (12 mm + 11 add) | fused (1 batched mm) | speedup |
+| ---: | ---:  | ---:  | ---: |
+| 4    | 23.9 µs | 23.3 µs | 1.024× |
+| 256  | 164.7 µs | 164.1 µs | 1.004× |
+| 1024 | 650 µs | 660 µs | 0.984× (fused slightly slower) |
 
-2. **No CUDA stream overlap**. Toy's per-op sum ≈ wallclock; PT's
-   wallclock is ~50 % of its kernel-time sum because cuBLAS uses
-   multiple streams. Even with the per-head fix, PT will continue to
-   beat us on this axis until ggml-cuda overlaps host orchestration
-   with kernel exec. Harder to fix; depends on ggml-cuda design.
+**Conclusion:** the per-head decomposition is NOT the source of the
+2× gap. Either ggml-cuda already coalesces small launches efficiently,
+or per-op cost in the real workload is dominated by something other
+than kernel-launch overhead. A full HeadFuseLoRAQ refactor would have
+been ~1-2 days for an estimated ~0.06 ms / step delta. We don't earn
+that complexity.
 
-3. **`upload_from_float_array` 5.5 % cost**. Labels + hyperparams
-   upload per step at ~7.6 ms each is more than it should be (the
-   payload is small). Either type conversion or non-pinned host
-   memory in the copy path. Quick win to investigate.
+The disconnect between the smoke (~7 µs/op average) and the trace
+(~30 µs/op average) is the actual signal — those extra 23 µs/op must
+come from something the smoke isolates away. Candidate causes for
+where the gap *actually* lives:
 
-The user's framing — *"whenever we are 'out of cuda' we should be
-competitive with Python"* — partially holds: of the 275 ms step, only
-~15 ms is Ruby/FFI orchestration (`compute_backward` covers 260 ms ≈
-95 % of the step). The remaining gap is **inside** the CUDA dispatch
-loop, not in the Ruby wrapper. Specifically, we dispatch more
-operations than PT and don't overlap host scheduling with GPU exec.
+1. **Graph-level sequential dependencies + lack of CUDA stream
+   overlap.** PT's 234 ms of kernel time fits in 120 ms wallclock
+   because cuBLAS uses multiple streams; ggml-cuda's per-op sum ≈
+   wallclock, so it dispatches serially. This is a ggml-cuda design
+   issue, not a toy issue — **file upstream rather than patch around**.
 
-## Next experiments
+2. **OUT_PROD-specific cost on CUDA.** OUT_PROD is 30.8 % of step
+   time at 26.5 µs mean. The smoke didn't test it. A focused
+   OUT_PROD-vs-equivalent-MUL_MAT smoke would tell us if the win is
+   in replacing OUT_PROD (where the gradient graph allows).
 
-Cheapest-first ordering:
+3. **TRACE_OPS overhead inflating per-op numbers in the trace
+   itself.** Measure step time traced vs untraced (we have data:
+   256 ms vs 240 ms = ~7 %). Probably not enough to explain 5× per-op,
+   but worth ruling in/out.
 
-- **Fuse the per-head LoRA-Q adapters at graph-build time**. One
-  `[d_model, r·n_heads]` adapter per layer instead of `n_heads`
-  separate `[d_model, r]` adapters. Both forward and backward become
-  single matmuls per layer. **Expected: ~30-40 ms saved per step**
-  (closes ~half the gap).
-- **Pin the host buffers used for upload_int_array / upload_row_major
-  / upload_from_float_array**. Use `cudaHostAlloc`-backed memory via
-  ggml-cuda. **Expected: ~10 ms saved per step**.
-- **Coalesce the gradient accumulator ADDs**. 2192 ADD ops/step is
-  high; many are gradient accumulation into per-layer slots. Some can
-  be folded into the matmul that produced the contribution.
+## What to do instead
 
-Re-record the heavy baselines after each successful experiment:
-`make bench-heavy-update && make bench-vs-pytorch-heavy-update`.
+Re-ranked by likely return, after the smoke result:
+
+- **Pin host upload buffers** (`upload_from_float_array` is 5.5 % /
+  ~7.6 ms/call — too slow for the payload). Different surface
+  (tnn FFI primitive), not a graph rewrite. **~10 ms saved / step.**
+- **OUT_PROD vs MUL_MAT A/B smoke.** Cheap (extends the existing
+  smoke harness). If OUT_PROD is per-call expensive, the win comes
+  from gradient-graph restructuring to prefer MUL_MAT, not from
+  fusing heads.
+- **File ggml-cuda stream-overlap issue upstream** with the trace
+  data we already have. We can't fix this in toy, and it's the
+  largest single contributor we can identify so far.
+- **Macro-op fusion** (different from head fusion): fuse adjacent
+  norm+matmul, activation+matmul into single ggml ops when the
+  graph builder can prove no other consumers. Shrinks graph node
+  count, which reduces per-graph-eval overhead (the suspect for
+  the 30-µs/op average).
 
 ## Methodology caveats
 
@@ -151,4 +171,15 @@ Re-record the heavy baselines after each successful experiment:
   AFTER the Q-projection split; PT/PEFT applies it to the full
   d_model × d_q linear before splitting. The output dimensionality
   is the same, the rank is the same; the wallclock difference is
-  almost entirely op-count, not work done.
+  almost entirely op-count, not work done. **Op-count differential
+  is real but doesn't translate to wallclock** (per the smoke).
+
+## Process note: smoke-first earned its keep
+
+The `tinynn/ab_smoke_lora_fused_cuda.rb` smoke took ~1 hour to write
+and refuted the launch-overhead hypothesis before we paid the 1-2 day
+HeadFuseLoRAQ refactor cost. The smoke is also a reusable A/B harness
+for future "fuse-or-not" questions — change the inner ops, re-run.
+This is the pattern: every proposed lowering rule should be A/B'd
+against the isolated mechanic before being plumbed through 19
+demos/examples.
