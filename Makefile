@@ -62,6 +62,17 @@ examples/example_inference: examples/01_inference.rb lib/arch.rb lib/transformer
 	$(SPINEL) $< -o $@
 example_inference: examples/example_inference
 
+# Auto-generated coverage matrix — ggml ops vs our FFI surface.
+# Sources are vendor/ggml/include/ggml.h, tinynn/tinynn_ggml.c, and the
+# two FFI binding files. See docs/coverage.md for the matrix.
+coverage: docs/coverage.md
+docs/coverage.md: prep/gen_coverage.rb vendor/ggml/include/ggml.h \
+                  tinynn/tinynn_ggml.c lib/tinynn.rb lib/tinynn_cuda.rb
+	ruby prep/gen_coverage.rb
+coverage-check:
+	ruby prep/gen_coverage.rb --check
+.PHONY: coverage coverage-check
+
 examples/example_train: examples/02_train_custom_gpt.rb lib/transformer.rb lib/training.rb lib/toy_trainer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 example_train: examples/example_train

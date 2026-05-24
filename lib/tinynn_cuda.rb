@@ -240,6 +240,31 @@ module TinyNNCuda
   ffi_func :tnn_tensor_ne0,       [:ptr],                   :int
   ffi_func :tnn_tensor_ne1,       [:ptr],                   :int
 
+  # CPU-parity bindings (added 2026-05-24 as part of the ggml-coverage
+  # reframe). Same C symbols, same backend selection at runtime — these
+  # were CPU-only by accident. The compute op (rms_norm_back) was a real
+  # CUDA training gap; the rest are GGUF-reader/file-utility helpers that
+  # don't touch the compute backend at all but were missing on the CUDA
+  # side, breaking demos that mix CPU loading with CUDA execution.
+  ffi_func :tnn_rms_norm_back,    [:ptr, :ptr, :ptr, :double], :ptr
+  ffi_func :tnn_gguf_load_empty,            [],                              :ptr
+  ffi_func :tnn_gguf_n_tensors,             [:ptr],                          :int
+  ffi_func :tnn_gguf_tensor_name,           [:ptr, :int],                    :str
+  ffi_func :tnn_gguf_tensor_ne,             [:ptr, :int, :int],              :int
+  ffi_func :tnn_gguf_tensor_nbytes,         [:ptr, :int],                    :size_t
+  ffi_func :tnn_gguf_tensor_is_quantized,   [:ptr, :int],                    :int
+  ffi_func :tnn_gguf_get_u32,               [:ptr, :str],                    :int
+  ffi_func :tnn_gguf_get_f32,               [:ptr, :str],                    :double
+  ffi_func :tnn_gguf_read_f32_to_doubles,   [:ptr, :int, :float_array, :size_t], :int
+  ffi_func :tnn_gguf_write_demo_file,       [:str],                          :int
+  ffi_func :tnn_gguf_copy_transposed_to_persistent,
+           [:ptr, :int, :ptr, :ptr, :int, :int], :int
+  ffi_func :tnn_gguf_copy_head_slice_to_persistent,
+           [:ptr, :int, :ptr, :ptr, :int, :int, :int, :int], :int
+  ffi_func :tnn_list_ggufs,                 [:str],                          :str
+  ffi_func :tnn_file_size,                  [:str],                          :size_t
+  ffi_func :tnn_download_to_f64_array,      [:ptr, :ptr, :float_array, :size_t], :int
+
   def self.matmul(a, b)
     sess = TinyNNCuda.tnn_session_new(1)   # 1 = prefer CUDA
 
