@@ -98,19 +98,28 @@ module GGUFLoad
   # Ruby Mat-backed model. Returns has_untied_output + has_qkv_bias so
   # the caller can build the FFI cache directly.
   class SmolLM2Flags
-    attr_accessor :untied, :qkv_bias, :qk_norm, :swa_window
-    def initialize(untied, qkv_bias, qk_norm, swa_window)
-      @untied     = untied
-      @qkv_bias   = qkv_bias
-      @qk_norm    = qk_norm
-      @swa_window = swa_window
+    attr_accessor :untied, :qkv_bias, :qk_norm, :swa_window,
+                  # M2.3: MoE presence + dimensions. is_moe is true when
+                  # GGUF carries blk.0.ffn_gate_inp.weight. n_experts /
+                  # n_experts_used come from the GGUF metadata keys
+                  # llama.expert_count / llama.expert_used_count.
+                  :is_moe, :n_experts, :n_experts_used
+    def initialize(untied, qkv_bias, qk_norm, swa_window,
+                   is_moe, n_experts, n_experts_used)
+      @untied         = untied
+      @qkv_bias       = qkv_bias
+      @qk_norm        = qk_norm
+      @swa_window     = swa_window
+      @is_moe         = is_moe
+      @n_experts      = n_experts
+      @n_experts_used = n_experts_used
     end
   end
 
   def self.detect_smollm2_flags(path)
     handle = TinyNN.tnn_gguf_load(path)
     if handle == nil
-      return SmolLM2Flags.new(false, false, false, 0)
+      return SmolLM2Flags.new(false, false, false, 0, false, 0, 0)
     end
     untied   = TinyNN.tnn_gguf_find_index(handle, "output.weight")       >= 0
     qkv_bias = TinyNN.tnn_gguf_find_index(handle, "blk.0.attn_q.bias")   >= 0
@@ -120,12 +129,33 @@ module GGUFLoad
     # not metadata flag — there's no canonical GGUF key for this yet.
     qk_norm  = TinyNN.tnn_gguf_find_index(handle, "blk.0.attn_q_norm.weight") >= 0
     # M3: sliding-window attention. llama.cpp emits the window size as
-    # `llama.attention.sliding_window`. Returns -1 when absent; treat
-    # as 0 (no SWA). Phi-3-mini-4k sets it to 2048; Gemma 2 to 4096.
+    # `<arch>.attention.sliding_window`. Treat -1 / missing as 0.
     sw = TinyNN.tnn_gguf_get_u32(handle, "llama.attention.sliding_window")
+    if sw < 0
+      sw = TinyNN.tnn_gguf_get_u32(handle, "olmoe.attention.sliding_window")
+    end
     if sw < 0; sw = 0; end
+    # M2.3: MoE detection. Presence of ffn_gate_inp.weight on layer 0
+    # is the sentinel. n_experts / n_experts_used live in <arch>.*
+    # metadata keys; we try llama.* then fall back to olmoe.* (and
+    # any future arch the same way). We don't *need* to know the arch
+    # name itself — just the values.
+    is_moe = TinyNN.tnn_gguf_find_index(handle, "blk.0.ffn_gate_inp.weight") >= 0
+    n_experts      = 0
+    n_experts_used = 0
+    if is_moe
+      ne_v = TinyNN.tnn_gguf_get_u32(handle, "llama.expert_count")
+      nu_v = TinyNN.tnn_gguf_get_u32(handle, "llama.expert_used_count")
+      if ne_v < 0
+        ne_v = TinyNN.tnn_gguf_get_u32(handle, "olmoe.expert_count")
+        nu_v = TinyNN.tnn_gguf_get_u32(handle, "olmoe.expert_used_count")
+      end
+      n_experts      = ne_v > 0 ? ne_v : 0
+      n_experts_used = nu_v > 0 ? nu_v : 0
+    end
     TinyNN.tnn_gguf_free(handle)
-    SmolLM2Flags.new(untied, qkv_bias, qk_norm, sw)
+    SmolLM2Flags.new(untied, qkv_bias, qk_norm, sw,
+                     is_moe, n_experts, n_experts_used)
   end
 
   # Inference-only loader: stream GGUF weights directly into the FFI
@@ -535,21 +565,30 @@ module SmolLM2ConfigLoader
       puts "SmolLM2ConfigLoader: failed to open " + path
       return Toy::SmolLM2Config.new(0, 0, 0, 0, 0, 0, 0, 10000.0, 1.0e-5)
     end
-    vocab     = TinyNN.tnn_gguf_get_u32(handle, "llama.vocab_size")
-    d_model   = TinyNN.tnn_gguf_get_u32(handle, "llama.embedding_length")
-    d_ff      = TinyNN.tnn_gguf_get_u32(handle, "llama.feed_forward_length")
-    n_head    = TinyNN.tnn_gguf_get_u32(handle, "llama.attention.head_count")
-    n_kv      = TinyNN.tnn_gguf_get_u32(handle, "llama.attention.head_count_kv")
-    n_layer   = TinyNN.tnn_gguf_get_u32(handle, "llama.block_count")
-    ctx       = TinyNN.tnn_gguf_get_u32(handle, "llama.context_length")
-    rope_base = TinyNN.tnn_gguf_get_f32(handle, "llama.rope.freq_base")
-    rms_eps   = TinyNN.tnn_gguf_get_f32(handle, "llama.attention.layer_norm_rms_epsilon")
-    # M1.1: prefer explicit head_dim (llama.attention.key_length) when
+    # M2.3: arch-prefix probe (llama.* / olmoe.* / …). embedding_length
+    # is in every arch; vocab_size isn't (OLMoE omits it).
+    ap = "llama"
+    if TinyNN.tnn_gguf_get_u32(handle, "llama.embedding_length") < 0
+      ap = "olmoe"
+    end
+    vocab     = TinyNN.tnn_gguf_get_u32(handle, ap + ".vocab_size")
+    if vocab < 0
+      vocab = TinyNN.tnn_gguf_arr_n(handle, "tokenizer.ggml.tokens")
+    end
+    d_model   = TinyNN.tnn_gguf_get_u32(handle, ap + ".embedding_length")
+    d_ff      = TinyNN.tnn_gguf_get_u32(handle, ap + ".feed_forward_length")
+    n_head    = TinyNN.tnn_gguf_get_u32(handle, ap + ".attention.head_count")
+    n_kv      = TinyNN.tnn_gguf_get_u32(handle, ap + ".attention.head_count_kv")
+    n_layer   = TinyNN.tnn_gguf_get_u32(handle, ap + ".block_count")
+    ctx       = TinyNN.tnn_gguf_get_u32(handle, ap + ".context_length")
+    rope_base = TinyNN.tnn_gguf_get_f32(handle, ap + ".rope.freq_base")
+    rms_eps   = TinyNN.tnn_gguf_get_f32(handle, ap + ".attention.layer_norm_rms_epsilon")
+    # M1.1: prefer explicit head_dim (<arch>.attention.key_length) when
     # present. Qwen3 sets head_dim=128 explicitly even though
     # hidden_size/num_heads = 64. Returns -1 when key absent; we treat
     # that as "use the default" (d_model / n_heads, computed in
     # SmolLM2Config.initialize).
-    head_dim = TinyNN.tnn_gguf_get_u32(handle, "llama.attention.key_length")
+    head_dim = TinyNN.tnn_gguf_get_u32(handle, ap + ".attention.key_length")
     scaling   = read_rope_scaling(handle)
     TinyNN.tnn_gguf_free(handle)
     cfg = Toy::SmolLM2Config.new(vocab, d_model, n_head, n_kv, d_ff, n_layer,

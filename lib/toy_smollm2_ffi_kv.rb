@@ -41,6 +41,15 @@ class SmolLM2KVBlockFFI
                 # null-ptr seed lets graph-builder code branch cleanly.
                 :t_q_norm_gamma, :t_k_norm_gamma,
                 :t_w_gate, :t_w_up, :t_w_down,
+                # M2.3 MoE. When SmolLM2KVFFICache#is_moe is true, the
+                # FFN block is replaced with a Mixtral-style routed FFN:
+                #   t_w_router    : 2D [d_model, n_experts] — gating
+                #   t_w_gate_exps : 3D [d_model, d_ff, n_experts]
+                #   t_w_up_exps   : 3D [d_model, d_ff, n_experts]
+                #   t_w_down_exps : 3D [d_ff, d_model, n_experts]
+                # Set by realize_for_mmap when GGUF carries
+                # blk.0.ffn_gate_inp.weight (the MoE-presence sentinel).
+                :t_w_router, :t_w_gate_exps, :t_w_up_exps, :t_w_down_exps,
                 :t_K, :t_V,
                 # F1.2: optional LoRA adapters on Q projection (one
                 # rank-R pair per Q head). t_w_lora_a_q[hq] has shape
@@ -76,6 +85,10 @@ class SmolLM2KVBlockFFI
     @t_w_gate = TinyNN.tnn_null_ptr
     @t_w_up   = TinyNN.tnn_null_ptr
     @t_w_down = TinyNN.tnn_null_ptr
+    @t_w_router    = TinyNN.tnn_null_ptr
+    @t_w_gate_exps = TinyNN.tnn_null_ptr
+    @t_w_up_exps   = TinyNN.tnn_null_ptr
+    @t_w_down_exps = TinyNN.tnn_null_ptr
     @t_w_lora_a_q = [TinyNN.tnn_null_ptr]
     @t_w_lora_b_q = [TinyNN.tnn_null_ptr]
     @t_w_lora_a_q_m = [TinyNN.tnn_null_ptr]
@@ -128,6 +141,11 @@ class SmolLM2KVFFICache
                 # aborts in vendored ggml), so this is INFERENCE only.
                 # Set via enable_flash_attn! BEFORE realize_for_*.
                 :use_flash_attn,
+                # M2.3: MoE flags. is_moe → replace SwiGLU FFN with the
+                # routed expert FFN (router → softmax → top_k → 3× mul_mat_id
+                # → silu·up → weighted sum). Set by detect_smollm2_flags
+                # when GGUF carries blk.0.ffn_gate_inp.weight.
+                :is_moe, :n_experts, :n_experts_used,
                 :gguf_handle_keepalive,
                 # F1.2: LoRA on Q projection. enable_lora_q!(r) sets
                 # both flags BEFORE realize. When enabled, each block
@@ -182,6 +200,9 @@ class SmolLM2KVFFICache
     @weight_type   = 0                # GGML_TYPE_F32; legacy default
     @kv_type_k     = 0                # GGML_TYPE_F32; opt in via enable_kv_q8!
     @use_flash_attn = false            # opt in via enable_flash_attn!
+    @is_moe         = false
+    @n_experts      = 0
+    @n_experts_used = 0
     @gguf_handle_keepalive = TinyNN.tnn_null_ptr  # set by realize_for_mmap
     @lora_q_enabled = false
     @lora_q_rank    = 0
@@ -212,6 +233,17 @@ class SmolLM2KVFFICache
   # so this path is INFERENCE only. Call BEFORE realize_for_mmap.
   def enable_flash_attn!
     @use_flash_attn = true
+  end
+
+  # M2.3: opt into the MoE FFN graph. Must be called BEFORE realize_for_mmap.
+  # n_experts is the total count in the GGUF; n_experts_used is the
+  # top-K routed per token. Mixtral-8x7B: enable_moe!(8, 2). Qwen3-30B-
+  # A3B: enable_moe!(128, 8) (with optional shared expert — not yet
+  # supported in this path).
+  def enable_moe!(n_experts, n_experts_used)
+    @is_moe         = true
+    @n_experts      = n_experts
+    @n_experts_used = n_experts_used
   end
 
   # F1.2: enable per-Q-head LoRA on this session's forward graph. Call
@@ -491,9 +523,6 @@ class SmolLM2KVFFICache
 
       # O / FFN — full 2D weights, no per-head slicing.
       o_idx    = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_output.weight")
-      gate_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_gate.weight")
-      up_idx   = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_up.weight")
-      down_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_down.weight")
       # M1.1: o_proj maps [n_heads * d_head] → [d_model]. For models
       # where d_head = d_model / n_heads (SmolLM2 / Llama / Qwen2.5)
       # these are equal; for Qwen3 with explicit head_dim=128 they
@@ -501,15 +530,50 @@ class SmolLM2KVFFICache
       blk.t_w_o    = TinyNN.tnn_input_2d_persistent_mmap(@sess, @d_model, @n_heads * @d_head,
                        TinyNN.tnn_gguf_tensor_type(gguf_handle, o_idx),
                        TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, o_idx))
-      blk.t_w_gate = TinyNN.tnn_input_2d_persistent_mmap(@sess, @d_ff, @d_model,
-                       TinyNN.tnn_gguf_tensor_type(gguf_handle, gate_idx),
-                       TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, gate_idx))
-      blk.t_w_up   = TinyNN.tnn_input_2d_persistent_mmap(@sess, @d_ff, @d_model,
-                       TinyNN.tnn_gguf_tensor_type(gguf_handle, up_idx),
-                       TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, up_idx))
-      blk.t_w_down = TinyNN.tnn_input_2d_persistent_mmap(@sess, @d_model, @d_ff,
-                       TinyNN.tnn_gguf_tensor_type(gguf_handle, down_idx),
-                       TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, down_idx))
+
+      if @is_moe
+        # M2.3: MoE FFN. Per-expert weight matrices are stacked along
+        # ne2 in the GGUF (llama.cpp convention):
+        #   ffn_gate_inp.weight : ne=[d_model, n_experts]
+        #   ffn_gate_exps.weight: ne=[d_model, d_ff,    n_experts]
+        #   ffn_up_exps.weight  : ne=[d_model, d_ff,    n_experts]
+        #   ffn_down_exps.weight: ne=[d_ff,    d_model, n_experts]
+        # All mmap'd in place — Mixtral-8x7B Q4_K_M (26 GB) loads without
+        # any RAM copy.
+        router_idx    = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_gate_inp.weight")
+        gate_exps_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_gate_exps.weight")
+        up_exps_idx   = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_up_exps.weight")
+        down_exps_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_down_exps.weight")
+        blk.t_w_router    = TinyNN.tnn_input_2d_persistent_mmap(@sess,
+                              @n_experts, @d_model,
+                              TinyNN.tnn_gguf_tensor_type(gguf_handle, router_idx),
+                              TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, router_idx))
+        blk.t_w_gate_exps = TinyNN.tnn_input_3d_persistent_mmap(@sess,
+                              @d_model, @d_ff, @n_experts,
+                              TinyNN.tnn_gguf_tensor_type(gguf_handle, gate_exps_idx),
+                              TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, gate_exps_idx))
+        blk.t_w_up_exps   = TinyNN.tnn_input_3d_persistent_mmap(@sess,
+                              @d_model, @d_ff, @n_experts,
+                              TinyNN.tnn_gguf_tensor_type(gguf_handle, up_exps_idx),
+                              TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, up_exps_idx))
+        blk.t_w_down_exps = TinyNN.tnn_input_3d_persistent_mmap(@sess,
+                              @d_ff, @d_model, @n_experts,
+                              TinyNN.tnn_gguf_tensor_type(gguf_handle, down_exps_idx),
+                              TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, down_exps_idx))
+      else
+        gate_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_gate.weight")
+        up_idx   = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_up.weight")
+        down_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_down.weight")
+        blk.t_w_gate = TinyNN.tnn_input_2d_persistent_mmap(@sess, @d_ff, @d_model,
+                         TinyNN.tnn_gguf_tensor_type(gguf_handle, gate_idx),
+                         TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, gate_idx))
+        blk.t_w_up   = TinyNN.tnn_input_2d_persistent_mmap(@sess, @d_ff, @d_model,
+                         TinyNN.tnn_gguf_tensor_type(gguf_handle, up_idx),
+                         TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, up_idx))
+        blk.t_w_down = TinyNN.tnn_input_2d_persistent_mmap(@sess, @d_model, @d_ff,
+                         TinyNN.tnn_gguf_tensor_type(gguf_handle, down_idx),
+                         TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, down_idx))
+      end
 
       li = li + 1
     end
@@ -1010,22 +1074,68 @@ class SmolLM2KVFFICache
     t_x_attn   = TinyNN.tnn_add(@sess, t_x, t_out_proj)
     t_x_attn   = trace_tap(tag + "post_attn", t_x_attn)
 
-    # --- SwiGLU FFN ---
+    # --- FFN ---
     t_h2     = TinyNN.tnn_rms_norm(@sess, t_x_attn, blk.t_rn2_gamma, eps)
     t_h2     = trace_tap(tag + "rn2", t_h2)
-    t_gate   = TinyNN.tnn_matmul(@sess, blk.t_w_gate, t_h2)        # ne=[d_ff, 1]
-    t_gate   = trace_tap(tag + "gate", t_gate)
-    t_up     = TinyNN.tnn_matmul(@sess, blk.t_w_up,   t_h2)        # ne=[d_ff, 1]
-    t_up     = trace_tap(tag + "up", t_up)
-    t_silug  = TinyNN.tnn_silu(@sess, t_gate)
-    t_silug  = trace_tap(tag + "silu_gate", t_silug)
-    t_gated  = TinyNN.tnn_mul(@sess, t_silug, t_up)
-    t_gated  = trace_tap(tag + "gated", t_gated)
-    t_dn     = TinyNN.tnn_matmul(@sess, blk.t_w_down, t_gated)     # ne=[d_model, 1]
-    t_dn     = trace_tap(tag + "dn", t_dn)
+
+    if @is_moe
+      t_dn = build_moe_ffn(blk, t_h2, tag)
+    else
+      # --- SwiGLU FFN (dense) ---
+      t_gate   = TinyNN.tnn_matmul(@sess, blk.t_w_gate, t_h2)        # ne=[d_ff, 1]
+      t_gate   = trace_tap(tag + "gate", t_gate)
+      t_up     = TinyNN.tnn_matmul(@sess, blk.t_w_up,   t_h2)        # ne=[d_ff, 1]
+      t_up     = trace_tap(tag + "up", t_up)
+      t_silug  = TinyNN.tnn_silu(@sess, t_gate)
+      t_silug  = trace_tap(tag + "silu_gate", t_silug)
+      t_gated  = TinyNN.tnn_mul(@sess, t_silug, t_up)
+      t_gated  = trace_tap(tag + "gated", t_gated)
+      t_dn     = TinyNN.tnn_matmul(@sess, blk.t_w_down, t_gated)     # ne=[d_model, 1]
+      t_dn     = trace_tap(tag + "dn", t_dn)
+    end
 
     t_post_ffn = TinyNN.tnn_add(@sess, t_x_attn, t_dn)
     trace_tap(tag + "post_ffn", t_post_ffn)
+  end
+
+  # M2.3: Mixtral / Qwen-MoE routed FFN. Ports the validated graph from
+  # tinynn/ab_smoke_moe_ffn into the production decode path. Shapes:
+  #   t_h2          [d_model, 1]                    input (post-norm)
+  #   router_logits [n_experts, 1]                  matmul(w_router, h2)
+  #   probs         [n_experts, 1]                  softmax(logits)
+  #   top_idx       [n_experts_used, 1]             top_k(probs)
+  #   weights       [1, n_experts_used, 1]          get_rows(reshape_3d(probs,1,n_exp,1), top_idx)
+  #   e_gate / e_up [d_ff,    n_experts_used, 1]    mul_mat_id(...exps, h2, top_idx)
+  #   e_down        [d_model, n_experts_used, 1]    after weight × sum
+  #
+  # The (mul/transpose/sum_rows/reshape) sum-across-K is the same trick
+  # the smoke uses; ggml has no axis-1 reduce primitive.
+  def build_moe_ffn(blk, t_h2, tag)
+    t_logits     = TinyNN.tnn_matmul(@sess, blk.t_w_router, t_h2)        # ne=[n_exp, 1]
+    t_logits     = trace_tap(tag + "moe_logits", t_logits)
+    t_probs      = TinyNN.tnn_softmax(@sess, t_logits)                   # ne=[n_exp, 1]
+    t_top_idx    = TinyNN.tnn_top_k(@sess, t_probs, @n_experts_used)     # ne=[K, 1]
+    t_probs_3d   = TinyNN.tnn_reshape_3d(@sess, t_probs, 1, @n_experts, 1)
+    t_w_route    = TinyNN.tnn_get_rows(@sess, t_probs_3d, t_top_idx)     # ne=[1, K, 1]
+
+    t_e_gate     = TinyNN.tnn_mul_mat_id(@sess, blk.t_w_gate_exps, t_h2, t_top_idx)
+    t_e_up       = TinyNN.tnn_mul_mat_id(@sess, blk.t_w_up_exps,   t_h2, t_top_idx)
+    t_e_silu     = TinyNN.tnn_silu(@sess, t_e_gate)
+    t_e_gated    = TinyNN.tnn_mul(@sess, t_e_silu, t_e_up)               # ne=[d_ff, K, 1]
+    t_e_down     = TinyNN.tnn_mul_mat_id(@sess, blk.t_w_down_exps, t_e_gated, t_top_idx)
+    t_e_down     = trace_tap(tag + "moe_e_down", t_e_down)               # ne=[d_model, K, 1]
+
+    # Broadcast weights over d_model: [d_model, K, 1] × [1, K, 1] → [d_model, K, 1].
+    t_weighted   = TinyNN.tnn_mul(@sess, t_e_down, t_w_route)
+
+    # Sum across K (axis 1). Reshape to 2D (T=1 collapses), transpose
+    # [d_model, K] → [K, d_model], sum_rows along ne0=K → [1, d_model],
+    # reshape back to [d_model, 1].
+    t_weighted_2d = TinyNN.tnn_reshape_2d(@sess, t_weighted, @d_model, @n_experts_used)
+    t_weighted_T  = TinyNN.tnn_transpose(@sess, t_weighted_2d)
+    t_summed_T    = TinyNN.tnn_sum_rows(@sess, t_weighted_T)             # ne=[1, d_model]
+    t_dn          = TinyNN.tnn_reshape_2d(@sess, t_summed_T, @d_model, 1)
+    trace_tap(tag + "moe_out", t_dn)
   end
 
   # One query head. Uses the (already-written) K and V of the

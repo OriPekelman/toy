@@ -357,6 +357,7 @@ module TinyNN
   ffi_func :tnn_argsort,          [:ptr, :ptr, :int],       :ptr
   ffi_func :tnn_top_k,            [:ptr, :ptr, :int],       :ptr
   ffi_func :tnn_input_3d_f32_persistent, [:ptr, :int, :int, :int], :ptr
+  ffi_func :tnn_input_3d_persistent_typed, [:ptr, :int, :int, :int, :int], :ptr
   ffi_func :tnn_add,              [:ptr, :ptr, :ptr],       :ptr
   ffi_func :tnn_gelu,             [:ptr, :ptr],             :ptr
   ffi_func :tnn_rms_norm,         [:ptr, :ptr, :ptr, :double], :ptr
@@ -428,6 +429,7 @@ module TinyNN
   # offsets inside it (no copy).
   ffi_func :tnn_session_attach_weight_mmap, [:ptr, :ptr, :size_t], :int
   ffi_func :tnn_input_2d_persistent_mmap, [:ptr, :int, :int, :int, :size_t], :ptr
+  ffi_func :tnn_input_3d_persistent_mmap, [:ptr, :int, :int, :int, :int, :size_t], :ptr
   ffi_func :tnn_input_1d_persistent_mmap, [:ptr, :int, :int, :size_t], :ptr
   ffi_func :tnn_input_1d_f32_persistent, [:ptr, :int],         :ptr
   ffi_func :tnn_finalize_weights, [:ptr],                   :int

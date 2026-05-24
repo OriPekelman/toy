@@ -71,6 +71,8 @@ void  *tnn_input_2d_persistent_typed(void *sess, int rows, int cols, int ggml_ty
 long   tnn_row_size(int ggml_type, int ne0);
 void  *tnn_input_1d_f32_persistent(void *sess, int n);
 void  *tnn_input_3d_f32_persistent(void *sess, int ne0, int ne1, int ne2);  /* M2 MoE */
+void  *tnn_input_3d_persistent_typed(void *sess, int ne0, int ne1, int ne2,
+                                       int ggml_type);                         /* M2.3 MoE */
 
 /* Phase 2 BYO-pointer: attach an mmap'd file region to the session.
  * Subsequent calls to tnn_input_*_persistent_mmap allocate tensors
@@ -80,6 +82,8 @@ void  *tnn_input_3d_f32_persistent(void *sess, int ne0, int ne1, int ne2);  /* M
  * Returns 0 on success. */
 int    tnn_session_attach_weight_mmap(void *sess, void *base, size_t size);
 void  *tnn_input_2d_persistent_mmap(void *sess, int rows, int cols,
+                                     int ggml_type, size_t buf_offset);
+void  *tnn_input_3d_persistent_mmap(void *sess, int ne0, int ne1, int ne2,
                                      int ggml_type, size_t buf_offset);
 void  *tnn_input_1d_persistent_mmap(void *sess, int n, int ggml_type,
                                      size_t buf_offset);

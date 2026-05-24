@@ -414,6 +414,34 @@ void *tnn_input_2d_persistent_mmap(void *sess, int rows, int cols,
     return (void *)tensor;
 }
 
+/* 3D variant for M2.3 MoE expert stacks. Per-expert weight matrices
+ * concatenated along ne[2] in the GGUF (e.g. ffn_gate_exps.weight has
+ * ne=[d_model, d_ff, n_experts]). Loads them in place via mmap so a
+ * Mixtral-8x7B Q4_K_M (26GB) doesn't require any RAM copy. */
+void *tnn_input_3d_persistent_mmap(void *sess, int ne0, int ne1, int ne2,
+                                    int ggml_type, size_t buf_offset)
+{
+    if (!sess || ne0 <= 0 || ne1 <= 0 || ne2 <= 0) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    if (!s->weights_buf_mmap || !s->weights_map_base) return NULL;
+    enum ggml_type t = (enum ggml_type)ggml_type;
+    int blck = ggml_blck_size(t);
+    if (blck > 1 && (ne0 % blck != 0)) return NULL;
+    if (buf_offset >= s->weights_map_size) return NULL;
+
+    struct ggml_tensor *tensor = ggml_new_tensor_3d(s->ctx_w_mmap, t,
+                                                    (int64_t)ne0,
+                                                    (int64_t)ne1,
+                                                    (int64_t)ne2);
+    if (!tensor) return NULL;
+
+    void *addr = (char *)s->weights_map_base + buf_offset;
+    enum ggml_status st = ggml_backend_tensor_alloc(s->weights_buf_mmap,
+                                                     tensor, addr);
+    if (st != GGML_STATUS_SUCCESS) return NULL;
+    return (void *)tensor;
+}
+
 /* 1D variant for norms / biases — same semantics. */
 void *tnn_input_1d_persistent_mmap(void *sess, int n, int ggml_type,
                                     size_t buf_offset)
@@ -452,6 +480,22 @@ void *tnn_input_3d_f32_persistent(void *sess, int ne0, int ne1, int ne2)
     tnn_session *s = (tnn_session *)sess;
     if (s->weights_finalized) return NULL;
     return (void *)ggml_new_tensor_3d(s->ctx_w, GGML_TYPE_F32,
+                                       (int64_t)ne0, (int64_t)ne1, (int64_t)ne2);
+}
+
+/* 3D variant of tnn_input_2d_persistent_typed for M2.3 MoE expert
+ * stacks. ne0/ne1 are the per-expert matrix dims; ne2 is n_experts.
+ * For Q8_0 we require ne0 % 32 == 0 (block alignment). */
+void *tnn_input_3d_persistent_typed(void *sess, int ne0, int ne1, int ne2,
+                                      int ggml_type)
+{
+    if (!sess || ne0 <= 0 || ne1 <= 0 || ne2 <= 0) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    if (s->weights_finalized) return NULL;
+    enum ggml_type t = (enum ggml_type)ggml_type;
+    int blck = ggml_blck_size(t);
+    if (blck > 1 && (ne0 % blck != 0)) return NULL;
+    return (void *)ggml_new_tensor_3d(s->ctx_w, t,
                                        (int64_t)ne0, (int64_t)ne1, (int64_t)ne2);
 }
 

@@ -104,6 +104,7 @@ module TinyNNCuda
   ffi_func :tnn_argsort,          [:ptr, :ptr, :int],       :ptr
   ffi_func :tnn_top_k,            [:ptr, :ptr, :int],       :ptr
   ffi_func :tnn_input_3d_f32_persistent, [:ptr, :int, :int, :int], :ptr
+  ffi_func :tnn_input_3d_persistent_typed, [:ptr, :int, :int, :int, :int], :ptr
   ffi_func :tnn_add,              [:ptr, :ptr, :ptr],       :ptr
   ffi_func :tnn_gelu,             [:ptr, :ptr],             :ptr
   ffi_func :tnn_rms_norm,         [:ptr, :ptr, :ptr, :double], :ptr
@@ -203,6 +204,7 @@ module TinyNNCuda
   # cudaHostRegister'd pages and run via UVA on unified-memory SKUs).
   ffi_func :tnn_session_attach_weight_mmap, [:ptr, :ptr, :size_t], :int
   ffi_func :tnn_input_2d_persistent_mmap, [:ptr, :int, :int, :int, :size_t], :ptr
+  ffi_func :tnn_input_3d_persistent_mmap, [:ptr, :int, :int, :int, :int, :size_t], :ptr
   ffi_func :tnn_input_1d_persistent_mmap, [:ptr, :int, :int, :size_t], :ptr
   # GGUF accessors — same C symbols as TinyNN; exposed here so CUDA-
   # only demos can avoid pulling in lib/tinynn.rb (which drags in extra

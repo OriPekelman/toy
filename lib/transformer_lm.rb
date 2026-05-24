@@ -70,6 +70,13 @@ class ToyLM
       is_native = (TinyNN.tnn_gguf_get_bool(probe, "toy.ggml_native") == 1)
       TinyNN.tnn_gguf_free(probe)
     end
+    # M2.3: MoE GGUFs (Mixtral / Qwen-MoE etc.) are always in standard
+    # ggml-native layout; the legacy "transposed-load" path doesn't
+    # know how to dequantize the 3D expert stacks anyway. Force mmap
+    # whenever MoE is detected, regardless of the toy.ggml_native flag.
+    if flags.is_moe
+      is_native = true
+    end
 
     kv = SmolLM2KVFFICache.new
     # P5.1: KV_Q8=1 opts into Q8_0 storage for the K cache. Must be set
@@ -83,6 +90,22 @@ class ToyLM
     # aborts.
     if (ENV["FLASH_ATTN"] || "") == "1"
       kv.enable_flash_attn!
+    end
+    # M2.3: MoE — detected by GGUF tensor presence; enables the routed
+    # FFN graph (router → softmax → top_k → 3× mul_mat_id → silu·up
+    # → weighted sum). Must come BEFORE realize_for_mmap.
+    if flags.is_moe
+      kv.enable_moe!(flags.n_experts, flags.n_experts_used)
+      puts "MoE detected: n_experts=" + flags.n_experts.to_s +
+           " top_k=" + flags.n_experts_used.to_s
+    end
+    # M2.4-pending: OLMoE / Granite-MoE store the QK-norm gamma at
+    # [d_model] (per-head packed) and apply it to the *full* Q before
+    # the per-head split. Our path is per-head with a [d_head] gamma
+    # (Qwen3 convention). Forcing NO_QK_NORM=1 turns the norm off
+    # entirely as a diagnostic.
+    if (ENV["NO_QK_NORM"] || "") == "1"
+      kv.has_qk_norm = false
     end
 
     if is_native

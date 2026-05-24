@@ -152,23 +152,44 @@ class Arch
     # Llama-family GGUF keys are the canonical scalar metadata (the
     # converter writes "llama.*" for SmolLM2/TinyLlama/Qwen2.5/Llama3
     # alike). Read once and reuse.
-    vocab    = TinyNN.tnn_gguf_get_u32(handle, "llama.vocab_size")
-    d_model  = TinyNN.tnn_gguf_get_u32(handle, "llama.embedding_length")
-    d_ff     = TinyNN.tnn_gguf_get_u32(handle, "llama.feed_forward_length")
-    n_q      = TinyNN.tnn_gguf_get_u32(handle, "llama.attention.head_count")
-    n_kv     = TinyNN.tnn_gguf_get_u32(handle, "llama.attention.head_count_kv")
-    n_layers = TinyNN.tnn_gguf_get_u32(handle, "llama.block_count")
-    ctx      = TinyNN.tnn_gguf_get_u32(handle, "llama.context_length")
+    # M2.3: support multiple arch prefixes (llama.* OR olmoe.* OR …).
+    # Probe embedding_length (present in every arch); whichever
+    # resolves wins. vocab_size isn't reliable — some archs (OLMoE)
+    # omit it and rely on the tokenizer.ggml.tokens array length.
+    arch_prefix = "llama"
+    if TinyNN.tnn_gguf_get_u32(handle, "llama.embedding_length") < 0
+      arch_prefix = "olmoe"
+    end
+    vocab    = TinyNN.tnn_gguf_get_u32(handle, arch_prefix + ".vocab_size")
+    if vocab < 0
+      vocab = TinyNN.tnn_gguf_arr_n(handle, "tokenizer.ggml.tokens")
+    end
+    d_model  = TinyNN.tnn_gguf_get_u32(handle, arch_prefix + ".embedding_length")
+    d_ff     = TinyNN.tnn_gguf_get_u32(handle, arch_prefix + ".feed_forward_length")
+    n_q      = TinyNN.tnn_gguf_get_u32(handle, arch_prefix + ".attention.head_count")
+    n_kv     = TinyNN.tnn_gguf_get_u32(handle, arch_prefix + ".attention.head_count_kv")
+    n_layers = TinyNN.tnn_gguf_get_u32(handle, arch_prefix + ".block_count")
+    ctx      = TinyNN.tnn_gguf_get_u32(handle, arch_prefix + ".context_length")
     if ctx < 0
       ctx = 8192   # default if metadata missing
     end
-    rope_base = TinyNN.tnn_gguf_get_f32(handle, "llama.rope.freq_base")
-    rms_eps   = TinyNN.tnn_gguf_get_f32(handle, "llama.attention.layer_norm_rms_epsilon")
+    rope_base = TinyNN.tnn_gguf_get_f32(handle, arch_prefix + ".rope.freq_base")
+    rms_eps   = TinyNN.tnn_gguf_get_f32(handle, arch_prefix + ".attention.layer_norm_rms_epsilon")
     d_head    = d_model / n_q
 
     # Tensor-presence flags.
     has_qkv_bias = TinyNN.tnn_gguf_find_index(handle, "blk.0.attn_q.bias") >= 0
     untied       = TinyNN.tnn_gguf_find_index(handle, "output.weight")     >= 0
+    # M2.3 MoE detection — same sentinel as detect_smollm2_flags.
+    is_moe       = TinyNN.tnn_gguf_find_index(handle, "blk.0.ffn_gate_inp.weight") >= 0
+    moe_n_exp    = 0
+    moe_n_used   = 0
+    if is_moe
+      ne_v = TinyNN.tnn_gguf_get_u32(handle, "llama.expert_count")
+      nu_v = TinyNN.tnn_gguf_get_u32(handle, "llama.expert_used_count")
+      moe_n_exp  = ne_v > 0 ? ne_v : 0
+      moe_n_used = nu_v > 0 ? nu_v : 0
+    end
 
     # Tokenizer metadata (most current GGUFs in this repo don't embed
     # it — our converter skips it. Read anyway for forward-compat).
@@ -205,7 +226,7 @@ class Arch
              rope_base, 1.0, 1.0,
              :rms, rms_eps,
              :swiglu, false,
-             false, 0, 0, 0, :softmax,
+             is_moe, moe_n_exp, moe_n_used, 0, :softmax,
              tok_kind, bos, eos, pad, unk, false,
              1.0)
   end
