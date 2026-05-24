@@ -619,6 +619,22 @@ class SmolLM2KVFFICacheCuda
         gate_exps_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_gate_exps.weight")
         up_exps_idx   = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_up_exps.weight")
         down_exps_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_down_exps.weight")
+        # #112: warn loudly when expert weights use a K-family quant.
+        # ggml's mul_mat_id has reliable kernels for F32/F16/Q8_0
+        # source only; K-quants (Q4_K=12, Q5_K=13, Q6_K=14, *_K_S/M/L
+        # variants) produce wrong output via mul_mat_id even though
+        # the dispatch accepts them. See docs/notes/mul_mat_id_quants.md.
+        # Only warn once per realize, on layer 0.
+        if li == 0
+          gate_type = TinyNNCuda.tnn_gguf_tensor_type(gguf_handle, gate_exps_idx)
+          if gate_type >= 10 && gate_type <= 19
+            puts "WARN: MoE expert weights are K-quantized (type=" + gate_type.to_s + ")."
+            puts "WARN: ggml's mul_mat_id kernel produces wrong output for K-quants."
+            puts "WARN: This model WILL run but the output will be incoherent."
+            puts "WARN: Use the Q8_0 variant of this GGUF, or another quant."
+            puts "WARN: See docs/notes/mul_mat_id_quants.md."
+          end
+        end
         blk.t_w_router    = TinyNNCuda.tnn_input_2d_persistent_mmap(@sess,
                               @n_experts, @d_model,
                               TinyNNCuda.tnn_gguf_tensor_type(gguf_handle, router_idx),
