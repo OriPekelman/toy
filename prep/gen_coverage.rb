@@ -142,6 +142,15 @@ def candidate_c_funcs(op_name)
   ["ggml_" + op_stem(op_name)]
 end
 
+# Wrapper-name overrides for ops where our tnn_<wrapper> doesn't
+# follow the tnn_<ggml_stem> naming convention. Without this, the
+# matching heuristic falls back to `via` (incidental composition)
+# even when a dedicated wrapper exists under a different name.
+PRIMARY_WRAPPER = {
+  "GGML_OP_MUL_MAT" => "tnn_matmul",   # not tnn_mul_mat
+  "GGML_OP_SOFT_MAX" => "tnn_softmax", # not tnn_soft_max
+}
+
 # Unary sub-ops (SILU, GELU, RELU, etc.) live under GGML_OP_UNARY in
 # the dispatch enum but each has its own ggml_<x>() C constructor and
 # its own enum value in `enum ggml_unary_op`. Surface them as virtual
@@ -196,8 +205,14 @@ def row_for(op_name, ggml_to_tnn, cpu_ffi, cuda_ffi, metal_ffi, ops_set)
   # variant being bound counts as the op being bound).
   hit_tnn         = nil
   incidental_only = false
+  override        = PRIMARY_WRAPPER[op_name]
   cands.each do |c|
     next unless ggml_to_tnn.key?(c) && !ggml_to_tnn[c].empty?
+    # First try the explicit override (e.g. ggml_mul_mat → tnn_matmul).
+    if override && ggml_to_tnn[c].include?(override)
+      hit_tnn = override
+      break
+    end
     expected_tnn = c.sub(/^ggml_/, "tnn_")
     if ggml_to_tnn[c].include?(expected_tnn)
       hit_tnn = expected_tnn
