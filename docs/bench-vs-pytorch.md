@@ -100,6 +100,64 @@ Always measured **live, both engines, same session** — never compared to
 a stale figure. (An older doc listed toy's train step at 108.5 ms; live
 it's ~77 ms. Trust the live ratio.)
 
+## Heavy mode (ambitious workloads, optimization yardstick)
+
+The light gate above runs in well under a minute and is meant to fire on
+every meaningful commit. There is also a **heavy** variant that exercises
+the libs at real scale — the kind of pressure you want when *choosing
+between optimization strategies*.
+
+```sh
+# Toy-only, fast iteration loop (no PyTorch, no docker).
+make bench-heavy                # gate vs bench/baselines_heavy.csv
+make bench-heavy-update         # re-record after an intended change
+make bench-heavy-report         # measure + print, no gate
+
+# Adds the PyTorch ratio gate (slower; needs the docker image).
+make bench-vs-pytorch-heavy
+make bench-vs-pytorch-heavy-update
+make bench-vs-pytorch-heavy-report
+```
+
+Two workloads (shared between both targets — no drift):
+
+- **`heavy_train_lora_1p5b`** — LoRA-Q step on Qwen2.5-1.5B, seq=256,
+  8 steps after warmup. Exercises the backward graph + AdamW at non-toy
+  shape. Emits `step_ms_{mean,p95,stddev}`.
+- **`heavy_infer_7b_q8`** — KV-cache greedy decode on Qwen2.5-7B-Q8 with
+  `KV_Q8=1 FLASH_ATTN=1`, prefill=512, n_new=128. Exercises the
+  Phase-2/3 mmap + Q8 dequant + the opt-in perf knobs at real model size.
+  Emits `realize_ms`, `prefill_ms`, `decode_ms_{mean,p95}`,
+  `decode_toks_per_sec`.
+
+Latest GB10 numbers (recorded as both sets of baselines):
+
+| Workload | toy | PyTorch | ratio toy/pt |
+| --- | --- | --- | --- |
+| LoRA-Q step, Qwen2.5-1.5B seq=256 | ~240 ms | ~120 ms | **~2.01×** |
+| Decode, Qwen2.5-7B-Q8 (KV_Q8+FLASH) | ~12.7 tok/s | ~7.6 tok/s | **~0.60× (toy wins)** |
+
+The 7B inference comparison is **toy-Q8 vs PT-F32**. That's the right
+real-world comparison — Q8 is how toy users actually serve 7B — and it
+shows up at decode where the workload is bandwidth-bound, so 4× less
+weight bytes pays off. The training comparison is fair (both F32) and
+identifies a ~2× headroom for optimization work on the seq-mode
+forward+backward+AdamW path.
+
+### Using heavy as an optimization yardstick
+
+For run-over-run optimization iteration use `make bench-heavy-report`
+(no gate, just numbers). The toy side has stddev < 1% on mean step time
+and < 0.3% on mean decode time across runs on GB10, so deltas of 3–5%
+from an optimization show up clearly. The CSV in
+[`bench/baselines_heavy.csv`](../bench/baselines_heavy.csv) holds the
+last `--update`-recorded numbers — re-run `--update` after an
+intentional change to advance the baseline.
+
+For weekly/release gating, `make bench-vs-pytorch-heavy` adds the
+ratio-vs-PyTorch check, which catches the case where toy gets faster but
+PyTorch gets faster by more (kernel cache refresh, ggml/torch upgrades).
+
 ## Caveats and what to extend
 
 - **Small models on CPU**: at ≤135M, toy's ggml-CPU path can *beat*

@@ -16,6 +16,10 @@
 #   PREFILL_T  = prefill context length (default 128)
 #   N_NEW      = generated tokens after warmup+prefill (default 64)
 #   MAX_T      = KV cache max position (must be >= PREFILL_T + N_NEW + N_WARMUP)
+#   KV_Q8      = "1" to call enable_kv_q8! (Q8 K+V cache, auto-enables flash)
+#   FLASH_ATTN = "1" to call enable_flash_attn! (fused attention)
+#   BENCH_TAG  = non-empty to emit `BENCH <tag>_<metric> <value>` lines (the
+#                heavy-bench orchestrator parses these). Default off.
 #
 # Outputs:
 #   - realize+mmap ms
@@ -33,10 +37,14 @@ MAX_T     = (ENV["MAX_T"]     || "512").to_i
 N_WARMUP  = (ENV["N_WARMUP"]  || "8").to_i
 PREFILL_T = (ENV["PREFILL_T"] || "128").to_i
 N_NEW     = (ENV["N_NEW"]     || "64").to_i
+KV_Q8     = ENV["KV_Q8"]      == "1"
+FLASH_ATTN = ENV["FLASH_ATTN"] == "1"
+BENCH_TAG = ENV["BENCH_TAG"]  || ""
 
 puts "=== Bench: " + GGUF + " ==="
 puts "  warmup=" + N_WARMUP.to_s + " prefill_T=" + PREFILL_T.to_s +
-     " n_new=" + N_NEW.to_s + " max_T=" + MAX_T.to_s
+     " n_new=" + N_NEW.to_s + " max_T=" + MAX_T.to_s +
+     " kv_q8=" + KV_Q8.to_s + " flash=" + FLASH_ATTN.to_s
 
 cfg = SmolLM2ConfigLoader.read(GGUF)
 puts "  cfg: vocab=" + cfg.vocab.to_s + " d=" + cfg.d_model.to_s +
@@ -48,6 +56,11 @@ flags = GGUFLoad.detect_smollm2_flags(GGUF)
 t_load_0 = Time.now
 gguf = TinyNNCuda.tnn_gguf_load(GGUF)
 kv = SmolLM2KVFFICacheCuda.new
+if KV_Q8
+  kv.enable_kv_q8!
+elsif FLASH_ATTN
+  kv.enable_flash_attn!
+end
 kv.realize_for_mmap(gguf, cfg, MAX_T, flags.untied, flags.qkv_bias)
 t_load_ms = (Time.now - t_load_0) * 1000.0
 puts "  realize+mmap: " + t_load_ms.to_s + " ms"
@@ -132,3 +145,13 @@ puts "    min    = " + min_v.to_s
 puts "    p95    = " + p95_v.to_s
 puts "    max    = " + max_v.to_s
 puts "  throughput: " + toks_per_sec.to_s + " tok/s (from mean)"
+
+# BENCH lines (parseable by bench/check_heavy.rb when BENCH_TAG is set).
+# Each line: "BENCH <tag>_<metric> <value>".
+if BENCH_TAG.length > 0
+  puts "BENCH " + BENCH_TAG + "_realize_ms "       + t_load_ms.to_s
+  puts "BENCH " + BENCH_TAG + "_prefill_ms "       + t_prefill_ms.to_s
+  puts "BENCH " + BENCH_TAG + "_decode_ms_mean "   + mean_v.to_s
+  puts "BENCH " + BENCH_TAG + "_decode_ms_p95 "    + p95_v.to_s
+  puts "BENCH " + BENCH_TAG + "_decode_toks_per_sec " + toks_per_sec.to_s
+end
