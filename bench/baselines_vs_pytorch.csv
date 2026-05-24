@@ -1,0 +1,3 @@
+metric,value,unit,direction,tolerance_pct
+ratio_train_toy_over_pt,1.0306,x,lower,25.0
+ratio_infer_toy_over_pt,1.3793,x,lower,25.0
