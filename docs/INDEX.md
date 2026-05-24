@@ -38,6 +38,16 @@ Project-level READMEs sit next to their code: [`README.md`](../README.md),
 - [`bench-vs-pytorch.md`](bench-vs-pytorch.md) — routine toy-vs-PyTorch
   comparison on a single GPU (`make bench-vs-pytorch`); gates the
   ratio, not absolute ms. GB10: ~parity train, ~1.38× decode at 135M.
+  Includes the **heavy** variant (`make bench-heavy[-vs-pytorch]`) for
+  ambitious workloads — LoRA on 1.5B seq=256, 7B-Q8 decode.
+
+## Attribution / investigation reports
+
+- [`heavy-train-attribution-2026-05-24.md`](heavy-train-attribution-2026-05-24.md) —
+  op-mix attribution for the heavy LoRA-Q training bench at 1.5B
+  seq=256. Identifies the per-head LoRA decomposition as the main
+  source of the 2× gap vs PyTorch, plus a ranked list of next
+  experiments. Reproducer commands inline.
 
 ## Notes (limitations + workarounds)
 
