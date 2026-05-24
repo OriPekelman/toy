@@ -40,6 +40,12 @@ class SmolLM2KVBlockFFI
                 # RoPE. Allocated only when has_qk_norm is set. The
                 # null-ptr seed lets graph-builder code branch cleanly.
                 :t_q_norm_gamma, :t_k_norm_gamma,
+                # I-Gemma (#113): post-attention and post-FFN RMSNorm
+                # gammas. Gemma 2 sandwiches each sublayer between a
+                # pre-norm (the existing t_rn1_gamma / t_rn2_gamma)
+                # and a post-norm (these). Shape [d_model] each.
+                # Allocated only when cache.has_post_norms is set.
+                :t_post_attn_norm_gamma, :t_post_ffn_norm_gamma,
                 :t_w_gate, :t_w_up, :t_w_down,
                 # M2.3 MoE. When SmolLM2KVFFICache#is_moe is true, the
                 # FFN block is replaced with a Mixtral-style routed FFN:
@@ -73,6 +79,8 @@ class SmolLM2KVBlockFFI
     @t_rn2_gamma = TinyNN.tnn_null_ptr
     @t_q_norm_gamma = TinyNN.tnn_null_ptr
     @t_k_norm_gamma = TinyNN.tnn_null_ptr
+    @t_post_attn_norm_gamma = TinyNN.tnn_null_ptr
+    @t_post_ffn_norm_gamma  = TinyNN.tnn_null_ptr
     @t_w_q  = [TinyNN.tnn_null_ptr]
     @t_w_k  = [TinyNN.tnn_null_ptr]
     @t_w_v  = [TinyNN.tnn_null_ptr]
@@ -115,6 +123,20 @@ class SmolLM2KVFFICache
                 # 0 = none. Set by realize_for_mmap from the detected
                 # flags. The graph builder branches on this.
                 :qk_norm_kind,
+                # I-Gemma (#113): Gemma 2-specific knobs. All default
+                # to inert values (no-op) for non-Gemma models.
+                #   has_post_norms: blk.X has post_attention_norm +
+                #     post_ffw_norm tensors after the residual adds.
+                #   embed_scale: post-token-embed multiplier
+                #     (sqrt(d_model) for Gemma 2; 1.0 otherwise).
+                #   attn_softcap: tanh-softcap on attention logits
+                #     (50.0 for Gemma 2; 0.0 disables).
+                #   final_softcap: tanh-softcap on the final output
+                #     logits (30.0 for Gemma 2; 0.0 disables).
+                #   swa_alternates: when true, only EVEN layers apply
+                #     sliding window; odd layers see full attention.
+                :has_post_norms, :embed_scale,
+                :attn_softcap, :final_softcap, :swa_alternates,
                 # M3: SWA window. 0 = no sliding window (full causal).
                 # >0 = attend only to the last `swa_window` positions
                 # in the K/V cache. Phi-3-mini-4k sets this to 2048;
@@ -192,6 +214,11 @@ class SmolLM2KVFFICache
     @has_qk_norm        = false
     @qk_norm_kind       = 0
     @swa_window         = 0
+    @has_post_norms     = false
+    @embed_scale        = 1.0
+    @attn_softcap       = 0.0
+    @final_softcap      = 0.0
+    @swa_alternates     = false
     @kv_blocks_ffi      = [SmolLM2KVBlockFFI.new]
     # CUDA-MIRROR-SKIP-BEGIN: trace-tap is CPU-only diagnostic
     # --- trace-tap diagnostics (zero cost when off) ---
@@ -409,6 +436,18 @@ class SmolLM2KVFFICache
                           TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, rn1_idx))
       blk.t_rn2_gamma = TinyNN.tnn_input_1d_persistent_mmap(@sess, @d_model, 0,
                           TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, rn2_idx))
+
+      # I-Gemma (#113): post-attention and post-FFN RMSNorm gammas
+      # (Gemma 2 sandwiches each sublayer between pre+post norms).
+      # Tensor names: blk.X.post_attention_norm.weight, blk.X.post_ffw_norm.weight.
+      if @has_post_norms
+        pa_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".post_attention_norm.weight")
+        pf_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".post_ffw_norm.weight")
+        blk.t_post_attn_norm_gamma = TinyNN.tnn_input_1d_persistent_mmap(@sess, @d_model, 0,
+                                       TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, pa_idx))
+        blk.t_post_ffn_norm_gamma  = TinyNN.tnn_input_1d_persistent_mmap(@sess, @d_model, 0,
+                                       TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, pf_idx))
+      end
 
       # M1 + #110: QK-norm gammas. Two flavors detected via shape:
       #   kind=1: Qwen3 — gamma shape [d_head], shared across heads.
@@ -1017,6 +1056,13 @@ class SmolLM2KVFFICache
     t_pos       = TinyNN.tnn_input_1d_i32_ctx(@sess, 1)
 
     t_x = TinyNN.tnn_get_rows(@sess, @t_token_embed, t_token_id)   # ne=[d_model, 1]
+    # I-Gemma (#113): Gemma 2 scales token embeddings by sqrt(d_model)
+    # post-lookup. Non-Gemma archs use @embed_scale = 1.0 (no-op
+    # branch). The scalar is computed at flag-detection time so we
+    # don't pay a Math.sqrt landmine in the hot path.
+    if @embed_scale != 1.0
+      t_x = TinyNN.tnn_scale(@sess, t_x, @embed_scale)
+    end
     t_x = trace_tap("embed", t_x)
 
     li = 0
@@ -1036,6 +1082,14 @@ class SmolLM2KVFFICache
       t_kv_logits = TinyNN.tnn_matmul(@sess, @t_output, t_x_final)
     else
       t_kv_logits = TinyNN.tnn_matmul(@sess, @t_token_embed, t_x_final)
+    end
+    # I-Gemma (#113): final logit soft-cap. Gemma 2 applies
+    # tanh(logits / final_softcap) * final_softcap to the output
+    # logits before argmax / sampling. No-op for other models.
+    if @final_softcap > 0.0
+      t_kv_logits = TinyNN.tnn_scale(@sess, t_kv_logits, 1.0 / @final_softcap)
+      t_kv_logits = TinyNN.tnn_tanh(@sess, t_kv_logits)
+      t_kv_logits = TinyNN.tnn_scale(@sess, t_kv_logits, @final_softcap)
     end
     TinyNN.tnn_set_output(t_kv_logits)
     SmolLM2KVStepResult.new(t_token_id, t_pos, t_kv_logits)
@@ -1127,13 +1181,15 @@ class SmolLM2KVFFICache
     # --- per-Q-head attention ---
     t_head_out0 = build_attention_qhead_step(t_h, blk, 0, t_pos, pos,
                                               scale, bytes_d_head, bytes_d_head_k,
-                                              bytes_d_head_v, bytes_max_T, tag, true)
+                                              bytes_d_head_v, bytes_max_T, tag, true,
+                                              layer_idx)
     t_head_outs = [t_head_out0]
     hq = 1
     while hq < @n_heads
       t_head_outs.push(build_attention_qhead_step(t_h, blk, hq, t_pos, pos,
                                                     scale, bytes_d_head, bytes_d_head_k,
-                                                    bytes_d_head_v, bytes_max_T, tag, false))
+                                                    bytes_d_head_v, bytes_max_T, tag, false,
+                                                    layer_idx))
       hq = hq + 1
     end
 
@@ -1147,6 +1203,14 @@ class SmolLM2KVFFICache
 
     t_out_proj = TinyNN.tnn_matmul(@sess, blk.t_w_o, t_concat)
     t_out_proj = trace_tap(tag + "attn_out", t_out_proj)
+    # I-Gemma (#113): post-attention RMSNorm applied to the attention
+    # output BEFORE the residual add. Gemma 2's sandwich structure:
+    #   pre_norm(x) → attention → post_norm → residual + …
+    # No-op when has_post_norms is false (every non-Gemma arch).
+    if @has_post_norms
+      t_out_proj = TinyNN.tnn_rms_norm(@sess, t_out_proj, blk.t_post_attn_norm_gamma, eps)
+      t_out_proj = trace_tap(tag + "post_attn_norm", t_out_proj)
+    end
     t_x_attn   = TinyNN.tnn_add(@sess, t_x, t_out_proj)
     t_x_attn   = trace_tap(tag + "post_attn", t_x_attn)
 
@@ -1170,6 +1234,12 @@ class SmolLM2KVFFICache
       t_dn     = trace_tap(tag + "dn", t_dn)
     end
 
+    # I-Gemma (#113): post-FFN RMSNorm on the FFN output before the
+    # residual add. Same pattern as the post-attn norm above.
+    if @has_post_norms
+      t_dn = TinyNN.tnn_rms_norm(@sess, t_dn, blk.t_post_ffn_norm_gamma, eps)
+      t_dn = trace_tap(tag + "post_ffn_norm", t_dn)
+    end
     t_post_ffn = TinyNN.tnn_add(@sess, t_x_attn, t_dn)
     trace_tap(tag + "post_ffn", t_post_ffn)
   end
@@ -1220,8 +1290,20 @@ class SmolLM2KVFFICache
   # don't multiply taps by n_heads in trace mode.
   def build_attention_qhead_step(t_h, blk, hq, t_pos, pos, scale,
                                   bytes_d_head, bytes_d_head_k, bytes_d_head_v,
-                                  bytes_max_T, tag, tap_this_head)
+                                  bytes_max_T, tag, tap_this_head,
+                                  layer_idx)
     hkv = hq / @group_size
+
+    # I-Gemma (#113): per-layer SWA toggle. Gemma 2 alternates layers
+    # between full attention and sliding-window. When @swa_alternates
+    # is true, only EVEN layers see the SWA window; odd layers get
+    # effectively full attention (window = 0 ⇒ hist_count = pos+1).
+    # Non-Gemma archs: @swa_alternates is false; all layers apply
+    # @swa_window uniformly (or 0 for no-SWA models).
+    swa_for_this_layer = @swa_window
+    if @swa_alternates && layer_idx.odd?
+      swa_for_this_layer = 0
+    end
 
     t_q_raw = TinyNN.tnn_matmul(@sess, blk.t_w_q[hq], t_h)   # ne=[d_head, 1]
     # F1.2: optional LoRA on Q. Standard placement is BEFORE the bias
@@ -1266,13 +1348,13 @@ class SmolLM2KVFFICache
       t_q = trace_tap(tag + "q_rot", t_q)
     end
 
-    # M3: sliding-window attention. When @swa_window > 0, restrict
-    # the K/V view to the last `min(pos+1, swa_window)` positions.
-    # Mathematically equivalent to a -inf mask elsewhere; cheaper to
-    # implement as a view-with-offset.
-    if @swa_window > 0 && (pos + 1) > @swa_window
-      hist_start = pos + 1 - @swa_window
-      hist_count = @swa_window
+    # M3 + I-Gemma: sliding-window attention. When swa_for_this_layer
+    # > 0, restrict the K/V view to the last `min(pos+1, swa_window)`
+    # positions. swa_for_this_layer differs from @swa_window only
+    # when @swa_alternates is set (Gemma 2's even/odd layer pattern).
+    if swa_for_this_layer > 0 && (pos + 1) > swa_for_this_layer
+      hist_start = pos + 1 - swa_for_this_layer
+      hist_count = swa_for_this_layer
     else
       hist_start = 0
       hist_count = pos + 1
@@ -1298,8 +1380,11 @@ class SmolLM2KVFFICache
       t_q_3d   = TinyNN.tnn_reshape_3d(@sess, t_q,      @d_head, 1, 1)
       t_K_3d   = TinyNN.tnn_reshape_3d(@sess, t_K_hist, @d_head, hist_count, 1)
       t_V_3d   = TinyNN.tnn_reshape_3d(@sess, t_V_hist, @d_head, hist_count, 1)
+      # I-Gemma (#113): pass logit soft-cap to flash_attn_ext. The
+      # kernel applies tanh(x/softcap)*softcap to attention logits
+      # internally. 0.0 disables (every non-Gemma model).
       t_out_4d = TinyNN.tnn_flash_attn_ext(@sess, t_q_3d, t_K_3d, t_V_3d, nil,
-                                            scale, 0.0, 0.0)
+                                            scale, 0.0, @attn_softcap)
       # Output ne=[d_head, n_head=1, T_q=1, batch=1]; collapse to 2D.
       t_head = TinyNN.tnn_reshape_2d(@sess, t_out_4d, @d_head, 1)
       if tap_this_head
@@ -1313,6 +1398,14 @@ class SmolLM2KVFFICache
       t_scores = trace_tap(tag + "scores", t_scores)
     end
     t_scaled = TinyNN.tnn_scale(@sess, t_scores, scale)
+    # I-Gemma (#113): logit soft-cap in the non-flash path.
+    #   y = softcap * tanh(x / softcap)
+    # Composed via two scales + tanh. No-op when @attn_softcap == 0.
+    if @attn_softcap > 0.0
+      t_scaled = TinyNN.tnn_scale(@sess, t_scaled, 1.0 / @attn_softcap)
+      t_scaled = TinyNN.tnn_tanh(@sess, t_scaled)
+      t_scaled = TinyNN.tnn_scale(@sess, t_scaled, @attn_softcap)
+    end
     t_attn   = TinyNN.tnn_softmax(@sess, t_scaled)
     if tap_this_head
       t_attn = trace_tap(tag + "softmax", t_attn)

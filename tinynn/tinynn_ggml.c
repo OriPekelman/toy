@@ -643,6 +643,16 @@ void *tnn_add(void *sess, void *a, void *b)
                              (struct ggml_tensor *)b);
 }
 
+void *tnn_tanh(void *sess, void *a)
+{
+    if (!sess || !a) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    /* Element-wise tanh. Used by Gemma 2's logit soft-cap:
+     *   y = softcap * tanh(x / softcap)
+     * Composed via tnn_scale + tnn_tanh + tnn_scale in the graph builder. */
+    return (void *)ggml_tanh(s->ctx, (struct ggml_tensor *)a);
+}
+
 void *tnn_gelu(void *sess, void *a)
 {
     if (!sess || !a) return NULL;

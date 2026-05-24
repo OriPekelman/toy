@@ -10,12 +10,12 @@ top of these ops are tracked separately in `docs/models-verified.md`.
 
 ## Summary
 
-- **27 of 98** ops have a dedicated `tnn_*` wrapper bound on the CPU side (28%).
+- **28 of 98** ops have a dedicated `tnn_*` wrapper bound on the CPU side (29%).
 - **2** more are composed inside other wrappers (status `via`) — usable in graphs we build but no standalone entry point.
 - **0** bound ops are CPU-only (no CUDA binding) — see "Parity drift" below.
-- **0** bound ops are not bound on Metal — the Metal mirror (`lib/tinynn_metal.rb`) is an intentionally thin smoke surface today, see "Metal mirror" below.
+- **1** bound ops are not bound on Metal — the Metal mirror (`lib/tinynn_metal.rb`) is an intentionally thin smoke surface today, see "Metal mirror" below.
 - **5** ops with a `*_BACK` enum case have an explicit backward wrapper; **1** more are emitted automatically by ggml's autodiff (`ggml_build_backward_expand`) without needing a wrapper.
-- **65** ops have no wrapper at all (and aren't composed by another).
+- **64** ops have no wrapper at all (and aren't composed by another).
 - **4** ops are dispatch-internal (no public `ggml_<x>()` constructor — e.g. `UNARY`, `MAP_CUSTOM1`).
 
 Backend caveats not captured by the table:
@@ -114,7 +114,7 @@ Backend caveats not captured by the table:
 | `GGML_OP_SILU` | `tnn_silu` | yes | yes | yes | yes | unary sub-op (dispatches via GGML_OP_UNARY) |
 | `GGML_OP_RELU` | — | missing | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
 | `GGML_OP_GELU_QUICK` | — | missing | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
-| `GGML_OP_TANH` | — | missing | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
+| `GGML_OP_TANH` | `tnn_tanh` | yes | yes | no | — | unary sub-op (dispatches via GGML_OP_UNARY) |
 | `GGML_OP_ELU` | — | missing | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
 | `GGML_OP_SIGMOID` | — | missing | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
 | `GGML_OP_HARDSIGMOID` | — | missing | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
@@ -148,8 +148,8 @@ smoke binding today — just enough to prove `ggml_backend_metal_init`
 regression signal; it's the to-do list for whoever wires real model
 inference on Metal (issue #2 follow-up).
 
-_Metal-bound ops_: **27** of 27 CPU-bound.
-_Not yet on Metal_: 0.
+_Metal-bound ops_: **27** of 28 CPU-bound.
+_Not yet on Metal_: 1.
 
 ## Tnn surface not directly tied to a ggml op
 

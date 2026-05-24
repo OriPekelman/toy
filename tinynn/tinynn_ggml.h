@@ -143,6 +143,7 @@ void  *tnn_top_k(void *sess, void *a, int k);
 void  *tnn_matmul_axb(void *sess, void *a, void *b);    /* A * B  (transposes B internally) */
 void  *tnn_add(void *sess, void *a, void *b);           /* element-wise A + B (same shape) */
 void  *tnn_gelu(void *sess, void *a);                   /* element-wise GeLU (tanh approx) */
+void  *tnn_tanh(void *sess, void *a);                   /* element-wise tanh — Gemma 2 logit soft-cap */
 void  *tnn_rms_norm(void *sess, void *x, void *gamma_row, double eps);
                                                          /* RMSNorm(x) * gamma_row, last-dim normalize, broadcast over the leading dim.
                                                             x: (n1, n0) with ne0=feature, ne1=batch_or_T

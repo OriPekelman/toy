@@ -158,7 +158,11 @@ class Arch
     # omit it and rely on the tokenizer.ggml.tokens array length.
     arch_prefix = "llama"
     if TinyNN.tnn_gguf_get_u32(handle, "llama.embedding_length") < 0
-      arch_prefix = "olmoe"
+      if TinyNN.tnn_gguf_get_u32(handle, "olmoe.embedding_length") >= 0
+        arch_prefix = "olmoe"
+      elsif TinyNN.tnn_gguf_get_u32(handle, "gemma2.embedding_length") >= 0
+        arch_prefix = "gemma2"
+      end
     end
     vocab    = TinyNN.tnn_gguf_get_u32(handle, arch_prefix + ".vocab_size")
     if vocab < 0

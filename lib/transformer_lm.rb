@@ -77,6 +77,13 @@ class ToyLM
     if flags.is_moe
       is_native = true
     end
+    # #113: same reasoning for Gemma 2 — third-party GGUFs (bartowski /
+    # ggml-org / etc.) don't carry toy.ggml_native, but their layout is
+    # standard. Force mmap when we see Gemma 2 sentinels (post-norm
+    # tensors) so we get the post-norm and softcap paths.
+    if flags.has_post_norms
+      is_native = true
+    end
 
     kv = SmolLM2KVFFICache.new
     # P5.1: KV_Q8=1 opts into Q8_0 storage for the K cache. Must be set
@@ -107,6 +114,21 @@ class ToyLM
     if (ENV["NO_QK_NORM"] || "") == "1"
       kv.has_qk_norm  = false
       kv.qk_norm_kind = 0
+    end
+    # #113: Gemma 2 extras. All inert by default — non-Gemma callers
+    # pass embed_scale=1.0, softcaps=0.0, has_post_norms=false,
+    # swa_alternates=false, and the graph paths skip the extras.
+    kv.has_post_norms = flags.has_post_norms
+    kv.embed_scale    = flags.embed_scale
+    kv.attn_softcap   = flags.attn_softcap
+    kv.final_softcap  = flags.final_softcap
+    kv.swa_alternates = flags.swa_alternates
+    if flags.has_post_norms || flags.attn_softcap > 0.0 || flags.swa_alternates
+      puts "Gemma-2 features: post_norms=" + flags.has_post_norms.to_s +
+           " embed_scale=" + flags.embed_scale.to_s +
+           " attn_softcap=" + flags.attn_softcap.to_s +
+           " final_softcap=" + flags.final_softcap.to_s +
+           " swa_alt=" + flags.swa_alternates.to_s
     end
 
     if is_native

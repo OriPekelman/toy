@@ -108,12 +108,29 @@ module GGUFLoad
                   #   0 = none (no qk_norm at all)
                   #   1 = per-head shared gamma at [d_head]    (Qwen3-style)
                   #   2 = full-Q gamma at [d_model]            (OLMoE / Granite-style)
-                  # Computed from the actual ne[0] of blk.0.attn_q_norm.weight.
-                  # Caller stores this on the cache so the graph builder
-                  # can route the qk_norm application correctly.
-                  :qk_norm_kind
+                  :qk_norm_kind,
+                  # I-Gemma (#113): Gemma 2 extras. Each is independent
+                  # of the others; non-Gemma models get 0/false defaults.
+                  #   has_post_norms: blk.X has post_attention_norm +
+                  #     post_ffw_norm tensors in addition to attn_norm
+                  #     + ffn_norm (Gemma 2's distinguishing tensor set).
+                  #   embed_scale: multiplier applied to token embedding
+                  #     post-lookup. Gemma 2 uses sqrt(d_model); other
+                  #     archs use 1.0 (no scaling).
+                  #   attn_softcap: tanh-softcap on attention logits.
+                  #     Gemma 2: 50.0. 0.0 disables (no softcap).
+                  #   final_softcap: tanh-softcap on the final output
+                  #     logits. Gemma 2: 30.0. 0.0 disables.
+                  #   swa_alternates: when true, sliding window applies
+                  #     to alternating layers (even index = SWA) rather
+                  #     than all layers. Gemma 2 specifically.
+                  :has_post_norms, :embed_scale,
+                  :attn_softcap, :final_softcap, :swa_alternates
     def initialize(untied, qkv_bias, qk_norm, swa_window,
-                   is_moe, n_experts, n_experts_used, qk_norm_kind = 0)
+                   is_moe, n_experts, n_experts_used, qk_norm_kind = 0,
+                   has_post_norms = false, embed_scale = 1.0,
+                   attn_softcap = 0.0, final_softcap = 0.0,
+                   swa_alternates = false)
       @untied         = untied
       @qkv_bias       = qkv_bias
       @qk_norm        = qk_norm
@@ -122,6 +139,11 @@ module GGUFLoad
       @n_experts      = n_experts
       @n_experts_used = n_experts_used
       @qk_norm_kind   = qk_norm_kind
+      @has_post_norms = has_post_norms
+      @embed_scale    = embed_scale
+      @attn_softcap   = attn_softcap
+      @final_softcap  = final_softcap
+      @swa_alternates = swa_alternates
     end
   end
 
@@ -130,8 +152,14 @@ module GGUFLoad
     if handle == nil
       return SmolLM2Flags.new(false, false, false, 0, false, 0, 0, 0)
     end
+    # Gemma 2 ties embeddings (no separate output.weight), but the
+    # convention varies. We detect tie via tensor presence, not arch.
     untied   = TinyNN.tnn_gguf_find_index(handle, "output.weight")       >= 0
     qkv_bias = TinyNN.tnn_gguf_find_index(handle, "blk.0.attn_q.bias")   >= 0
+    # I-Gemma (#113): post-norm tensors. Their presence is the
+    # sentinel for "Gemma 2-shaped block" even if the metadata arch
+    # name varies. attn_q_norm-style models (Qwen3) don't have these.
+    has_post_norms = TinyNN.tnn_gguf_find_index(handle, "blk.0.post_attention_norm.weight") >= 0
     # M1 + #110: QK-norm — presence of attn_q_norm tensors signals
     # "apply RMSNorm to Q,K before RoPE". The gamma shape distinguishes
     # the two known dialects:
@@ -147,11 +175,15 @@ module GGUFLoad
     qk_norm_kind = 0
     if qk_norm
       gamma_ne0 = TinyNN.tnn_gguf_tensor_ne(handle, qn_idx, 0)
-      # Probe d_model and the head count to derive d_head. Same multi-
-      # arch prefix logic as the rest of the detector.
+      # Probe d_model and the head count to derive d_head. Multi-arch
+      # prefix logic — try each known arch in order.
       ap = "llama"
       if TinyNN.tnn_gguf_get_u32(handle, "llama.embedding_length") < 0
-        ap = "olmoe"
+        if TinyNN.tnn_gguf_get_u32(handle, "olmoe.embedding_length") >= 0
+          ap = "olmoe"
+        elsif TinyNN.tnn_gguf_get_u32(handle, "gemma2.embedding_length") >= 0
+          ap = "gemma2"
+        end
       end
       d_model_v = TinyNN.tnn_gguf_get_u32(handle, ap + ".embedding_length")
       n_heads_v = TinyNN.tnn_gguf_get_u32(handle, ap + ".attention.head_count")
@@ -172,13 +204,51 @@ module GGUFLoad
         qk_norm_kind = 1
       end
     end
-    # M3: sliding-window attention. llama.cpp emits the window size as
-    # `<arch>.attention.sliding_window`. Treat -1 / missing as 0.
+    # M3 + I-Gemma: sliding-window attention. llama.cpp emits the
+    # window size as `<arch>.attention.sliding_window`. Treat -1 /
+    # missing as 0. Try each known arch prefix.
     sw = TinyNN.tnn_gguf_get_u32(handle, "llama.attention.sliding_window")
     if sw < 0
       sw = TinyNN.tnn_gguf_get_u32(handle, "olmoe.attention.sliding_window")
     end
+    if sw < 0
+      sw = TinyNN.tnn_gguf_get_u32(handle, "gemma2.attention.sliding_window")
+    end
     if sw < 0; sw = 0; end
+    # I-Gemma: Gemma 2 applies SWA on alternating layers (the
+    # `sliding_window_pattern=2` HF config; layers alternate between
+    # full attention and sliding). llama.cpp encodes this implicitly
+    # by setting attention.sliding_window AND using the gemma2 arch
+    # prefix — there's no metadata key for the pattern itself, it's
+    # inferred from `general.architecture == "gemma2"`.
+    swa_alternates = false
+    arch_name      = TinyNN.tnn_gguf_get_str(handle, "general.architecture")
+    if arch_name == "gemma2" && sw > 0
+      swa_alternates = true
+    end
+    # I-Gemma: soft-cap parameters for attention logits and the final
+    # output logits. Read as f32; default 0.0 (no softcap).
+    attn_softcap  = TinyNN.tnn_gguf_get_f32(handle, "gemma2.attn_logit_softcapping")
+    final_softcap = TinyNN.tnn_gguf_get_f32(handle, "gemma2.final_logit_softcapping")
+    if attn_softcap  <  0.0; attn_softcap  = 0.0; end
+    if final_softcap <  0.0; final_softcap = 0.0; end
+    # I-Gemma: embedding scale. Gemma 2 multiplies token embeddings
+    # by sqrt(d_model) post-lookup. Other archs use 1.0.
+    embed_scale = 1.0
+    if arch_name == "gemma2"
+      d_model_g = TinyNN.tnn_gguf_get_u32(handle, "gemma2.embedding_length")
+      if d_model_g > 0
+        # Newton sqrt avoids the Math.sqrt poly-dispatch landmine.
+        x = d_model_g.to_f
+        s = x > 1.0 ? x : 1.0
+        ni = 0
+        while ni < 30
+          s = 0.5 * (s + x / s)
+          ni = ni + 1
+        end
+        embed_scale = s
+      end
+    end
     # M2.3: MoE detection. Presence of ffn_gate_inp.weight on layer 0
     # is the sentinel. n_experts / n_experts_used live in <arch>.*
     # metadata keys; we try llama.* then fall back to olmoe.* (and
@@ -199,7 +269,9 @@ module GGUFLoad
     end
     TinyNN.tnn_gguf_free(handle)
     SmolLM2Flags.new(untied, qkv_bias, qk_norm, sw,
-                     is_moe, n_experts, n_experts_used, qk_norm_kind)
+                     is_moe, n_experts, n_experts_used, qk_norm_kind,
+                     has_post_norms, embed_scale,
+                     attn_softcap, final_softcap, swa_alternates)
   end
 
   # Inference-only loader: stream GGUF weights directly into the FFI
@@ -607,11 +679,15 @@ module SmolLM2ConfigLoader
       puts "SmolLM2ConfigLoader: failed to open " + path
       return Toy::SmolLM2Config.new(0, 0, 0, 0, 0, 0, 0, 10000.0, 1.0e-5)
     end
-    # M2.3: arch-prefix probe (llama.* / olmoe.* / …). embedding_length
-    # is in every arch; vocab_size isn't (OLMoE omits it).
+    # M2.3 + I-Gemma: arch-prefix probe (llama.* / olmoe.* / gemma2.* / …).
+    # embedding_length is in every arch; vocab_size isn't (OLMoE omits it).
     ap = "llama"
     if TinyNN.tnn_gguf_get_u32(handle, "llama.embedding_length") < 0
-      ap = "olmoe"
+      if TinyNN.tnn_gguf_get_u32(handle, "olmoe.embedding_length") >= 0
+        ap = "olmoe"
+      elsif TinyNN.tnn_gguf_get_u32(handle, "gemma2.embedding_length") >= 0
+        ap = "gemma2"
+      end
     end
     vocab     = TinyNN.tnn_gguf_get_u32(handle, ap + ".vocab_size")
     if vocab < 0
@@ -624,6 +700,13 @@ module SmolLM2ConfigLoader
     n_layer   = TinyNN.tnn_gguf_get_u32(handle, ap + ".block_count")
     ctx       = TinyNN.tnn_gguf_get_u32(handle, ap + ".context_length")
     rope_base = TinyNN.tnn_gguf_get_f32(handle, ap + ".rope.freq_base")
+    if rope_base <= 0.0
+      # Gemma 2 doesn't emit rope.freq_base — it uses the HF default
+      # of 10000. Same fallback works for any arch that omits the
+      # key. Models that genuinely need a custom base (Llama-3.x,
+      # Qwen3 — 100000 or 1000000) always emit it.
+      rope_base = 10000.0
+    end
     rms_eps   = TinyNN.tnn_gguf_get_f32(handle, ap + ".attention.layer_norm_rms_epsilon")
     # M1.1: prefer explicit head_dim (<arch>.attention.key_length) when
     # present. Qwen3 sets head_dim=128 explicitly even though
