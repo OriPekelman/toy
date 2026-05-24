@@ -4,48 +4,52 @@
   <img src="toy_logo.png" alt="toy" width="240" />
 </p>
 
-**v0.4.0-pre-alpha** — early signal. Not API-stable. See
-[`CHANGELOG.md`](CHANGELOG.md) for what's working today.
+**v0.4.0-pre-alpha** · early signal · not API-stable
+&nbsp;·&nbsp; [CHANGELOG](CHANGELOG.md)
+&nbsp;·&nbsp; [docs](docs/INDEX.md)
+&nbsp;·&nbsp; [op coverage](docs/coverage.md)
 
-A small transformer language model in Ruby. AOT-compiled to a native
-binary by [Spinel](https://github.com/matz/spinel) (matz's Ruby AOT
-compiler). Runs real HuggingFace models — from SmolLM2-135M to
-Mistral-7B and Qwen3 — at output-identical fidelity to PyTorch.
+A transformer LM in Ruby, [Spinel](https://github.com/matz/spinel)-compiled
+to native binaries. Runs real HuggingFace models — SmolLM2, Llama 3,
+Qwen 2.5, Qwen 3, Mistral, Gemma 2, OLMoE (MoE) — at output-identical
+fidelity to PyTorch. CPU, CUDA, Metal.
 
-It does these things end-to-end, each as a single native binary:
+End-to-end as single native binaries:
 
-- **Run pretrained models** — KV-cache decode (CPU + CUDA + Metal) on
-  F32 or Q8, zero-copy mmap from the GGUF on disk.
-- **Reuse models already on the machine** — auto-discovers GGUFs in
-  the HuggingFace, Ollama, LM Studio, and project-local caches.
-- **Train from scratch** — `Toy::Trainer` over a `TransformerLM` (CPU).
-- **Fine-tune with LoRA** — sequence-mode forward + backward + AdamW
-  in one compute (CPU + CUDA).
-- **QLoRA** — same fine-tune path against a Q8 base; only the adapter
-  is F32 (CPU; CUDA QLoRA pending a vendor patch).
-- **Serve over HTTP** — Tep+Spinel OpenAI-compatible API.
+- **Inference** — KV-cache decode on CPU/CUDA/Metal. F32 or Q8 with
+  zero-copy mmap. Opt-in: Q8 K+V cache, fused flash attention.
+- **Training** — from-scratch trainer over `TransformerLM`.
+- **Fine-tune** — LoRA + QLoRA, one sequence-mode forward + backward +
+  AdamW graph (CPU + CUDA).
+- **Serve** — Tep+Spinel OpenAI-compatible HTTP.
+- **Discover** — auto-finds GGUFs in HF, Ollama, LM Studio, and
+  project-local caches.
 
-The goal is to be **readable**: the whole forward pass fits on one
-screen, every shape is annotated inline, the building blocks are
-named after the math.
+Modern architecture coverage: MoE routing (OLMoE), SentencePiece
+Unigram tokenizers (Gemma 2), pre+post-norm sandwich + logit
+soft-cap + alternating sliding-window attention (Gemma 2), per-arch
+QK-norm (Qwen 3 shared / OLMoE packed), RoPE scaling (YaRN /
+llama3 / linear). See [supported models](#supported-models) for the
+verified matrix.
+
+The goal is **readable**: the whole forward pass fits on one screen,
+every shape is annotated, building blocks are named after the math.
 
 ## What it looks like
 
 ```ruby
-# One transformer block: pre-LN → MHA → residual → pre-LN → FFN → residual.
+# One transformer block (GPT-2 family — Llama swaps LN→RMSNorm and
+# adds RoPE inside self_attention; same one-screen shape).
 def transformer_block(x, block)
-  h_norm  = layer_norm(x, block.ln1_gamma, block.ln1_beta)
-  attn    = self_attention(h_norm, block)
-  x.add!(attn)
-
-  h_norm2 = layer_norm(x, block.ln2_gamma, block.ln2_beta)
-  ff      = feed_forward(h_norm2, block)
-  x.add!(ff)
+  h  = layer_norm(x, block.ln1_gamma, block.ln1_beta)
+  x.add!(self_attention(h, block))
+  h2 = layer_norm(x, block.ln2_gamma, block.ln2_beta)
+  x.add!(feed_forward(h2, block))
   x
 end
 ```
 
-Every model has an `algorithm_card` that emits Phuong-Hutter style
+Every model has an `algorithm_card` emitting Phuong-Hutter style
 pseudocode (arXiv:2207.09238) with shape annotations:
 
 ```
@@ -67,55 +71,65 @@ that constructs the model — the round-trip closes.
 
 ## Quickstart
 
+Requires Ruby, [Spinel](https://github.com/matz/spinel) at
+`~/sites/spinel`, and a C compiler. `uv` self-installs for the
+Python converter.
+
 ```sh
-make setup-ggml                                # one-time, ~30 s
-make example_list_models                       # see what's already cached locally
-./examples/example_list_models                 # HF / Ollama / LM Studio / ./data
+make setup-ggml                              # one-time, ~30 s
+make example_list_models                     # what's cached locally
+./examples/example_list_models               # HF / Ollama / LM Studio / ./data
 ```
 
-If nothing shows up, grab one with the helper:
+If nothing shows up:
 
 ```sh
 prep/fetch_model.sh bartowski/SmolLM2-135M-Instruct-GGUF SmolLM2-135M-Instruct-Q8_0.gguf
 ```
 
-…or use `huggingface-cli download`, `ollama pull <name>`, or LM
-Studio directly. They all land in caches the next `example_list_models`
-will see.
+…or use `huggingface-cli download`, `ollama pull`, or LM Studio
+— they all land in caches the next list-models will see.
 
-Then run a model:
+Then run:
 
 ```sh
 make example_inference
-GGUF=data/llama-3.2-1b-tok.gguf PROMPT="The capital of France is" ./examples/example_inference
+GGUF=data/llama-3.2-1b-tok.gguf PROMPT="The capital of France is" \
+  ./examples/example_inference
 # → text: The capital of France is Paris. The capital of Germany is …
+
+# Try the opt-in perf knobs:
+KV_Q8=1 FLASH_ATTN=1 \
+  GGUF=data/qwen3-1.7b-tok.gguf PROMPT="Hi" N_NEW=32 \
+  ./examples/example_inference
+
+# Modern MoE works (Q8 expert weights required — see footnote):
+GGUF=data/OLMoE-1b-7b-0924-Instruct-q8_0.gguf PROMPT="The capital of France is" \
+  ./examples/example_inference
+
+# Gemma 2 (all four arch quirks auto-detected):
+GGUF=data/gemma-2-2b-it-Q8_0.gguf PROMPT="The capital of France is" \
+  ./examples/example_inference
 ```
 
 `example_inference` speaks text when the GGUF was converted with
-`--with-tokenizer` (the `*-tok.gguf` variants). The tokenizer
-auto-detects byte-level BPE (GPT-2 / Llama-3 / Qwen) vs
-SentencePiece (Llama-1/2 / Mistral / TinyLlama). Without an
-embedded tokenizer it falls back to a fixed token-ID prompt and
-prints raw IDs.
+`--with-tokenizer` (the `*-tok.gguf` variants). Three tokenizer
+flavors auto-detected: byte-level BPE, SPM-BPE, SPM-Unigram. Without
+an embedded tokenizer the example falls back to a fixed token-ID
+prompt and prints raw IDs.
 
-The [`examples/`](examples/README.md) directory has five focused entry
-points: inference, train-from-scratch, LoRA / QLoRA fine-tune, HTTP
-serve, model discovery. Each is one Ruby file under ~100 lines that
-compiles to a single native binary.
+[`examples/`](examples/README.md) has five focused entry points
+(inference / train-from-scratch / LoRA fine-tune / HTTP serve /
+model discovery), each one Ruby file under ~100 lines compiled to
+a single native binary.
 
-For CUDA + larger models: `make setup-ggml-cuda` then `*_cuda`
-example variants.
+**CUDA:** `make setup-ggml-cuda` then `*_cuda` example variants.
 
-For Apple Silicon via Metal: `make setup-ggml-metal` then
-`make example_inference_metal`. Works with Command Line Tools alone
-(the metal shaders embed into the static archive and JIT-compile on
-first device load, ~15 s one-time per binary). Inference output is
-bit-identical to the CPU path on the validated models. See
-[`docs/coverage.md`](docs/coverage.md) Metal column for op surface.
-
-Requires Ruby, [Spinel](https://github.com/matz/spinel) at
-`~/sites/spinel`, and a C compiler. `uv` installs itself for the
-Python converter; or `pip install uv` first.
+**Metal:** `make setup-ggml-metal` then `make example_inference_metal`.
+Works with Command Line Tools alone (shaders embed into the static
+archive, JIT-compile on first device load ~15 s, then cached).
+Validated end-to-end on SmolLM2-135M F32; [`coverage.md`](docs/coverage.md)
+Metal column shows the rest.
 
 ## Reading the rest
 
