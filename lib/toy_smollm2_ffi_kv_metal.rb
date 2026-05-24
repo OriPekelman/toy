@@ -113,6 +113,13 @@ class SmolLM2KVFFICacheMetal
                 # Detect by presence of "blk.0.attn_q_norm.weight" in
                 # the GGUF. Always false on Qwen2.5 / Llama-family.
                 :has_qk_norm,
+                # #110: which QK-norm flavor — 1 = per-head shared
+                # gamma (Qwen3, gamma shape [d_head]); 2 = full-Q
+                # gamma (OLMoE / Granite, gamma shape [d_model],
+                # applied to the concatenated Q before head split).
+                # 0 = none. Set by realize_for_mmap from the detected
+                # flags. The graph builder branches on this.
+                :qk_norm_kind,
                 # M3: SWA window. 0 = no sliding window (full causal).
                 # >0 = attend only to the last `swa_window` positions
                 # in the K/V cache. Phi-3-mini-4k sets this to 2048;
@@ -185,6 +192,7 @@ class SmolLM2KVFFICacheMetal
     @has_untied_output  = false
     @has_qkv_bias       = false
     @has_qk_norm        = false
+    @qk_norm_kind       = 0
     @swa_window         = 0
     @kv_blocks_ffi      = [SmolLM2KVBlockFFIMetal.new]
     @weight_type   = 0                # GGML_TYPE_F32; legacy default
@@ -324,6 +332,14 @@ class SmolLM2KVFFICacheMetal
     @has_untied_output = untied
     @has_qkv_bias      = qkv_bias
     @has_qk_norm       = qk_norm
+    # #110: if caller didn't pre-set qk_norm_kind via the
+    # attr_accessor, default to 1 (per-head shared) for backward
+    # compat with the Qwen3 detection that established the qk_norm
+    # path. Models that want full-Q (OLMoE / Granite) must set
+    # kv.qk_norm_kind = 2 BEFORE calling realize_for_mmap.
+    if @has_qk_norm && @qk_norm_kind == 0
+      @qk_norm_kind = 1
+    end
 
     # llama3 / LongRoPE: allocate the (d_head/2)-elem freq_factors
     # tensor in ctx_w before finalize_weights. We compute and upload
@@ -382,14 +398,21 @@ class SmolLM2KVFFICacheMetal
       blk.t_rn2_gamma = TinyNNMetal.tnn_input_1d_persistent_mmap(@sess, @d_model, 0,
                           TinyNNMetal.tnn_gguf_tensor_file_offset(gguf_handle, rn2_idx))
 
-      # M1: Qwen3 QK-norm gammas (shape [d_head], shared across heads).
-      # Tensor names follow llama.cpp: blk.X.attn_q_norm.weight etc.
+      # M1 + #110: QK-norm gammas. Two flavors detected via shape:
+      #   kind=1: Qwen3 — gamma shape [d_head], shared across heads.
+      #   kind=2: OLMoE / Granite — gamma shape [d_model], applied to
+      #          the full Q before head split. Allocate the full
+      #          [d_model] tensor; the graph builder either does a
+      #          full-Q rms_norm OR views per-head d_head slices.
+      gamma_nelems = (@qk_norm_kind == 2) ? @d_model : @d_head
       if @has_qk_norm
         qn_idx = TinyNNMetal.tnn_gguf_find_index(gguf_handle, prefix + ".attn_q_norm.weight")
         kn_idx = TinyNNMetal.tnn_gguf_find_index(gguf_handle, prefix + ".attn_k_norm.weight")
-        blk.t_q_norm_gamma = TinyNNMetal.tnn_input_1d_persistent_mmap(@sess, @d_head, 0,
+        blk.t_q_norm_gamma = TinyNNMetal.tnn_input_1d_persistent_mmap(@sess, gamma_nelems, 0,
                                TinyNNMetal.tnn_gguf_tensor_file_offset(gguf_handle, qn_idx))
-        blk.t_k_norm_gamma = TinyNNMetal.tnn_input_1d_persistent_mmap(@sess, @d_head, 0,
+        # K norm follows the same flavor as Q.
+        k_gamma_nelems = (@qk_norm_kind == 2) ? (@n_kv * @d_head) : @d_head
+        blk.t_k_norm_gamma = TinyNNMetal.tnn_input_1d_persistent_mmap(@sess, k_gamma_nelems, 0,
                                TinyNNMetal.tnn_gguf_tensor_file_offset(gguf_handle, kn_idx))
       end
 
@@ -974,10 +997,25 @@ class SmolLM2KVFFICacheMetal
       if hkv == 0
         t_k_pre = trace_tap(tag + "k_pre", t_k_pre)
       end
-      # M1: Qwen3 QK-norm — RMSNorm K with the per-block gamma before
-      # rope. Shared gamma across heads (shape [d_head]).
+      # M1 + #110: QK-norm. Two flavors:
+      #   kind=1 (Qwen3): blk.t_k_norm_gamma is [d_head], shared
+      #     across all KV heads; pass directly.
+      #   kind=2 (OLMoE / Granite, per-head approximation):
+      #     blk.t_k_norm_gamma is [n_kv * d_head] = [d_model_kv];
+      #     view the per-head [d_head] slice at byte offset
+      #     hkv*d_head*4. This computes per-head variance (not the
+      #     true full-Q-vector variance) but applies the correct
+      #     per-element gamma scaling. Cheap and close-enough for
+      #     models where per-head magnitudes are similar (which they
+      #     typically are for projections of a single input).
       if @has_qk_norm
-        t_k_pre = TinyNNMetal.tnn_rms_norm(@sess, t_k_pre, blk.t_k_norm_gamma, @rms_eps)
+        if @qk_norm_kind == 2
+          k_gamma_view = TinyNNMetal.tnn_view_1d(@sess, blk.t_k_norm_gamma,
+                                              @d_head, hkv * @d_head * 4)
+          t_k_pre = TinyNNMetal.tnn_rms_norm(@sess, t_k_pre, k_gamma_view, @rms_eps)
+        else
+          t_k_pre = TinyNNMetal.tnn_rms_norm(@sess, t_k_pre, blk.t_k_norm_gamma, @rms_eps)
+        end
       end
       t_k_rot = TinyNNMetal.tnn_rope_ext(@sess, t_k_pre, t_pos, @d_head,
                                     @rope_base, @rope_scaling.freq_scale,
@@ -1139,7 +1177,16 @@ class SmolLM2KVFFICacheMetal
       t_q_pre = trace_tap(tag + "q_pre", t_q_pre)
     end
     if @has_qk_norm
-      t_q_pre = TinyNNMetal.tnn_rms_norm(@sess, t_q_pre, blk.t_q_norm_gamma, @rms_eps)
+      if @qk_norm_kind == 2
+        # OLMoE / Granite per-head gamma slice (see build_block_step's
+        # K-norm comment). The gamma tensor is [d_model]; head hq's
+        # slice lives at byte offset hq*d_head*4.
+        q_gamma_view = TinyNNMetal.tnn_view_1d(@sess, blk.t_q_norm_gamma,
+                                            @d_head, hq * @d_head * 4)
+        t_q_pre = TinyNNMetal.tnn_rms_norm(@sess, t_q_pre, q_gamma_view, @rms_eps)
+      else
+        t_q_pre = TinyNNMetal.tnn_rms_norm(@sess, t_q_pre, blk.t_q_norm_gamma, @rms_eps)
+      end
     end
     t_q     = TinyNNMetal.tnn_rope_ext(@sess, t_q_pre, t_pos, @d_head,
                                   @rope_base, @rope_scaling.freq_scale,

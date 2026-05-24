@@ -99,13 +99,14 @@ class ToyLM
       puts "MoE detected: n_experts=" + flags.n_experts.to_s +
            " top_k=" + flags.n_experts_used.to_s
     end
-    # M2.4-pending: OLMoE / Granite-MoE store the QK-norm gamma at
-    # [d_model] (per-head packed) and apply it to the *full* Q before
-    # the per-head split. Our path is per-head with a [d_head] gamma
-    # (Qwen3 convention). Forcing NO_QK_NORM=1 turns the norm off
-    # entirely as a diagnostic.
+    # #110: pass through the detected qk_norm flavor BEFORE realize.
+    # 1 = Qwen3-style ([d_head] shared), 2 = OLMoE/Granite-style
+    # ([d_model] per-head packed; per-head sliced gamma).
+    kv.qk_norm_kind = flags.qk_norm_kind
+    # NO_QK_NORM=1 turns the norm off entirely as a diagnostic.
     if (ENV["NO_QK_NORM"] || "") == "1"
-      kv.has_qk_norm = false
+      kv.has_qk_norm  = false
+      kv.qk_norm_kind = 0
     end
 
     if is_native

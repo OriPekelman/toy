@@ -103,9 +103,17 @@ module GGUFLoad
                   # GGUF carries blk.0.ffn_gate_inp.weight. n_experts /
                   # n_experts_used come from the GGUF metadata keys
                   # llama.expert_count / llama.expert_used_count.
-                  :is_moe, :n_experts, :n_experts_used
+                  :is_moe, :n_experts, :n_experts_used,
+                  # I-QKnorm (#110): which QK-norm flavor this GGUF uses.
+                  #   0 = none (no qk_norm at all)
+                  #   1 = per-head shared gamma at [d_head]    (Qwen3-style)
+                  #   2 = full-Q gamma at [d_model]            (OLMoE / Granite-style)
+                  # Computed from the actual ne[0] of blk.0.attn_q_norm.weight.
+                  # Caller stores this on the cache so the graph builder
+                  # can route the qk_norm application correctly.
+                  :qk_norm_kind
     def initialize(untied, qkv_bias, qk_norm, swa_window,
-                   is_moe, n_experts, n_experts_used)
+                   is_moe, n_experts, n_experts_used, qk_norm_kind = 0)
       @untied         = untied
       @qkv_bias       = qkv_bias
       @qk_norm        = qk_norm
@@ -113,21 +121,57 @@ module GGUFLoad
       @is_moe         = is_moe
       @n_experts      = n_experts
       @n_experts_used = n_experts_used
+      @qk_norm_kind   = qk_norm_kind
     end
   end
 
   def self.detect_smollm2_flags(path)
     handle = TinyNN.tnn_gguf_load(path)
     if handle == nil
-      return SmolLM2Flags.new(false, false, false, 0, false, 0, 0)
+      return SmolLM2Flags.new(false, false, false, 0, false, 0, 0, 0)
     end
     untied   = TinyNN.tnn_gguf_find_index(handle, "output.weight")       >= 0
     qkv_bias = TinyNN.tnn_gguf_find_index(handle, "blk.0.attn_q.bias")   >= 0
-    # M1: Qwen3 QK-norm — presence of attn_q_norm/attn_k_norm tensors
-    # signals "apply RMSNorm to Q,K before RoPE". Qwen2.5 / Llama don't
-    # have these (returns -1 / false). Detection is by tensor existence,
-    # not metadata flag — there's no canonical GGUF key for this yet.
-    qk_norm  = TinyNN.tnn_gguf_find_index(handle, "blk.0.attn_q_norm.weight") >= 0
+    # M1 + #110: QK-norm — presence of attn_q_norm tensors signals
+    # "apply RMSNorm to Q,K before RoPE". The gamma shape distinguishes
+    # the two known dialects:
+    #   ne[0] == d_head  → Qwen3-style (shared per-head gamma, applied
+    #                      after the head split; equivalent across heads).
+    #   ne[0] == d_model → OLMoE / Granite-style (full-Q gamma, applied
+    #                      to the concatenated d_model Q vector BEFORE
+    #                      the head split; variance is over d_model dims).
+    # These are mathematically distinct: in the full-Q form, RMSNorm
+    # variance pools across all heads, so per-head behavior differs.
+    qn_idx   = TinyNN.tnn_gguf_find_index(handle, "blk.0.attn_q_norm.weight")
+    qk_norm  = qn_idx >= 0
+    qk_norm_kind = 0
+    if qk_norm
+      gamma_ne0 = TinyNN.tnn_gguf_tensor_ne(handle, qn_idx, 0)
+      # Probe d_model and the head count to derive d_head. Same multi-
+      # arch prefix logic as the rest of the detector.
+      ap = "llama"
+      if TinyNN.tnn_gguf_get_u32(handle, "llama.embedding_length") < 0
+        ap = "olmoe"
+      end
+      d_model_v = TinyNN.tnn_gguf_get_u32(handle, ap + ".embedding_length")
+      n_heads_v = TinyNN.tnn_gguf_get_u32(handle, ap + ".attention.head_count")
+      head_dim  = TinyNN.tnn_gguf_get_u32(handle, ap + ".attention.key_length")
+      if head_dim <= 0 && n_heads_v > 0
+        head_dim = d_model_v / n_heads_v
+      end
+      if gamma_ne0 == head_dim
+        qk_norm_kind = 1   # per-head shared
+      elsif gamma_ne0 == d_model_v
+        qk_norm_kind = 2   # full-Q
+      else
+        # Unknown shape; warn loudly and default to per-head shared.
+        # If this fires the model output will be wrong.
+        puts "WARN: blk.0.attn_q_norm.weight has ne[0]=" + gamma_ne0.to_s +
+             " (expected d_head=" + head_dim.to_s + " or d_model=" +
+             d_model_v.to_s + "). Defaulting to per-head shared."
+        qk_norm_kind = 1
+      end
+    end
     # M3: sliding-window attention. llama.cpp emits the window size as
     # `<arch>.attention.sliding_window`. Treat -1 / missing as 0.
     sw = TinyNN.tnn_gguf_get_u32(handle, "llama.attention.sliding_window")
@@ -155,7 +199,7 @@ module GGUFLoad
     end
     TinyNN.tnn_gguf_free(handle)
     SmolLM2Flags.new(untied, qkv_bias, qk_norm, sw,
-                     is_moe, n_experts, n_experts_used)
+                     is_moe, n_experts, n_experts_used, qk_norm_kind)
   end
 
   # Inference-only loader: stream GGUF weights directly into the FFI
