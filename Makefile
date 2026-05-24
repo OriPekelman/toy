@@ -426,6 +426,16 @@ ab-smoke-adamw-op-cuda: tinynn/ab_smoke_adamw_op_cuda
 tinynn/ab_smoke_adamw_op_cuda: tinynn/ab_smoke_adamw_op_cuda.rb lib/transformer.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml_cuda.a
 	$(SPINEL) tinynn/ab_smoke_adamw_op_cuda.rb -o tinynn/ab_smoke_adamw_op_cuda
 
+# A/B harness for the "fuse-or-not" question: N_HEADS small matmuls vs
+# 1 batched matmul at LoRA-Q shape. Override D_MODEL / N_HEADS / R / T
+# via env to sweep launch-overhead vs compute-bound regimes. See
+# docs/heavy-train-attribution-2026-05-24.md.
+ab-smoke-lora-fused-cuda: tinynn/ab_smoke_lora_fused_cuda
+	./tinynn/ab_smoke_lora_fused_cuda
+
+tinynn/ab_smoke_lora_fused_cuda: tinynn/ab_smoke_lora_fused_cuda.rb lib/transformer.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml_cuda.a
+	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' tinynn/ab_smoke_lora_fused_cuda.rb -o tinynn/ab_smoke_lora_fused_cuda
+
 # Transformer-shape sized parity + wallclock comparison.
 ab-smoke-big: tinynn/ab_smoke_big
 	./tinynn/ab_smoke_big
