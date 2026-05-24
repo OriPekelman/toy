@@ -156,9 +156,70 @@ def bench_infer(args, dev, sync):
     print(f"BENCH {args.metric_prefix}infer_step_ms {elapsed * 1e3 / args.n_new}")
 
 
+def profile_train(args, dev, sync):
+    """torch.profiler over a few train steps. Emits a flat op→ms table
+    that's directly comparable to bench/aggregate_trace.rb output."""
+    from torch.profiler import profile, record_function, ProfilerActivity
+    torch.manual_seed(42)
+    cfg, model = build_model(args.arch, dev)
+    if args.lora:
+        model = wrap_lora_q(model, r=args.lora_r)
+        trainable = [p for p in model.parameters() if p.requires_grad]
+    else:
+        trainable = list(model.parameters())
+    model.train()
+    opt = torch.optim.AdamW(trainable, lr=1e-4)
+    ids = torch.randint(0, cfg.vocab_size, (1, args.train_t), device=dev)
+
+    def step():
+        opt.zero_grad(set_to_none=True)
+        loss = model(ids, labels=ids).loss
+        loss.backward()
+        opt.step()
+
+    for _ in range(args.warmup):
+        step()
+    sync()
+
+    activities = [ProfilerActivity.CPU]
+    if dev.type == "cuda":
+        activities.append(ProfilerActivity.CUDA)
+
+    with profile(activities=activities, record_shapes=False) as prof:
+        for _ in range(args.profile_steps):
+            with record_function("step"):
+                step()
+        sync()
+
+    # Aggregate by op name. For CUDA we use self_device_time_total
+    # (kernel-only, excludes children). For CPU we use self_cpu_time_total.
+    # Both are in microseconds in this profiler.
+    use_cuda = dev.type == "cuda"
+    events = prof.key_averages()
+    rows = []
+    for ev in events:
+        if ev.key == "step":
+            continue
+        total_us = (ev.self_device_time_total if use_cuda else ev.self_cpu_time_total)
+        if total_us <= 0:
+            continue
+        rows.append((ev.key, ev.count, total_us))
+    rows.sort(key=lambda r: -r[2])
+
+    total_step_us = sum(t for _, _, t in rows)
+    print(f"PROFILE_HEADER op,count,total_us,mean_us,pct")
+    for name, count, total_us in rows[:args.profile_top]:
+        mean_us = total_us / count if count else 0.0
+        pct = 100.0 * total_us / total_step_us if total_step_us else 0.0
+        # Escape commas in op names (rare but happens for some aten ops).
+        safe = name.replace(",", ";")
+        print(f"PROFILE_ROW {safe},{count},{total_us:.0f},{mean_us:.2f},{pct:.2f}")
+    print(f"PROFILE_TOTAL steps={args.profile_steps} total_us={total_step_us:.0f}")
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--workload", choices=["train", "infer", "both"], default="both")
+    ap.add_argument("--workload", choices=["train", "infer", "both", "profile_train"], default="both")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--arch", choices=list(ARCHES.keys()), default="smollm2_135m",
                     help="model arch dims (smollm2_135m | qwen25_1p5b | qwen25_7b)")
@@ -172,6 +233,9 @@ def main():
     ap.add_argument("--warmup", type=int, default=5)
     ap.add_argument("--prompt_len", type=int, default=32)  # matches toy qwen25_bench PREFILL_T
     ap.add_argument("--n_new", type=int, default=8)        # matches toy qwen25_bench N_NEW
+    # Op-mix profiling (used for tracing comparisons, not the routine gate).
+    ap.add_argument("--profile_steps", type=int, default=3)
+    ap.add_argument("--profile_top", type=int, default=20)
     args = ap.parse_args()
 
     dev = torch.device(args.device)
@@ -179,6 +243,9 @@ def main():
             else torch.mps.synchronize if dev.type == "mps"
             else (lambda: None))
 
+    if args.workload == "profile_train":
+        profile_train(args, dev, sync)
+        return
     if args.workload in ("train", "both"):
         bench_train(args, dev, sync)
     if args.workload in ("infer", "both"):
