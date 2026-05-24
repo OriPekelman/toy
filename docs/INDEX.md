@@ -35,6 +35,9 @@ Project-level READMEs sit next to their code: [`README.md`](../README.md),
   ~7 GB of RSS (Phase 2 BYO-pointer, Phase 3 Q8-stays-Q8).
 - [`cuda-byo-pointer-design.md`](cuda-byo-pointer-design.md) — CUDA
   side of the BYO-pointer mmap (UVA, the vendored ggml-cuda patch).
+- [`bench-vs-pytorch.md`](bench-vs-pytorch.md) — routine toy-vs-PyTorch
+  comparison on a single GPU (`make bench-vs-pytorch`); gates the
+  ratio, not absolute ms. GB10: ~parity train, ~1.38× decode at 135M.
 
 ## Notes (limitations + workarounds)
 

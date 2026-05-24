@@ -915,6 +915,22 @@ bench-update: tinynn/libtinynn_ggml.a
 bench-report: tinynn/libtinynn_ggml.a
 	ruby bench/check.rb --report
 
+# Routine comparison vs PyTorch — the "old-stable" yardstick — in the
+# single-machine single-GPU case. Runs ON gx10: toy CUDA benches run
+# native, the PyTorch reference (bench/ref_pytorch.py) runs in the
+# dev-pytorch container. Gates the toy/PyTorch *ratio* (not absolute
+# ms, which is machine-dependent) so a design change that quietly
+# widens the gap fails. Budget in bench/baselines_vs_pytorch.csv;
+# `--update` re-records it. Override the torch invocation with PT_CMD.
+bench-vs-pytorch: demos/seq_train_bench_cuda demos/qwen25_bench_cuda
+	ruby bench/check_vs_pytorch.rb
+
+bench-vs-pytorch-update: demos/seq_train_bench_cuda demos/qwen25_bench_cuda
+	ruby bench/check_vs_pytorch.rb --update
+
+bench-vs-pytorch-report: demos/seq_train_bench_cuda demos/qwen25_bench_cuda
+	ruby bench/check_vs_pytorch.rb --report
+
 .PHONY: all clean distclean setup-ggml setup-ggml-cuda setup-ggml-metal smoke \
         example_inference_metal \
         ab-smoke ab-smoke-add ab-smoke-gelu ab-smoke-rms-norm \
@@ -925,4 +941,5 @@ bench-report: tinynn/libtinynn_ggml.a
         tinyllama tinyllama_kv tinyllama_kv_cuda \
         train algorithm_cards \
         examples gen-mirrors verify-mirrors \
-        bench bench-update bench-report check-cards
+        bench bench-update bench-report check-cards \
+        bench-vs-pytorch bench-vs-pytorch-update bench-vs-pytorch-report
