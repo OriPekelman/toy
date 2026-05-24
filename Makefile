@@ -931,6 +931,30 @@ bench-vs-pytorch-update: demos/seq_train_bench_cuda demos/qwen25_bench_cuda
 bench-vs-pytorch-report: demos/seq_train_bench_cuda demos/qwen25_bench_cuda
 	ruby bench/check_vs_pytorch.rb --report
 
+# Heavy bench — ambitious workloads that exercise the libs (LoRA on
+# Qwen2.5-1.5B at seq=256, decode on Qwen2.5-7B-Q8 with KV_Q8+FLASH).
+# ~3-5 min wallclock; meant as a yardstick for choosing between
+# optimization strategies, not for every-commit gating.
+#   bench-heavy            — toy-only, fast iteration loop (no PyTorch)
+#   bench-vs-pytorch-heavy — same workloads + PyTorch ratio gate
+bench-heavy: demos/seq_train_bench_cuda demos/qwen25_bench_cuda
+	ruby bench/check_heavy.rb
+
+bench-heavy-update: demos/seq_train_bench_cuda demos/qwen25_bench_cuda
+	ruby bench/check_heavy.rb --update
+
+bench-heavy-report: demos/seq_train_bench_cuda demos/qwen25_bench_cuda
+	ruby bench/check_heavy.rb --report
+
+bench-vs-pytorch-heavy: demos/seq_train_bench_cuda demos/qwen25_bench_cuda
+	ruby bench/check_vs_pytorch.rb --heavy
+
+bench-vs-pytorch-heavy-update: demos/seq_train_bench_cuda demos/qwen25_bench_cuda
+	ruby bench/check_vs_pytorch.rb --heavy --update
+
+bench-vs-pytorch-heavy-report: demos/seq_train_bench_cuda demos/qwen25_bench_cuda
+	ruby bench/check_vs_pytorch.rb --heavy --report
+
 .PHONY: all clean distclean setup-ggml setup-ggml-cuda setup-ggml-metal smoke \
         example_inference_metal \
         ab-smoke ab-smoke-add ab-smoke-gelu ab-smoke-rms-norm \
@@ -942,4 +966,6 @@ bench-vs-pytorch-report: demos/seq_train_bench_cuda demos/qwen25_bench_cuda
         train algorithm_cards \
         examples gen-mirrors verify-mirrors \
         bench bench-update bench-report check-cards \
-        bench-vs-pytorch bench-vs-pytorch-update bench-vs-pytorch-report
+        bench-vs-pytorch bench-vs-pytorch-update bench-vs-pytorch-report \
+        bench-heavy bench-heavy-update bench-heavy-report \
+        bench-vs-pytorch-heavy bench-vs-pytorch-heavy-update bench-vs-pytorch-heavy-report

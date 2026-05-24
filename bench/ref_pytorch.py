@@ -29,24 +29,90 @@ sanity. On gx10 run inside the torch image:
 import argparse, time
 import torch
 
-# SmolLM2-135M architecture (HF config). Weights are random; we time throughput.
+# Architectures (HF config dicts). Weights are random; perf is weight-
+# independent, so we time throughput at the right shape. New arches can
+# be added by dropping a dict in ARCHES.
 SMOLLM2_135M = dict(vocab_size=49152, hidden_size=576, intermediate_size=1536,
                     num_hidden_layers=30, num_attention_heads=9,
                     num_key_value_heads=3, max_position_embeddings=8192,
                     rope_theta=10000.0, rms_norm_eps=1e-5)
 
+# Qwen2.5-1.5B-Instruct dims (used by heavy LoRA train workload).
+QWEN25_1P5B = dict(vocab_size=151936, hidden_size=1536, intermediate_size=8960,
+                   num_hidden_layers=28, num_attention_heads=12,
+                   num_key_value_heads=2, max_position_embeddings=32768,
+                   rope_theta=1000000.0, rms_norm_eps=1e-6)
 
-def build_llama(dev):
-    from transformers import LlamaConfig, LlamaForCausalLM
-    cfg = LlamaConfig(**SMOLLM2_135M, tie_word_embeddings=True)
-    return cfg, LlamaForCausalLM(cfg).to(dev)
+# Qwen2.5-7B-Instruct dims (used by heavy 7B decode workload).
+QWEN25_7B = dict(vocab_size=152064, hidden_size=3584, intermediate_size=18944,
+                 num_hidden_layers=28, num_attention_heads=28,
+                 num_key_value_heads=4, max_position_embeddings=32768,
+                 rope_theta=1000000.0, rms_norm_eps=1e-6)
+
+ARCHES = {
+    "smollm2_135m": ("llama",   SMOLLM2_135M, dict(tie_word_embeddings=True)),
+    "qwen25_1p5b":  ("qwen2",   QWEN25_1P5B,  dict(tie_word_embeddings=True)),
+    "qwen25_7b":    ("qwen2",   QWEN25_7B,    dict(tie_word_embeddings=False)),
+}
+
+
+def build_model(arch, dev, dtype=None):
+    kind, dims, extra = ARCHES[arch]
+    if kind == "llama":
+        from transformers import LlamaConfig, LlamaForCausalLM
+        cfg = LlamaConfig(**dims, **extra)
+        model = LlamaForCausalLM(cfg)
+    else:
+        from transformers import Qwen2Config, Qwen2ForCausalLM
+        cfg = Qwen2Config(**dims, **extra)
+        model = Qwen2ForCausalLM(cfg)
+    if dtype is not None:
+        model = model.to(dtype=dtype)
+    return cfg, model.to(dev)
+
+
+class LoRAQ(torch.nn.Module):
+    """Hand-rolled LoRA-on-q_proj. Matches toy's enable_lora_q!(r) exactly:
+    y = q_proj(x) + (x @ A) @ B, where A is [d_in, r], B is [r, d_out],
+    base q_proj is frozen. We avoid peft to sidestep its torchao
+    version-pinning (the dev-pytorch image ships an older torchao than
+    peft 0.19 wants — and we don't need any peft features here)."""
+    def __init__(self, base, r):
+        super().__init__()
+        self.base = base
+        for p in base.parameters(): p.requires_grad_(False)
+        d_in, d_out = base.in_features, base.out_features
+        dev, dtype = base.weight.device, base.weight.dtype
+        self.A = torch.nn.Parameter(torch.zeros(d_in, r, device=dev, dtype=dtype))
+        self.B = torch.nn.Parameter(torch.zeros(r, d_out, device=dev, dtype=dtype))
+        torch.nn.init.kaiming_uniform_(self.A, a=5 ** 0.5)
+
+    def forward(self, x):
+        return self.base(x) + (x @ self.A) @ self.B
+
+
+def wrap_lora_q(model, r=8):
+    """Replace every q_proj nn.Linear inside the model with LoRAQ(base, r).
+    All non-LoRA params get frozen. Matches toy/Spinel-side semantics."""
+    for p in model.parameters(): p.requires_grad_(False)
+    for module in model.modules():
+        for name, child in list(module.named_children()):
+            if name == "q_proj" and isinstance(child, torch.nn.Linear):
+                setattr(module, name, LoRAQ(child, r))
+    return model
 
 
 def bench_train(args, dev, sync):
     torch.manual_seed(42)
-    cfg, model = build_llama(dev)
-    model.train()                                   # full fine-tune: all params trainable
-    opt = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    cfg, model = build_model(args.arch, dev)
+    if args.lora:
+        model = wrap_lora_q(model, r=args.lora_r)
+        # PEFT freezes non-LoRA params; only LoRA params hit the optimizer.
+        trainable = [p for p in model.parameters() if p.requires_grad]
+    else:
+        trainable = list(model.parameters())
+    model.train()
+    opt = torch.optim.AdamW(trainable, lr=1e-4)
     ids = torch.randint(0, cfg.vocab_size, (1, args.train_t), device=dev)
 
     def step():
@@ -62,12 +128,12 @@ def bench_train(args, dev, sync):
     for _ in range(args.steps):
         step()
     sync()
-    print(f"BENCH pt_train_ms {(time.perf_counter() - t0) / args.steps * 1e3}")
+    print(f"BENCH {args.metric_prefix}train_ms {(time.perf_counter() - t0) / args.steps * 1e3}")
 
 
 def bench_infer(args, dev, sync):
     torch.manual_seed(42)
-    cfg, model = build_llama(dev)
+    cfg, model = build_model(args.arch, dev)
     model.eval()
     prompt = torch.randint(0, cfg.vocab_size, (1, args.prompt_len), device=dev)
 
@@ -86,14 +152,21 @@ def bench_infer(args, dev, sync):
     decode(args.n_new)
     sync()
     elapsed = time.perf_counter() - t0
-    print(f"BENCH pt_infer_toks_per_sec {args.n_new / elapsed}")
-    print(f"BENCH pt_infer_step_ms {elapsed * 1e3 / args.n_new}")
+    print(f"BENCH {args.metric_prefix}infer_toks_per_sec {args.n_new / elapsed}")
+    print(f"BENCH {args.metric_prefix}infer_step_ms {elapsed * 1e3 / args.n_new}")
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--workload", choices=["train", "infer", "both"], default="both")
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--arch", choices=list(ARCHES.keys()), default="smollm2_135m",
+                    help="model arch dims (smollm2_135m | qwen25_1p5b | qwen25_7b)")
+    ap.add_argument("--lora", action="store_true",
+                    help="wrap model in PEFT LoRA on q_proj (heavy train workload)")
+    ap.add_argument("--lora_r", type=int, default=8)
+    ap.add_argument("--metric_prefix", default="pt_",
+                    help="prefix for BENCH metric names (default pt_; heavy mode uses pt_heavy_)")
     ap.add_argument("--train_t", type=int, default=4)    # T positions, matches toy seq_train_bench
     ap.add_argument("--steps", type=int, default=20)
     ap.add_argument("--warmup", type=int, default=5)

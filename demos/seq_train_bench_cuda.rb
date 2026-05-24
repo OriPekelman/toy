@@ -3,39 +3,66 @@ require_relative "../lib/toy_smollm2"
 require_relative "../lib/toy_smollm2_loader"
 require_relative "../lib/llama_seq_forward_ffi_cuda"
 
-GGUF = ENV["GGUF"] || "data/smollm2-135m-native.gguf"
-MODE = ENV["MODE"] || "lora"  # lora | ft
-STEPS = (ENV["STEPS"] || "10").to_i
+# CUDA sequence-mode training bench (LoRA-Q or full-FT).
+#
+# Env knobs:
+#   GGUF       = model path (default smollm2-135m-native.gguf)
+#   MODE       = "lora" (default) | "ft"
+#   STEPS      = total iterations (default 10; first is dropped as warmup)
+#   SEQ_LEN    = sequence length T (default 4). Heavy bench uses 256.
+#   BENCH_TAG  = non-empty → emit `BENCH <tag>_<metric> <value>` lines that
+#                bench/check_heavy.rb can parse.
+#
+# Output:
+#   Always: human-readable mean step time excluding warmup.
+#   When tagged: `BENCH <tag>_step_ms_{mean,p95,stddev}` lines.
 
-TOKENS = [12092, 4845, 253, 1429]
+GGUF    = ENV["GGUF"]    || "data/smollm2-135m-native.gguf"
+MODE    = ENV["MODE"]    || "lora"  # lora | ft
+STEPS   = (ENV["STEPS"]  || "10").to_i
+SEQ_LEN = (ENV["SEQ_LEN"] || "4").to_i
+BENCH_TAG = ENV["BENCH_TAG"] || ""
+
 cfg = SmolLM2ConfigLoader.read(GGUF)
 flags = GGUFLoad.detect_smollm2_flags(GGUF)
+
+# Synthesise deterministic but spread-out token IDs and positions of
+# length SEQ_LEN. Token-content has no effect on per-step wallclock at
+# fixed shapes; we just need IDs inside the vocab.
+TOKENS = [0]; TOKENS.pop
+positions = [0]; positions.pop
+i = 0
+while i < SEQ_LEN
+  tok = (i * 1103515245 + 12345) & 0x3FFF        # stays inside vocab
+  TOKENS.push(tok)
+  positions.push(i)
+  i = i + 1
+end
 
 gguf = TinyNNCuda.tnn_gguf_load(GGUF)
 seq = LlamaSeqForwardFFICacheCuda.new
 if MODE == "ft"
   seq.enable_full_finetune!
-  seq.realize_for_full_finetune(gguf, cfg, TOKENS.length, flags.untied, flags.qkv_bias)
+  seq.realize_for_full_finetune(gguf, cfg, SEQ_LEN, flags.untied, flags.qkv_bias)
 else
   seq.enable_lora_q!(8)
   seq.enable_lora_q_adamw!
-  seq.realize_for_mmap(gguf, cfg, TOKENS.length, flags.untied, flags.qkv_bias)
+  seq.realize_for_mmap(gguf, cfg, SEQ_LEN, flags.untied, flags.qkv_bias)
   seq.upload_lora_q_init!(42, 0.01)
 end
 
 result = seq.build_training_step
 t_loss, t_labels, t_hp = result[0], result[1], result[2]
 
-m_labels = Mat.new(TOKENS.length, cfg.vocab)
-i = 0; while i < TOKENS.length * cfg.vocab; m_labels.flat[i] = 0.0; i = i + 1; end
-i = 0; while i < TOKENS.length; m_labels.flat[i * cfg.vocab + 99] = 1.0; i = i + 1; end
+m_labels = Mat.new(SEQ_LEN, cfg.vocab)
+i = 0; while i < SEQ_LEN * cfg.vocab; m_labels.flat[i] = 0.0; i = i + 1; end
+i = 0; while i < SEQ_LEN; m_labels.flat[i * cfg.vocab + 99] = 1.0; i = i + 1; end
 
 m_hp = Mat.new(1, 7)
 m_hp.flat[0] = 0.001; m_hp.flat[1] = 0.9; m_hp.flat[2] = 0.999
 m_hp.flat[3] = 1.0e-8; m_hp.flat[4] = 0.0
 
 times = [0.0]; times.pop
-positions = [0, 1, 2, 3]
 step = 1
 while step <= STEPS
   m_hp.flat[5] = 1.0 / (1.0 - (0.9 ** step.to_f))
@@ -56,6 +83,49 @@ while step <= STEPS
   step = step + 1
 end
 
-# Drop first step (compile warmup)
-total = 0.0; i = 1; while i < times.length; total = total + times[i]; i = i + 1; end
-puts MODE.upcase + " step time (excl warmup): mean=" + (total / (times.length - 1)).to_s + " ms over " + (times.length - 1).to_s + " steps"
+# Drop first step (compile warmup), then stats over the rest.
+samples = [0.0]; samples.pop
+i = 1
+while i < times.length; samples.push(times[i]); i = i + 1; end
+n = samples.length
+
+# Mean
+sum = 0.0
+i = 0; while i < n; sum = sum + samples[i]; i = i + 1; end
+mean_ms = sum / n.to_f
+
+# Stddev (population)
+var = 0.0
+i = 0
+while i < n
+  d = samples[i] - mean_ms
+  var = var + d * d
+  i = i + 1
+end
+stddev_ms = (var / n.to_f) ** 0.5
+
+# P95: copy + insertion sort (Spinel-friendly), pick ceil(0.95 * (n-1))
+sorted = [0.0]; sorted.pop
+i = 0; while i < n; sorted.push(samples[i]); i = i + 1; end
+i = 1
+while i < n
+  v = sorted[i]; j = i - 1
+  while j >= 0 && sorted[j] > v
+    sorted[j + 1] = sorted[j]
+    j = j - 1
+  end
+  sorted[j + 1] = v
+  i = i + 1
+end
+p95_idx = ((n - 1).to_f * 0.95).to_i
+p95_ms = sorted[p95_idx]
+
+puts MODE.upcase + " step time (excl warmup): mean=" + mean_ms.to_s +
+     " ms  p95=" + p95_ms.to_s + " ms  stddev=" + stddev_ms.to_s +
+     " ms  over " + n.to_s + " steps  (SEQ_LEN=" + SEQ_LEN.to_s + ")"
+
+if BENCH_TAG.length > 0
+  puts "BENCH " + BENCH_TAG + "_step_ms_mean "   + mean_ms.to_s
+  puts "BENCH " + BENCH_TAG + "_step_ms_p95 "    + p95_ms.to_s
+  puts "BENCH " + BENCH_TAG + "_step_ms_stddev " + stddev_ms.to_s
+end
