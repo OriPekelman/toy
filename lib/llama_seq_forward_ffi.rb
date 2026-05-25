@@ -1471,8 +1471,12 @@ class LlamaSeqForwardFFICache
 
     # K, V over all KV heads. Pre-compute v_t per head so the per-Q-head
     # attention loop can index it (avoids n_heads × transpose).
-    t_k_per_kv = []
-    t_vt_per_kv = []
+    # See lib/llama_seq_forward_ffi_cuda.rb for the Spinel landmine
+    # (issue #688 partial fix; the function-parameter type for
+    # build_seq_qhead was already locked in as IntArray before the
+    # local-var ptr-push promotion runs).
+    t_k_per_kv  = [TinyNN.tnn_null_ptr]; t_k_per_kv.pop
+    t_vt_per_kv = [TinyNN.tnn_null_ptr]; t_vt_per_kv.pop
     hkv = 0
     while hkv < @seq_n_kv
       t_k_raw = TinyNN.tnn_matmul(@sess, blk.t_seq_w_k[hkv], t_h)
