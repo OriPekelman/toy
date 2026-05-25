@@ -62,6 +62,14 @@ int     tnn_events_active(void);
  * clock skew. */
 double  tnn_events_now_seconds(void);
 
+/* Provenance helpers for the run_start / run_end fields the v1 schema
+ * documents (tao#run-start-provenance). All return pointers to static
+ * thread-unsafe buffers; copy or emit immediately. */
+const char *tnn_events_iso8601_now(void);   /* "2026-05-25T17:42:13Z" */
+const char *tnn_provenance_host_name(void); /* gethostname() */
+const char *tnn_provenance_host_os(void);   /* uname.sysname lowercased */
+const char *tnn_provenance_host_arch(void); /* uname.machine */
+
 #ifdef __cplusplus
 }
 #endif

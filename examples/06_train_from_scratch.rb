@@ -99,10 +99,44 @@ while pi < CONTEXT; positions.push(pi); pi = pi + 1; end
 
 losses = [0.0]; losses.pop
 
+# Read git state for run_start.provenance.git. Pure Ruby; reads from
+# the cwd's .git/. If we're run from outside the toy repo, falls back
+# to "unknown" without aborting (the field is for diagnostics, not
+# load-bearing). Tao's acceptance only requires git.sha to be present.
+git_sha    = "unknown"
+git_branch = "unknown"
+if File.exist?(".git/HEAD")
+  head = File.read(".git/HEAD")
+  # Strip trailing newline manually — Spinel-friendly.
+  if head.length > 0 && head[head.length - 1...head.length] == "\n"
+    head = head[0...head.length - 1]
+  end
+  if head.length > 5 && head[0...5] == "ref: "
+    ref_rel = head[5...head.length]              # e.g. "refs/heads/main"
+    parts   = ref_rel.split("/")
+    if parts.length >= 3
+      git_branch = parts[parts.length - 1]
+    end
+    ref_path = ".git/" + ref_rel
+    if File.exist?(ref_path)
+      sha = File.read(ref_path)
+      if sha.length >= 40
+        git_sha = sha[0...40]
+      end
+    end
+  else
+    # Detached HEAD: contents IS the SHA.
+    if head.length >= 40
+      git_sha    = head[0...40]
+      git_branch = "HEAD"
+    end
+  end
+end
+
 # Open the events stream (docs/events-schema.md v1). Emit run_start
-# with model shape + training config so a consumer reading only the
-# stream has the full run identity. Cheap-when-off: the file open and
-# JSON formatting only happen when an env knob asks for them.
+# with full provenance per tao#run-start-provenance: started_at,
+# host, backend, git in addition to model+config. Cheap-when-off:
+# the file open and JSON formatting only happen when an env knob asks.
 if EVENTS.length > 0
   rc = TinyNN.tnn_events_open(EVENTS)
   if rc != 0
@@ -112,8 +146,15 @@ if EVENTS.length > 0
     rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
     rs  = "{\"kind\":\"run_start\",\"schema\":\"toy/v1\""
     rs = rs + ",\"t\":" + TinyNN.tnn_events_now_seconds.to_s
+    rs = rs + ",\"started_at\":\"" + TinyNN.tnn_events_iso8601_now + "\""
     rs = rs + ",\"run_id\":\"" + rid + "\""
     rs = rs + ",\"phase\":\"train\""
+    rs = rs + ",\"host\":{\"name\":\""   + TinyNN.tnn_provenance_host_name + "\""
+    rs = rs + ",\"os\":\""               + TinyNN.tnn_provenance_host_os   + "\""
+    rs = rs + ",\"arch\":\""             + TinyNN.tnn_provenance_host_arch + "\"}"
+    rs = rs + ",\"backend\":{\"kind\":\"" + TinyNN.tnn_backend_name(fcache.sess) + "\"}"
+    rs = rs + ",\"git\":{\"sha\":\""     + git_sha    + "\""
+    rs = rs + ",\"branch\":\""           + git_branch + "\"}"
     rs = rs + ",\"model\":{\"arch\":\"llama\""
     rs = rs + ",\"name\":\"from-scratch-tinystories\""
     rs = rs + ",\"vocab\":"    + cfg.vocab.to_s
@@ -198,6 +239,7 @@ if EVENTS.length > 0 && TinyNN.tnn_events_active == 1
   exit_code = not_learning ? 1 : 0
   re  = "{\"kind\":\"run_end\""
   re = re + ",\"t\":"           + TinyNN.tnn_events_now_seconds.to_s
+  re = re + ",\"ended_at\":\""  + TinyNN.tnn_events_iso8601_now + "\""
   re = re + ",\"reason\":\""    + reason + "\""
   re = re + ",\"final_step\":"  + STEPS.to_s
   re = re + ",\"final_loss\":"  + final_loss.to_s
