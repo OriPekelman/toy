@@ -24,6 +24,7 @@ require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
 require_relative "../lib/llama_seq_forward_ffi"
 require_relative "../lib/toy_describe_flow"
+require_relative "../lib/toy_drift_grad"
 
 VOCAB_SIZE = 627
 D_MODEL    = (ENV["D_MODEL"]  || "64").to_i
@@ -44,6 +45,13 @@ TAO_RUN_DIR = ENV["TAO_RUN_DIR"] || ""
 TOY_EVENTS  = ENV["TOY_EVENTS"]  || ""
 EVENTS      = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/events.jsonl") : TOY_EVENTS
 RUN_ID      = ENV["TOY_RUN_ID"] || ""
+
+# tao#drift-grad-sentinels — opt-in observability for tao compare.
+# When TOY_DRIFT_EVERY=N (N>0), emit a drift event per param every N
+# steps (snapshot taken at step 0). When TOY_GRAD_SENTINELS=1, emit a
+# grad event per param per step. Both are cheap-when-off.
+DRIFT_EVERY = (ENV["TOY_DRIFT_EVERY"] || "0").to_i
+GRAD_SENT   = (ENV["TOY_GRAD_SENTINELS"] || "0") == "1"
 
 cfg = Toy::SmolLM2Config.new(VOCAB_SIZE, D_MODEL, N_HEADS, N_HEADS,
                               D_FF, N_LAYERS, CONTEXT, 10000.0, 1.0e-5)
@@ -191,6 +199,27 @@ if EVENTS.length > 0
   end
 end
 
+# Snapshot params at step 0 if drift tracking is on. Mat snapshots
+# live in main scope (Spinel doesn't generate sp_Mat_ptr_array, so we
+# can't pass the snapshot array across a function boundary).
+drift_params = [TinyNN.tnn_null_ptr]; drift_params.pop
+drift_snaps  = [Mat.new(1, 1)]; drift_snaps.pop
+if EVENTS.length > 0 && (DRIFT_EVERY > 0 || GRAD_SENT)
+  drift_params = ToyDriftGrad.params(fcache.sess)
+  puts "drift/grad: tracking " + drift_params.length.to_s + " PARAM tensors"
+  if DRIFT_EVERY > 0
+    di = 0
+    while di < drift_params.length
+      drift_snaps.push(ToyDriftGrad.snapshot_one(fcache.sess, drift_params[di]))
+      di = di + 1
+    end
+    puts "drift: snapshot at step 0, emitting every " + DRIFT_EVERY.to_s + " steps"
+  end
+  if GRAD_SENT
+    puts "grad: per-step sentinels enabled"
+  end
+end
+
 t_start = Time.now
 step = 1
 final_loss = 0.0
@@ -214,6 +243,30 @@ while step <= STEPS
   final_loss = loss
   if step <= 5 || step % 10 == 0 || step == STEPS
     puts "step " + step.to_s.rjust(4) + ": CE=" + loss.to_s
+  end
+
+  # Optional drift/grad emission. Both run AFTER compute_backward so
+  # the grad tensors are live; both before the next graph_reset clears
+  # them. Each is opt-in via env (cheap-when-off). The per-param loop
+  # lives here (not in the module) so the Mat snapshots stay in main
+  # scope — see lib/toy_drift_grad.rb header for the Spinel reason.
+  if EVENTS.length > 0
+    t_now = TinyNN.tnn_events_now_seconds
+    if GRAD_SENT && drift_params.length > 0
+      pi = 0
+      while pi < drift_params.length
+        ToyDriftGrad.emit_grad_event(fcache.sess, drift_params[pi], step, t_now)
+        pi = pi + 1
+      end
+    end
+    if DRIFT_EVERY > 0 && drift_params.length > 0 && (step % DRIFT_EVERY == 0)
+      pi = 0
+      while pi < drift_params.length
+        ToyDriftGrad.emit_drift_event(fcache.sess, drift_params[pi],
+                                        drift_snaps[pi], step, t_now)
+        pi = pi + 1
+      end
+    end
   end
 
   # Per-step event (v1 schema). ppl=exp(loss) deferred to consumer side
