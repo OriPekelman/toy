@@ -231,18 +231,25 @@ else
   puts "VERDICT: training is learning (final/initial = " + ratio.to_s + ")"
 end
 
-# Emit run_end before exiting. reason="errored" when the learning gate
-# failed (ratio >= 0.9), "completed" otherwise. exit_code mirrors the
-# original exit-1-on-failure contract so CI behaviour is unchanged.
+# Emit run_end. The run *executed to completion* — we always reach
+# this point without an exception — so reason is always "completed".
+# The learning-gate verdict is a separate, structured signal (the
+# `quality_gate` field). Consumers (e.g. Tao) key on reason for crash
+# detection; they key on quality_gate.passed for "is this run useful?".
+# CI exit-1-on-failure contract preserved separately below.
+# Closes toy#run-end-reason-semantics.
+exit_code = not_learning ? 1 : 0
 if EVENTS.length > 0 && TinyNN.tnn_events_active == 1
-  reason = not_learning ? "errored" : "completed"
-  exit_code = not_learning ? 1 : 0
   re  = "{\"kind\":\"run_end\""
   re = re + ",\"t\":"           + TinyNN.tnn_events_now_seconds.to_s
   re = re + ",\"ended_at\":\""  + TinyNN.tnn_events_iso8601_now + "\""
-  re = re + ",\"reason\":\""    + reason + "\""
+  re = re + ",\"reason\":\"completed\""
   re = re + ",\"final_step\":"  + STEPS.to_s
   re = re + ",\"final_loss\":"  + final_loss.to_s
+  re = re + ",\"quality_gate\":{\"passed\":" + (not_learning ? "false" : "true") + ""
+  re = re + ",\"metric\":\"loss_ratio\""
+  re = re + ",\"value\":" + ratio.to_s
+  re = re + ",\"threshold\":0.9}"
   re = re + ",\"exit_code\":"   + exit_code.to_s
   re = re + "}"
   TinyNN.tnn_events_emit(re)
