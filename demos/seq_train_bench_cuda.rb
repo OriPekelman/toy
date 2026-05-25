@@ -12,20 +12,6 @@ require_relative "../lib/llama_seq_forward_ffi_cuda"
 #   SEQ_LEN    = sequence length T (default 4). Heavy bench uses 256.
 #   BENCH_TAG  = non-empty → emit `BENCH <tag>_<metric> <value>` lines that
 #                bench/check_heavy.rb can parse.
-#   TRACE      = path to Chrome Trace JSON (opened AFTER step 1 to skip the
-#                graph-compile / allocator-warmup transient, then closed
-#                after a small captured window so the file stays bite-sized).
-#   TRACE_OPS  = "1" to also capture per-ggml-op durations. CUDA per-op
-#                numbers reflect enqueue latency, not kernel wallclock —
-#                relative attribution is still useful.
-#   TRACE_FROM = first step (1-indexed) to include in the trace (default 3,
-#                so first 2 are warmup; opening after step 1's compile is
-#                what matters most).
-#   TRACE_FOR  = number of steps to trace (default 2). Keeps the JSON small.
-#   SKIP_LABELS_UPLOAD = "1" → upload t_labels ONCE before the timed
-#                loop (rather than per step). For attribution only: real
-#                training varies labels per step. Reveals the upper
-#                bound of "what if labels upload cost was zero?"
 #
 # Output:
 #   Always: human-readable mean step time excluding warmup.
@@ -36,11 +22,6 @@ MODE    = ENV["MODE"]    || "lora"  # lora | ft
 STEPS   = (ENV["STEPS"]  || "10").to_i
 SEQ_LEN = (ENV["SEQ_LEN"] || "4").to_i
 BENCH_TAG = ENV["BENCH_TAG"] || ""
-TRACE     = ENV["TRACE"]      || ""
-TRACE_OPS = ENV["TRACE_OPS"]  || ""
-TRACE_FROM = (ENV["TRACE_FROM"] || "3").to_i
-TRACE_FOR  = (ENV["TRACE_FOR"]  || "2").to_i
-SKIP_LABELS_UPLOAD = ENV["SKIP_LABELS_UPLOAD"] == "1"
 
 cfg = SmolLM2ConfigLoader.read(GGUF)
 flags = GGUFLoad.detect_smollm2_flags(GGUF)
@@ -81,33 +62,9 @@ m_hp = Mat.new(1, 7)
 m_hp.flat[0] = 0.001; m_hp.flat[1] = 0.9; m_hp.flat[2] = 0.999
 m_hp.flat[3] = 1.0e-8; m_hp.flat[4] = 0.0
 
-if SKIP_LABELS_UPLOAD
-  TinyNNCuda.upload_row_major(seq.sess, t_labels, m_labels)
-  puts "t_labels uploaded once before timed loop (SKIP_LABELS_UPLOAD=1)"
-end
-
 times = [0.0]; times.pop
-trace_opened = false
-trace_first = TRACE_FROM
-trace_last  = TRACE_FROM + TRACE_FOR - 1
 step = 1
 while step <= STEPS
-  # Open the trace just before the first step we want to capture, after
-  # graph-compile/allocator transients have settled into steady state.
-  if TRACE.length > 0 && !trace_opened && step == trace_first
-    rc = TinyNNCuda.tnn_trace_open(TRACE)
-    if rc != 0
-      puts "trace_open failed: rc=" + rc.to_s + " (TRACE=" + TRACE + ")"
-    else
-      puts "tracing to " + TRACE + " (steps " + trace_first.to_s + ".." + trace_last.to_s + ")"
-      if TRACE_OPS == "1"
-        TinyNNCuda.tnn_trace_set_op_capture(1)
-        puts "per-op trace enabled (TRACE_OPS=1)"
-      end
-      trace_opened = true
-    end
-  end
-
   m_hp.flat[5] = 1.0 / (1.0 - (0.9 ** step.to_f))
   m_hp.flat[6] = 1.0 / (1.0 - (0.999 ** step.to_f))
   if step == 1
@@ -115,27 +72,14 @@ while step <= STEPS
   else
     TinyNNCuda.tnn_graph_reset_grads_only(seq.sess)
   end
-  _t_step = trace_opened ? TinyNNCuda.tnn_trace_begin("step") : 0
   t0 = Time.now
   TinyNNCuda.upload_int_array(seq.sess, seq.t_seq_token_ids, TOKENS)
   TinyNNCuda.upload_int_array(seq.sess, seq.t_seq_positions, positions)
-  if !SKIP_LABELS_UPLOAD
-    TinyNNCuda.upload_row_major(seq.sess, t_labels, m_labels)
-  end
+  TinyNNCuda.upload_row_major(seq.sess, t_labels, m_labels)
   TinyNNCuda.upload_row_major(seq.sess, t_hp, m_hp)
   TinyNNCuda.tnn_compute_backward(seq.sess)
   ms = (Time.now - t0) * 1000.0
-  if trace_opened
-    TinyNNCuda.tnn_trace_end("step", _t_step)
-  end
   times.push(ms)
-
-  # Close the trace after we've captured the requested window.
-  if trace_opened && step == trace_last
-    TinyNNCuda.tnn_trace_close
-    puts "trace closed: " + TRACE
-    trace_opened = false
-  end
   step = step + 1
 end
 

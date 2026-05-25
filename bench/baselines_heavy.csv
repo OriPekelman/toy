@@ -1,9 +1,9 @@
 metric,value,unit,direction,tolerance_pct
-heavy_train_lora_1p5b_step_ms_mean,235.099705,ms,lower,8.0
-heavy_train_lora_1p5b_step_ms_p95,236.162980,ms,lower,10.0
-heavy_train_lora_1p5b_step_ms_stddev,2.334114,ms,lower,50.0
-heavy_infer_7b_q8_realize_ms,665.647806,ms,lower,30.0
-heavy_infer_7b_q8_prefill_ms,40060.686269,ms,lower,10.0
-heavy_infer_7b_q8_decode_ms_mean,78.757402,ms,lower,5.0
-heavy_infer_7b_q8_decode_ms_p95,80.143010,ms,lower,10.0
-heavy_infer_7b_q8_decode_toks_per_sec,12.697219,tok/s,higher,5.0
+heavy_train_lora_1p5b_step_ms_mean,245.319294,ms,lower,8.0
+heavy_train_lora_1p5b_step_ms_p95,246.792110,ms,lower,10.0
+heavy_train_lora_1p5b_step_ms_stddev,1.943703,ms,lower,50.0
+heavy_infer_7b_q8_realize_ms,744.614598,ms,lower,30.0
+heavy_infer_7b_q8_prefill_ms,40024.356700,ms,lower,10.0
+heavy_infer_7b_q8_decode_ms_mean,78.912601,ms,lower,5.0
+heavy_infer_7b_q8_decode_ms_p95,80.519979,ms,lower,10.0
+heavy_infer_7b_q8_decode_toks_per_sec,12.672247,tok/s,higher,5.0
