@@ -183,3 +183,61 @@ for future "fuse-or-not" questions — change the inner ops, re-run.
 This is the pattern: every proposed lowering rule should be A/B'd
 against the isolated mechanic before being plumbed through 19
 demos/examples.
+
+## 2026-05-25 follow-up: four experiments, four converging null results
+
+After the initial attribution, we ran all four ranked candidates from
+the "What to do instead" section. The pattern that emerged:
+
+| # | Experiment | Result |
+| --- | --- | --- |
+| smoke 0 | HeadFuseLoRAQ (12 small matmul vs 1 batched matmul) | **1.00×** |
+| #1 | Pinned host upload buffers (cudaHostAlloc scratch) | **~0-1 ms / step** (within noise) |
+| #2 | OUT_PROD vs MUL_MAT per-op cost at 4 shapes | **0.98-1.02× ratio** |
+| #4 | Macro-op fusion (silu+mul → swiglu_split) | **1.00×** |
+
+Every per-op-cost candidate refuted. The single remaining hypothesis
+is **#3 — graph-level orchestration / single-stream serialization**
+(ggml-cuda dispatches sequentially; PT fits 234 ms of kernel time in
+120 ms wallclock via multiple cuBLAS streams). Upstream issue draft at
+[`archive/upstream/issues-vendor/05-ggml-cuda-stream-overlap.md`](archive/upstream/issues-vendor/05-ggml-cuda-stream-overlap.md).
+
+### What this means for toy
+
+Three concrete take-aways:
+
+1. **The 2× wallclock gap to PyTorch on the heavy LoRA-train bench
+   is not toy's to close from the application layer.** It's a property
+   of the ggml-cuda graph dispatcher. Toy already lives at the
+   per-op-efficient point on this hardware.
+2. **ggml-cuda already auto-fuses several relevant patterns**
+   (`RMS_NORM + MUL`, `ADD` chains up to 8, `ROPE + … + SET_ROWS`,
+   `SSM_CONV + ADD + SILU`). Toy benefits from these automatically as
+   long as the graph builder emits adjacent ops in the recognised
+   shape. **No toy-side change required** to get these wins.
+3. **Pinned scratch and swiglu_split FFI were both shipped as
+   defensive changes** even though they didn't move the bench needle.
+   They're the right primitives to have available — future workloads
+   with different shape regimes may benefit, and the cost (a few LOC
+   of glue per primitive) is negligible.
+
+### What we'd actually need to close the gap
+
+Per the upstream issue: ggml-cuda either needs multi-stream dispatch,
+async host-side node prep, or `cudaGraphInstantiate` capture for
+repeated-shape graphs. The latter is most impactful for training-loop
+workloads (same graph shape every step). Until any of those land
+upstream, the heavy-bench ratio of 2.01× is approximately the floor
+that toy can achieve while staying within ggml-cuda's design.
+
+### The graph-side fix that IS toy's to make
+
+`upload_from_float_array` consumes 5.5 % of step time (~19 ms / step at
+the heavy shape) almost entirely because we upload a `[T, vocab]`
+one-hot label tensor (155 MB at vocab=151936 × T=256) every step
+through f64 → f32 conversion. The cleanest fix is graph-side: take
+target IDs as a `[T]` int32 tensor, scatter on GPU. ~50 LOC across
+`build_training_step` + the bench. Deferred until the upstream
+ggml-cuda question is decided — if we land overlap upstream, this
+becomes irrelevant; if we don't, this is the only remaining toy-side
+lever.
