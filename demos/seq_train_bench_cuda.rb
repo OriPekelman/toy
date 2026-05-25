@@ -22,6 +22,10 @@ require_relative "../lib/llama_seq_forward_ffi_cuda"
 #                so first 2 are warmup; opening after step 1's compile is
 #                what matters most).
 #   TRACE_FOR  = number of steps to trace (default 2). Keeps the JSON small.
+#   SKIP_LABELS_UPLOAD = "1" → upload t_labels ONCE before the timed
+#                loop (rather than per step). For attribution only: real
+#                training varies labels per step. Reveals the upper
+#                bound of "what if labels upload cost was zero?"
 #
 # Output:
 #   Always: human-readable mean step time excluding warmup.
@@ -36,6 +40,7 @@ TRACE     = ENV["TRACE"]      || ""
 TRACE_OPS = ENV["TRACE_OPS"]  || ""
 TRACE_FROM = (ENV["TRACE_FROM"] || "3").to_i
 TRACE_FOR  = (ENV["TRACE_FOR"]  || "2").to_i
+SKIP_LABELS_UPLOAD = ENV["SKIP_LABELS_UPLOAD"] == "1"
 
 cfg = SmolLM2ConfigLoader.read(GGUF)
 flags = GGUFLoad.detect_smollm2_flags(GGUF)
@@ -76,6 +81,11 @@ m_hp = Mat.new(1, 7)
 m_hp.flat[0] = 0.001; m_hp.flat[1] = 0.9; m_hp.flat[2] = 0.999
 m_hp.flat[3] = 1.0e-8; m_hp.flat[4] = 0.0
 
+if SKIP_LABELS_UPLOAD
+  TinyNNCuda.upload_row_major(seq.sess, t_labels, m_labels)
+  puts "t_labels uploaded once before timed loop (SKIP_LABELS_UPLOAD=1)"
+end
+
 times = [0.0]; times.pop
 trace_opened = false
 trace_first = TRACE_FROM
@@ -109,7 +119,9 @@ while step <= STEPS
   t0 = Time.now
   TinyNNCuda.upload_int_array(seq.sess, seq.t_seq_token_ids, TOKENS)
   TinyNNCuda.upload_int_array(seq.sess, seq.t_seq_positions, positions)
-  TinyNNCuda.upload_row_major(seq.sess, t_labels, m_labels)
+  if !SKIP_LABELS_UPLOAD
+    TinyNNCuda.upload_row_major(seq.sess, t_labels, m_labels)
+  end
   TinyNNCuda.upload_row_major(seq.sess, t_hp, m_hp)
   TinyNNCuda.tnn_compute_backward(seq.sess)
   ms = (Time.now - t0) * 1000.0

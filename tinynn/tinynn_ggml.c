@@ -194,12 +194,24 @@ typedef struct {
     void                   *weights_map_base;  /* mmap base, caller-owned */
     size_t                  weights_map_size;
     float                  *scratch;
+    int                     scratch_pinned;        /* 1 if cudaHostAlloc'd */
     int                     realized;
     int                     realized_b;
     int                     weights_finalized;
     int                     last_graph;            /* 0 = none, 1 = a, 2 = b */
     int                     scratch_overflow_warned; /* once-per-session diag */
 } tnn_session;
+
+/* Pinned-memory allocator hooks. Weak defaults below fall back to
+ * calloc/free. The CUDA backend object overrides these with
+ * cudaHostAlloc/cudaFreeHost so that ggml_backend_tensor_set can DMA
+ * directly from the scratch buffer instead of staging through a pinned
+ * bounce buffer inside the driver. CPU-only builds keep the weak
+ * fallbacks and pay no extra cost. */
+__attribute__((weak))
+void *tnn_pinned_alloc(size_t bytes) { return calloc(1, bytes); }
+__attribute__((weak))
+void  tnn_pinned_free(void *p)       { free(p); }
 
 void *tnn_session_new(int backend_kind)
 {
@@ -278,7 +290,15 @@ void *tnn_session_new(int backend_kind)
     s->ctx_w_mmap_buf      = NULL;
     s->ctx_w_mmap          = NULL;
 
-    s->scratch = (float *)calloc(1, TNN_SCRATCH_BYTES);
+    /* Pinned scratch on CUDA: cudaHostAlloc'd pages let
+     * ggml_backend_tensor_set DMA directly without staging through a
+     * pinned bounce buffer inside the driver. Cuts per-step
+     * labels-upload cost (heavy LoRA bench: ~19 ms → ~target). The
+     * pinned_alloc symbols are weak in this object; the CUDA backend
+     * archive overrides them with cudaHostAlloc, CPU-only binaries
+     * keep the calloc fallback. */
+    s->scratch = (float *)tnn_pinned_alloc(TNN_SCRATCH_BYTES);
+    s->scratch_pinned = (s->scratch != NULL);
     s->realized          = 0;
     s->realized_b        = 0;
     s->weights_finalized = 0;
@@ -302,7 +322,8 @@ void tnn_session_free(void *sess)
     free(s->ctx_buf);
     free(s->ctx_w_buf);
     free(s->ctx_w_mmap_buf);
-    free(s->scratch);
+    if (s->scratch_pinned) tnn_pinned_free(s->scratch);
+    else                   free(s->scratch);
     free(s);
     /* Engine + sched are cached globally; do not free here. */
 }
@@ -583,6 +604,19 @@ void *tnn_matmul(void *sess, void *a, void *b)
     return (void *)ggml_mul_mat(s->ctx,
                                  (struct ggml_tensor *)a,
                                  (struct ggml_tensor *)b);
+}
+
+void *tnn_out_prod(void *sess, void *a, void *b)
+{
+    /* ggml_out_prod: result[m, n] = sum_k a[k, m] * b[k, n]. Same
+     * input shape constraints as ggml_mul_mat (a.ne0 == b.ne0). Used
+     * by ggml's autograd for weight-gradient computations. Exposed
+     * here so A/B smokes can compare per-op cost vs ggml_mul_mat. */
+    if (!sess || !a || !b) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_out_prod(s->ctx,
+                                  (struct ggml_tensor *)a,
+                                  (struct ggml_tensor *)b);
 }
 
 /* M2 MoE primitives. Thin wrappers — ggml does the work; we just expose

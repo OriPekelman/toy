@@ -12,6 +12,9 @@
 #include "ggml.h"
 #include "ggml-backend.h"
 #include "ggml-cuda.h"
+#include <cuda_runtime.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 ggml_backend_t tnn_backend_cuda_init_internal(void)
 {
@@ -41,4 +44,34 @@ void tnn_cuda_force_link(void)
      * libggml-cuda.a. */
     volatile void *p = (void *)&ggml_backend_cuda_init;
     (void)p;
+}
+
+/* Strong override of the weak tnn_pinned_alloc / tnn_pinned_free in
+ * tinynn_ggml.c. cudaHostAlloc allocates pinned (page-locked) host
+ * memory; cudaMemcpy from a pinned source bypasses the driver's
+ * internal staging copy and can DMA directly. For toy's per-step
+ * label-upload (heavy bench: t_labels = 155 MB at vocab=151936×T=256)
+ * this halves the wall-clock cost of the transfer. */
+void *tnn_pinned_alloc(size_t bytes)
+{
+    void *p = NULL;
+    cudaError_t err = cudaHostAlloc(&p, bytes, cudaHostAllocDefault);
+    if (err != cudaSuccess) {
+        fprintf(stderr, "[tnn-cuda] cudaHostAlloc(%zu) failed: %s — "
+                        "falling back to pageable\n",
+                        bytes, cudaGetErrorString(err));
+        return calloc(1, bytes);
+    }
+    return p;
+}
+
+void tnn_pinned_free(void *p)
+{
+    if (!p) return;
+    cudaError_t err = cudaFreeHost(p);
+    if (err != cudaSuccess) {
+        fprintf(stderr, "[tnn-cuda] cudaFreeHost failed: %s\n",
+                cudaGetErrorString(err));
+        free(p);  /* try pageable free as fallback */
+    }
 }
