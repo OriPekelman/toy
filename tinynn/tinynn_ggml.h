@@ -120,6 +120,7 @@ int    tnn_switch_b(void *sess);
 /* Compute the secondary graph (graph_b). Must be preceded by tnn_switch_b. */
 int    tnn_compute_b(void *sess);
 void  *tnn_matmul(void *sess, void *a, void *b);        /* A * B^T (ggml-native) */
+void  *tnn_out_prod(void *sess, void *a, void *b);      /* outer product (ggml-native — used by autograd in the wild; here for A/B smokes) */
 
 /* --- M2: MoE primitives --------------------------------------------------- */
 /* Sparse expert matmul. `as` is a 3-D weight tensor stacked across experts
