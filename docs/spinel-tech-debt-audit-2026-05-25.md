@@ -6,9 +6,18 @@ fix we know exactly what tech debt we can pay back. The list also
 serves as a "regression budget" — Spinel changes that touch any of
 these patterns deserve a heads-up.
 
-Spinel revision on this machine when audited: `master = d500374`
-(detached `HEAD = 0ec6b1d` — we're bisecting recent commits to find a
-Tep-side regression). Toy revision: `dd4b131`.
+Spinel revision when audited: `master = d500374` (~2 h ago).
+Toy revision: `dd4b131` at audit; `5ffea87` after comment refinement.
+
+**Project-family Spinel pin: `ef3f1f3`** ("fix(codegen): explicit 0
+return in compile_yield_inline_capture", ~5 h before audit). Tep
+pinned here to avoid the `0ec6b1d (*StrHash _get returns NULL,
+Phase 2)` runtime-behaviour change. Toy verified clean against this
+pin: `make bench-heavy` reports all 8 metrics ok (-1.4 % on train
+mean, within tolerance), all 5ffea87 builds reproduce identical
+behaviour, no new warnings. Toy does not depend on the StrHash NULL
+change either way (we use `Hash<String, Int>` everywhere, not
+`<String, String>`), so the pin is cost-free for us.
 
 ## Inventory of workaround patterns
 
