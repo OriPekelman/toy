@@ -176,6 +176,11 @@ module TinyNNCuda
   ffi_func :tnn_events_close,         [],                           :void
   ffi_func :tnn_events_active,        [],                           :int
   ffi_func :tnn_events_now_seconds,   [],                           :double
+  # Provenance for run_start / run_end (tao#run-start-provenance).
+  ffi_func :tnn_events_iso8601_now,   [],                           :str
+  ffi_func :tnn_provenance_host_name, [],                           :str
+  ffi_func :tnn_provenance_host_os,   [],                           :str
+  ffi_func :tnn_provenance_host_arch, [],                           :str
   ffi_func :tnn_set_loss,             [:ptr],                       :void
   ffi_func :tnn_sum,                  [:ptr, :ptr],                 :ptr
   ffi_func :tnn_sum_rows,             [:ptr, :ptr],                 :ptr
