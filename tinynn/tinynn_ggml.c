@@ -1984,5 +1984,60 @@ int tnn_scratch_nan_count_f32(void *sess, int n)
 
 int tnn_tensor_ne0(void *t) { return t ? (int)((struct ggml_tensor *)t)->ne[0] : 0; }
 int tnn_tensor_ne1(void *t) { return t ? (int)((struct ggml_tensor *)t)->ne[1] : 0; }
+int tnn_tensor_ne2(void *t) { return t ? (int)((struct ggml_tensor *)t)->ne[2] : 0; }
+int tnn_tensor_ne3(void *t) { return t ? (int)((struct ggml_tensor *)t)->ne[3] : 0; }
 size_t tnn_tensor_nbytes(void *t) { return t ? ggml_nbytes((struct ggml_tensor *)t) : 0; }
 int    tnn_tensor_nelements(void *t) { return t ? (int)ggml_nelements((struct ggml_tensor *)t) : 0; }
+
+/* Introspection primitives for kv.describe_flow (tao#kv-describe-flow).
+ * All are read-only walks over the built compute graph + leaf set;
+ * cheap enough to invoke ad-hoc after a graph has been realized. */
+const char *tnn_tensor_name(void *t) {
+    return t ? ((struct ggml_tensor *)t)->name : "";
+}
+/* ggml_type enum value: 0=F32, 8=Q8_0, etc. See vendor/ggml/include/ggml.h. */
+int tnn_tensor_dtype(void *t) {
+    return t ? (int)((struct ggml_tensor *)t)->type : 0;
+}
+/* Bitmask of GGML_TENSOR_FLAG_INPUT(1) | OUTPUT(2) | PARAM(4) | LOSS(8) | COMPUTE(16). */
+int tnn_tensor_flags(void *t) {
+    return t ? (int)((struct ggml_tensor *)t)->flags : 0;
+}
+/* Op id (ggml_op enum) — 0=NONE, then MUL_MAT, ADD, …. Useful to label
+ * compute nodes by their op kind in the description. */
+int tnn_tensor_op(void *t) {
+    return t ? (int)((struct ggml_tensor *)t)->op : 0;
+}
+const char *tnn_tensor_op_name(void *t) {
+    if (!t) return "";
+    return ggml_op_name(((struct ggml_tensor *)t)->op);
+}
+/* Source-tensor pointers for an op node: src[0]..src[N]. Returns NULL
+ * past the last source. ggml caps at GGML_MAX_SRC=10 — typical ops
+ * use 2 srcs, opt_step_adamw uses 5, no current op uses more than 10. */
+void *tnn_tensor_src(void *t, int i) {
+    if (!t || i < 0 || i >= GGML_MAX_SRC) return NULL;
+    return (void *)((struct ggml_tensor *)t)->src[i];
+}
+
+/* Graph walk: number of compute nodes, indexed accessor. Walks the
+ * primary graph (graph_a) — the one populated by tnn_build_forward_only
+ * or tnn_realize. Use tnn_graph_b_n_nodes / tnn_graph_b_node for the
+ * backward graph when needed. */
+int tnn_graph_n_nodes(void *sess) {
+    if (!sess) return 0;
+    tnn_session *s = (tnn_session *)sess;
+    if (!s->graph) return 0;
+    return ggml_graph_n_nodes(s->graph);
+}
+void *tnn_graph_node(void *sess, int i) {
+    if (!sess || i < 0) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    if (!s->graph) return NULL;
+    if (i >= ggml_graph_n_nodes(s->graph)) return NULL;
+    return (void *)ggml_graph_node(s->graph, i);
+}
+/* No tnn_graph_n_leafs / tnn_graph_leaf: ggml's cgraph leafs[] is
+ * private (no public accessor). The describe_flow walker discovers
+ * leaves from the Ruby side by scanning node srcs that aren't
+ * themselves nodes — same set, just computed differently. */

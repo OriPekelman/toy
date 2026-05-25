@@ -531,7 +531,19 @@ module TinyNN
   ffi_func :tnn_upload_transposed_f64,   [:ptr, :ptr, :float_array, :int, :int], :int
   ffi_func :tnn_tensor_ne0,       [:ptr],                   :int
   ffi_func :tnn_tensor_ne1,       [:ptr],                   :int
+  ffi_func :tnn_tensor_ne2,       [:ptr],                   :int
+  ffi_func :tnn_tensor_ne3,       [:ptr],                   :int
+  ffi_func :tnn_tensor_nbytes,    [:ptr],                   :size_t
   ffi_func :tnn_tensor_nelements, [:ptr],                   :int
+  # Introspection for kv.describe_flow (tao#kv-describe-flow).
+  ffi_func :tnn_tensor_name,      [:ptr],                   :str
+  ffi_func :tnn_tensor_dtype,     [:ptr],                   :int
+  ffi_func :tnn_tensor_flags,     [:ptr],                   :int
+  ffi_func :tnn_tensor_op,        [:ptr],                   :int
+  ffi_func :tnn_tensor_op_name,   [:ptr],                   :str
+  ffi_func :tnn_tensor_src,       [:ptr, :int],             :ptr
+  ffi_func :tnn_graph_n_nodes,    [:ptr],                   :int
+  ffi_func :tnn_graph_node,       [:ptr, :int],             :ptr
 
   # Scratch stats — fast O(n) reductions in C over the bytes just
   # placed in sess->scratch by tnn_download. Used by trace-tap.
