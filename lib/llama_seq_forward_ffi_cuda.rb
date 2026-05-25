@@ -1237,12 +1237,15 @@ class LlamaSeqForwardFFICacheCuda
 
     # K, V over all KV heads. Pre-compute v_t per head so the per-Q-head
     # attention loop can index it (avoids n_heads × transpose).
-    # Seed with a typed null pointer to force Spinel's PtrArray inference;
-    # without this `[]` infers as IntArray, but the .push below stores
-    # tensor pointers, and the inference mismatch propagates into a
-    # `sp_IntArray * vs sp_PtrArray *` warning on build_seq_qhead's call.
-    # The warning is fatal at runtime — the function reads the array as
-    # ints, garbling the pointers. (Spinel landmine #2.)
+    # Seed with a typed null pointer to force Spinel's PtrArray inference
+    # at construction time. Spinel f292232 (issue #688) promotes the
+    # LOCAL var when push(<:ptr>) is observed, but build_seq_qhead's
+    # parameter type was already locked in as IntArray earlier in the
+    # analyze pass — the promotion doesn't propagate to the call
+    # signature. Verified 2026-05-25 on Spinel 0ec6b1d; the warning
+    # `sp_IntArray * vs sp_PtrArray *` re-appears the moment we drop
+    # the seed. Fatal at runtime (function reads the array as ints,
+    # garbling pointers).
     t_k_per_kv  = [TinyNNCuda.tnn_null_ptr]; t_k_per_kv.pop
     t_vt_per_kv = [TinyNNCuda.tnn_null_ptr]; t_vt_per_kv.pop
     hkv = 0
