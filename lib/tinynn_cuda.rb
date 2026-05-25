@@ -256,6 +256,18 @@ module TinyNNCuda
   ffi_func :tnn_adam_step_scratch,[:ptr, :int, :double, :double, :double, :double, :double, :double], :void
   ffi_func :tnn_tensor_ne0,       [:ptr],                   :int
   ffi_func :tnn_tensor_ne1,       [:ptr],                   :int
+  ffi_func :tnn_tensor_ne2,       [:ptr],                   :int
+  ffi_func :tnn_tensor_ne3,       [:ptr],                   :int
+  ffi_func :tnn_tensor_nbytes,    [:ptr],                   :size_t
+  # Introspection for kv.describe_flow (tao#kv-describe-flow).
+  ffi_func :tnn_tensor_name,      [:ptr],                   :str
+  ffi_func :tnn_tensor_dtype,     [:ptr],                   :int
+  ffi_func :tnn_tensor_flags,     [:ptr],                   :int
+  ffi_func :tnn_tensor_op,        [:ptr],                   :int
+  ffi_func :tnn_tensor_op_name,   [:ptr],                   :str
+  ffi_func :tnn_tensor_src,       [:ptr, :int],             :ptr
+  ffi_func :tnn_graph_n_nodes,    [:ptr],                   :int
+  ffi_func :tnn_graph_node,       [:ptr, :int],             :ptr
 
   # CPU-parity bindings (added 2026-05-24 as part of the ggml-coverage
   # reframe). Same C symbols, same backend selection at runtime — these

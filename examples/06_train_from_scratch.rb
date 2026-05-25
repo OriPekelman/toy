@@ -23,6 +23,7 @@
 require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
 require_relative "../lib/llama_seq_forward_ffi"
+require_relative "../lib/toy_describe_flow"
 
 VOCAB_SIZE = 627
 D_MODEL    = (ENV["D_MODEL"]  || "64").to_i
@@ -57,6 +58,21 @@ t_realize = Time.now
 fcache = LlamaSeqForwardFFICache.new
 fcache.realize_for_random_init(cfg, CONTEXT, false, false, SEED, 1.0)
 puts "realize_for_random_init: " + ((Time.now - t_realize).to_f * 1000.0).to_s + " ms"
+
+# tao#kv-describe-flow: opt-in DAG dump. Three formats; consumer
+# picks via env (text | json | mermaid). Exits after printing so
+# downstream tools can capture the structured form alone.
+DESCRIBE = ENV["TOY_DESCRIBE"] || ""
+if DESCRIBE.length > 0
+  if DESCRIBE == "json"
+    puts ToyDescribeFlow.json(fcache.sess)
+  elsif DESCRIBE == "mermaid"
+    puts ToyDescribeFlow.mermaid(fcache.sess)
+  else
+    puts ToyDescribeFlow.text(fcache.sess)
+  end
+  exit 0
+end
 
 # Read first TinyStories sequence (Array<Integer>).
 raw        = File.read("data/ts_seqs.txt")

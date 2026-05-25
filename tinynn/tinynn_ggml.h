@@ -438,8 +438,23 @@ int    tnn_download_to_f64_array(void *sess, void *tensor, double *dst, size_t n
 
 int    tnn_tensor_ne0(void *t);
 int    tnn_tensor_ne1(void *t);
+int    tnn_tensor_ne2(void *t);
+int    tnn_tensor_ne3(void *t);
 size_t tnn_tensor_nbytes(void *t);
 int    tnn_tensor_nelements(void *t);
+
+/* Introspection (tao#kv-describe-flow). All are O(1) reads of tensor
+ * metadata; cheap to call from a graph walker. */
+const char *tnn_tensor_name(void *t);     /* ggml_tensor.name or "" */
+int    tnn_tensor_dtype(void *t);          /* ggml_type enum */
+int    tnn_tensor_flags(void *t);          /* INPUT|OUTPUT|PARAM|LOSS|COMPUTE bitmask */
+int    tnn_tensor_op(void *t);             /* ggml_op enum (0=NONE for leaves) */
+const char *tnn_tensor_op_name(void *t);   /* "MUL_MAT", "ADD", ... */
+void  *tnn_tensor_src(void *t, int i);     /* src[i], NULL past end */
+int    tnn_graph_n_nodes(void *sess);
+void  *tnn_graph_node(void *sess, int i);
+/* No tnn_graph_n_leafs / tnn_graph_leaf: ggml's leafs[] is private.
+ * Discover leaves Ruby-side by scanning node srcs that aren't nodes. */
 
 /* Stats over the first `n` floats of sess->scratch. Caller has just
  * done tnn_download(sess, t). Used by FFI trace-tap diagnostics. */
