@@ -1237,8 +1237,14 @@ class LlamaSeqForwardFFICacheCuda
 
     # K, V over all KV heads. Pre-compute v_t per head so the per-Q-head
     # attention loop can index it (avoids n_heads × transpose).
-    t_k_per_kv = []
-    t_vt_per_kv = []
+    # Seed with a typed null pointer to force Spinel's PtrArray inference;
+    # without this `[]` infers as IntArray, but the .push below stores
+    # tensor pointers, and the inference mismatch propagates into a
+    # `sp_IntArray * vs sp_PtrArray *` warning on build_seq_qhead's call.
+    # The warning is fatal at runtime — the function reads the array as
+    # ints, garbling the pointers. (Spinel landmine #2.)
+    t_k_per_kv  = [TinyNNCuda.tnn_null_ptr]; t_k_per_kv.pop
+    t_vt_per_kv = [TinyNNCuda.tnn_null_ptr]; t_vt_per_kv.pop
     hkv = 0
     while hkv < @seq_n_kv
       t_k_raw = TinyNNCuda.tnn_matmul(@sess, blk.t_seq_w_k[hkv], t_h)

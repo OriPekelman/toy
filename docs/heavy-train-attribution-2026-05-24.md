@@ -241,3 +241,78 @@ target IDs as a `[T]` int32 tensor, scatter on GPU. ~50 LOC across
 ggml-cuda question is decided — if we land overlap upstream, this
 becomes irrelevant; if we don't, this is the only remaining toy-side
 lever.
+
+## 2026-05-25 correction: the 19 ms one-hot upload was bench noise
+
+We pursued the one-hot upload fix and found the bench was crashing on
+fresh rebuilds (`GGML_ASSERT(cgraph->grads != NULL)`). Root cause: a
+**Spinel type-inference landmine** — in
+`lib/llama_seq_forward_ffi_cuda.rb` the per-KV-head tensor arrays
+`t_k_per_kv` and `t_vt_per_kv` were initialized with `[]`, which Spinel
+inferred as `sp_IntArray *`. The arrays then held tensor pointers
+(8 bytes) but were indexed as ints (4 bytes), producing the
+`sp_IntArray * vs sp_PtrArray *` warning at compile time and
+unspecified behaviour at runtime.
+
+The bench had been compiling with this warning all along; what we
+read as "19 ms / step from labels upload" was the bench measuring a
+silently-wrong execution path. Fix: seed the arrays with a typed null
+pointer (`[TinyNNCuda.tnn_null_ptr]; .pop`) to force Spinel's
+`sp_PtrArray *` inference.
+
+After the fix:
+
+- Toy heavy LoRA-train step time: 235 → **245 ms** (the previous
+  number was wrong-execution-fast).
+- `SKIP_LABELS_UPLOAD=1` savings: 19 → **~0.3 ms / step**. The "fix"
+  has nothing to fix; the per-step upload cost was always small.
+- Toy/PT ratio: 2.01× → **2.03×** (basically unchanged — both sides
+  shifted by similar margins).
+- Pinned scratch (`tnn_pinned_alloc`) contribution: was reported as
+  ~0-1 ms (noise) — that interpretation stands.
+
+**Net conclusion update.** Of the five candidates we investigated,
+**all five are now refuted or attributed upstream**:
+
+| # | Candidate | Outcome |
+| --- | --- | --- |
+| 0 | HeadFuseLoRAQ (per-head batch matmul) | 1.00× — refuted |
+| 1 | Pinned host upload buffers | ~0 ms — defensive change kept |
+| 2 | OUT_PROD per-op cost vs MUL_MAT | 0.98-1.02× — refuted |
+| 3 | ggml-cuda stream-overlap | upstream issue 05 filed |
+| 4 | Macro-op fusion (swiglu_split etc.) | 1.00× — already auto-fused; defensive FFI kept |
+| 5 | One-hot label upload (this) | bench-noise illusion (Spinel landmine) |
+
+**The Spinel landmine fix itself is the only real perf-relevant change
+from this whole investigation arc.** It corrects per-step timing from
+a measurement artifact, not a real win — but it stops the bench from
+crashing on fresh rebuilds and aligns toy with its intended behaviour
+(correct pointers into the K/V-per-KV-head arrays).
+
+The 2× wallclock gap to PyTorch at this shape range on ggml-cuda is
+**entirely upstream stream-overlap**. There are no per-op-cost
+candidates left to investigate from the application layer.
+
+### Process note: the bench-as-yardstick paid off again
+
+Two attribution rounds, eight A/B smokes, and zero "real" application-
+side optimizations. That sounds like nothing got done. What actually
+got done:
+
+- One genuine bug found and fixed (Spinel landmine in the training
+  graph builder, which had been silently mis-executing for an unknown
+  number of weeks before the bench made fresh rebuilds reproducible).
+- Five hypotheses refuted with measured evidence (not handwaved).
+- One upstream issue drafted with side-by-side trace data.
+- A reusable A/B smoke harness (`tinynn/ab_smoke_*_cuda.rb`) for
+  future "fuse-or-not" questions.
+- Two FFI primitives added (`tnn_out_prod`, `tnn_swiglu_split`) that
+  cost ~5 LOC each and are available when future workloads want them.
+- Pinned host scratch (defensive correctness change).
+
+The lesson is the principle that started the arc: **earn complexity by
+attribution**. If we had skipped the smokes and just done the
+HeadFuseLoRAQ refactor (1-2 days, ~70 LOC across 19 files), we'd have
+spent the effort and gotten 1.00× speedup. The framework now lives at
+"the application-layer optimization space is empty until upstream
+moves" — a useful place to be.
