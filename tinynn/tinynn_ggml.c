@@ -619,6 +619,19 @@ void *tnn_out_prod(void *sess, void *a, void *b)
                                   (struct ggml_tensor *)b);
 }
 
+void *tnn_swiglu_split(void *sess, void *gate, void *up)
+{
+    /* ggml_swiglu_split: silu(gate) * up — fused activation+mul for
+     * the Llama-family SwiGLU FFN gating step. Replaces the explicit
+     * silu(gate) → mul(_, up) pair in toy's FFN block. On CUDA the
+     * fusion lets ggml-cuda issue one kernel instead of two. */
+    if (!sess || !gate || !up) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_swiglu_split(s->ctx,
+                                       (struct ggml_tensor *)gate,
+                                       (struct ggml_tensor *)up);
+}
+
 /* M2 MoE primitives. Thin wrappers — ggml does the work; we just expose
  * the entry points through the FFI. See tinynn_ggml.h for shape docs. */
 void *tnn_mul_mat_id(void *sess, void *as, void *b, void *ids)
