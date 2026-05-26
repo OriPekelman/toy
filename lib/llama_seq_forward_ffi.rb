@@ -1474,7 +1474,8 @@ class LlamaSeqForwardFFICache
     # See lib/llama_seq_forward_ffi_cuda.rb for the Spinel landmine
     # (issue #688 partial fix; the function-parameter type for
     # build_seq_qhead was already locked in as IntArray before the
-    # local-var ptr-push promotion runs).
+    # local-var ptr-push promotion runs). Re-verified 2026-05-26 on
+    # Spinel 2183a92: bare `[]` still fires the warning.
     t_k_per_kv  = [TinyNN.tnn_null_ptr]; t_k_per_kv.pop
     t_vt_per_kv = [TinyNN.tnn_null_ptr]; t_vt_per_kv.pop
     hkv = 0
