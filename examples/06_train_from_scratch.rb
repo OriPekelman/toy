@@ -26,6 +26,7 @@ require_relative "../lib/llama_seq_forward_ffi"
 require_relative "../lib/toy_describe_flow"
 require_relative "../lib/toy_drift_grad"
 require_relative "../lib/toy_gguf_writer"
+require_relative "../lib/toy_tap"
 
 VOCAB_SIZE = 627
 D_MODEL    = (ENV["D_MODEL"]  || "64").to_i
@@ -61,6 +62,14 @@ GRAD_SENT   = (ENV["TOY_GRAD_SENTINELS"] || "0") == "1"
 # configured).
 CHECKPOINT_EVERY = (ENV["CHECKPOINT_EVERY"] || "0").to_i
 WEIGHTS_DIR      = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/weights") : ""
+
+# tao#kv-tap-surface — TOY_TAP=1 enables a demonstration tap on the
+# loss scalar after each compute_backward. Real production taps belong
+# inside the cache's graph builder (e.g. tapping t_q_rotated inside
+# build_seq_qhead with region="attn_q_post_rope"), but the loss tap is
+# enough to demonstrate the wire and validate the event shape against
+# the schema.
+TAP_ENABLED = (ENV["TOY_TAP"] || "0") == "1"
 
 cfg = Toy::SmolLM2Config.new(VOCAB_SIZE, D_MODEL, N_HEADS, N_HEADS,
                               D_FF, N_LAYERS, CONTEXT, 10000.0, 1.0e-5)
@@ -283,6 +292,13 @@ while step <= STEPS
                                         drift_snaps[pi], step, t_now)
         pi = pi + 1
       end
+    end
+    if TAP_ENABLED
+      # Demonstration tap. Real region names come from inside the
+      # graph builder; "loss_post_compute" is just the wire test.
+      # layer=-1 / head=-1 → null in JSON; n_heads=0 → no per_head_l2.
+      ToyTap.emit(fcache.sess, "loss_post_compute", t_loss,
+                    -1, -1, step, t_now, 0)
     end
   end
 
