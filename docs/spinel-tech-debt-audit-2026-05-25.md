@@ -300,3 +300,50 @@ Cheapest-first:
 - Don't update Spinel HEAD without testing toy's bench-heavy gate
   first — the 40-commit-day surface has too many ways to break.
   Tep already flagged one regression; treat the gate as the proof.
+
+## 2026-05-26 sync — Spinel 38e5a2e → 2183a92 (+76 commits)
+
+Pulled, clean rebuild of toy. Re-tested each documented workaround.
+
+### Status changes
+
+| Item | Before | Now (Spinel 2183a92) |
+| --- | --- | --- |
+| `File.basename(path)` / `(path, ext)` | C shim required | **WORKS** — landmine #4 narrowed |
+| String interpolation `"x=#{val}"` | Avoided per landmine | **WORKS** in isolation |
+| Default args `def f(x = nil)` | Cascade risk | **WORKS in isolation** (cascade risk in complex programs remains untested) |
+| Empty `[]` → IntArray fn-param case | Workaround required | **Still required** (re-verified: bare `[]` → sp_IntArray * vs sp_PtrArray * warning fires) |
+| `STDERR.puts` | Missing | **Still missing** ("cannot resolve call to 'puts' on int") |
+| `Dir.entries(path)` | Missing | **Still missing** |
+| `File.dirname / extname / expand_path` | Missing | **Still missing** |
+
+### Implications for toy
+
+- **Could selectively adopt `File.basename`** to remove parts of
+  the tinynn_gguf.c shim, but `Dir.entries` is still missing so the
+  shim stays for filesystem walking. **Low ROI**.
+- **Could use `#{}` interpolation in new code** (e.g. event emitters)
+  for readability. **Don't bulk-sweep** existing `.to_s + …` sites —
+  104 sites × poly-cascade risk in mixed-type contexts.
+- **Seed-and-pop sites stay** (the critical-path landmine #1).
+- **`has_key?` guards stay** (Phase 4 IntHash nil semantics still
+  deferred upstream per `docs/HASH-NULLABLE.md`).
+
+### Bench-heavy at this Spinel revision
+
+Numbers regressed across the board (train +14%, infer realize +35%).
+**Cause is system, not Spinel:** four stuck `make test` root processes
+(running since 2026-05-19, each 99.9 % CPU) are eating 4 cores; load
+avg 11 on a 20-core box. PT-side numbers also regressed in proportion
+(slower by ~25 % in absolute terms), so the toy/PT *ratio* actually
+improved (2.029× → 1.871×). The bench-heavy gate is correctly
+detecting CPU contention; baselines stay (will pass once the rogue
+processes are cleared by root). Spinel itself is regression-free.
+
+### Net tech-debt change
+
+Two readability wins available (`File.basename`, `#{}`) — neither
+critical. The structural workarounds (seed-and-pop, has_key?, no
+STDERR, C shim for filesystem) all stay. No bulk cleanup pass
+warranted; new code can opportunistically use the unblocked
+primitives.
