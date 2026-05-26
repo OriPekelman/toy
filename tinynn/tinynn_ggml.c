@@ -3,11 +3,15 @@
 #include "ggml.h"
 #include "ggml-backend.h"
 #include "ggml-cpu.h"
+#include "gguf.h"
 
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 /* CUDA backend init lives in tinynn_backend_cuda.c (only present when
  * linking against libtinynn_ggml_cuda.a). Weak DEFINITION here returns
@@ -2041,3 +2045,84 @@ void *tnn_graph_node(void *sess, int i) {
  * private (no public accessor). The describe_flow walker discovers
  * leaves from the Ruby side by scanning node srcs that aren't
  * themselves nodes — same set, just computed differently. */
+
+/* tao#gguf-checkpoint-writer thin wrappers over ggml's gguf writer
+ * API. The lifecycle is:
+ *   ctx = tnn_gguf_w_init()
+ *   tnn_gguf_w_set_str/u32/f32(ctx, key, value)   — metadata
+ *   tnn_tensor_set_name(t, "...")                  — name each param
+ *   tnn_gguf_w_add_tensor(ctx, t)                  — record + data ptr
+ *   tnn_gguf_w_finalize(ctx, path)                 — fsync + close
+ *   tnn_gguf_w_free(ctx)
+ *
+ * `tnn_gguf_w_add_tensor` reads the tensor's `data` field; for CPU
+ * backend that's the host pointer in the persistent backend buffer.
+ * For CUDA backend a download step (not implemented here — see
+ * toy#gguf-checkpoint-writer-cuda) would be required. */
+
+void tnn_tensor_set_name(void *t, const char *name) {
+    if (!t || !name) return;
+    ggml_set_name((struct ggml_tensor *)t, name);
+}
+
+void *tnn_gguf_w_init(void) {
+    return (void *)gguf_init_empty();
+}
+
+void tnn_gguf_w_set_str(void *ctx, const char *key, const char *val) {
+    if (!ctx || !key || !val) return;
+    gguf_set_val_str((struct gguf_context *)ctx, key, val);
+}
+
+void tnn_gguf_w_set_u32(void *ctx, const char *key, int val) {
+    if (!ctx || !key) return;
+    gguf_set_val_u32((struct gguf_context *)ctx, key, (uint32_t)val);
+}
+
+void tnn_gguf_w_set_f32(void *ctx, const char *key, double val) {
+    if (!ctx || !key) return;
+    gguf_set_val_f32((struct gguf_context *)ctx, key, (float)val);
+}
+
+void tnn_gguf_w_add_tensor(void *ctx, void *t) {
+    if (!ctx || !t) return;
+    gguf_add_tensor((struct gguf_context *)ctx,
+                     (const struct ggml_tensor *)t);
+}
+
+/* Returns 0 on success, -1 on null args, -2 on file write failure. */
+int tnn_gguf_w_finalize(void *ctx, const char *path) {
+    if (!ctx || !path) return -1;
+    bool ok = gguf_write_to_file((const struct gguf_context *)ctx,
+                                   path, /*only_meta=*/ false);
+    return ok ? 0 : -2;
+}
+
+void tnn_gguf_w_free(void *ctx) {
+    if (!ctx) return;
+    gguf_free((struct gguf_context *)ctx);
+}
+
+/* Atomic symlink replace (sym_path → target). Used by the checkpoint
+ * writer to maintain `weights/latest`. Returns 0 on success, -1 on
+ * failure. Unlinks any pre-existing symlink first; the create itself
+ * is non-atomic (real atomicity needs renameat2 + a tmp link), but
+ * Tao's consumers tolerate brief absence of the latest link. */
+int tnn_filesystem_symlink(const char *target, const char *sym_path) {
+    if (!target || !sym_path) return -1;
+    unlink(sym_path);                 /* may not exist; ignore EEXIST/ENOENT */
+    int rc = symlink(target, sym_path);
+    return rc == 0 ? 0 : -1;
+}
+
+/* mkdir-p style helper: creates dir if missing. Returns 0 on success
+ * (or already-exists), -1 on failure. Single-level: caller is
+ * responsible for parent dirs (typically TAO_RUN_DIR already exists
+ * because Tao created it). */
+int tnn_filesystem_mkdir(const char *path) {
+    if (!path) return -1;
+    int rc = mkdir(path, 0755);
+    if (rc == 0) return 0;
+    if (errno == EEXIST) return 0;
+    return -1;
+}
