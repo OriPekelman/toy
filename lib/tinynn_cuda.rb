@@ -268,6 +268,17 @@ module TinyNNCuda
   ffi_func :tnn_tensor_src,       [:ptr, :int],             :ptr
   ffi_func :tnn_graph_n_nodes,    [:ptr],                   :int
   ffi_func :tnn_graph_node,       [:ptr, :int],             :ptr
+  # tao#gguf-checkpoint-writer
+  ffi_func :tnn_tensor_set_name,  [:ptr, :str],             :void
+  ffi_func :tnn_gguf_w_init,      [],                       :ptr
+  ffi_func :tnn_gguf_w_set_str,   [:ptr, :str, :str],       :void
+  ffi_func :tnn_gguf_w_set_u32,   [:ptr, :str, :int],       :void
+  ffi_func :tnn_gguf_w_set_f32,   [:ptr, :str, :double],    :void
+  ffi_func :tnn_gguf_w_add_tensor,[:ptr, :ptr],             :void
+  ffi_func :tnn_gguf_w_finalize,  [:ptr, :str],             :int
+  ffi_func :tnn_gguf_w_free,      [:ptr],                   :void
+  ffi_func :tnn_filesystem_symlink,[:str, :str],            :int
+  ffi_func :tnn_filesystem_mkdir, [:str],                   :int
 
   # CPU-parity bindings (added 2026-05-24 as part of the ggml-coverage
   # reframe). Same C symbols, same backend selection at runtime — these

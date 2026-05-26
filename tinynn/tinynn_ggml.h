@@ -456,6 +456,18 @@ void  *tnn_graph_node(void *sess, int i);
 /* No tnn_graph_n_leafs / tnn_graph_leaf: ggml's leafs[] is private.
  * Discover leaves Ruby-side by scanning node srcs that aren't nodes. */
 
+/* tao#gguf-checkpoint-writer thin wrappers (tinynn_ggml.c). */
+void   tnn_tensor_set_name(void *t, const char *name);
+void  *tnn_gguf_w_init(void);
+void   tnn_gguf_w_set_str(void *ctx, const char *key, const char *val);
+void   tnn_gguf_w_set_u32(void *ctx, const char *key, int val);
+void   tnn_gguf_w_set_f32(void *ctx, const char *key, double val);
+void   tnn_gguf_w_add_tensor(void *ctx, void *t);
+int    tnn_gguf_w_finalize(void *ctx, const char *path);
+void   tnn_gguf_w_free(void *ctx);
+int    tnn_filesystem_symlink(const char *target, const char *sym_path);
+int    tnn_filesystem_mkdir(const char *path);
+
 /* Stats over the first `n` floats of sess->scratch. Caller has just
  * done tnn_download(sess, t). Used by FFI trace-tap diagnostics. */
 double tnn_scratch_min_f32(void *sess, int n);

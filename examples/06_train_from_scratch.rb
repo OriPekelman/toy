@@ -25,6 +25,7 @@ require_relative "../lib/toy_smollm2"
 require_relative "../lib/llama_seq_forward_ffi"
 require_relative "../lib/toy_describe_flow"
 require_relative "../lib/toy_drift_grad"
+require_relative "../lib/toy_gguf_writer"
 
 VOCAB_SIZE = 627
 D_MODEL    = (ENV["D_MODEL"]  || "64").to_i
@@ -52,6 +53,14 @@ RUN_ID      = ENV["TOY_RUN_ID"] || ""
 # grad event per param per step. Both are cheap-when-off.
 DRIFT_EVERY = (ENV["TOY_DRIFT_EVERY"] || "0").to_i
 GRAD_SENT   = (ENV["TOY_GRAD_SENTINELS"] || "0") == "1"
+
+# tao#gguf-checkpoint-writer. CHECKPOINT_EVERY=N → write a snapshot
+# at step N, 2N, 3N, …, plus a final snapshot at run_end. Lands in
+# $TAO_RUN_DIR/weights/step_<N>.gguf with a `latest` symlink to the
+# newest. Cheap-when-off (no schedule unless N > 0 AND a run-dir is
+# configured).
+CHECKPOINT_EVERY = (ENV["CHECKPOINT_EVERY"] || "0").to_i
+WEIGHTS_DIR      = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/weights") : ""
 
 cfg = Toy::SmolLM2Config.new(VOCAB_SIZE, D_MODEL, N_HEADS, N_HEADS,
                               D_FF, N_LAYERS, CONTEXT, 10000.0, 1.0e-5)
@@ -199,14 +208,17 @@ if EVENTS.length > 0
   end
 end
 
-# Snapshot params at step 0 if drift tracking is on. Mat snapshots
-# live in main scope (Spinel doesn't generate sp_Mat_ptr_array, so we
-# can't pass the snapshot array across a function boundary).
+# Enumerate PARAM tensors once if ANY observability or checkpoint
+# feature is active. Reused by drift/grad emitters AND the checkpoint
+# writer. Mat snapshots (drift_snaps) live in main scope — Spinel
+# doesn't generate sp_Mat_ptr_array, so cross-function passes of
+# Array<Mat> are off-limits.
 drift_params = [TinyNN.tnn_null_ptr]; drift_params.pop
 drift_snaps  = [Mat.new(1, 1)]; drift_snaps.pop
-if EVENTS.length > 0 && (DRIFT_EVERY > 0 || GRAD_SENT)
+ckpt_enabled = WEIGHTS_DIR.length > 0 && CHECKPOINT_EVERY > 0
+if (EVENTS.length > 0 && (DRIFT_EVERY > 0 || GRAD_SENT)) || ckpt_enabled
   drift_params = ToyDriftGrad.params(fcache.sess)
-  puts "drift/grad: tracking " + drift_params.length.to_s + " PARAM tensors"
+  puts "params tracked: " + drift_params.length.to_s
   if DRIFT_EVERY > 0
     di = 0
     while di < drift_params.length
@@ -217,6 +229,11 @@ if EVENTS.length > 0 && (DRIFT_EVERY > 0 || GRAD_SENT)
   end
   if GRAD_SENT
     puts "grad: per-step sentinels enabled"
+  end
+  if ckpt_enabled
+    TinyNN.tnn_filesystem_mkdir(WEIGHTS_DIR)
+    puts "checkpoints: " + WEIGHTS_DIR + "/step_<N>.gguf every " +
+         CHECKPOINT_EVERY.to_s + " steps"
   end
 end
 
@@ -269,6 +286,17 @@ while step <= STEPS
     end
   end
 
+  # tao#gguf-checkpoint-writer — write on schedule. Lands AFTER the
+  # opt_step has mutated weights for this step. The latest symlink
+  # updates atomically (unlink + create — see tnn_filesystem_symlink).
+  if ckpt_enabled && (step % CHECKPOINT_EVERY == 0)
+    rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
+    rc = ToyGGUFWriter.write_step(cfg, drift_params, WEIGHTS_DIR, rid, step)
+    if rc != 0
+      puts "checkpoint write failed: rc=" + rc.to_s + " (step=" + step.to_s + ")"
+    end
+  end
+
   # Per-step event (v1 schema). ppl=exp(loss) deferred to consumer side
   # (Math.exp under Spinel risks poly-dispatch landmines per
   # feedback_spinel_type_inference_landmines).
@@ -298,6 +326,17 @@ if not_learning
   puts "VERDICT: training NOT learning (final/initial = " + ratio.to_s + ")"
 else
   puts "VERDICT: training is learning (final/initial = " + ratio.to_s + ")"
+end
+
+# Final checkpoint at run_end (idempotent — if STEPS is a multiple of
+# CHECKPOINT_EVERY the in-loop emit already covered it; if not, this
+# captures the final state and updates `latest`).
+if ckpt_enabled && (STEPS % CHECKPOINT_EVERY != 0)
+  rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
+  rc = ToyGGUFWriter.write_step(cfg, drift_params, WEIGHTS_DIR, rid, STEPS)
+  if rc != 0
+    puts "final checkpoint write failed: rc=" + rc.to_s
+  end
 end
 
 # Emit run_end. The run *executed to completion* — we always reach
