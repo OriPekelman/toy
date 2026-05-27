@@ -99,4 +99,79 @@ module ToyTap
     ev = ev + "}"
     TinyNN.tnn_events_emit(ev)
   end
+
+  # GH#15 — Activation-Gram tap for linear CKA. For activation A of
+  # shape [d, T] in ggml column-major, computes G = Aᵀ·A (T×T) and
+  # emits it as a `gram` field on the tap event alongside the standard
+  # scalar stats. T×T fits easily in JSON for typical context lengths
+  # (e.g. T=32 → 32×32 = 1024 floats = a few KB per event).
+  #
+  # Region naming convention is the issue's: attn_q_post_rope,
+  # ffn_out, resid_post_block, etc. — user-chosen + stable across runs.
+  def self.emit_cka(sess, region, tensor, layer, head, step, t_now)
+    if tensor == nil || tensor == TinyNN.tnn_null_ptr
+      return
+    end
+    d = TinyNN.tnn_tensor_ne0(tensor)
+    t = TinyNN.tnn_tensor_ne1(tensor)
+    if d <= 0 || t <= 0
+      return
+    end
+    n = d * t
+    TinyNN.tnn_download(sess, tensor)
+    sum_sq  = TinyNN.tnn_scratch_sum_sq_f32(sess, n)
+    sum_abs = TinyNN.tnn_scratch_sum_abs_f32(sess, n)
+    nan_n   = TinyNN.tnn_scratch_nan_count_f32(sess, n)
+    l2       = sum_sq ** 0.5
+    abs_mean = sum_abs / n.to_f
+
+    # Gram G = Aᵀ·A. A is column-major [d, T] → flat[i + j*d] = A[i,j].
+    # G[i, j] = sum_k A[k, i] * A[k, j] = sum_k flat[k + i*d] * flat[k + j*d]
+    # Cost: T*T*d ops. For T=32, d=64: 65k. For T=128, d=1024: 16M.
+    buf = Mat.new(1, n)
+    TinyNN.tnn_download_to_f64_array(sess, tensor, buf.flat, n)
+
+    ev  = "{\"kind\":\"tap\",\"phase\":\"train\""
+    ev = ev + ",\"t\":"          + t_now.to_s
+    ev = ev + ",\"step\":"       + step.to_s
+    ev = ev + ",\"region\":\""   + region + "\""
+    if layer >= 0
+      ev = ev + ",\"layer\":" + layer.to_s
+    else
+      ev = ev + ",\"layer\":null"
+    end
+    if head >= 0
+      ev = ev + ",\"head\":" + head.to_s
+    else
+      ev = ev + ",\"head\":null"
+    end
+    ev = ev + ",\"shape\":[" + d.to_s + "," + t.to_s + "]"
+    ev = ev + ",\"dtype\":\"f32\""
+    ev = ev + ",\"l2\":"        + l2.to_s
+    ev = ev + ",\"abs_mean\":"  + abs_mean.to_s
+    ev = ev + ",\"nan_count\":" + nan_n.to_s
+
+    ev = ev + ",\"gram\":["
+    i = 0
+    while i < t
+      ev = ev + (i == 0 ? "[" : ",[")
+      j = 0
+      while j < t
+        s = 0.0
+        k = 0
+        while k < d
+          s = s + buf.flat[k + i * d] * buf.flat[k + j * d]
+          k = k + 1
+        end
+        ev = ev + (j == 0 ? "" : ",") + s.to_s
+        j = j + 1
+      end
+      ev = ev + "]"
+      i = i + 1
+    end
+    ev = ev + "]"
+
+    ev = ev + "}"
+    TinyNN.tnn_events_emit(ev)
+  end
 end

@@ -71,6 +71,13 @@ WEIGHTS_DIR      = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/weights") : ""
 # the schema.
 TAP_ENABLED = (ENV["TOY_TAP"] || "0") == "1"
 
+# GH#15 — TOY_CKA=N emits Activation-Gram taps (T×T Gram per region,
+# per layer) every N steps. Three regions: attn_norm, ffn_out,
+# resid_post. Cheap-when-off; the graph builder always set_outputs the
+# tap tensors, but the emit_cka call is the costly part (T×T×d ops +
+# JSON serialization). N=0 disables; N=1 emits every step.
+CKA_EVERY = (ENV["TOY_CKA"] || "0").to_i
+
 cfg = Toy::SmolLM2Config.new(VOCAB_SIZE, D_MODEL, N_HEADS, N_HEADS,
                               D_FF, N_LAYERS, CONTEXT, 10000.0, 1.0e-5)
 puts "config: vocab=" + cfg.vocab.to_s +
@@ -299,6 +306,21 @@ while step <= STEPS
       # layer=-1 / head=-1 → null in JSON; n_heads=0 → no per_head_l2.
       ToyTap.emit(fcache.sess, "loss_post_compute", t_loss,
                     -1, -1, step, t_now, 0)
+    end
+    # GH#15 — per-layer Gram taps. T×T fits in the tap event; Tao's
+    # compare CKA consumer is unit-tested and ready.
+    if CKA_EVERY > 0 && (step % CKA_EVERY) == 0
+      li_tap = 0
+      while li_tap < cfg.n_layers
+        blk_tap = fcache.seq_blocks_ffi[li_tap]
+        ToyTap.emit_cka(fcache.sess, "attn_norm",      blk_tap.tap_attn_norm,
+                          li_tap, -1, step, t_now)
+        ToyTap.emit_cka(fcache.sess, "ffn_out",        blk_tap.tap_ffn_out,
+                          li_tap, -1, step, t_now)
+        ToyTap.emit_cka(fcache.sess, "resid_post_block", blk_tap.tap_resid_post,
+                          li_tap, -1, step, t_now)
+        li_tap = li_tap + 1
+      end
     end
   end
 

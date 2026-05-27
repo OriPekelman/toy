@@ -178,6 +178,7 @@ event per (step, region, layer). The available stats are:
 | `nan_count`      | number of NaNs                                       |
 | `per_head_l2`    | array, one L2 per head (for multi-head tensors)      |
 | `histogram`      | array of 32 bin counts spanning min..max             |
+| `gram`           | T×T Gram matrix `G = Aᵀ·A` for activation `A` of shape `[d, T]` — feeds linear CKA (GH#15) |
 
 ```json
 {
@@ -194,6 +195,32 @@ event per (step, region, layer). The available stats are:
   "abs_mean": 0.00052,
   "nan_count": 0,
   "per_head_l2": [0.0041, 0.0044, 0.0040, 0.0042, 0.0043, 0.0041, 0.0042, 0.0042, 0.0043]
+}
+```
+
+#### `tap` with `gram` (CKA, GH#15)
+
+When emitted via `ToyTap.emit_cka`, the event additionally carries a
+`gram` field: a T×T symmetric PSD matrix `G = Aᵀ·A` over an activation
+`A` of shape `[d, T]`. Consumers compute linear CKA from gram pairs
+(`Analyze.linear_cka` in the Tao sibling). Suggested region names:
+`attn_norm`, `ffn_out`, `resid_post_block` — all stable across runs.
+
+```json
+{
+  "kind": "tap",
+  "phase": "train",
+  "t": 0.420,
+  "step": 1,
+  "region": "resid_post_block",
+  "layer": 0,
+  "head": null,
+  "shape": [64, 32],
+  "dtype": "f32",
+  "l2": 6318.97,
+  "abs_mean": 4.21,
+  "nan_count": 0,
+  "gram": [[…32 floats…], [...], ..., [...]]
 }
 ```
 
