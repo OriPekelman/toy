@@ -100,6 +100,8 @@ module TinyNNCuda
   ffi_func :tnn_im2col,          [:ptr, :ptr, :ptr, :int, :int, :int, :int, :int, :int, :int, :int], :ptr
   ffi_func :tnn_im2col_back,     [:ptr, :ptr, :ptr, :int, :int, :int, :int, :int, :int, :int, :int, :int, :int, :int, :int], :ptr
   ffi_func :tnn_conv_2d,         [:ptr, :ptr, :ptr, :int, :int, :int, :int, :int, :int], :ptr
+  ffi_func :tnn_permute,         [:ptr, :ptr, :int, :int, :int, :int], :ptr
+  ffi_func :tnn_cont_2d,         [:ptr, :ptr, :int, :int], :ptr
   ffi_func :tnn_backend_name,     [:ptr],                   :str
   ffi_func :tnn_input_2d_f32,     [:ptr, :int, :int],       :ptr
   ffi_func :tnn_input_1d_i32,     [:ptr, :int],             :ptr
