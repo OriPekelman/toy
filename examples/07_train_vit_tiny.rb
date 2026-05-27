@@ -67,29 +67,78 @@ cache.realize_for_random_init(cfg, SEED, 1.0)
 t_loss = cache.build_training_step
 puts "realize + build_training_step OK"
 
-# Events stream.
+# Read git state for run_start.provenance.git — same recipe as
+# 06_train_from_scratch.rb so Tao's parser gets the same fields.
+git_sha    = "unknown"
+git_branch = "unknown"
+if File.exist?(".git/HEAD")
+  head = File.read(".git/HEAD")
+  if head.length > 0 && head[head.length - 1...head.length] == "\n"
+    head = head[0...head.length - 1]
+  end
+  if head.length > 5 && head[0...5] == "ref: "
+    ref_rel = head[5...head.length]
+    parts   = ref_rel.split("/")
+    if parts.length >= 3
+      git_branch = parts[parts.length - 1]
+    end
+    ref_path = ".git/" + ref_rel
+    if File.exist?(ref_path)
+      sha = File.read(ref_path)
+      if sha.length >= 40
+        git_sha = sha[0...40]
+      end
+    end
+  else
+    if head.length >= 40
+      git_sha    = head[0...40]
+      git_branch = "HEAD"
+    end
+  end
+end
+
+# Events stream — full run-start-provenance per tao#run-start-provenance
+# (matches the 06_train_from_scratch.rb contract: schema, host, git,
+# backend, model, config, schedule).
 if EVENTS.length > 0
-  TinyNN.tnn_events_open(EVENTS)
-  t_open = TinyNN.tnn_events_now_seconds
-  rs  = "{\"kind\":\"run_start\",\"phase\":\"train\""
-  rs  = rs + ",\"t\":"          + t_open.to_s
-  rs  = rs + ",\"started_at\":\"" + TinyNN.tnn_events_iso8601_now + "\""
-  rs  = rs + ",\"run_id\":\""   + RUN_ID + "\""
-  rs  = rs + ",\"name\":\"vit-tiny\""
-  rs  = rs + ",\"model\":{\"kind\":\"vit\""
-  rs  = rs + ",\"image_size\":" + cfg.image_size.to_s
-  rs  = rs + ",\"patch_size\":" + cfg.patch_size.to_s
-  rs  = rs + ",\"d_model\":"    + cfg.d_model.to_s
-  rs  = rs + ",\"n_heads\":"    + cfg.n_heads.to_s
-  rs  = rs + ",\"n_layers\":"   + cfg.n_layers.to_s
-  rs  = rs + ",\"num_classes\":" + cfg.num_classes.to_s + "}"
-  rs  = rs + ",\"schedule\":{\"lr_max\":" + LR_MAX.to_s +
+  rc = TinyNN.tnn_events_open(EVENTS)
+  if rc != 0
+    puts "events_open failed: rc=" + rc.to_s + " (path=" + EVENTS + ")"
+  else
+    puts "events → " + EVENTS
+    rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
+    rs  = "{\"kind\":\"run_start\",\"schema\":\"toy/v1\""
+    rs = rs + ",\"t\":"          + TinyNN.tnn_events_now_seconds.to_s
+    rs = rs + ",\"started_at\":\"" + TinyNN.tnn_events_iso8601_now + "\""
+    rs = rs + ",\"run_id\":\""   + rid + "\""
+    rs = rs + ",\"phase\":\"train\""
+    rs = rs + ",\"name\":\"vit-tiny\""
+    rs = rs + ",\"host\":{\"name\":\"" + TinyNN.tnn_provenance_host_name + "\""
+    rs = rs + ",\"os\":\""             + TinyNN.tnn_provenance_host_os   + "\""
+    rs = rs + ",\"arch\":\""           + TinyNN.tnn_provenance_host_arch + "\"}"
+    rs = rs + ",\"backend\":{\"kind\":\"" + TinyNN.tnn_backend_name(cache.sess) + "\"}"
+    rs = rs + ",\"git\":{\"sha\":\"" + git_sha + "\""
+    rs = rs + ",\"branch\":\""       + git_branch + "\"}"
+    rs = rs + ",\"model\":{\"arch\":\"vit\""
+    rs = rs + ",\"name\":\"vit-tiny\""
+    rs = rs + ",\"image_size\":"  + cfg.image_size.to_s
+    rs = rs + ",\"patch_size\":"  + cfg.patch_size.to_s
+    rs = rs + ",\"d_model\":"     + cfg.d_model.to_s
+    rs = rs + ",\"n_layers\":"    + cfg.n_layers.to_s
+    rs = rs + ",\"n_heads\":"     + cfg.n_heads.to_s
+    rs = rs + ",\"d_ff\":"        + cfg.d_ff.to_s
+    rs = rs + ",\"num_classes\":" + cfg.num_classes.to_s + "}"
+    rs = rs + ",\"config\":{\"image_dir\":\"" + IMG_DIR + "\""
+    rs = rs + ",\"n_images\":" + N_IMAGES.to_s
+    rs = rs + ",\"steps\":"    + STEPS.to_s
+    rs = rs + ",\"seed\":"     + SEED.to_s + "}"
+    rs = rs + ",\"schedule\":{\"lr_max\":" + LR_MAX.to_s +
               ",\"lr_min\":" + LR_MIN.to_s +
               ",\"warmup\":" + WARMUP.to_s +
               ",\"n_steps\":" + STEPS.to_s + "}"
-  rs  = rs + ",\"backend\":{\"kind\":\"" + TinyNN.tnn_backend_name(cache.sess) + "\"}"
-  rs  = rs + "}"
-  TinyNN.tnn_events_emit(rs)
+    rs = rs + "}"
+    TinyNN.tnn_events_emit(rs)
+  end
 end
 
 plist = ToyDriftGrad.params(cache.sess)
