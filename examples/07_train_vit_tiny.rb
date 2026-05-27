@@ -46,6 +46,20 @@ LR_MIN      = (ENV["LR_MIN"]     || "0.0001").to_f
 WARMUP      = (ENV["WARMUP"]     || "10").to_i
 SEED        = (ENV["SEED"]       || "0").to_i
 
+# INIT={scratch,pure_emb}. scratch (default) = full random init.
+# pure_emb = load patch_embed.proj.weight + pos_embed + cls_token
+# from data/vit_tiny_donor.gguf (the timm vit_tiny_patch16_224
+# extractor's output, E1.4). Block weights stay random in both arms.
+# The pure-emb-vs-scratch comparison is granite_transfer #28's two
+# arms — see Tao's E1 spec.
+#
+# Pure_emb requires the model dims to MATCH the donor (image=224,
+# patch=16, d_model=192, n_heads=3, d_ff=768, n_layers=12). pos_embed
+# resampling for non-224 inputs (Tao's actual protocol uses 96×96)
+# is a follow-up — for now we bail loud on a dim mismatch.
+INIT        = ENV["INIT"]        || "scratch"
+DONOR_GGUF  = ENV["DONOR_GGUF"]  || "data/vit_tiny_donor.gguf"
+
 TAO_RUN_DIR = ENV["TAO_RUN_DIR"] || ""
 EVENTS      = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/events.jsonl") : ""
 RUN_ID      = ENV["TOY_RUN_ID"]   || "vit-tiny"
@@ -66,6 +80,61 @@ cache = ViTTinyForwardFFICache.new
 cache.realize_for_random_init(cfg, SEED, 1.0)
 t_loss = cache.build_training_step
 puts "realize + build_training_step OK"
+
+# INIT=pure_emb: load patch_embed + pos_embed + cls_token from the
+# donor GGUF, leaving block weights at their random init. Must come
+# AFTER realize (the cache tensors exist) and BEFORE the first step
+# (otherwise the random values train through the first batch).
+if INIT == "pure_emb"
+  unless File.exist?(DONOR_GGUF)
+    puts "INIT=pure_emb: donor GGUF not found at " + DONOR_GGUF
+    puts "  produce it via: uv run prep/extract_vit_tiny.py"
+    exit 1
+  end
+  ggh = TinyNN.tnn_gguf_load(DONOR_GGUF)
+  if ggh == nil || ggh == TinyNN.tnn_null_ptr
+    puts "INIT=pure_emb: failed to open " + DONOR_GGUF
+    exit 1
+  end
+  # Donor dims must match cfg — pos_embed and cls_token shapes are
+  # config-bound, so a non-matching cfg would silently wrong-size.
+  donor_d = TinyNN.tnn_gguf_get_u32(ggh, "vit.d_model")
+  donor_p = TinyNN.tnn_gguf_get_u32(ggh, "vit.patch_size")
+  donor_s = TinyNN.tnn_gguf_get_u32(ggh, "vit.seq_t")
+  if donor_d != cfg.d_model || donor_p != cfg.patch_size || donor_s != (cache.n_patches + 1)
+    puts "INIT=pure_emb: donor dim mismatch — donor d_model=" + donor_d.to_s +
+         " patch=" + donor_p.to_s + " seq_t=" + donor_s.to_s +
+         " vs cfg d_model=" + cfg.d_model.to_s + " patch=" + cfg.patch_size.to_s +
+         " seq_t=" + (cache.n_patches + 1).to_s
+    puts "  pos_embed resampling for non-matching shapes is a follow-up"
+    puts "  for now: IMAGE_SIZE=224 PATCH_SIZE=16 D_MODEL=192 N_HEADS=3 D_FF=768 N_LAYERS=12 INIT=pure_emb"
+    exit 1
+  end
+
+  # Upload patch_embed.proj.weight ([patch_flat_dim, d_model] = [768, 192]).
+  pkw_idx = TinyNN.tnn_gguf_find_index(ggh, "patch_embed.proj.weight")
+  pkw_n   = cfg.num_channels * cfg.patch_size * cfg.patch_size * cfg.d_model
+  pkw_buf = Mat.new(1, pkw_n)
+  TinyNN.tnn_gguf_read_f32_to_doubles(ggh, pkw_idx, pkw_buf.flat, pkw_n)
+  TinyNN.tnn_upload_from_float_array(cache.sess, cache.t_patch_kernel, pkw_buf.flat, pkw_n)
+
+  # Upload pos_embed ([d_model, seq_t] = [192, 197]).
+  pe_idx = TinyNN.tnn_gguf_find_index(ggh, "pos_embed")
+  pe_n   = cfg.d_model * (cache.n_patches + 1)
+  pe_buf = Mat.new(1, pe_n)
+  TinyNN.tnn_gguf_read_f32_to_doubles(ggh, pe_idx, pe_buf.flat, pe_n)
+  TinyNN.tnn_upload_from_float_array(cache.sess, cache.t_pos_embed, pe_buf.flat, pe_n)
+
+  # Upload cls_token ([1, d_model] = [1, 192]).
+  ct_idx = TinyNN.tnn_gguf_find_index(ggh, "cls_token")
+  ct_n   = cfg.d_model
+  ct_buf = Mat.new(1, ct_n)
+  TinyNN.tnn_gguf_read_f32_to_doubles(ggh, ct_idx, ct_buf.flat, ct_n)
+  TinyNN.tnn_upload_from_float_array(cache.sess, cache.t_cls_token, ct_buf.flat, ct_n)
+
+  TinyNN.tnn_gguf_free(ggh)
+  puts "INIT=pure_emb: loaded patch_embed/pos_embed/cls_token from " + DONOR_GGUF
+end
 
 # Read git state for run_start.provenance.git — same recipe as
 # 06_train_from_scratch.rb so Tao's parser gets the same fields.
@@ -131,7 +200,9 @@ if EVENTS.length > 0
     rs = rs + ",\"config\":{\"image_dir\":\"" + IMG_DIR + "\""
     rs = rs + ",\"n_images\":" + N_IMAGES.to_s
     rs = rs + ",\"steps\":"    + STEPS.to_s
-    rs = rs + ",\"seed\":"     + SEED.to_s + "}"
+    rs = rs + ",\"seed\":"     + SEED.to_s
+    rs = rs + ",\"init\":\""   + INIT + "\""
+    rs = rs + ",\"donor\":\""  + (INIT == "pure_emb" ? DONOR_GGUF : "") + "\"}"
     rs = rs + ",\"schedule\":{\"lr_max\":" + LR_MAX.to_s +
               ",\"lr_min\":" + LR_MIN.to_s +
               ",\"warmup\":" + WARMUP.to_s +
