@@ -78,7 +78,11 @@ examples/smoke_toy_ckpt_reload: examples/smoke_toy_ckpt_reload.rb lib/arch.rb li
 	$(SPINEL) $< -o $@
 
 # toy#embed-api (#145) — smoke for ToyLM#embed_lookup.
-examples/smoke_embed_api: examples/smoke_embed_api.rb lib/arch.rb lib/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/tokenizer.rb tinynn/libtinynn_ggml.a
+examples/smoke_embed_api: examples/smoke_embed_api.rb lib/arch.rb lib/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/tokenizer.rb lib/toy_logprobs.rb tinynn/libtinynn_ggml.a
+	$(SPINEL) $< -o $@
+
+# toy#decode-logprobs (#151) — smoke for ToyLM#decode_step_with_logprobs.
+examples/smoke_decode_logprobs: examples/smoke_decode_logprobs.rb lib/arch.rb lib/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/tokenizer.rb lib/toy_logprobs.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 # Auto-generated coverage matrix — ggml ops vs our FFI surface.
