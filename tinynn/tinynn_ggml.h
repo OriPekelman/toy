@@ -49,6 +49,12 @@ void  *tnn_session_new(int backend_kind);    /* 0 = CPU, 1 = CUDA, 2 = Metal —
                                               * backend archive isn't linked in */
 void   tnn_session_free(void *sess);
 
+/* toy#embed-api (#145): single-row dequantize-aware read from a
+ * mmap'd 2-D tensor (token_embd in practice). Writes d_model doubles
+ * into dst. Returns 0 on success, negative on failure. */
+int    tnn_embed_lookup_to_doubles(void *sess, void *tensor, int row_idx,
+                                    double *dst, int d_model);
+
 /* GH#17: bump compute-graph node capacity beyond the default 65536.
  * Call before any realize / input / build op. Returns 0 on success;
  * non-zero if sess is null, capacity <= 0, or realize has already

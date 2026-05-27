@@ -169,6 +169,43 @@ class ToyLM
     SmolLM2KV.decode_step(@kv_cpu, token_id, pos)
   end
 
+  # toy#embed-api (#145) — return the token-embedding row for each
+  # input ID as a flat Array<Float> of length n_tokens * d_model.
+  # Callers (Tep /v1/embeddings) can reshape / pool client-side. Works
+  # regardless of backend because the GGUF mmap region is CPU-readable.
+  # Single-row lookup is dequantize-aware (Q4/Q5/Q6/Q8/F16/F32).
+  def embed_lookup(token_ids)
+    if !@loaded
+      puts "ToyLM.embed_lookup: model not loaded; call .load(path) first"
+      return [0.0]
+    end
+    if @backend == :cuda
+      puts "ToyLM.embed_lookup: CUDA backend not wired in this build " +
+           "(use lib/transformer_lm_cuda.rb mirror once it lands; #145)"
+      return Array.new(token_ids.length * @arch.d_model, 0.0)
+    end
+    d_model = @arch.d_model
+    out = Array.new(token_ids.length * d_model, 0.0)
+    row = Array.new(d_model, 0.0)
+    handle = @kv_cpu.sess
+    tensor = @kv_cpu.t_token_embed
+    i = 0
+    while i < token_ids.length
+      rc = TinyNN.tnn_embed_lookup_to_doubles(handle, tensor, token_ids[i], row, d_model)
+      if rc != 0
+        puts "embed_lookup: rc=" + rc.to_s + " token=" + token_ids[i].to_s
+        return out
+      end
+      j = 0
+      while j < d_model
+        out[i * d_model + j] = row[j]
+        j = j + 1
+      end
+      i = i + 1
+    end
+    out
+  end
+
   # Run prefill + generate. Returns the full ID array (prompt + N_NEW
   # generated). Uses greedy argmax if sampler_config is nil; otherwise
   # applies the configured sampler pipeline.
