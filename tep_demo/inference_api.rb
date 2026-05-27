@@ -11,7 +11,7 @@
 
 require_relative "../lib/transformer"
 require_relative "../lib/tinynn"
-require_relative "_tep_lib/tep"
+require_relative "../vendor/spinel/deps"
 
 VOCAB    = 16
 D_MODEL  = 32

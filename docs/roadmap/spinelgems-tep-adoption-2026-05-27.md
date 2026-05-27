@@ -1,6 +1,9 @@
 # spinelgems adoption: replacing prep/sync_tep.rb with the Gemfile convention
 
-**Date:** 2026-05-27. **Status:** plan + drafts; blocked on tep#95.
+**Date:** 2026-05-27. **Status:** ✅ shipped end-to-end same day. All
+`tep_demo/*` apps now require Tep via the spinelgems-vendored
+`vendor/spinel/deps`; the rsync hack (`prep/sync_tep.rb` +
+`tep_demo/_tep_lib/`) is retired.
 **Context:** the sibling [spinelgems](https://github.com/OriPekelman/spinelgems)
 project ships an experimental Gemfile convention for Spinel-compiled
 projects. Its [adoption guide](https://github.com/OriPekelman/spinelgems/blob/main/docs/adoption.md)

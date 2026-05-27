@@ -1,7 +1,7 @@
 # Minimal tep+spinel sanity test -- no model, just verifies that the
 # build pipeline works for our project layout.
 
-require_relative "_tep_lib/tep"
+require_relative "../vendor/spinel/deps"
 
 class HelloHandler < Tep::Handler
   def handle(req, res)
