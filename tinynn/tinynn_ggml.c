@@ -2084,6 +2084,11 @@ void tnn_gguf_w_set_f32(void *ctx, const char *key, double val) {
     gguf_set_val_f32((struct gguf_context *)ctx, key, (float)val);
 }
 
+void tnn_gguf_w_set_bool(void *ctx, const char *key, int val) {
+    if (!ctx || !key) return;
+    gguf_set_val_bool((struct gguf_context *)ctx, key, val ? true : false);
+}
+
 void tnn_gguf_w_add_tensor(void *ctx, void *t) {
     if (!ctx || !t) return;
     gguf_add_tensor((struct gguf_context *)ctx,

@@ -61,6 +61,12 @@ module ToyGGUFWriter
     # Provenance — the toy-side checkpoint format version.
     TinyNN.tnn_gguf_w_set_str(ctx, "toy.checkpoint_format", "toy-from-scratch/v1")
     TinyNN.tnn_gguf_w_set_u32(ctx, "toy.n_params_written",  plist.length)
+    # toy#gguf-checkpoint-reload (#153): the bytes go out in native
+    # ggml column-major because we hand finalized ggml tensors directly
+    # to gguf_add_tensor. Flag it so transformer_lm.rb's load_cpu picks
+    # the mmap path (which understands the per-head naming convention)
+    # instead of the legacy direct loader.
+    TinyNN.tnn_gguf_w_set_bool(ctx, "toy.ggml_native", 1)
 
     # Name each param and add it.
     name_params(plist)

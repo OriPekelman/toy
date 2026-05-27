@@ -72,6 +72,11 @@ examples/example_inference: examples/01_inference.rb lib/arch.rb lib/transformer
 	$(SPINEL) $< -o $@
 example_inference: examples/example_inference
 
+# toy#gguf-checkpoint-reload (#153) — smoke binary that loads a
+# from-scratch toy GGUF and runs a tiny generation. No tokenizer.
+examples/smoke_toy_ckpt_reload: examples/smoke_toy_ckpt_reload.rb lib/arch.rb lib/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/tokenizer.rb tinynn/libtinynn_ggml.a
+	$(SPINEL) $< -o $@
+
 # Auto-generated coverage matrix — ggml ops vs our FFI surface.
 # Sources are vendor/ggml/include/ggml.h, tinynn/tinynn_ggml.c, and the
 # two FFI binding files. See docs/coverage.md for the matrix.
