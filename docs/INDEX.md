@@ -64,6 +64,14 @@ Project-level READMEs sit next to their code: [`README.md`](../README.md),
   Mixtral, Phi-3, GLM-4. Three priority bindings unblock most of it.
 - [`roadmap/scout-small-models.md`](roadmap/scout-small-models.md) —
   next-target survey across modern small models.
+- [`roadmap/backends-and-scale-2026-05-27.md`](roadmap/backends-and-scale-2026-05-27.md) —
+  training maturity (batching, grad accum, mixed-precision,
+  activation recompute), hybrid CPU/GPU offload, non-ggml backends,
+  the strategic question on what toy should own vs delegate.
+- [`roadmap/e1-e2-scope-2026-05-27.md`](roadmap/e1-e2-scope-2026-05-27.md) —
+  E1 (ViT-Tiny, 6 sub-issues) + E2 (Qwen-410M embedding transfer,
+  7 sub-issues) decomposed. E2's graph-capacity blocker already
+  shipped as GH#17.
 - [`roadmap/lowerer-design.md`](roadmap/lowerer-design.md) — a
   Roundhouse-style preprocessor for toy. Not built; recorded because
   there's a concrete external proposal.

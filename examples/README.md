@@ -77,6 +77,37 @@ that actually writes English-shaped stories, bump `EPOCHS=200` and
 (`lib/toy_trainer.rb`) absorbs the per-step boilerplate so what you
 read in `02_train_*.rb` **is** the algorithm.
 
+### From-scratch — Llama arch + Tao instrumentation (`06_train_from_scratch.rb`)
+
+The modern from-scratch path. Llama-shape (RMSNorm + GQA + RoPE +
+SwiGLU), full f32 weights + AdamW state in persistent memory, one
+forward + backward + opt_step graph per training step. Drives Tao's
+end-to-end experiment harness.
+
+```sh
+make example_train_from_scratch
+./examples/example_train_from_scratch                 # CPU, SmolLM2-shape default
+DEVICE=cuda ./examples/example_train_from_scratch     # ~10× faster on GB10
+```
+
+Knobs (env, all optional):
+
+| Env | Purpose |
+| --- | --- |
+| `D_MODEL=64 D_FF=128 N_HEADS=4 N_LAYERS=2 CONTEXT=32` | Model shape |
+| `STEPS=60 LR=0.001 SEED=42` | Training schedule |
+| `TAO_RUN_DIR=/tmp/r` | Emit toy/v1 events stream to `/tmp/r/events.jsonl` |
+| `TOY_GRAD_SENTINELS=1` | Per-PARAM `grad` event every step (drift detection) |
+| `TOY_DRIFT_EVERY=N` | Per-PARAM `drift` event every N steps |
+| `TOY_CKA=N` | Activation-Gram tap event every N steps (per block × 3 regions) |
+| `CHECKPOINT_EVERY=N` | Write `weights/step_<N>.gguf` every N steps (+ `latest` symlink) |
+| `TOY_DESCRIBE=json\|mermaid\|text` | Dump the compute graph and exit (no training) |
+
+Qwen-shape sanity (24L × 16-head × 1024) trains end-to-end via
+`D_MODEL=1024 D_FF=2816 N_HEADS=16 N_LAYERS=24 DEVICE=cuda` (~314
+ms/step on GB10). The graph node budget auto-sizes from cfg
+(`n_layers × n_heads × 1000 + 65536`).
+
 ## Fine-tuning (LoRA + QLoRA)
 
 ```sh
@@ -129,6 +160,37 @@ Token-IDs in, token-IDs out — tokenizer work belongs client-side
 
 For the full OpenAI-compatible API (chat completions / streaming /
 multi-model registry) see [`tep_demo/`](../tep_demo/README.md).
+
+## Inspecting + analysing trained models
+
+Once you have one (or two) checkpoints from `06_train_from_scratch`,
+several runners read them back.
+
+```sh
+# Load a from-scratch toy GGUF and generate from it (smoke; the
+# checkpoint per-head naming is detected automatically).
+make examples/smoke_toy_ckpt_reload
+GGUF=/tmp/run_a/weights/latest ./examples/smoke_toy_ckpt_reload
+
+# Linear Mode Connectivity: blend two ckpts along α and eval CE.
+# Emits one eval(name="lmc", extra.alpha) per α — Tao's Analyze.lmc
+# consumes these to plot the α→loss curve and call same-basin /
+# disconnected.
+make example_lmc
+LMC_A=/tmp/run_a/weights/latest LMC_B=/tmp/run_b/weights/latest \
+  LMC_ALPHAS=0,0.25,0.5,0.75,1.0 TAO_RUN_DIR=/tmp/lmc \
+  ./examples/example_lmc
+
+# Embedding-table lookup (one row per token id; dequant-aware,
+# F32/Q4/Q5/Q6/Q8/F16). Building block for Tep's /v1/embeddings.
+make examples/smoke_embed_api
+GGUF=data/llama-3.2-1b-native.gguf ./examples/smoke_embed_api
+
+# Per-step logprobs + top-K (building block for Tep's
+# /v1/chat?logprobs=true).
+make examples/smoke_decode_logprobs
+GGUF=data/smollm2-135m-native.gguf TOP_K=5 ./examples/smoke_decode_logprobs
+```
 
 ## Where to go after the examples
 
