@@ -356,13 +356,73 @@ Free-form human or AI annotation. Useful for inline commentary
   "reason": "completed",
   "final_step": 1000,
   "final_loss": 2.31,
+  "quality_gate": {
+    "passed": true,
+    "metric": "loss_ratio",
+    "value": 0.68,
+    "threshold": 0.9
+  },
   "exit_code": 0
 }
 ```
 
-`reason` is one of `"completed"`, `"interrupted"`, `"aborted"`,
-`"errored"`. If interrupted/aborted/errored, an `error` field with the
+`reason` is reserved for **execution status** — one of `"completed"`,
+`"interrupted"`, `"aborted"`, `"errored"`. A run that executed to
+completion without an exception is always `"completed"` regardless of
+quality. If interrupted/aborted/errored, an `error` field with the
 message is conventional.
+
+`quality_gate` (optional) carries the **research verdict** —
+distinct from `reason`. A run that completed cleanly but failed a
+quality bar (e.g. "loss didn't decrease enough", "perplexity above
+threshold") gets `reason: "completed"` + `quality_gate.passed: false`.
+This separation lets consumers distinguish "did this run crash?"
+(`reason`) from "is this run useful for the experiment?"
+(`quality_gate.passed`). Fields:
+
+- `passed` (bool, required if `quality_gate` is emitted)
+- `metric` (string) — the name of the gate metric, e.g. `"loss_ratio"`,
+  `"perplexity"`, `"top1"`
+- `value` (number) — the metric's measured value
+- `threshold` (number) — the gate boundary
+
+`exit_code` mirrors the OS exit code (0 = success, 1 = quality-gate
+fail, 2+ = command/usage errors). Independent of `reason` so CI/make
+contracts can stay sharp.
+
+### `eval` with `phase: "serve"` — inference-time telemetry
+
+Inference servers (e.g. `Tep::Llm::OpenAI::Server`, the toy
+serving path) emit `eval` events with `phase: "serve"` and
+`name: "request"` for per-completion telemetry. The shape:
+
+```json
+{
+  "kind": "eval",
+  "phase": "serve",
+  "t": 87.42,
+  "name": "request",
+  "extra": {
+    "model": "smollm2-135m",
+    "prompt_tokens": 12,
+    "completion_tokens": 8,
+    "latency_us": 87000,
+    "sampling": { "temperature": 0.7, "max_tokens": 256 },
+    "request_id": "chatcmpl-abc",
+    "principal_id": "user:42"
+  }
+}
+```
+
+The `phase: "serve"` value distinguishes from `phase: "eval"` (which is
+held-out evaluation during training). The `extra` open-bag carries
+caller-specific fields without bloating the schema; consumers route on
+`extra.request_id` for request-keyed aggregation.
+
+A serving run additionally emits `run_start` at server-boot
+(with `backend.kind`, `host`, `git`, `model`) and `run_end` at
+shutdown — same envelope as a training run, so the consumer
+ingest path is uniform across training and serving telemetry.
 
 ## Producer guarantees
 
