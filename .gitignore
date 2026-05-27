@@ -111,6 +111,7 @@ tinynn/ab_smoke_mul
 !tinynn/README.md
 # tep_demo build artifacts (sources committed; binaries + scratch ignored)
 tep_demo/hello
+tep_demo/hello_vendored
 tep_demo/api
 tep_demo/openai_api
 tep_demo/openai_api_smollm2
