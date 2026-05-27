@@ -151,6 +151,12 @@ class LlamaSeqForwardFFICache
     @ft_globals_m       = [TinyNN.tnn_null_ptr]; @ft_globals_m.pop
     @ft_globals_v       = [TinyNN.tnn_null_ptr]; @ft_globals_v.pop
     @ft_train_embeddings_enabled = false
+    # E2.3 (towards GH#14) — projection-lens path. donor_d_in is read
+    # from cfg in realize_for_random_init; @t_seq_w_proj is the
+    # trainable [donor_d_in, d_model] linear inserted after the embed
+    # get_rows when donor_d_in > 0.
+    @seq_donor_d_in   = 0
+    @t_seq_w_proj     = TinyNN.tnn_null_ptr
   end
 
   # F3 — additionally train the embedding / final-norm gamma / untied
@@ -1012,6 +1018,7 @@ class LlamaSeqForwardFFICache
     TinyNN.tnn_session_set_graph_capacity(@sess, cap)
     @seq_has_untied_output = untied
     @seq_has_qkv_bias      = qkv_bias
+    @seq_donor_d_in        = cfg.donor_d_in   # E2.3 — 0 disables projection lens
 
     if @seq_rope_scaling.kind == :llama3
       @t_seq_rope_freq_factors = TinyNN.tnn_rope_freq_factors_alloc(@sess, cfg.head_dim)
@@ -1022,10 +1029,31 @@ class LlamaSeqForwardFFICache
     # Globals — all trainable persistent F32. Each gets a llama.cpp-
     # convention name so drift/grad/checkpoint consumers can align
     # across runs (toy#semantic-tensor-names, GH#11).
-    @t_seq_token_embed = TinyNN.tnn_input_2d_f32_persistent(@sess,
-                           @seq_vocab_size, @seq_d_model)
-    ft_add_global_2d(@t_seq_token_embed, @seq_vocab_size, @seq_d_model)
-    ft_name_last_global("token_embd.weight")
+    # E2.3 — projection lens. When cfg.donor_d_in > 0 the embed
+    # table has donor_d_in columns (typically loaded from a donor
+    # GGUF post-realize, frozen); a trainable Linear(donor_d_in,
+    # d_model) named "lens.proj.weight" sits between get_rows and
+    # the first block. When 0, behaviour is identical to before.
+    if @seq_donor_d_in > 0
+      # token_embd ne=[donor_d_in, vocab] — donor-width rows.
+      @t_seq_token_embed = TinyNN.tnn_input_2d_f32_persistent(@sess,
+                             @seq_vocab_size, @seq_donor_d_in)
+      # Frozen — NOT in ft_globals so backward won't compute its grad
+      # and build_training_step won't emit an opt_step for it. Caller
+      # uploads donor values post-finalize.
+      TinyNN.tnn_tensor_set_name(@t_seq_token_embed, "token_embd.weight")
+      # W_proj ne=[donor_d_in, d_model] so matmul(W_proj, embed)
+      # contracts donor_d_in → d_model. Trainable.
+      @t_seq_w_proj = TinyNN.tnn_input_2d_f32_persistent(@sess,
+                        @seq_d_model, @seq_donor_d_in)
+      ft_add_global_2d(@t_seq_w_proj, @seq_d_model, @seq_donor_d_in)
+      ft_name_last_global("lens.proj.weight")
+    else
+      @t_seq_token_embed = TinyNN.tnn_input_2d_f32_persistent(@sess,
+                             @seq_vocab_size, @seq_d_model)
+      ft_add_global_2d(@t_seq_token_embed, @seq_vocab_size, @seq_d_model)
+      ft_name_last_global("token_embd.weight")
+    end
 
     @t_seq_final_norm_gamma = TinyNN.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
     ft_add_global_1d(@t_seq_final_norm_gamma)
@@ -1145,8 +1173,16 @@ class LlamaSeqForwardFFICache
   def upload_random_init!(seed, init_scale, qkv_bias, untied)
     state = [seed]
 
-    # Token embed + (optional) untied output: N(0, 0.02).
-    upload_gaussian(@t_seq_token_embed, @seq_vocab_size * @seq_d_model, 0.02, state)
+    # Token embed: width depends on projection lens.
+    # When donor_d_in > 0, embed is [vocab, donor_d_in] (caller may
+    # overwrite with real donor values after realize); the trainable
+    # projection W_proj [donor_d_in, d_model] also gets a Gaussian init.
+    embed_cols = @seq_donor_d_in > 0 ? @seq_donor_d_in : @seq_d_model
+    upload_gaussian(@t_seq_token_embed, @seq_vocab_size * embed_cols, 0.02, state)
+    if @seq_donor_d_in > 0
+      upload_gaussian(@t_seq_w_proj, @seq_donor_d_in * @seq_d_model,
+                       1.0 / Math.sqrt(@seq_donor_d_in.to_f), state)
+    end
     upload_constant(@t_seq_final_norm_gamma, @seq_d_model, 1.0)
     if untied
       upload_gaussian(@t_seq_output, @seq_vocab_size * @seq_d_model, 0.02, state)
@@ -1405,7 +1441,15 @@ class LlamaSeqForwardFFICache
     @t_seq_x_embed = TinyNN.tnn_get_rows(@sess, @t_seq_token_embed, @t_seq_token_ids)
     TinyNN.tnn_set_output(@t_seq_x_embed)
 
-    t_cur = @t_seq_x_embed
+    # E2.3 — projection lens. ggml matmul(W, x) with W=[donor_d_in, d_model]
+    # and x=[donor_d_in, T] gives [d_model, T] (contraction on ne[0]).
+    if @seq_donor_d_in > 0
+      t_proj = TinyNN.tnn_matmul(@sess, @t_seq_w_proj, @t_seq_x_embed)
+      TinyNN.tnn_set_output(t_proj)
+      t_cur = t_proj
+    else
+      t_cur = @t_seq_x_embed
+    end
     li_g = 0
     while li_g < @seq_n_layers
       t_cur = build_seq_block(t_cur, @seq_blocks_ffi[li_g], scale, eps)

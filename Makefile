@@ -90,6 +90,10 @@ examples/example_lmc: examples/08_lmc.rb lib/llama_seq_forward_ffi.rb lib/toy_sm
 	$(SPINEL) $< -o $@
 example_lmc: examples/example_lmc
 
+# E2.3 (towards GH#14) — projection-lens smoke.
+examples/smoke_projection_lens: examples/smoke_projection_lens.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb lib/toy_drift_grad.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+
 # Auto-generated coverage matrix — ggml ops vs our FFI surface.
 # Sources are vendor/ggml/include/ggml.h, tinynn/tinynn_ggml.c, and the
 # two FFI binding files. See docs/coverage.md for the matrix.

@@ -122,7 +122,14 @@ module Toy
                   # = d_model / n_heads (set in initialize); the GGUF
                   # loader overrides via cfg.head_dim = … when the
                   # `llama.attention.key_length` key is present.
-                  :head_dim
+                  :head_dim,
+                  # E2.3 (towards GH#14) — projection-lens width.
+                  # When > 0, the token embedding table is sized
+                  # [vocab × donor_d_in] (typically loaded from a
+                  # donor GGUF) and a Linear(donor_d_in, d_model) is
+                  # inserted after embed lookup. 0 disables (default
+                  # path = embed table has d_model columns).
+                  :donor_d_in
 
     def initialize(vocab, d_model, n_heads, n_kv, d_ff, n_layers,
                    ctx, rope_base, rms_eps)
@@ -141,6 +148,7 @@ module Toy
       # Default to no scaling. Callers set @rope_scaling after .new
       # (the GGUF loader does this in SmolLM2ConfigLoader.read).
       @rope_scaling = Toy::RopeScaling.none
+      @donor_d_in   = 0   # E2.3 — projection-lens disabled by default
     end
 
     # Convenience: the default that matches SmolLM2-135M on HF.
