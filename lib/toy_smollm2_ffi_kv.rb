@@ -397,6 +397,16 @@ class SmolLM2KVFFICache
     map_size = TinyNN.tnn_gguf_mmap_size(gguf_handle)
     TinyNN.tnn_session_attach_weight_mmap(@sess, map_base, map_size)
 
+    # toy#gguf-checkpoint-reload (#153) — from-scratch checkpoints
+    # written by ToyGGUFWriter store one tensor per head
+    # (blk.N.attn_q.head_H.weight) rather than the fused llama.cpp
+    # shape. Detect via the head_0 sentinel; the per-Q-head/K/V
+    # loaders below branch on it.
+    @per_head_attn = TinyNN.tnn_gguf_find_index(gguf_handle, "blk.0.attn_q.head_0.weight") >= 0
+    if @per_head_attn
+      puts "  per-head tensors detected (toy from-scratch checkpoint)"
+    end
+
     # Globals — embeddings + final norm + optional untied output.
     eidx = TinyNN.tnn_gguf_find_index(gguf_handle, "token_embd.weight")
     eoff = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, eidx)
@@ -467,20 +477,39 @@ class SmolLM2KVFFICache
                                TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, kn_idx))
       end
 
-      # Q per-head — each head is a contiguous slice of the full
-      # [n_heads*d_head, d_model] tensor in HF-native row-major.
-      q_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_q.weight")
-      q_off_base = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, q_idx)
-      q_type     = TinyNN.tnn_gguf_tensor_type(gguf_handle, q_idx)
-      q_stride   = head_nbytes(q_type, @d_head, @d_model)
-      blk.t_w_q = [TinyNN.tnn_input_2d_persistent_mmap(@sess,
-                     @d_head, @d_model, q_type, q_off_base)]
-      hq = 1
-      while hq < @n_heads
-        blk.t_w_q.push(TinyNN.tnn_input_2d_persistent_mmap(@sess,
-                         @d_head, @d_model, q_type,
-                         q_off_base + hq * q_stride))
-        hq = hq + 1
+      # Q per-head — two layouts:
+      # 1) Fused (llama.cpp): single attn_q.weight tensor; each head
+      #    is a contiguous slice at offset q_base + h * head_nbytes.
+      # 2) Per-head (toy from-scratch ckpt, #153): each head has its
+      #    own attn_q.head_H.weight tensor with its own file offset.
+      if @per_head_attn
+        q0_idx  = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_q.head_0.weight")
+        q0_type = TinyNN.tnn_gguf_tensor_type(gguf_handle, q0_idx)
+        blk.t_w_q = [TinyNN.tnn_input_2d_persistent_mmap(@sess,
+                       @d_head, @d_model, q0_type,
+                       TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, q0_idx))]
+        hq = 1
+        while hq < @n_heads
+          qh_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_q.head_" + hq.to_s + ".weight")
+          blk.t_w_q.push(TinyNN.tnn_input_2d_persistent_mmap(@sess,
+                           @d_head, @d_model, q0_type,
+                           TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, qh_idx)))
+          hq = hq + 1
+        end
+      else
+        q_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_q.weight")
+        q_off_base = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, q_idx)
+        q_type     = TinyNN.tnn_gguf_tensor_type(gguf_handle, q_idx)
+        q_stride   = head_nbytes(q_type, @d_head, @d_model)
+        blk.t_w_q = [TinyNN.tnn_input_2d_persistent_mmap(@sess,
+                       @d_head, @d_model, q_type, q_off_base)]
+        hq = 1
+        while hq < @n_heads
+          blk.t_w_q.push(TinyNN.tnn_input_2d_persistent_mmap(@sess,
+                           @d_head, @d_model, q_type,
+                           q_off_base + hq * q_stride))
+          hq = hq + 1
+        end
       end
 
       # F1.2: per-Q-head LoRA adapter slots. F32-only, allocated in
@@ -529,19 +558,34 @@ class SmolLM2KVFFICache
         end
       end
 
-      # K, V per-kv-head — same slicing math.
-      k_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_k.weight")
-      v_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_v.weight")
-      k_off_base = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, k_idx)
-      v_off_base = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, v_idx)
-      k_type     = TinyNN.tnn_gguf_tensor_type(gguf_handle, k_idx)
-      v_type     = TinyNN.tnn_gguf_tensor_type(gguf_handle, v_idx)
-      k_stride   = head_nbytes(k_type, @d_head, @d_model)
-      v_stride   = head_nbytes(v_type, @d_head, @d_model)
-      blk.t_w_k = [TinyNN.tnn_input_2d_persistent_mmap(@sess,
-                     @d_head, @d_model, k_type, k_off_base)]
-      blk.t_w_v = [TinyNN.tnn_input_2d_persistent_mmap(@sess,
-                     @d_head, @d_model, v_type, v_off_base)]
+      # K, V per-kv-head — same dual-layout split (#153).
+      if @per_head_attn
+        k0_idx  = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_k.head_0.weight")
+        v0_idx  = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_v.head_0.weight")
+        k_type  = TinyNN.tnn_gguf_tensor_type(gguf_handle, k0_idx)
+        v_type  = TinyNN.tnn_gguf_tensor_type(gguf_handle, v0_idx)
+        blk.t_w_k = [TinyNN.tnn_input_2d_persistent_mmap(@sess,
+                       @d_head, @d_model, k_type,
+                       TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, k0_idx))]
+        blk.t_w_v = [TinyNN.tnn_input_2d_persistent_mmap(@sess,
+                       @d_head, @d_model, v_type,
+                       TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, v0_idx))]
+        k_stride = 0  # unused in per-head branch but referenced later
+        v_stride = 0
+      else
+        k_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_k.weight")
+        v_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_v.weight")
+        k_off_base = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, k_idx)
+        v_off_base = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, v_idx)
+        k_type     = TinyNN.tnn_gguf_tensor_type(gguf_handle, k_idx)
+        v_type     = TinyNN.tnn_gguf_tensor_type(gguf_handle, v_idx)
+        k_stride   = head_nbytes(k_type, @d_head, @d_model)
+        v_stride   = head_nbytes(v_type, @d_head, @d_model)
+        blk.t_w_k = [TinyNN.tnn_input_2d_persistent_mmap(@sess,
+                       @d_head, @d_model, k_type, k_off_base)]
+        blk.t_w_v = [TinyNN.tnn_input_2d_persistent_mmap(@sess,
+                       @d_head, @d_model, v_type, v_off_base)]
+      end
       # P5.1+P5.2: K and V allocs both follow @kv_type_*. Layout is
       # `ne=[d_head, max_T]` for both — positions on ne1, d_head on
       # ne0. Per-position writes span a contiguous d_head-vector
@@ -559,12 +603,23 @@ class SmolLM2KVFFICache
       end
       hkv = 1
       while hkv < @n_kv
-        blk.t_w_k.push(TinyNN.tnn_input_2d_persistent_mmap(@sess,
-                         @d_head, @d_model, k_type,
-                         k_off_base + hkv * k_stride))
-        blk.t_w_v.push(TinyNN.tnn_input_2d_persistent_mmap(@sess,
-                         @d_head, @d_model, v_type,
-                         v_off_base + hkv * v_stride))
+        if @per_head_attn
+          kh_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_k.head_" + hkv.to_s + ".weight")
+          vh_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_v.head_" + hkv.to_s + ".weight")
+          blk.t_w_k.push(TinyNN.tnn_input_2d_persistent_mmap(@sess,
+                           @d_head, @d_model, k_type,
+                           TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, kh_idx)))
+          blk.t_w_v.push(TinyNN.tnn_input_2d_persistent_mmap(@sess,
+                           @d_head, @d_model, v_type,
+                           TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, vh_idx)))
+        else
+          blk.t_w_k.push(TinyNN.tnn_input_2d_persistent_mmap(@sess,
+                           @d_head, @d_model, k_type,
+                           k_off_base + hkv * k_stride))
+          blk.t_w_v.push(TinyNN.tnn_input_2d_persistent_mmap(@sess,
+                           @d_head, @d_model, v_type,
+                           v_off_base + hkv * v_stride))
+        end
         if @kv_type_k == 8
           blk.t_K.push(TinyNN.tnn_input_2d_persistent_typed(@sess, max_T, @d_head, 8))
         else

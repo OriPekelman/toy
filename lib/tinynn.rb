@@ -550,6 +550,7 @@ module TinyNN
   ffi_func :tnn_gguf_w_set_str,   [:ptr, :str, :str],       :void
   ffi_func :tnn_gguf_w_set_u32,   [:ptr, :str, :int],       :void
   ffi_func :tnn_gguf_w_set_f32,   [:ptr, :str, :double],    :void
+  ffi_func :tnn_gguf_w_set_bool,  [:ptr, :str, :int],       :void
   ffi_func :tnn_gguf_w_add_tensor,[:ptr, :ptr],             :void
   ffi_func :tnn_gguf_w_finalize,  [:ptr, :str],             :int
   ffi_func :tnn_gguf_w_free,      [:ptr],                   :void

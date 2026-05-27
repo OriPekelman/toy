@@ -42,11 +42,20 @@ module GGUFLoad
 
     # Q/K/V biases are a Qwen2.x trait (Llama / SmolLM2 / TinyLlama lack
     # them). Detect via attn_q.bias in block 0; the converter writes all
-    # three when any are present in the HF safetensors.
-    qkv_bias_idx = find_index(handle, "blk.0.attn_q.bias", n_tensors)
-    has_qkv_bias = qkv_bias_idx >= 0
+    # three when any are present in the HF safetensors. The per-head
+    # variant (toy from-scratch checkpoints) carries blk.0.attn_q.head_0.bias.
+    has_qkv_bias = (find_index(handle, "blk.0.attn_q.bias", n_tensors) >= 0) ||
+                   (find_index(handle, "blk.0.attn_q.head_0.bias", n_tensors) >= 0)
     if has_qkv_bias
       puts "  Q/K/V biases present (Qwen2.x-style)"
+    end
+
+    # toy#gguf-checkpoint-reload (#153) — from-scratch checkpoints written
+    # by ToyGGUFWriter store one tensor PER HEAD (blk.N.attn_q.head_H.weight)
+    # rather than the fused llama.cpp shape. Detect via the head_0 sentinel.
+    per_head = find_index(handle, "blk.0.attn_q.head_0.weight", n_tensors) >= 0
+    if per_head
+      puts "  per-head tensors (toy from-scratch checkpoint format)"
     end
 
     li = 0
@@ -57,25 +66,43 @@ module GGUFLoad
       read_array(handle, prefix + ".attn_norm.weight", blk.rn1.gamma, n_tensors)
       read_array(handle, prefix + ".ffn_norm.weight",  blk.rn2.gamma, n_tensors)
 
-      # Q: full [d_model, n_heads * d_head] = [d_model, d_model]
-      read_split_heads_weight(handle, prefix + ".attn_q.weight",
-                               blk.attn.w_q, n_heads, d_model, d_head, n_tensors)
-      # K, V: narrower [d_model, n_kv * d_head] — uses the GQA reader.
-      read_split_kv_weight(handle, prefix + ".attn_k.weight",
-                            blk.attn.w_k, n_kv, d_model, d_head, n_tensors)
-      read_split_kv_weight(handle, prefix + ".attn_v.weight",
-                            blk.attn.w_v, n_kv, d_model, d_head, n_tensors)
+      if per_head
+        read_per_head_weight(handle, prefix + ".attn_q",
+                              blk.attn.w_q, n_heads, d_model, d_head, n_tensors)
+        read_per_head_weight(handle, prefix + ".attn_k",
+                              blk.attn.w_k, n_kv,    d_model, d_head, n_tensors)
+        read_per_head_weight(handle, prefix + ".attn_v",
+                              blk.attn.w_v, n_kv,    d_model, d_head, n_tensors)
+      else
+        # Q: full [d_model, n_heads * d_head] = [d_model, d_model]
+        read_split_heads_weight(handle, prefix + ".attn_q.weight",
+                                 blk.attn.w_q, n_heads, d_model, d_head, n_tensors)
+        # K, V: narrower [d_model, n_kv * d_head] — uses the GQA reader.
+        read_split_kv_weight(handle, prefix + ".attn_k.weight",
+                              blk.attn.w_k, n_kv, d_model, d_head, n_tensors)
+        read_split_kv_weight(handle, prefix + ".attn_v.weight",
+                              blk.attn.w_v, n_kv, d_model, d_head, n_tensors)
+      end
       read_mat(handle,   prefix + ".attn_output.weight", blk.attn.w_o, n_tensors)
 
       if has_qkv_bias
-        # Q bias: [n_heads * d_head] split into per-Q-head arrays.
-        read_split_heads_bias(handle, prefix + ".attn_q.bias",
-                               blk.attn.b_q, n_heads, d_head, n_tensors)
-        # K/V biases: [n_kv * d_head] split into per-KV-head arrays.
-        read_split_kv_bias(handle, prefix + ".attn_k.bias",
-                            blk.attn.b_k, n_kv, d_head, n_tensors)
-        read_split_kv_bias(handle, prefix + ".attn_v.bias",
-                            blk.attn.b_v, n_kv, d_head, n_tensors)
+        if per_head
+          read_per_head_bias(handle, prefix + ".attn_q",
+                              blk.attn.b_q, n_heads, d_head, n_tensors)
+          read_per_head_bias(handle, prefix + ".attn_k",
+                              blk.attn.b_k, n_kv,    d_head, n_tensors)
+          read_per_head_bias(handle, prefix + ".attn_v",
+                              blk.attn.b_v, n_kv,    d_head, n_tensors)
+        else
+          # Q bias: [n_heads * d_head] split into per-Q-head arrays.
+          read_split_heads_bias(handle, prefix + ".attn_q.bias",
+                                 blk.attn.b_q, n_heads, d_head, n_tensors)
+          # K/V biases: [n_kv * d_head] split into per-KV-head arrays.
+          read_split_kv_bias(handle, prefix + ".attn_k.bias",
+                              blk.attn.b_k, n_kv, d_head, n_tensors)
+          read_split_kv_bias(handle, prefix + ".attn_v.bias",
+                              blk.attn.b_v, n_kv, d_head, n_tensors)
+        end
         blk.attn.enable_qkv_bias!
       end
 

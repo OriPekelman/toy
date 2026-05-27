@@ -181,8 +181,10 @@ class Arch
     rms_eps   = TinyNN.tnn_gguf_get_f32(handle, arch_prefix + ".attention.layer_norm_rms_epsilon")
     d_head    = d_model / n_q
 
-    # Tensor-presence flags.
-    has_qkv_bias = TinyNN.tnn_gguf_find_index(handle, "blk.0.attn_q.bias") >= 0
+    # Tensor-presence flags. Per-head bias (toy from-scratch ckpts, #153)
+    # carries blk.0.attn_q.head_0.bias instead of the fused name.
+    has_qkv_bias = (TinyNN.tnn_gguf_find_index(handle, "blk.0.attn_q.bias") >= 0) ||
+                   (TinyNN.tnn_gguf_find_index(handle, "blk.0.attn_q.head_0.bias") >= 0)
     untied       = TinyNN.tnn_gguf_find_index(handle, "output.weight")     >= 0
     # M2.3 MoE detection — same sentinel as detect_smollm2_flags.
     is_moe       = TinyNN.tnn_gguf_find_index(handle, "blk.0.ffn_gate_inp.weight") >= 0

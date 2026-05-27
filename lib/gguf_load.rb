@@ -222,6 +222,53 @@ module GGUFLoad
     end
   end
 
+  # toy-checkpoint variant: each head is its own tensor named
+  # blk.N.attn_<q|k|v>.head_H.weight, shape [d_head, d_model] in ggml
+  # column-major (== row-major [d_model × d_head] in our Mat layout).
+  # That is exactly what a per-head Mat expects, so each tensor reads
+  # straight into its slot — no fan-out / strided extraction.
+  #
+  # Used by toy#gguf-checkpoint-reload (#153) to load from-scratch
+  # toy GGUFs without going through the fused llama.cpp convention.
+  def self.read_per_head_weight(handle, prefix_attn, dst, n_heads, d_model, d_head, n_tensors)
+    h = 0
+    while h < n_heads
+      name = prefix_attn + ".head_" + h.to_s + ".weight"
+      idx = find_index(handle, name, n_tensors)
+      if idx < 0
+        puts "missing: " + name
+        return
+      end
+      mat = dst[h]
+      nel = d_model * d_head
+      rc = TinyNN.tnn_gguf_read_f32_to_doubles(handle, idx, mat.flat, nel)
+      if rc != 0
+        puts "read failed: " + name + " rc=" + rc.to_s
+        return
+      end
+      h = h + 1
+    end
+  end
+
+  # Per-head bias: blk.N.attn_<q|k|v>.head_H.bias, shape [d_head].
+  def self.read_per_head_bias(handle, prefix_attn, dst, n_heads, d_head, n_tensors)
+    h = 0
+    while h < n_heads
+      name = prefix_attn + ".head_" + h.to_s + ".bias"
+      idx = find_index(handle, name, n_tensors)
+      if idx < 0
+        puts "missing: " + name
+        return
+      end
+      rc = TinyNN.tnn_gguf_read_f32_to_doubles(handle, idx, dst[h], d_head)
+      if rc != 0
+        puts "read failed: " + name + " rc=" + rc.to_s
+        return
+      end
+      h = h + 1
+    end
+  end
+
   # Load distilgpt2-shaped GGUF (also fits gpt2-small/medium/large) into
   # a caller-constructed GPT2LM. Returns true on success.
   def self.load_gpt2(model, path)

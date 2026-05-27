@@ -462,6 +462,7 @@ void  *tnn_gguf_w_init(void);
 void   tnn_gguf_w_set_str(void *ctx, const char *key, const char *val);
 void   tnn_gguf_w_set_u32(void *ctx, const char *key, int val);
 void   tnn_gguf_w_set_f32(void *ctx, const char *key, double val);
+void   tnn_gguf_w_set_bool(void *ctx, const char *key, int val);
 void   tnn_gguf_w_add_tensor(void *ctx, void *t);
 int    tnn_gguf_w_finalize(void *ctx, const char *path);
 void   tnn_gguf_w_free(void *ctx);
