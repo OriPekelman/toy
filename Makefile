@@ -381,6 +381,10 @@ tinynn/ab_smoke_conv2d: tinynn/ab_smoke_conv2d.rb lib/transformer.rb lib/tinynn.
 tinynn/ab_smoke_patch_embed: tinynn/ab_smoke_patch_embed.rb lib/transformer.rb lib/tinynn.rb lib/toy_vit.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) tinynn/ab_smoke_patch_embed.rb -o tinynn/ab_smoke_patch_embed
 
+# E1.3 / GH#13 — ViT-Tiny forward + training smoke.
+examples/smoke_vit_tiny: examples/smoke_vit_tiny.rb lib/vit_tiny_forward_ffi.rb lib/toy_vit.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+
 tinynn/ab_smoke_gelu: tinynn/ab_smoke_gelu.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) tinynn/ab_smoke_gelu.rb -o tinynn/ab_smoke_gelu
 
