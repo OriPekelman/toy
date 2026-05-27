@@ -68,6 +68,11 @@ Project-level READMEs sit next to their code: [`README.md`](../README.md),
   training maturity (batching, grad accum, mixed-precision,
   activation recompute), hybrid CPU/GPU offload, non-ggml backends,
   the strategic question on what toy should own vs delegate.
+- [`roadmap/decoupled-diloco-research-2026-05-27.md`](roadmap/decoupled-diloco-research-2026-05-27.md) —
+  drills into Decoupled DiLoCo (Douillard et al. April 2026) for the
+  "laptop + remote GPU joins mid-training" scenario. Closer-fit
+  variants for the asymmetric case (OpenDiLoCo, Async-Local-SGD);
+  honest scope for what toy would need to ship.
 - [`roadmap/e1-e2-scope-2026-05-27.md`](roadmap/e1-e2-scope-2026-05-27.md) —
   E1 (ViT-Tiny, 6 sub-issues) + E2 (Qwen-410M embedding transfer,
   7 sub-issues) decomposed. E2's graph-capacity blocker already
