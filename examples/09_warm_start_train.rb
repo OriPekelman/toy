@@ -54,6 +54,23 @@ SEED     = (ENV["SEED"]     || "0").to_i
 CORPUS   = ENV["CORPUS"]    || "data/ts_seqs.bin"
 VOCAB    = (ENV["VOCAB"]    || "627").to_i
 
+# INIT={scratch,warm}. scratch (default) = random init for both
+# token_embd and W_proj (current behaviour). warm = load the donor
+# embedding from a Qwen-class GGUF; W_proj stays random-init.
+# Matches granite_transfer #38's warm-vs-scratch arms.
+#
+# Cfg-vs-donor dim check: donor's d_model (llama.embedding_length in
+# the GGUF) must equal cfg.donor_d_in. We don't enforce vocab
+# alignment — we read the first VOCAB rows of the donor's token_embd
+# and load them as the donor side, which is correct when the toy
+# corpus is *also* tokenized against the donor's tokenizer (the real
+# E2 protocol uses Qwen-tokenized FineWeb-Edu). For the smoke against
+# TinyStories vocab=627, those first 627 Qwen rows are essentially
+# "structured noise" — exercises the warm-init machinery without
+# claiming scientific alignment.
+INIT        = ENV["INIT"]        || "scratch"
+DONOR_GGUF  = ENV["DONOR_GGUF"]  || "data/qwen25-1.5b-f32.gguf"
+
 TAO_RUN_DIR = ENV["TAO_RUN_DIR"] || ""
 EVENTS      = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/events.jsonl") : ""
 RUN_ID      = ENV["TOY_RUN_ID"] || "warm-start"
@@ -74,6 +91,51 @@ fcache = LlamaSeqForwardFFICache.new
 # untied=true is mandatory when donor_d_in > 0 — see E2.3 commit.
 fcache.realize_for_random_init(cfg, CONTEXT, true, false, SEED, 1.0)
 puts "realize OK"
+
+# INIT=warm: load donor token_embd.weight into the realize'd embed
+# table (first VOCAB rows; donor's vocab is normally much larger).
+# Must come AFTER realize (the tensor exists) and BEFORE the first
+# step (else we train through random initial values).
+if INIT == "warm"
+  unless File.exist?(DONOR_GGUF)
+    puts "INIT=warm: donor GGUF not found at " + DONOR_GGUF
+    puts "  set DONOR_GGUF= to a Qwen-shaped GGUF that has token_embd.weight"
+    exit 1
+  end
+  ggh = TinyNN.tnn_gguf_load(DONOR_GGUF)
+  if ggh == nil || ggh == TinyNN.tnn_null_ptr
+    puts "INIT=warm: failed to open " + DONOR_GGUF
+    exit 1
+  end
+  donor_d = TinyNN.tnn_gguf_get_u32(ggh, "llama.embedding_length")
+  if donor_d != DONOR_D
+    puts "INIT=warm: donor d_model=" + donor_d.to_s +
+         " but cfg.donor_d_in=" + DONOR_D.to_s + " (DONOR_D mismatch)"
+    puts "  set DONOR_D=" + donor_d.to_s + " to match the donor"
+    exit 1
+  end
+  te_idx = TinyNN.tnn_gguf_find_index(ggh, "token_embd.weight")
+  if te_idx < 0
+    puts "INIT=warm: donor has no token_embd.weight tensor"
+    exit 1
+  end
+  n_to_read = VOCAB * DONOR_D
+  te_buf = Mat.new(1, n_to_read)
+  # tnn_gguf_read_f32_to_doubles returns 0 on success, negative on
+  # error (different convention from tnn_read_f32_file which returns
+  # element count). The function caps n at available internally, so a
+  # short read returns 0 too — best diagnostic is verifying values
+  # downstream.
+  rc = TinyNN.tnn_gguf_read_f32_to_doubles(ggh, te_idx, te_buf.flat, n_to_read)
+  if rc != 0
+    puts "INIT=warm: read failed rc=" + rc.to_s + " on token_embd.weight"
+    exit 1
+  end
+  TinyNN.tnn_upload_from_float_array(fcache.sess, fcache.t_seq_token_embed, te_buf.flat, n_to_read)
+  TinyNN.tnn_gguf_free(ggh)
+  puts "INIT=warm: loaded " + n_to_read.to_s + " floats (" + VOCAB.to_s +
+       " × " + DONOR_D.to_s + ") from " + DONOR_GGUF + " token_embd.weight"
+end
 
 result   = fcache.build_training_step
 t_loss   = result[0]
@@ -99,6 +161,9 @@ if EVENTS.length > 0
               ",\"warmup\":" + WARMUP.to_s +
               ",\"n_steps\":" + STEPS.to_s + "}"
   rs  = rs + ",\"backend\":{\"kind\":\"" + TinyNN.tnn_backend_name(fcache.sess) + "\"}"
+  rs  = rs + ",\"config\":{\"init\":\"" + INIT + "\""
+  rs  = rs + ",\"donor\":\"" + (INIT == "warm" ? DONOR_GGUF : "") + "\""
+  rs  = rs + ",\"seed\":" + SEED.to_s + "}"
   rs  = rs + "}"
   TinyNN.tnn_events_emit(rs)
 end
