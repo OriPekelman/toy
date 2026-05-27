@@ -1597,6 +1597,36 @@ int tnn_build_forward_only(void *sess, void *result)
  * Use for side-effect ops (ggml_cpy into a view) that aren't reachable
  * from the final result tensor — without this they'd be pruned. The
  * realize-target's tree is appended later by tnn_realize itself. */
+/* E2.4 — streaming corpus loader primitive. Reads n_ints int32s
+ * from `path` starting at byte_offset (byte-addressed, not
+ * token-addressed — caller computes offset = token_offset * 4).
+ * Widens the disk-format i32s to int64 to match Spinel's :int_array
+ * ABI (Ruby Integers are 64-bit on this platform).
+ * Returns count of i32s actually read (== n_ints on full read,
+ * < n_ints at EOF), or negative on open/seek/alloc failure. */
+int tnn_read_i32_file(const char *path, int byte_offset, int n_ints, int64_t *dst)
+{
+    if (!path || !dst || n_ints <= 0) return -1;
+    FILE *f = fopen(path, "rb");
+    if (!f) return -2;
+    if (fseek(f, (long)byte_offset, SEEK_SET) != 0) {
+        fclose(f);
+        return -3;
+    }
+    int32_t *tmp = (int32_t *)malloc((size_t)n_ints * sizeof(int32_t));
+    if (!tmp) {
+        fclose(f);
+        return -4;
+    }
+    size_t got = fread(tmp, sizeof(int32_t), (size_t)n_ints, f);
+    fclose(f);
+    for (size_t i = 0; i < got; i++) {
+        dst[i] = (int64_t)tmp[i];
+    }
+    free(tmp);
+    return (int)got;
+}
+
 /* toy#embed-api (#145) — dequantize-aware single-row read from a
  * 2-D tensor whose data lives in CPU-readable memory (mmap'd GGUF
  * pages are the common case). Reads row `row_idx` of `tensor`,
