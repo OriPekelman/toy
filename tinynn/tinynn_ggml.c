@@ -1604,6 +1604,29 @@ int tnn_build_forward_only(void *sess, void *result)
  * ABI (Ruby Integers are 64-bit on this platform).
  * Returns count of i32s actually read (== n_ints on full read,
  * < n_ints at EOF), or negative on open/seek/alloc failure. */
+int tnn_read_f32_file(const char *path, int byte_offset, int n_floats, double *dst)
+{
+    if (!path || !dst || n_floats <= 0) return -1;
+    FILE *f = fopen(path, "rb");
+    if (!f) return -2;
+    if (fseek(f, (long)byte_offset, SEEK_SET) != 0) {
+        fclose(f);
+        return -3;
+    }
+    float *tmp = (float *)malloc((size_t)n_floats * sizeof(float));
+    if (!tmp) {
+        fclose(f);
+        return -4;
+    }
+    size_t got = fread(tmp, sizeof(float), (size_t)n_floats, f);
+    fclose(f);
+    for (size_t i = 0; i < got; i++) {
+        dst[i] = (double)tmp[i];
+    }
+    free(tmp);
+    return (int)got;
+}
+
 int tnn_read_i32_file(const char *path, int byte_offset, int n_ints, int64_t *dst)
 {
     if (!path || !dst || n_ints <= 0) return -1;
