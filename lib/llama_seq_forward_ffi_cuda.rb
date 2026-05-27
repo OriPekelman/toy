@@ -1001,6 +1001,13 @@ class LlamaSeqForwardFFICacheCuda
     @seq_rms_eps    = cfg.rms_eps
 
     @sess                  = TinyNNCuda.tnn_session_new(1)
+    # GH#17 — per-head decomposition makes node count scale as
+    # O(n_layers × n_heads). The default 65536 cap overflows on
+    # 24L × 16-head Qwen-shape at backward-expand. Empirically a
+    # 24L × 16-head model needs ~450k nodes for forward + backward +
+    # AdamW, so we budget ~1000 nodes per (layer × head) cell + floor.
+    cap = cfg.n_layers * cfg.n_heads * 1000 + 65536
+    TinyNNCuda.tnn_session_set_graph_capacity(@sess, cap)
     @seq_has_untied_output = untied
     @seq_has_qkv_bias      = qkv_bias
 

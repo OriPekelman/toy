@@ -94,6 +94,7 @@ module TinyNNCuda
 
   ffi_func :tnn_session_new,      [:int],                   :ptr
   ffi_func :tnn_session_free,     [:ptr],                   :void
+  ffi_func :tnn_session_set_graph_capacity, [:ptr, :int],   :int
   ffi_func :tnn_backend_name,     [:ptr],                   :str
   ffi_func :tnn_input_2d_f32,     [:ptr, :int, :int],       :ptr
   ffi_func :tnn_input_1d_i32,     [:ptr, :int],             :ptr
