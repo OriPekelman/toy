@@ -1,5 +1,106 @@
 # Changelog
 
+## v0.5.0-pre-alpha — 2026-05-27
+
+**Headline.** Tao Tier-3 fully unblocked: trustworthy drift/grad, LMC,
+and activation-CKA all have producer-side support landed. From-scratch
+training runs on CUDA (~10× CPU at 24L × 16-head Qwen-shape). Toy
+checkpoints round-trip through inference. Embedding lookup +
+decode-logprobs primitives shipped for Tep's eventual `/v1/embeddings`
+and `/v1/chat?logprobs=true`. Graph node capacity scales with
+n_layers × n_heads so per-head decomposition doesn't cap us at ~10
+layers anymore.
+
+### Training observability + cross-run analysis (Tao Tier-3)
+
+- **Semantic tensor names** (#11, #16). PARAM tensors emitted by
+  `realize_for_random_init` (from-scratch), `realize_for_mmap` (LoRA),
+  and `realize_for_full_finetune` (FFT) now carry llama.cpp-convention
+  names: `token_embd.weight`, `blk.N.attn_q.head_H.weight`,
+  `…ffn_down.weight`, `…lora_a.weight`, plus matching `.m` / `.v` for
+  Adam moments. Drift, grad, and gguf-checkpoint events now have
+  stable cross-run identifiers — Tao's `compare` can align.
+- **Session graph capacity is parametric** (#17). Per-head
+  decomposition makes node count scale as `O(n_layers × n_heads)`;
+  the default 65536 cap overflowed on 24L × 16-head Qwen-shape at
+  backward-expand time. `tnn_session_set_graph_capacity` re-allocates
+  graphs (auto-grows ctx_buf if needed) + persists across
+  `tnn_reset_for_rebuild`. `realize_for_random_init` now sizes
+  `cap = n_layers × n_heads × 1000 + 65536` from cfg.
+- **Activation-Gram taps for CKA** (#15). `ToyTap.emit_cka` computes
+  `G = Aᵀ·A` (T×T Gram) of an `[d, T]` activation and emits it as a
+  `gram` field on tap events. Wired into `build_seq_block` at three
+  stable regions per block: `attn_norm`, `ffn_out`,
+  `resid_post_block`. Gated by `TOY_CKA=N` (every N steps). Tao's
+  `Analyze.linear_cka` already unit-tested on synthetic grams.
+  Schema: `gram` field added to `tap` event in
+  [`docs/events-schema.md`](docs/events-schema.md).
+- **LMC interpolate-and-eval runner** (#18). `examples/08_lmc.rb`
+  takes two toy checkpoints + α-grid; for each α it blends
+  `θ_α = (1-α)·θ_A + α·θ_B` per-PARAM (by name, semantic-names
+  required), runs forward + CE on a fixed sequence, emits one
+  `eval` event per α with `name="lmc"`. Tao's `Analyze.lmc` reads
+  these → α-curve → same-basin / disconnected verdict.
+
+### From-scratch training: CUDA + larger shapes
+
+- **`DEVICE=cuda` for from-scratch training** (#152).
+  `prep/gen_cuda_mirror.rb` now mirrors `examples/06_train_from_scratch.rb`
+  alongside the FFI libs; `make example_train_from_scratch_cuda`
+  produces a CUDA-linked binary. Shell wrapper routes
+  `DEVICE=cuda` → CUDA binary. On GB10: SmolLM2-shape ~57 ms/step
+  (CPU is multi-s); Qwen-shape (24L × 1024) trains at ~314 ms/step
+  vs ~3 s/step on CPU. Math matches CPU to float-roundoff.
+- **Checkpoint reload through the inference path** (#153). Toy
+  checkpoints written by `ToyGGUFWriter` are now loadable by the
+  standard inference path. `realize_for_mmap` detects per-head
+  naming via the `blk.0.attn_q.head_0.weight` sentinel and reads
+  each head's own GGUF tensor offset instead of base+stride. Writer
+  also flags `toy.ggml_native=true` so `transformer_lm.rb` routes
+  through the mmap path. Smoke: train 5 steps → write ckpt →
+  `lm.generate` 3 tokens, no NaN, no crash. New
+  `tnn_gguf_w_set_bool` primitive for the flag.
+
+### Tep `/v1/*` building blocks
+
+- **Embedding lookup** (#145). `tnn_embed_lookup_to_doubles`:
+  dequantize-aware single-row read from a 2-D tensor whose data
+  lives in CPU-readable memory (mmap'd GGUF pages — the common
+  case). F32 short-circuits memcpy; Q4/Q5/Q6/Q8/F16 go through
+  ggml's per-type `to_float`. Ruby API:
+  `ToyLM#embed_lookup(token_ids) → flat Array<Float>` of length
+  `n_tokens × d_model`. Verified on llama-3.2-1b f32 and
+  qwen25-0.5b q8.
+- **Decode logprobs** (#151). `ToyLogProbs.log_softmax` (max-shift,
+  numerically stable) + `ToyLogProbs.top_k` (manual partial-sort,
+  Spinel-safe). `ToyLM#decode_step_with_logprobs(token_id, pos, k)`
+  returns `[logits_mat, logprobs_mat, top_ids, top_vals]`. Smoke on
+  SmolLM2-135M: top-5 logprobs around -2.6 to -3.7, argmax sanity
+  passes.
+
+### Roadmap docs
+
+- [`docs/roadmap/e1-e2-scope-2026-05-27.md`](docs/roadmap/e1-e2-scope-2026-05-27.md)
+  — full decomposition of E1 (ViT-Tiny, 6 sub-issues, 5-8 days) and
+  E2 (Qwen-410M embedding transfer, 7 sub-issues, 3-5 days). E2.1
+  cheapest-first-step was executed (24L × 16H Qwen-shape) — uncovered
+  the graph-capacity blocker (filed + shipped as #17).
+- [`docs/roadmap/backends-and-scale-2026-05-27.md`](docs/roadmap/backends-and-scale-2026-05-27.md)
+  — training maturity (batching, grad accum, mixed-precision,
+  activation recompute), hybrid CPU/GPU offload, non-ggml backends,
+  the strategic question on what toy should own.
+
+### Spinel landmines pinned this run
+
+- F32 has no `to_float` in ggml type_traits — caller must memcpy-
+  shortcut (the type_traits API would otherwise return NULL and
+  emit zeros). Now memorialized in `tnn_embed_lookup_to_doubles`
+  with the F32 short-circuit branch.
+- `Array<Array<int_or_float>>` seeds confuse Spinel poly inference
+  and can fault at startup-class-init (`poly_array_push`). Pin in
+  `lib/toy_logprobs.rb` header — return two parallel arrays
+  (`ids: Array<Int>`, `vals: Array<Float>`) instead.
+
 ## v0.4.0-pre-alpha — 2026-05-24
 
 **Headline.** Real OLMoE-1B-7B-Instruct produces coherent factual
