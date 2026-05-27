@@ -37,6 +37,11 @@ CONTEXT    = (ENV["CONTEXT"]  || "32").to_i
 STEPS      = (ENV["STEPS"]    || "60").to_i
 LR         = (ENV["LR"]       || "0.001").to_f
 SEED       = (ENV["SEED"]     || "42").to_i
+# GH#7 — micro-batching. BATCH=1 is the default and keeps the graph
+# bit-identical to pre-GH#7 (diag_mask_inf + softmax path; flat T-long
+# token + position arrays). BATCH>1 lays B sequences side-by-side as
+# a flat [T*B] vector with a block-causal mask uploaded at realize.
+BATCH      = (ENV["BATCH"]    || "1").to_i
 
 # Events stream (v1, docs/events-schema.md). Two env knobs:
 #   TAO_RUN_DIR — preferred. Tao's per-run directory; we append
@@ -100,7 +105,7 @@ end
 
 t_realize = Time.now
 fcache = LlamaSeqForwardFFICacheMetal.new
-fcache.realize_for_random_init(cfg, CONTEXT, false, false, SEED, 1.0)
+fcache.realize_for_random_init(cfg, CONTEXT, BATCH, false, false, SEED, 1.0)
 if !DESCRIBE_QUIET
   puts "realize_for_random_init: " + ((Time.now - t_realize).to_f * 1000.0).to_s + " ms"
 end
@@ -131,32 +136,51 @@ if TAO_RUN_DIR.length > 0
   end
 end
 
-# Read first TinyStories sequence (Array<Integer>).
-raw        = File.read("data/ts_seqs.txt")
-first_line = raw.split("\n")[0]
-parts      = first_line.split(" ")
-seq_ids    = [0]; seq_ids.pop
-k = 0
-while k < parts.length && k < CONTEXT
-  seq_ids.push(parts[k].to_i)
-  k = k + 1
+# Read BATCH TinyStories sequences (flat Array<Integer> of length
+# CONTEXT*BATCH). BATCH=1 is the legacy single-line path; BATCH>1
+# pulls the first BATCH lines (cycling if the file is shorter than
+# BATCH). Each line is padded with 0 to CONTEXT.
+raw      = File.read("data/ts_seqs.txt")
+lines    = raw.split("\n")
+seq_ids  = [0]; seq_ids.pop
+bi = 0
+while bi < BATCH
+  line  = lines[bi % lines.length]
+  parts = line.split(" ")
+  k = 0
+  while k < CONTEXT
+    if k < parts.length
+      seq_ids.push(parts[k].to_i)
+    else
+      seq_ids.push(0)
+    end
+    k = k + 1
+  end
+  bi = bi + 1
 end
-while seq_ids.length < CONTEXT; seq_ids.push(0); end
 
 result   = fcache.build_training_step
 t_loss   = result[0]
 t_labels = result[1]
 t_hp     = result[2]
 
-# Shift-by-one next-token targets, one-hot rows.
-m_labels = Mat.new(CONTEXT, VOCAB_SIZE)
+# Shift-by-one next-token targets per batch element, one-hot rows.
+# At the last position within a batch (ti == CONTEXT-1) target = self,
+# same fall-back the legacy single-sequence path used.
+m_labels = Mat.new(CONTEXT * BATCH, VOCAB_SIZE)
 li = 0
-while li < CONTEXT * VOCAB_SIZE; m_labels.flat[li] = 0.0; li = li + 1; end
-ti = 0
-while ti < CONTEXT
-  tgt = ti + 1 < CONTEXT ? seq_ids[ti + 1] : seq_ids[ti]
-  m_labels.flat[ti * VOCAB_SIZE + tgt] = 1.0
-  ti = ti + 1
+while li < CONTEXT * BATCH * VOCAB_SIZE; m_labels.flat[li] = 0.0; li = li + 1; end
+b_lbl = 0
+while b_lbl < BATCH
+  ti = 0
+  while ti < CONTEXT
+    flat_q = b_lbl * CONTEXT + ti
+    next_ti = ti + 1 < CONTEXT ? ti + 1 : ti
+    tgt = seq_ids[b_lbl * CONTEXT + next_ti]
+    m_labels.flat[flat_q * VOCAB_SIZE + tgt] = 1.0
+    ti = ti + 1
+  end
+  b_lbl = b_lbl + 1
 end
 
 m_hp = Mat.new(1, 7)
@@ -166,9 +190,19 @@ m_hp.flat[2] = 0.999
 m_hp.flat[3] = 1.0e-8
 m_hp.flat[4] = 0.0
 
+# Positions cycle 0..CONTEXT-1 per batch element. RoPE applies the
+# correct per-batch positional encoding because rope_ext reads
+# positions[k] for each ne[2] slot.
 positions = [0]; positions.pop
-pi = 0
-while pi < CONTEXT; positions.push(pi); pi = pi + 1; end
+b_pos = 0
+while b_pos < BATCH
+  pi = 0
+  while pi < CONTEXT
+    positions.push(pi)
+    pi = pi + 1
+  end
+  b_pos = b_pos + 1
+end
 
 losses = [0.0]; losses.pop
 
@@ -239,6 +273,7 @@ if EVENTS.length > 0
     rs = rs + ",\"d_ff\":"     + cfg.d_ff.to_s
     rs = rs + "}"
     rs = rs + ",\"config\":{\"context\":" + CONTEXT.to_s
+    rs = rs + ",\"batch\":"  + BATCH.to_s
     rs = rs + ",\"steps\":" + STEPS.to_s
     rs = rs + ",\"lr\":"    + LR.to_s
     rs = rs + ",\"seed\":"  + SEED.to_s
@@ -369,7 +404,7 @@ while step <= STEPS
     es = es + ",\"step\":"     + step.to_s
     es = es + ",\"loss\":"     + loss.to_s
     es = es + ",\"lr\":"       + LR.to_s
-    es = es + ",\"tokens\":"   + CONTEXT.to_s
+    es = es + ",\"tokens\":"   + (CONTEXT * BATCH).to_s
     es = es + ",\"wall_us\":"  + step_wall_us.to_s
     es = es + "}"
     TinyNNMetal.tnn_events_emit(es)

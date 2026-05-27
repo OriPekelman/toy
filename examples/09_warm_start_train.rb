@@ -89,7 +89,7 @@ puts "config: vocab=" + cfg.vocab.to_s +
 
 fcache = LlamaSeqForwardFFICache.new
 # untied=true is mandatory when donor_d_in > 0 — see E2.3 commit.
-fcache.realize_for_random_init(cfg, CONTEXT, true, false, SEED, 1.0)
+fcache.realize_for_random_init(cfg, CONTEXT, 1, true, false, SEED, 1.0)
 puts "realize OK"
 
 # INIT=warm: load donor token_embd.weight into the realize'd embed
