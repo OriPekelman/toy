@@ -46,7 +46,11 @@ class LlamaSeqBlockFFICuda
                 # per trainable weight tensor in this block. Populated
                 # only on the realize_for_full_finetune path; left empty
                 # in the mmap / LoRA-only paths.
-                :ft_weights, :ft_m, :ft_v
+                :ft_weights, :ft_m, :ft_v,
+                # GH#15 — per-block activation tap targets for CKA.
+                # set_output-pinned intermediates so the host can download
+                # them after compute. Region names match the issue text.
+                :tap_attn_norm, :tap_ffn_out, :tap_resid_post
 
   def initialize
     @t_seq_rn1_gamma = TinyNNCuda.tnn_null_ptr
@@ -70,6 +74,9 @@ class LlamaSeqBlockFFICuda
     @ft_weights = [TinyNNCuda.tnn_null_ptr]; @ft_weights.pop
     @ft_m       = [TinyNNCuda.tnn_null_ptr]; @ft_m.pop
     @ft_v       = [TinyNNCuda.tnn_null_ptr]; @ft_v.pop
+    @tap_attn_norm  = TinyNNCuda.tnn_null_ptr
+    @tap_ffn_out    = TinyNNCuda.tnn_null_ptr
+    @tap_resid_post = TinyNNCuda.tnn_null_ptr
   end
 end
 
@@ -1552,6 +1559,10 @@ class LlamaSeqForwardFFICacheCuda
   #   x_out  = x_attn + ff
   def build_seq_block(t_x, blk, scale, eps)
     t_h = TinyNNCuda.tnn_rms_norm(@sess, t_x, blk.t_seq_rn1_gamma, eps)
+    # GH#15 — tap the post-attn-norm activation. set_output keeps it
+    # alive across graph computation so the host can download it.
+    blk.tap_attn_norm = t_h
+    TinyNNCuda.tnn_set_output(t_h)
 
     # K, V over all KV heads. Pre-compute v_t per head so the per-Q-head
     # attention loop can index it (avoids n_heads × transpose).
@@ -1625,8 +1636,16 @@ class LlamaSeqForwardFFICacheCuda
     t_silug = TinyNNCuda.tnn_silu(@sess, t_gate)
     t_gated = TinyNNCuda.tnn_mul(@sess, t_silug, t_up)
     t_dn    = TinyNNCuda.tnn_matmul(@sess, blk.t_seq_w_down, t_gated)
+    # GH#15 — tap the FFN output (pre-residual). set_output to pin.
+    blk.tap_ffn_out = t_dn
+    TinyNNCuda.tnn_set_output(t_dn)
 
-    TinyNNCuda.tnn_add(@sess, t_x_attn, t_dn)
+    t_resid = TinyNNCuda.tnn_add(@sess, t_x_attn, t_dn)
+    # GH#15 — tap the residual-stream value AFTER this block. Stable,
+    # matched-across-runs region name: resid_post_block.
+    blk.tap_resid_post = t_resid
+    TinyNNCuda.tnn_set_output(t_resid)
+    t_resid
   end
 
   def build_seq_qhead(t_h, blk, hq, t_k_per_kv, t_vt_per_kv, scale)
