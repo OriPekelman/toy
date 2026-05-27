@@ -1509,6 +1509,52 @@ int tnn_build_forward_only(void *sess, void *result)
  * Use for side-effect ops (ggml_cpy into a view) that aren't reachable
  * from the final result tensor — without this they'd be pruned. The
  * realize-target's tree is appended later by tnn_realize itself. */
+/* toy#embed-api (#145) — dequantize-aware single-row read from a
+ * 2-D tensor whose data lives in CPU-readable memory (mmap'd GGUF
+ * pages are the common case). Reads row `row_idx` of `tensor`,
+ * dequantizes via the per-type to_float, and writes d_model doubles
+ * into dst.
+ *
+ * Returns 0 on success, negative on failure:
+ *   -1 null arg, -2 bad row_idx, -3 mismatched d_model,
+ *   -4 t->data is NULL (GPU-resident; needs download path instead),
+ *   -5 type has no to_float (no known dequantizer).
+ *
+ * Use case: Tep's future /v1/embeddings. The mmap'd token_embd table
+ * is CPU-readable regardless of compute backend, so this primitive
+ * works under :cpu, :cuda, and :metal sessions. */
+int tnn_embed_lookup_to_doubles(void *sess, void *tensor, int row_idx,
+                                 double *dst, int d_model)
+{
+    (void)sess;  /* not consulted; embed table lives in mmap region */
+    if (!tensor || !dst) return -1;
+    struct ggml_tensor *t = (struct ggml_tensor *)tensor;
+    if (row_idx < 0 || row_idx >= (int)t->ne[1]) return -2;
+    if (d_model != (int)t->ne[0]) return -3;
+    if (!t->data) return -4;
+
+    /* Row offset in bytes: stride along ne[1] is nb[1]. */
+    const uint8_t *src = (const uint8_t *)t->data + (size_t)row_idx * t->nb[1];
+
+    /* F32 needs no dequant; ggml's type_traits.to_float is NULL for it. */
+    if (t->type == GGML_TYPE_F32) {
+        const float *frow = (const float *)src;
+        for (int j = 0; j < d_model; j++) dst[j] = (double)frow[j];
+        return 0;
+    }
+
+    const struct ggml_type_traits *tr = ggml_get_type_traits(t->type);
+    if (!tr || !tr->to_float) return -5;
+
+    /* Dequantize into a float scratch then widen to double. */
+    float *fbuf = (float *)malloc((size_t)d_model * sizeof(float));
+    if (!fbuf) return -6;
+    tr->to_float(src, fbuf, (int64_t)d_model);
+    for (int j = 0; j < d_model; j++) dst[j] = (double)fbuf[j];
+    free(fbuf);
+    return 0;
+}
+
 /* GH#17 — re-allocate the session's forward + backward graphs with a
  * larger node-count budget. Must be called BEFORE realize so the ctx
  * hasn't yet stored any compute tensors.
