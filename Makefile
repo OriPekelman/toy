@@ -85,6 +85,11 @@ examples/smoke_embed_api: examples/smoke_embed_api.rb lib/arch.rb lib/transforme
 examples/smoke_decode_logprobs: examples/smoke_decode_logprobs.rb lib/arch.rb lib/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/tokenizer.rb lib/toy_logprobs.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
+# GH#18 — LMC interpolate-and-eval runner.
+examples/example_lmc: examples/08_lmc.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb lib/toy_drift_grad.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+example_lmc: examples/example_lmc
+
 # Auto-generated coverage matrix — ggml ops vs our FFI surface.
 # Sources are vendor/ggml/include/ggml.h, tinynn/tinynn_ggml.c, and the
 # two FFI binding files. See docs/coverage.md for the matrix.
