@@ -78,6 +78,34 @@ layers anymore.
   SmolLM2-135M: top-5 logprobs around -2.6 to -3.7, argmax sanity
   passes.
 
+### Consumer packaging — toy as a vendored gem
+
+- **toy.gemspec** (`toy#19`, commit `1f06840`). A downstream research
+  project (e.g. `tao_transfer`) can now declare `gem "toy", path:
+  "../toy_ruby_neural_network"` in a Gemfile, `bundle lock`, run
+  `spinel-compat vendor` from
+  [spinelgems](https://github.com/OriPekelman/spinelgems), apply a
+  small post-vendor link-path rewrite (`prep/post_vendor_toy.rb`),
+  and compile its own experiment against toy's primitives — no
+  forks, no hand-pathed `require_relative`s, no Mat poly-dispatch
+  landmine. End-to-end recipe in
+  [`docs/consuming-toy.md`](docs/consuming-toy.md).
+- **lib/toy/version.rb** + **lib/toy/ffi_manifest.rb**. VERSION
+  extracted so the gemspec doesn't pull in Spinel-only `tinynn.rb`.
+  FFI manifest follows the same `Tep::FFIManifest` shape from
+  `tep#97` — CRuby-only declarative spec of per-backend link
+  recipes that consumer-side post-vendor scripts read.
+- **prep/post_vendor_toy.rb**. Consumer-side hook (shipped as
+  template; consumers copy into their own `prep/`). Rewrites
+  `ffi_cflags` in the vendored `tinynn{,_cuda,_metal}.rb` from
+  toy's relative `-L.` / `-Ltinynn` paths to absolute references
+  anchored at `TOY_SRC`. Honors `CUDA_DIR_LIB` env, `TOY_DISABLE`
+  to skip backends a consumer doesn't compile.
+- **Verified end-to-end** on a `/tmp` consumer project: bundle
+  lock + vendor + rewrite + spinel compile + run. Training 3 steps
+  with `LlamaSeqForwardFFICache`, loss 6.44 → 6.32, `events.jsonl`
+  emitted with full provenance.
+
 ### Roadmap docs
 
 - [`docs/roadmap/e1-e2-scope-2026-05-27.md`](docs/roadmap/e1-e2-scope-2026-05-27.md)
