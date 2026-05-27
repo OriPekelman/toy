@@ -931,6 +931,260 @@ class LlamaSeqForwardFFICacheCuda
     @seq_realized = true
   end
 
+  # P2-α: from-scratch training entry. Allocates the same persistent
+  # tensor layout as realize_for_full_finetune (embeddings + per-block
+  # weights, all trainable F32 in ctx_w), then random-initialises
+  # every weight via Ruby-side Gaussian upload — no GGUF needed.
+  #
+  # Force-enables `@ft_train_embeddings_enabled` so the existing
+  # full-FT machinery allocates persistent F32 embeddings instead
+  # of the mmap branch. Caller doesn't need to call
+  # enable_full_finetune_embeddings! first.
+  #
+  # Currently Llama-arch only (RMSNorm + GQA + RoPE + SwiGLU). Other
+  # architectures (GPT-2 LN, MHA + biases) need a separate trainer
+  # cache class; deferred until we actually need GPT-2 from-scratch.
+  def realize_for_random_init(cfg, t_seq, untied, qkv_bias, seed, init_scale)
+    @ft_train_embeddings_enabled = true   # forces persistent-F32 alloc of embeddings
+    @seq_full_finetune_enabled   = true   # build_training_step gates on this
+
+    @seq_t          = t_seq
+    @seq_d_model    = cfg.d_model
+    @seq_d_ff       = cfg.d_ff
+    @seq_n_heads    = cfg.n_heads
+    @seq_n_kv       = cfg.n_kv
+    @seq_d_head     = cfg.head_dim
+    @seq_group_size = cfg.n_heads / cfg.n_kv
+    @seq_n_layers   = cfg.n_layers
+    @seq_vocab_size = cfg.vocab
+    @seq_rope_base    = cfg.rope_base
+    @seq_rope_scaling = cfg.rope_scaling
+    @seq_rms_eps    = cfg.rms_eps
+
+    @sess                  = TinyNNCuda.tnn_session_new(1)
+    @seq_has_untied_output = untied
+    @seq_has_qkv_bias      = qkv_bias
+
+    if @seq_rope_scaling.kind == :llama3
+      @t_seq_rope_freq_factors = TinyNNCuda.tnn_rope_freq_factors_alloc(@sess, cfg.head_dim)
+    else
+      @t_seq_rope_freq_factors = TinyNNCuda.tnn_null_ptr
+    end
+
+    # Globals — all trainable persistent F32. Each gets a llama.cpp-
+    # convention name so drift/grad/checkpoint consumers can align
+    # across runs (toy#semantic-tensor-names, GH#11).
+    @t_seq_token_embed = TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
+                           @seq_vocab_size, @seq_d_model)
+    ft_add_global_2d(@t_seq_token_embed, @seq_vocab_size, @seq_d_model)
+    ft_name_last_global("token_embd.weight")
+
+    @t_seq_final_norm_gamma = TinyNNCuda.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
+    ft_add_global_1d(@t_seq_final_norm_gamma)
+    ft_name_last_global("output_norm.weight")
+
+    if untied
+      @t_seq_output = TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
+                        @seq_vocab_size, @seq_d_model)
+      ft_add_global_2d(@t_seq_output, @seq_vocab_size, @seq_d_model)
+      ft_name_last_global("output.weight")
+    end
+
+    # Per-block weights — identical structure to realize_for_full_finetune.
+    @seq_blocks_ffi = [LlamaSeqBlockFFICuda.new]
+    li_init = 1
+    while li_init < @seq_n_layers
+      @seq_blocks_ffi.push(LlamaSeqBlockFFICuda.new)
+      li_init = li_init + 1
+    end
+
+    li = 0
+    while li < @seq_n_layers
+      blk = @seq_blocks_ffi[li]
+      prefix = "blk." + li.to_s + "."
+
+      blk.t_seq_rn1_gamma = TinyNNCuda.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
+      blk.t_seq_rn2_gamma = TinyNNCuda.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
+      ft_add_1d(blk, blk.t_seq_rn1_gamma)
+      ft_name_last(blk, prefix + "attn_norm.weight")
+      ft_add_1d(blk, blk.t_seq_rn2_gamma)
+      ft_name_last(blk, prefix + "ffn_norm.weight")
+
+      blk.t_seq_w_q = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model)]
+      hq = 1
+      while hq < @seq_n_heads
+        blk.t_seq_w_q.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model))
+        hq = hq + 1
+      end
+      hq2 = 0
+      while hq2 < @seq_n_heads
+        ft_add_2d(blk, blk.t_seq_w_q[hq2], @seq_d_head, @seq_d_model)
+        ft_name_last(blk, prefix + "attn_q.head_" + hq2.to_s + ".weight")
+        hq2 = hq2 + 1
+      end
+
+      blk.t_seq_w_k = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model)]
+      blk.t_seq_w_v = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model)]
+      hkv = 1
+      while hkv < @seq_n_kv
+        blk.t_seq_w_k.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model))
+        blk.t_seq_w_v.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model))
+        hkv = hkv + 1
+      end
+      hkv2 = 0
+      while hkv2 < @seq_n_kv
+        ft_add_2d(blk, blk.t_seq_w_k[hkv2], @seq_d_head, @seq_d_model)
+        ft_name_last(blk, prefix + "attn_k.head_" + hkv2.to_s + ".weight")
+        ft_add_2d(blk, blk.t_seq_w_v[hkv2], @seq_d_head, @seq_d_model)
+        ft_name_last(blk, prefix + "attn_v.head_" + hkv2.to_s + ".weight")
+        hkv2 = hkv2 + 1
+      end
+
+      blk.t_seq_w_o    = TinyNNCuda.tnn_input_2d_f32_persistent(@sess, @seq_d_model, @seq_n_heads * @seq_d_head)
+      blk.t_seq_w_gate = TinyNNCuda.tnn_input_2d_f32_persistent(@sess, @seq_d_ff,    @seq_d_model)
+      blk.t_seq_w_up   = TinyNNCuda.tnn_input_2d_f32_persistent(@sess, @seq_d_ff,    @seq_d_model)
+      blk.t_seq_w_down = TinyNNCuda.tnn_input_2d_f32_persistent(@sess, @seq_d_model, @seq_d_ff)
+      ft_add_2d(blk, blk.t_seq_w_o,    @seq_d_model, @seq_n_heads * @seq_d_head)
+      ft_name_last(blk, prefix + "attn_output.weight")
+      ft_add_2d(blk, blk.t_seq_w_gate, @seq_d_ff,    @seq_d_model)
+      ft_name_last(blk, prefix + "ffn_gate.weight")
+      ft_add_2d(blk, blk.t_seq_w_up,   @seq_d_ff,    @seq_d_model)
+      ft_name_last(blk, prefix + "ffn_up.weight")
+      ft_add_2d(blk, blk.t_seq_w_down, @seq_d_model, @seq_d_ff)
+      ft_name_last(blk, prefix + "ffn_down.weight")
+
+      wi = 0
+      while wi < blk.ft_weights.length
+        TinyNNCuda.tnn_set_param(blk.ft_weights[wi])
+        wi = wi + 1
+      end
+
+      li = li + 1
+    end
+
+    # Mark globals as params too (gated on @ft_train_embeddings_enabled).
+    gi = 0
+    while gi < @ft_globals_weights.length
+      TinyNNCuda.tnn_set_param(@ft_globals_weights[gi])
+      gi = gi + 1
+    end
+
+    TinyNNCuda.tnn_finalize_weights(@sess)
+
+    if @seq_rope_scaling.kind == :llama3
+      ff = Toy::RopeScaling.compute_llama3_freq_factors(
+        @seq_d_head, @seq_rope_base,
+        @seq_rope_scaling.orig_max_pos, @seq_rope_scaling.factor,
+        @seq_rope_scaling.low_freq_factor, @seq_rope_scaling.high_freq_factor)
+      TinyNNCuda.tnn_upload_from_float_array(@sess, @t_seq_rope_freq_factors, ff, ff.length)
+    end
+
+    # Random-init every weight + zero biases + ones gammas.
+    upload_random_init!(seed, init_scale, qkv_bias, untied)
+    ft_zero_init_adam(qkv_bias)
+    ft_zero_init_adam_globals
+
+    build_forward_in_current_ctx
+    TinyNNCuda.tnn_realize(@sess, @t_seq_logits)
+    @seq_realized = true
+  end
+
+  # Fill every persistent weight tensor with N(0, std) values.
+  # Norm gammas → 1.0, biases (if present) → 0.0, matmul weights →
+  # N(0, init_scale/sqrt(fan_in)). Token embedding uses GPT-2-style
+  # N(0, 0.02). All values computed in Ruby, uploaded in bulk via
+  # tnn_upload_from_float_array.
+  def upload_random_init!(seed, init_scale, qkv_bias, untied)
+    state = [seed]
+
+    # Token embed + (optional) untied output: N(0, 0.02).
+    upload_gaussian(@t_seq_token_embed, @seq_vocab_size * @seq_d_model, 0.02, state)
+    upload_constant(@t_seq_final_norm_gamma, @seq_d_model, 1.0)
+    if untied
+      upload_gaussian(@t_seq_output, @seq_vocab_size * @seq_d_model, 0.02, state)
+    end
+
+    inv_sqrt_d   = init_scale / Math.sqrt(@seq_d_model.to_f)
+    inv_sqrt_dff = init_scale / Math.sqrt(@seq_d_ff.to_f)
+
+    li = 0
+    while li < @seq_n_layers
+      blk = @seq_blocks_ffi[li]
+      upload_constant(blk.t_seq_rn1_gamma, @seq_d_model, 1.0)
+      upload_constant(blk.t_seq_rn2_gamma, @seq_d_model, 1.0)
+
+      hq = 0
+      while hq < @seq_n_heads
+        upload_gaussian(blk.t_seq_w_q[hq], @seq_d_head * @seq_d_model, inv_sqrt_d, state)
+        hq = hq + 1
+      end
+      hkv = 0
+      while hkv < @seq_n_kv
+        upload_gaussian(blk.t_seq_w_k[hkv], @seq_d_head * @seq_d_model, inv_sqrt_d, state)
+        upload_gaussian(blk.t_seq_w_v[hkv], @seq_d_head * @seq_d_model, inv_sqrt_d, state)
+        hkv = hkv + 1
+      end
+
+      upload_gaussian(blk.t_seq_w_o,    @seq_d_model * @seq_n_heads * @seq_d_head, inv_sqrt_d, state)
+      upload_gaussian(blk.t_seq_w_gate, @seq_d_ff    * @seq_d_model, inv_sqrt_d, state)
+      upload_gaussian(blk.t_seq_w_up,   @seq_d_ff    * @seq_d_model, inv_sqrt_d, state)
+      upload_gaussian(blk.t_seq_w_down, @seq_d_model * @seq_d_ff,    inv_sqrt_dff, state)
+      li = li + 1
+    end
+  end
+
+  # Box-Muller from a xorshift64-driven uniform stream. state is a
+  # one-element Array<Integer> so the mutable PRNG state survives
+  # across calls without using class variables. Always emits exactly
+  # `n` Gaussian-distributed F32 values via tnn_upload_from_float_array.
+  def upload_gaussian(tensor, n, std, state)
+    buf = [0.0]; buf.pop
+    pair = 0
+    saved = 0.0
+    i = 0
+    while i < n
+      if pair == 0
+        u1 = xorshift_uniform!(state)
+        u2 = xorshift_uniform!(state)
+        if u1 < 1.0e-300; u1 = 1.0e-300; end
+        r = Math.sqrt(-2.0 * Math.log(u1))
+        theta = 2.0 * Math::PI * u2
+        z0 = r * Math.cos(theta) * std
+        z1 = r * Math.sin(theta) * std
+        buf.push(z0)
+        saved = z1
+        pair = 1
+      else
+        buf.push(saved)
+        pair = 0
+      end
+      i = i + 1
+    end
+    TinyNNCuda.tnn_upload_from_float_array(@sess, tensor, buf, n)
+  end
+
+  def upload_constant(tensor, n, v)
+    buf = [0.0]; buf.pop
+    i = 0
+    while i < n
+      buf.push(v)
+      i = i + 1
+    end
+    TinyNNCuda.tnn_upload_from_float_array(@sess, tensor, buf, n)
+  end
+
+  # xorshift64 → uniform in (0, 1). Mutates state[0].
+  def xorshift_uniform!(state)
+    x = state[0]
+    x = x ^ (x << 13)
+    x = x & 0xFFFFFFFFFFFFFFFF
+    x = x ^ (x >> 7)
+    x = x ^ (x << 17)
+    x = x & 0xFFFFFFFFFFFFFFFF
+    state[0] = x
+    (x.to_f / 18446744073709551616.0) + 1.0e-300
+  end
+
   # Append (weight, m, v) to the block's parallel arrays. Allocates
   # Adam m and v of the same shape as `weight` as a side effect.
   def ft_add_2d(blk, weight, rows, cols)
@@ -944,6 +1198,24 @@ class LlamaSeqForwardFFICacheCuda
     blk.ft_weights.push(weight)
     blk.ft_m.push(TinyNNCuda.tnn_input_1d_f32_persistent(@sess, n))
     blk.ft_v.push(TinyNNCuda.tnn_input_1d_f32_persistent(@sess, n))
+  end
+
+  # Name the most-recently-pushed (weight, m, v) triple in a block.
+  # Used right after ft_add_2d / ft_add_1d so drift/grad event consumers
+  # see llama.cpp-convention names like "blk.0.attn_norm.weight" instead
+  # of ggml's auto-generated "node_N". toy#semantic-tensor-names.
+  def ft_name_last(blk, name)
+    last = blk.ft_weights.length - 1
+    TinyNNCuda.tnn_tensor_set_name(blk.ft_weights[last], name)
+    TinyNNCuda.tnn_tensor_set_name(blk.ft_m[last],       name + ".m")
+    TinyNNCuda.tnn_tensor_set_name(blk.ft_v[last],       name + ".v")
+  end
+
+  def ft_name_last_global(name)
+    last = @ft_globals_weights.length - 1
+    TinyNNCuda.tnn_tensor_set_name(@ft_globals_weights[last], name)
+    TinyNNCuda.tnn_tensor_set_name(@ft_globals_m[last],       name + ".m")
+    TinyNNCuda.tnn_tensor_set_name(@ft_globals_v[last],       name + ".v")
   end
 
   # Same shape as ft_add_2d / ft_add_1d but writes to the cache-level
@@ -1237,15 +1509,11 @@ class LlamaSeqForwardFFICacheCuda
 
     # K, V over all KV heads. Pre-compute v_t per head so the per-Q-head
     # attention loop can index it (avoids n_heads × transpose).
-    # Seed with a typed null pointer to force Spinel's PtrArray inference
-    # at construction time. Spinel f292232 (issue #688) promotes the
-    # LOCAL var when push(<:ptr>) is observed, but build_seq_qhead's
-    # parameter type was already locked in as IntArray earlier in the
-    # analyze pass — the promotion doesn't propagate to the call
-    # signature. Verified 2026-05-25 on Spinel 0ec6b1d; the warning
-    # `sp_IntArray * vs sp_PtrArray *` re-appears the moment we drop
-    # the seed. Fatal at runtime (function reads the array as ints,
-    # garbling pointers).
+    # See lib/llama_seq_forward_ffi_cuda.rb for the Spinel landmine
+    # (issue #688 partial fix; the function-parameter type for
+    # build_seq_qhead was already locked in as IntArray before the
+    # local-var ptr-push promotion runs). Re-verified 2026-05-26 on
+    # Spinel 2183a92: bare `[]` still fires the warning.
     t_k_per_kv  = [TinyNNCuda.tnn_null_ptr]; t_k_per_kv.pop
     t_vt_per_kv = [TinyNNCuda.tnn_null_ptr]; t_vt_per_kv.pop
     hkv = 0

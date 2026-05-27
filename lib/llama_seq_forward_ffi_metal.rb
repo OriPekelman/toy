@@ -971,18 +971,23 @@ class LlamaSeqForwardFFICacheMetal
       @t_seq_rope_freq_factors = TinyNNMetal.tnn_null_ptr
     end
 
-    # Globals — all trainable persistent F32.
+    # Globals — all trainable persistent F32. Each gets a llama.cpp-
+    # convention name so drift/grad/checkpoint consumers can align
+    # across runs (toy#semantic-tensor-names, GH#11).
     @t_seq_token_embed = TinyNNMetal.tnn_input_2d_f32_persistent(@sess,
                            @seq_vocab_size, @seq_d_model)
     ft_add_global_2d(@t_seq_token_embed, @seq_vocab_size, @seq_d_model)
+    ft_name_last_global("token_embd.weight")
 
     @t_seq_final_norm_gamma = TinyNNMetal.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
     ft_add_global_1d(@t_seq_final_norm_gamma)
+    ft_name_last_global("output_norm.weight")
 
     if untied
       @t_seq_output = TinyNNMetal.tnn_input_2d_f32_persistent(@sess,
                         @seq_vocab_size, @seq_d_model)
       ft_add_global_2d(@t_seq_output, @seq_vocab_size, @seq_d_model)
+      ft_name_last_global("output.weight")
     end
 
     # Per-block weights — identical structure to realize_for_full_finetune.
@@ -996,11 +1001,14 @@ class LlamaSeqForwardFFICacheMetal
     li = 0
     while li < @seq_n_layers
       blk = @seq_blocks_ffi[li]
+      prefix = "blk." + li.to_s + "."
 
       blk.t_seq_rn1_gamma = TinyNNMetal.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
       blk.t_seq_rn2_gamma = TinyNNMetal.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
       ft_add_1d(blk, blk.t_seq_rn1_gamma)
+      ft_name_last(blk, prefix + "attn_norm.weight")
       ft_add_1d(blk, blk.t_seq_rn2_gamma)
+      ft_name_last(blk, prefix + "ffn_norm.weight")
 
       blk.t_seq_w_q = [TinyNNMetal.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model)]
       hq = 1
@@ -1011,6 +1019,7 @@ class LlamaSeqForwardFFICacheMetal
       hq2 = 0
       while hq2 < @seq_n_heads
         ft_add_2d(blk, blk.t_seq_w_q[hq2], @seq_d_head, @seq_d_model)
+        ft_name_last(blk, prefix + "attn_q.head_" + hq2.to_s + ".weight")
         hq2 = hq2 + 1
       end
 
@@ -1025,7 +1034,9 @@ class LlamaSeqForwardFFICacheMetal
       hkv2 = 0
       while hkv2 < @seq_n_kv
         ft_add_2d(blk, blk.t_seq_w_k[hkv2], @seq_d_head, @seq_d_model)
+        ft_name_last(blk, prefix + "attn_k.head_" + hkv2.to_s + ".weight")
         ft_add_2d(blk, blk.t_seq_w_v[hkv2], @seq_d_head, @seq_d_model)
+        ft_name_last(blk, prefix + "attn_v.head_" + hkv2.to_s + ".weight")
         hkv2 = hkv2 + 1
       end
 
@@ -1034,9 +1045,13 @@ class LlamaSeqForwardFFICacheMetal
       blk.t_seq_w_up   = TinyNNMetal.tnn_input_2d_f32_persistent(@sess, @seq_d_ff,    @seq_d_model)
       blk.t_seq_w_down = TinyNNMetal.tnn_input_2d_f32_persistent(@sess, @seq_d_model, @seq_d_ff)
       ft_add_2d(blk, blk.t_seq_w_o,    @seq_d_model, @seq_n_heads * @seq_d_head)
+      ft_name_last(blk, prefix + "attn_output.weight")
       ft_add_2d(blk, blk.t_seq_w_gate, @seq_d_ff,    @seq_d_model)
+      ft_name_last(blk, prefix + "ffn_gate.weight")
       ft_add_2d(blk, blk.t_seq_w_up,   @seq_d_ff,    @seq_d_model)
+      ft_name_last(blk, prefix + "ffn_up.weight")
       ft_add_2d(blk, blk.t_seq_w_down, @seq_d_model, @seq_d_ff)
+      ft_name_last(blk, prefix + "ffn_down.weight")
 
       wi = 0
       while wi < blk.ft_weights.length
@@ -1183,6 +1198,24 @@ class LlamaSeqForwardFFICacheMetal
     blk.ft_weights.push(weight)
     blk.ft_m.push(TinyNNMetal.tnn_input_1d_f32_persistent(@sess, n))
     blk.ft_v.push(TinyNNMetal.tnn_input_1d_f32_persistent(@sess, n))
+  end
+
+  # Name the most-recently-pushed (weight, m, v) triple in a block.
+  # Used right after ft_add_2d / ft_add_1d so drift/grad event consumers
+  # see llama.cpp-convention names like "blk.0.attn_norm.weight" instead
+  # of ggml's auto-generated "node_N". toy#semantic-tensor-names.
+  def ft_name_last(blk, name)
+    last = blk.ft_weights.length - 1
+    TinyNNMetal.tnn_tensor_set_name(blk.ft_weights[last], name)
+    TinyNNMetal.tnn_tensor_set_name(blk.ft_m[last],       name + ".m")
+    TinyNNMetal.tnn_tensor_set_name(blk.ft_v[last],       name + ".v")
+  end
+
+  def ft_name_last_global(name)
+    last = @ft_globals_weights.length - 1
+    TinyNNMetal.tnn_tensor_set_name(@ft_globals_weights[last], name)
+    TinyNNMetal.tnn_tensor_set_name(@ft_globals_m[last],       name + ".m")
+    TinyNNMetal.tnn_tensor_set_name(@ft_globals_v[last],       name + ".v")
   end
 
   # Same shape as ft_add_2d / ft_add_1d but writes to the cache-level
@@ -1476,8 +1509,13 @@ class LlamaSeqForwardFFICacheMetal
 
     # K, V over all KV heads. Pre-compute v_t per head so the per-Q-head
     # attention loop can index it (avoids n_heads × transpose).
-    t_k_per_kv = []
-    t_vt_per_kv = []
+    # See lib/llama_seq_forward_ffi_cuda.rb for the Spinel landmine
+    # (issue #688 partial fix; the function-parameter type for
+    # build_seq_qhead was already locked in as IntArray before the
+    # local-var ptr-push promotion runs). Re-verified 2026-05-26 on
+    # Spinel 2183a92: bare `[]` still fires the warning.
+    t_k_per_kv  = [TinyNNMetal.tnn_null_ptr]; t_k_per_kv.pop
+    t_vt_per_kv = [TinyNNMetal.tnn_null_ptr]; t_vt_per_kv.pop
     hkv = 0
     while hkv < @seq_n_kv
       t_k_raw = TinyNNMetal.tnn_matmul(@sess, blk.t_seq_w_k[hkv], t_h)
