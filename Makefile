@@ -49,15 +49,22 @@ GGML_REPO   := https://github.com/ggml-org/ggml.git
 GGML_CUDA_ARCH ?= 121
 CUDA_DIR    ?= /usr/local/cuda
 
-# --- Tep sibling sync -------------------------------------------------------
-# Tep is co-developed with this repo (sibling at ~/sites/tep); we
-# track HEAD continuously. `prep/sync_tep.rb` rsyncs upstream Tep's
-# lib/ into tep_demo/_tep_lib/ and substitutes the @TEP_*@
-# placeholders that upstream's bin/tep handles at build time. Bails
-# loud if a dependency (libpq, libsqlite3) is missing — never
-# silently degrades. Run after pulling Tep changes, or via:
-sync-tep:
-	./prep/sync_tep.rb
+# --- Tep sibling sync (spinelgems convention) -------------------------------
+# Tep is co-developed with this repo (sibling at ~/sites/tep). As of
+# 2026-05-27 we vendor it via the bundler-spinel / spinelgems
+# convention (see docs/roadmap/spinelgems-tep-adoption-2026-05-27.md):
+#
+#   1. `bundle lock`                                  (Gemfile → Gemfile.lock)
+#   2. `../spinelgems/exe/spinel-compat vendor`       (lock → vendor/spinel/)
+#   3. `./prep/post_vendor_tep.rb`                    (@TEP_*@ rewrite)
+#
+# All three roll up into the `vendor-tep` target. Bails loud on
+# missing libpq / libsqlite3 — same diagnostic as the retired
+# prep/sync_tep.rb did.
+vendor-tep:
+	bundle lock
+	SPINEL_DIR=$(HOME)/sites/spinel ../spinelgems/exe/spinel-compat vendor
+	./prep/post_vendor_tep.rb
 
 # --- pure-Spinel drivers ----------------------------------------------------
 # Source lives in demos/. We expose short top-level target names
@@ -144,7 +151,7 @@ endif
 	$(SPINEL) --cc='cc -Wl,-u,_tnn_metal_force_link -framework Foundation -framework Metal -framework MetalKit' $< -o $@
 example_inference_metal: examples/example_inference_metal
 
-examples/example_serve: examples/04_serve_http.rb tep_demo/_tep_lib/tep.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
+examples/example_serve: examples/04_serve_http.rb vendor/spinel/tep/lib/tep.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 example_serve: examples/example_serve
 
@@ -188,26 +195,20 @@ verify-mirrors:
 # Parity-checks vs native TransformerLM.forward.
 
 # Tep+Spinel HTTP server demos. See tep_demo/README.md. Builds bypass
-# tep's translator (we use spinel directly on a layout-substituted
-# copy of tep's lib in tep_demo/_tep_lib/).
-tep_demo/hello: tep_demo/hello_api.rb tep_demo/_tep_lib/tep.rb
+# tep's translator (we use spinel directly on the spinelgems-vendored
+# tep tree at vendor/spinel/tep/lib/, produced by `make vendor-tep`).
+tep_demo/hello: tep_demo/hello_api.rb vendor/spinel/tep/lib/tep.rb
 	$(SPINEL) tep_demo/hello_api.rb -o tep_demo/hello
 
-# spinelgems-vendored twin (parity check vs the rsync'd hello above).
-# Depends on vendor/spinel/tep/lib/tep.rb produced by:
-#   bundle lock && ../spinelgems/exe/spinel-compat vendor && ./prep/post_vendor_tep.rb
-tep_demo/hello_vendored: tep_demo/hello_api_vendored.rb vendor/spinel/tep/lib/tep.rb vendor/spinel/deps.rb
-	$(SPINEL) tep_demo/hello_api_vendored.rb -o tep_demo/hello_vendored
-
 # Inference API: /generate?n=N runs greedy generation via FullForwardFFICache.
-tep_demo/api: tep_demo/inference_api.rb tep_demo/_tep_lib/tep.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
+tep_demo/api: tep_demo/inference_api.rb vendor/spinel/tep/lib/tep.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) tep_demo/inference_api.rb -o tep_demo/api
 
 # OpenAI-compatible API backed by SmolLM2/Qwen-family models via the
 # direct GGUF→FFI loader. Accepts pre-tokenized integer IDs (no
 # server-side tokenizer — keeps the single-binary deployment story).
 # Hard-codes the model GGUF path; copy + edit for other sizes.
-tep_demo/openai_api_smollm2: tep_demo/openai_api_smollm2.rb tep_demo/_tep_lib/tep.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb tinynn/libtinynn_ggml.a
+tep_demo/openai_api_smollm2: tep_demo/openai_api_smollm2.rb vendor/spinel/tep/lib/tep.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) tep_demo/openai_api_smollm2.rb -o tep_demo/openai_api_smollm2
 
 # Larger-size variants of the same API. Per-binary GGUF path because
@@ -216,7 +217,7 @@ tep_demo/openai_api_smollm2: tep_demo/openai_api_smollm2.rb tep_demo/_tep_lib/te
 # tep_demo/openai_api_qwen25_1.5b.rb for the canonical 2-line diff).
 OPENAI_QWEN_SOURCES   = $(wildcard tep_demo/openai_api_qwen25_*.rb)
 OPENAI_QWEN_TARGETS   = $(OPENAI_QWEN_SOURCES:.rb=)
-OPENAI_QWEN_DEPS      = tep_demo/_tep_lib/tep.rb \
+OPENAI_QWEN_DEPS      = vendor/spinel/tep/lib/tep.rb \
                         lib/toy_smollm2_ffi_kv.rb \
                         lib/toy_smollm2_loader.rb \
                         tinynn/libtinynn_ggml.a

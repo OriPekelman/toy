@@ -53,7 +53,7 @@
 
 require_relative "../lib/toy_smollm2_ffi_kv"
 require_relative "../lib/toy_smollm2_loader"
-require_relative "_tep_lib/tep"
+require_relative "../vendor/spinel/deps"
 
 # Local helper: parse a JSON value at `start_pos` as an int array.
 # Returns Array<Int> (empty on absent / non-array / non-int-element).

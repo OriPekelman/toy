@@ -96,16 +96,16 @@ quotes ~167k req/s; we use `Connection: close` here for simplicity.
 
 ## Caveats
 
-- **`_tep_lib/` is generated.** We bypass Tep's translator and
-  substitute the `@TEP_*@` placeholders manually:
+- **Tep vendoring uses the spinelgems convention.** As of 2026-05-27,
+  `tep_demo/*.rb` requires Tep via `vendor/spinel/deps` (placed by
+  `spinel-compat vendor` from the `Gemfile` declaring `gem "tep",
+  path: "../tep"`). Re-vendor when Tep moves:
   ```sh
-  cp -r ~/sites/tep/lib tep_demo/_tep_lib
-  sed -i "s|@TEP_SPHTTP_O@|/home/oripekelman/sites/tep/lib/tep/sphttp.o|g" \
-      tep_demo/_tep_lib/tep/net.rb
-  sed -i "s|@TEP_SQLITE_O@|/home/oripekelman/sites/tep/lib/tep/tep_sqlite.o|g" \
-      tep_demo/_tep_lib/tep/sqlite.rb
+  make vendor-tep    # bundle lock → spinel-compat vendor → post_vendor_tep.rb
   ```
-  Re-run when Tep moves.
+  See `docs/roadmap/spinelgems-tep-adoption-2026-05-27.md` for the
+  background. The older `prep/sync_tep.rb` + `tep_demo/_tep_lib/`
+  rsync hack was retired in the same commit.
 - **Spinel name collisions.** `Mat#add` was renamed to `Mat#plus` to
   avoid a dispatch clash with `Tep::Router#add` — method names are
   the unit of collision, so `Mat#add!` (in-place) is fine.
