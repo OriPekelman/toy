@@ -93,6 +93,8 @@ module TinyNNMetal
   ffi_func :tnn_im2col,          [:ptr, :ptr, :ptr, :int, :int, :int, :int, :int, :int, :int, :int], :ptr
   ffi_func :tnn_im2col_back,     [:ptr, :ptr, :ptr, :int, :int, :int, :int, :int, :int, :int, :int, :int, :int, :int, :int], :ptr
   ffi_func :tnn_conv_2d,         [:ptr, :ptr, :ptr, :int, :int, :int, :int, :int, :int], :ptr
+  ffi_func :tnn_permute,         [:ptr, :ptr, :int, :int, :int, :int], :ptr
+  ffi_func :tnn_cont_2d,         [:ptr, :ptr, :int, :int], :ptr
   ffi_func :tnn_shutdown_engines, [],                       :void
   # _exit() trampoline — skips C++ static destructors. Use at end of
   # main on Metal programs. See tinynn_backend_metal.m for the why.

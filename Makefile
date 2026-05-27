@@ -368,6 +368,10 @@ tinynn/ab_smoke_add: tinynn/ab_smoke_add.rb lib/transformer.rb lib/tinynn.rb tin
 tinynn/ab_smoke_conv2d: tinynn/ab_smoke_conv2d.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) tinynn/ab_smoke_conv2d.rb -o tinynn/ab_smoke_conv2d
 
+# E1.2 / GH#13 — patch_embed composite smoke + parity dump.
+tinynn/ab_smoke_patch_embed: tinynn/ab_smoke_patch_embed.rb lib/transformer.rb lib/tinynn.rb lib/toy_vit.rb tinynn/libtinynn_ggml.a
+	$(SPINEL) tinynn/ab_smoke_patch_embed.rb -o tinynn/ab_smoke_patch_embed
+
 tinynn/ab_smoke_gelu: tinynn/ab_smoke_gelu.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) tinynn/ab_smoke_gelu.rb -o tinynn/ab_smoke_gelu
 

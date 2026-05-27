@@ -251,6 +251,12 @@ void  *tnn_im2col_back(void *sess, void *kernel, void *grad_im2col,
                        int is_2D);
 void  *tnn_conv_2d(void *sess, void *kernel, void *data,
                    int s0, int s1, int p0, int p1, int d0, int d1);
+/* Reorder dims as a view (no copy). For ViT patch_embed:
+ *   conv2d_out ne=[OW,OH,OC,N] → permute(2,0,1,3) → ne=[OC,OW,OH,N] */
+void  *tnn_permute(void *sess, void *a, int axis0, int axis1, int axis2, int axis3);
+/* Make contiguous with a new 2D shape — flattens OW*OH into a single
+ * patch axis: ne=[OC,OW,OH,N] → cont_2d(OC, OW*OH) → ne=[OC, OW*OH]. */
+void  *tnn_cont_2d(void *sess, void *a, int ne0, int ne1);
 
 /* --- Llama-family ops --- */
 void  *tnn_silu(void *sess, void *a);                    /* SiLU: x * sigmoid(x). SwiGLU activation. */

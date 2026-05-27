@@ -976,6 +976,26 @@ void *tnn_conv_2d(void *sess, void *kernel, void *data,
                                  s0, s1, p0, p1, d0, d1);
 }
 
+/* Reorder dims as a view (no copy). Result must be passed through
+ * ggml_cont before any op that requires contiguous memory. */
+void *tnn_permute(void *sess, void *a, int axis0, int axis1, int axis2, int axis3)
+{
+    if (!sess || !a) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_permute(s->ctx, (struct ggml_tensor *)a,
+                                 axis0, axis1, axis2, axis3);
+}
+
+/* Make contiguous + reshape to 2D in one op. Used after a permute
+ * to flatten the spatial dims for the transformer input. */
+void *tnn_cont_2d(void *sess, void *a, int ne0, int ne1)
+{
+    if (!sess || !a) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_cont_2d(s->ctx, (struct ggml_tensor *)a,
+                                 (int64_t)ne0, (int64_t)ne1);
+}
+
 /* --- Llama-family ops -------------------------------------------------- */
 
 /* SiLU activation: silu(x) = x * sigmoid(x). Used in SwiGLU FFNs
