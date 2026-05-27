@@ -194,3 +194,6 @@ demos/seq_train_bench_cuda
 # bench/baselines.csv are committed)
 bench/build/
 examples/example_train_from_scratch
+
+# spinelgems-built gem artifacts (rebuilt via `gem build`)
+toy-*.gem
