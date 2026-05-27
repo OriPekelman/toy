@@ -131,6 +131,16 @@ archive, JIT-compile on first device load ~15 s, then cached).
 Validated end-to-end on SmolLM2-135M F32; [`coverage.md`](docs/coverage.md)
 Metal column shows the rest.
 
+**Use toy as a library from your own project:** as of 2026-05-27 toy
+ships [`toy.gemspec`](toy.gemspec) and is consumable via the
+[spinelgems](https://github.com/OriPekelman/spinelgems) Gemfile
+convention. A research project (e.g. `tao_transfer`) declares
+`gem "toy", path: "../toy_ruby_neural_network"`, vendors toy into
+its tree, and compiles its own experiments against toy's primitives
+— no forks, no hand-pathed `require_relative`s. See
+[`docs/consuming-toy.md`](docs/consuming-toy.md) for the end-to-end
+recipe.
+
 ## Reading the rest
 
 - [`examples/`](examples/README.md) — start here.
