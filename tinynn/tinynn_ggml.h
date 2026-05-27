@@ -91,6 +91,7 @@ void  *tnn_input_2d_persistent_typed(void *sess, int rows, int cols, int ggml_ty
 long   tnn_row_size(int ggml_type, int ne0);
 void  *tnn_input_1d_f32_persistent(void *sess, int n);
 void  *tnn_input_3d_f32_persistent(void *sess, int ne0, int ne1, int ne2);  /* M2 MoE */
+void  *tnn_input_4d_f32_persistent(void *sess, int ne0, int ne1, int ne2, int ne3); /* E1.1 — conv kernel [KW,KH,IC,OC] */
 void  *tnn_input_3d_persistent_typed(void *sess, int ne0, int ne1, int ne2,
                                        int ggml_type);                         /* M2.3 MoE */
 
@@ -229,6 +230,27 @@ void  *tnn_flash_attn_ext(void *sess, void *q, void *k, void *v, void *mask,
                             double scale, double max_bias, double logit_softcap);
 
                                                          /* set elements above the diagonal (off by n_past) to -inf */
+
+/* --- Vision / Conv ops (E1.1, towards GH#13) ---
+ *
+ * ggml's conv_2d expects:
+ *   kernel a: ne=[KW, KH, IC, OC]  (KW fastest)
+ *   data   b: ne=[ W,  H, IC,  N]  (W fastest, N batch)
+ *
+ * im2col emits ne=[IC*KH*KW, OH*OW, N, 1] (when is_2D=true) — feed
+ * into a matmul against a kernel reshaped to [IC*KH*KW, OC] to get
+ * the conv output. tnn_conv_2d wraps that fold internally.
+ *
+ * dst_type=0 → GGML_TYPE_F32 for the im2col output. */
+void  *tnn_im2col(void *sess, void *kernel, void *data,
+                  int s0, int s1, int p0, int p1, int d0, int d1,
+                  int is_2D, int dst_type);
+void  *tnn_im2col_back(void *sess, void *kernel, void *grad_im2col,
+                       int input_w, int input_h, int input_c, int input_n,
+                       int s0, int s1, int p0, int p1, int d0, int d1,
+                       int is_2D);
+void  *tnn_conv_2d(void *sess, void *kernel, void *data,
+                   int s0, int s1, int p0, int p1, int d0, int d1);
 
 /* --- Llama-family ops --- */
 void  *tnn_silu(void *sess, void *a);                    /* SiLU: x * sigmoid(x). SwiGLU activation. */
