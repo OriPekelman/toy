@@ -360,6 +360,10 @@ tinynn/ab_smoke: tinynn/ab_smoke.rb lib/transformer.rb lib/tinynn.rb tinynn/libt
 tinynn/ab_smoke_add: tinynn/ab_smoke_add.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) tinynn/ab_smoke_add.rb -o tinynn/ab_smoke_add
 
+# E1.1 / GH#13 — Conv2D smoke + JSON dump for PyTorch parity.
+tinynn/ab_smoke_conv2d: tinynn/ab_smoke_conv2d.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
+	$(SPINEL) tinynn/ab_smoke_conv2d.rb -o tinynn/ab_smoke_conv2d
+
 tinynn/ab_smoke_gelu: tinynn/ab_smoke_gelu.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) tinynn/ab_smoke_gelu.rb -o tinynn/ab_smoke_gelu
 

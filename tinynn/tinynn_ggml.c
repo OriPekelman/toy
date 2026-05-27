@@ -572,6 +572,17 @@ void *tnn_input_3d_persistent_typed(void *sess, int ne0, int ne1, int ne2,
                                        (int64_t)ne0, (int64_t)ne1, (int64_t)ne2);
 }
 
+/* E1.1 — 4D persistent F32 (conv kernels: ne=[KW, KH, IC, OC]). */
+void *tnn_input_4d_f32_persistent(void *sess, int ne0, int ne1, int ne2, int ne3)
+{
+    if (!sess || ne0 <= 0 || ne1 <= 0 || ne2 <= 0 || ne3 <= 0) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    if (s->weights_finalized) return NULL;
+    return (void *)ggml_new_tensor_4d(s->ctx_w, GGML_TYPE_F32,
+                                       (int64_t)ne0, (int64_t)ne1,
+                                       (int64_t)ne2, (int64_t)ne3);
+}
+
 /* Allocate the backend buffer for all persistent tensors in ctx_w.
  * Must be called AFTER declaring all persistent tensors and BEFORE
  * any tnn_realize/compute. After this, the persistent tensors have
@@ -906,6 +917,63 @@ void *tnn_diag_mask_inf(void *sess, void *a, int n_past)
     if (!sess || !a) return NULL;
     tnn_session *s = (tnn_session *)sess;
     return (void *)ggml_diag_mask_inf(s->ctx, (struct ggml_tensor *)a, n_past);
+}
+
+/* --- Vision / Conv ops (E1.1) ------------------------------------------ */
+
+/* im2col: extracts sliding kernel windows from the input image into a
+ * 2D matrix suitable for matmul-as-conv. ggml's im2col output ne for
+ * is_2D=true is [IC*KH*KW, OH*OW, N, 1].
+ *
+ * dst_type: 0=F32, 1=F16, 26=I32 (full enum in ggml.h:ggml_type). */
+void *tnn_im2col(void *sess, void *kernel, void *data,
+                 int s0, int s1, int p0, int p1, int d0, int d1,
+                 int is_2D, int dst_type)
+{
+    if (!sess || !kernel || !data) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_im2col(s->ctx,
+                                (struct ggml_tensor *)kernel,
+                                (struct ggml_tensor *)data,
+                                s0, s1, p0, p1, d0, d1,
+                                is_2D ? true : false,
+                                (enum ggml_type)dst_type);
+}
+
+/* im2col_back: gradient of im2col w.r.t. the input image. Caller
+ * must pass the original input image shape via input_w/input_h/input_c/input_n
+ * (ggml's API wants an int64_t ne[4]). */
+void *tnn_im2col_back(void *sess, void *kernel, void *grad_im2col,
+                      int input_w, int input_h, int input_c, int input_n,
+                      int s0, int s1, int p0, int p1, int d0, int d1,
+                      int is_2D)
+{
+    if (!sess || !kernel || !grad_im2col) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    int64_t ne[4];
+    ne[0] = (int64_t)input_w;
+    ne[1] = (int64_t)input_h;
+    ne[2] = (int64_t)input_c;
+    ne[3] = (int64_t)input_n;
+    return (void *)ggml_im2col_back(s->ctx,
+                                     (struct ggml_tensor *)kernel,
+                                     (struct ggml_tensor *)grad_im2col,
+                                     ne,
+                                     s0, s1, p0, p1, d0, d1,
+                                     is_2D ? true : false);
+}
+
+/* conv_2d: composite (im2col + matmul). ggml internally folds the
+ * kernel + im2col output and emits the [OW, OH, OC, N] result. */
+void *tnn_conv_2d(void *sess, void *kernel, void *data,
+                  int s0, int s1, int p0, int p1, int d0, int d1)
+{
+    if (!sess || !kernel || !data) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_conv_2d(s->ctx,
+                                 (struct ggml_tensor *)kernel,
+                                 (struct ggml_tensor *)data,
+                                 s0, s1, p0, p1, d0, d1);
 }
 
 /* --- Llama-family ops -------------------------------------------------- */
