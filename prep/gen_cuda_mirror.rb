@@ -55,10 +55,11 @@
 require "fileutils"
 
 MIRRORABLE = [
-  "lib/llama_seq_forward_ffi.rb",   # M3 (sequence-mode forward + LoRA)
-  "lib/toy_smollm2_ffi_kv.rb",      # KV-cache decode (Phase 0.6 step 2)
-  "lib/gpt2_ffi.rb",                # GPT-2 full-forward FFI (Phase 0.6 step 3)
-  "lib/gpt2_ffi_kv.rb",             # GPT-2 KV-cache decode (Phase 0.6 step 3)
+  "lib/llama_seq_forward_ffi.rb",       # M3 (sequence-mode forward + LoRA)
+  "lib/toy_smollm2_ffi_kv.rb",          # KV-cache decode (Phase 0.6 step 2)
+  "lib/gpt2_ffi.rb",                    # GPT-2 full-forward FFI (Phase 0.6 step 3)
+  "lib/gpt2_ffi_kv.rb",                 # GPT-2 KV-cache decode (Phase 0.6 step 3)
+  "examples/06_train_from_scratch.rb",  # #152: from-scratch training entry (CPU/CUDA)
 ]
 
 # Per-backend codegen parameters.
@@ -146,6 +147,17 @@ def subs_for(cpu_path, backend)
       [/^module GPT2KV$/,             "module GPT2KV" + suffix],
     ] + common_module_tail
 
+  when "examples/06_train_from_scratch.rb"
+    # #152 — CUDA mirror of the from-scratch training entry. Rewrites
+    # the require to the GPU-side llama_seq_forward_ffi mirror, renames
+    # LlamaSeqForwardFFICache to its backend variant, and swaps every
+    # TinyNN. call to TinyNN<Suffix>. (handled by common_module_tail).
+    [
+      [/^require_relative "..\/lib\/llama_seq_forward_ffi"$/,
+       'require_relative "../lib/llama_seq_forward_ffi_' + backend.to_s + '"'],
+      [/\bLlamaSeqForwardFFICache\b/, "LlamaSeqForwardFFICache" + suffix],
+    ] + common_module_tail
+
   else
     nil
   end
@@ -187,7 +199,11 @@ def generate(cpu_path, subs)
 end
 
 def derive_mirror_path(cpu_path, backend)
-  raise "expected lib/X_ffi*.rb, got #{cpu_path}" unless cpu_path =~ /_ffi(_[a-z]+)?\.rb$/
+  # lib/X_ffi.rb → lib/X_ffi_<backend>.rb (original use case)
+  # examples/NN_name.rb → examples/NN_name_<backend>.rb (#152)
+  unless cpu_path =~ /_ffi(_[a-z]+)?\.rb$/ || cpu_path =~ %r{^examples/\d+_[a-z0-9_]+\.rb$}
+    raise "unrecognised mirror path: #{cpu_path}"
+  end
   cpu_path.sub(/\.rb$/, "_#{backend}.rb")
 end
 
