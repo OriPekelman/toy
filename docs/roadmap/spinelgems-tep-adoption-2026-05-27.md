@@ -3,7 +3,7 @@
 **Date:** 2026-05-27. **Status:** plan + drafts; blocked on tep#95.
 **Context:** the sibling [spinelgems](https://github.com/OriPekelman/spinelgems)
 project ships an experimental Gemfile convention for Spinel-compiled
-projects. Its [dogfood doc](../../../spinelgems/docs/dogfood-toy-tep-tao.md)
+projects. Its [adoption guide](https://github.com/OriPekelman/spinelgems/blob/main/docs/adoption.md)
 calls out toy as the flagship consumer — the rsync-and-substitute
 hack in `prep/sync_tep.rb` + `tep_demo/_tep_lib/` is literally the
 pain it was designed to retire.

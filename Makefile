@@ -193,6 +193,12 @@ verify-mirrors:
 tep_demo/hello: tep_demo/hello_api.rb tep_demo/_tep_lib/tep.rb
 	$(SPINEL) tep_demo/hello_api.rb -o tep_demo/hello
 
+# spinelgems-vendored twin (parity check vs the rsync'd hello above).
+# Depends on vendor/spinel/tep/lib/tep.rb produced by:
+#   bundle lock && ../spinelgems/exe/spinel-compat vendor && ./prep/post_vendor_tep.rb
+tep_demo/hello_vendored: tep_demo/hello_api_vendored.rb vendor/spinel/tep/lib/tep.rb vendor/spinel/deps.rb
+	$(SPINEL) tep_demo/hello_api_vendored.rb -o tep_demo/hello_vendored
+
 # Inference API: /generate?n=N runs greedy generation via FullForwardFFICache.
 tep_demo/api: tep_demo/inference_api.rb tep_demo/_tep_lib/tep.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) tep_demo/inference_api.rb -o tep_demo/api
