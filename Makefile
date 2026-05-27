@@ -94,6 +94,10 @@ example_lmc: examples/example_lmc
 examples/smoke_projection_lens: examples/smoke_projection_lens.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb lib/toy_drift_grad.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
+# E2.4 (towards GH#14) — streaming corpus loader + cosine LR smoke.
+examples/smoke_corpus_loader: examples/smoke_corpus_loader.rb lib/transformer.rb lib/tinynn.rb lib/toy_corpus_loader.rb lib/toy_lr_schedule.rb tinynn/libtinynn_ggml.a
+	$(SPINEL) $< -o $@
+
 # Auto-generated coverage matrix — ggml ops vs our FFI surface.
 # Sources are vendor/ggml/include/ggml.h, tinynn/tinynn_ggml.c, and the
 # two FFI binding files. See docs/coverage.md for the matrix.

@@ -55,6 +55,10 @@ void   tnn_session_free(void *sess);
 int    tnn_embed_lookup_to_doubles(void *sess, void *tensor, int row_idx,
                                     double *dst, int d_model);
 
+/* E2.4: read n_ints int32s from `path` at byte_offset, widened to i64.
+ * Returns count actually read; negative on file-open/seek/alloc failure. */
+int    tnn_read_i32_file(const char *path, int byte_offset, int n_ints, int64_t *dst);
+
 /* GH#17: bump compute-graph node capacity beyond the default 65536.
  * Call before any realize / input / build op. Returns 0 on success;
  * non-zero if sess is null, capacity <= 0, or realize has already
