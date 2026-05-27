@@ -98,6 +98,11 @@ examples/smoke_projection_lens: examples/smoke_projection_lens.rb lib/llama_seq_
 examples/smoke_corpus_loader: examples/smoke_corpus_loader.rb lib/transformer.rb lib/tinynn.rb lib/toy_corpus_loader.rb lib/toy_lr_schedule.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
+# E2.5 (towards GH#14) — warm-start training driver.
+examples/example_warm_start_train: examples/09_warm_start_train.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb lib/toy_drift_grad.rb lib/toy_gguf_writer.rb lib/toy_corpus_loader.rb lib/toy_lr_schedule.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+example_warm_start_train: examples/example_warm_start_train
+
 # Auto-generated coverage matrix — ggml ops vs our FFI surface.
 # Sources are vendor/ggml/include/ggml.h, tinynn/tinynn_ggml.c, and the
 # two FFI binding files. See docs/coverage.md for the matrix.
