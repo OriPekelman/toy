@@ -351,6 +351,7 @@ module TinyNN
   ffi_func :tnn_session_set_graph_capacity, [:ptr, :int],   :int
   ffi_func :tnn_embed_lookup_to_doubles, [:ptr, :ptr, :int, :float_array, :int], :int
   ffi_func :tnn_read_i32_file,   [:str, :int, :int, :int_array],            :int
+  ffi_func :tnn_read_f32_file,   [:str, :int, :int, :float_array],          :int
   # E1.1 — Conv2D + Im2Col (towards GH#13)
   ffi_func :tnn_input_4d_f32_persistent, [:ptr, :int, :int, :int, :int], :ptr
   ffi_func :tnn_im2col,          [:ptr, :ptr, :ptr, :int, :int, :int, :int, :int, :int, :int, :int], :ptr

@@ -385,6 +385,10 @@ tinynn/ab_smoke_patch_embed: tinynn/ab_smoke_patch_embed.rb lib/transformer.rb l
 examples/smoke_vit_tiny: examples/smoke_vit_tiny.rb lib/vit_tiny_forward_ffi.rb lib/toy_vit.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
+# E1.5 / GH#13 — image-loader smoke.
+examples/smoke_image_loader: examples/smoke_image_loader.rb lib/toy_image_loader.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
+	$(SPINEL) $< -o $@
+
 tinynn/ab_smoke_gelu: tinynn/ab_smoke_gelu.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) tinynn/ab_smoke_gelu.rb -o tinynn/ab_smoke_gelu
 
