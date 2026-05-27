@@ -562,6 +562,9 @@ class LlamaSeqForwardFFICacheMetal
 
       # M3 step 3 — LoRA-Q adapter pair per Q head. Trainable F32 in
       # ctx_w (mirrors SmolLM2KVFFICache). Optional persistent Adam m/v.
+      # Names ride the llama.cpp convention extended for the per-head /
+      # adapter axes: blk.N.attn_q.head_H.lora_{a,b}.weight (+ .m / .v).
+      lora_prefix = "blk." + li.to_s + ".attn_q.head_"
       if @seq_lora_q_enabled
         blk.t_seq_w_lora_a_q = [TinyNNMetal.tnn_input_2d_f32_persistent(@sess,
                                   @seq_lora_q_rank, @seq_d_model)]
@@ -574,6 +577,14 @@ class LlamaSeqForwardFFICacheMetal
           blk.t_seq_w_lora_b_q.push(TinyNNMetal.tnn_input_2d_f32_persistent(@sess,
                                       @seq_d_head, @seq_lora_q_rank))
           hql = hql + 1
+        end
+        hqn = 0
+        while hqn < @seq_n_heads
+          TinyNNMetal.tnn_tensor_set_name(blk.t_seq_w_lora_a_q[hqn],
+                                     lora_prefix + hqn.to_s + ".lora_a.weight")
+          TinyNNMetal.tnn_tensor_set_name(blk.t_seq_w_lora_b_q[hqn],
+                                     lora_prefix + hqn.to_s + ".lora_b.weight")
+          hqn = hqn + 1
         end
 
         if @seq_lora_q_adamw_enabled
@@ -596,6 +607,18 @@ class LlamaSeqForwardFFICacheMetal
             blk.t_seq_w_lora_b_q_v.push(TinyNNMetal.tnn_input_2d_f32_persistent(@sess,
                                           @seq_d_head, @seq_lora_q_rank))
             hqm = hqm + 1
+          end
+          hmn = 0
+          while hmn < @seq_n_heads
+            TinyNNMetal.tnn_tensor_set_name(blk.t_seq_w_lora_a_q_m[hmn],
+                                       lora_prefix + hmn.to_s + ".lora_a.m")
+            TinyNNMetal.tnn_tensor_set_name(blk.t_seq_w_lora_a_q_v[hmn],
+                                       lora_prefix + hmn.to_s + ".lora_a.v")
+            TinyNNMetal.tnn_tensor_set_name(blk.t_seq_w_lora_b_q_m[hmn],
+                                       lora_prefix + hmn.to_s + ".lora_b.m")
+            TinyNNMetal.tnn_tensor_set_name(blk.t_seq_w_lora_b_q_v[hmn],
+                                       lora_prefix + hmn.to_s + ".lora_b.v")
+            hmn = hmn + 1
           end
         end
       end
@@ -770,14 +793,17 @@ class LlamaSeqForwardFFICacheMetal
       @t_seq_token_embed = TinyNNMetal.tnn_input_2d_f32_persistent(@sess,
                              @seq_vocab_size, @seq_d_model)
       ft_add_global_2d(@t_seq_token_embed, @seq_vocab_size, @seq_d_model)
+      ft_name_last_global("token_embd.weight")
 
       @t_seq_final_norm_gamma = TinyNNMetal.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
       ft_add_global_1d(@t_seq_final_norm_gamma)
+      ft_name_last_global("output_norm.weight")
 
       if untied
         @t_seq_output = TinyNNMetal.tnn_input_2d_f32_persistent(@sess,
                           @seq_vocab_size, @seq_d_model)
         ft_add_global_2d(@t_seq_output, @seq_vocab_size, @seq_d_model)
+        ft_name_last_global("output.weight")
       end
     else
       map_base = TinyNNMetal.tnn_gguf_mmap_base(gguf_handle)
@@ -817,11 +843,14 @@ class LlamaSeqForwardFFICacheMetal
     li = 0
     while li < @seq_n_layers
       blk = @seq_blocks_ffi[li]
+      prefix = "blk." + li.to_s + "."
 
       blk.t_seq_rn1_gamma = TinyNNMetal.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
       blk.t_seq_rn2_gamma = TinyNNMetal.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
       ft_add_1d(blk, blk.t_seq_rn1_gamma)
+      ft_name_last(blk, prefix + "attn_norm.weight")
       ft_add_1d(blk, blk.t_seq_rn2_gamma)
+      ft_name_last(blk, prefix + "ffn_norm.weight")
 
       blk.t_seq_w_q = [TinyNNMetal.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model)]
       hq = 1
@@ -832,6 +861,7 @@ class LlamaSeqForwardFFICacheMetal
       hq2 = 0
       while hq2 < @seq_n_heads
         ft_add_2d(blk, blk.t_seq_w_q[hq2], @seq_d_head, @seq_d_model)
+        ft_name_last(blk, prefix + "attn_q.head_" + hq2.to_s + ".weight")
         hq2 = hq2 + 1
       end
 
@@ -846,7 +876,9 @@ class LlamaSeqForwardFFICacheMetal
       hkv2 = 0
       while hkv2 < @seq_n_kv
         ft_add_2d(blk, blk.t_seq_w_k[hkv2], @seq_d_head, @seq_d_model)
+        ft_name_last(blk, prefix + "attn_k.head_" + hkv2.to_s + ".weight")
         ft_add_2d(blk, blk.t_seq_w_v[hkv2], @seq_d_head, @seq_d_model)
+        ft_name_last(blk, prefix + "attn_v.head_" + hkv2.to_s + ".weight")
         hkv2 = hkv2 + 1
       end
 
@@ -868,12 +900,15 @@ class LlamaSeqForwardFFICacheMetal
         hbq2 = 0
         while hbq2 < @seq_n_heads
           ft_add_1d(blk, blk.t_seq_b_q[hbq2])
+          ft_name_last(blk, prefix + "attn_q.head_" + hbq2.to_s + ".bias")
           hbq2 = hbq2 + 1
         end
         hbkv2 = 0
         while hbkv2 < @seq_n_kv
           ft_add_1d(blk, blk.t_seq_b_k[hbkv2])
+          ft_name_last(blk, prefix + "attn_k.head_" + hbkv2.to_s + ".bias")
           ft_add_1d(blk, blk.t_seq_b_v[hbkv2])
+          ft_name_last(blk, prefix + "attn_v.head_" + hbkv2.to_s + ".bias")
           hbkv2 = hbkv2 + 1
         end
       end
@@ -883,9 +918,13 @@ class LlamaSeqForwardFFICacheMetal
       blk.t_seq_w_up   = TinyNNMetal.tnn_input_2d_f32_persistent(@sess, @seq_d_ff,    @seq_d_model)
       blk.t_seq_w_down = TinyNNMetal.tnn_input_2d_f32_persistent(@sess, @seq_d_model, @seq_d_ff)
       ft_add_2d(blk, blk.t_seq_w_o,    @seq_d_model, @seq_d_model)
+      ft_name_last(blk, prefix + "attn_output.weight")
       ft_add_2d(blk, blk.t_seq_w_gate, @seq_d_ff,    @seq_d_model)
+      ft_name_last(blk, prefix + "ffn_gate.weight")
       ft_add_2d(blk, blk.t_seq_w_up,   @seq_d_ff,    @seq_d_model)
+      ft_name_last(blk, prefix + "ffn_up.weight")
       ft_add_2d(blk, blk.t_seq_w_down, @seq_d_model, @seq_d_ff)
+      ft_name_last(blk, prefix + "ffn_down.weight")
 
       # Mark every recorded weight as a trainable parameter.
       wi = 0
