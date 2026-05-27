@@ -1,7 +1,11 @@
 metric,value,unit,direction,tolerance_pct
-lora_step_ms,76.311265,ms,lower,15.0
-lora_steady_state_ms,72.321033,ms,lower,15.0
-infer_toks_per_sec,87.334513,tok/s,higher,15.0
-infer_step_ms,11.450227,ms,lower,15.0
-tokenizer_encode_us_per_tok,1.238127,us/tok,lower,15.0
-tokenizer_encode_toks_per_sec,807671.264530,tok/s,higher,15.0
+lora_step_b1_ms,58.125575,ms,lower,15.0
+lora_steady_state_b1_ms,53.533036,ms,lower,15.0
+lora_step_ms,58.125575,ms,lower,15.0
+lora_steady_state_ms,53.533036,ms,lower,15.0
+lora_step_b4_ms,104.420342,ms,lower,15.0
+lora_steady_state_b4_ms,99.095326,ms,lower,15.0
+infer_toks_per_sec,64.393151,tok/s,higher,15.0
+infer_step_ms,15.529602,ms,lower,15.0
+tokenizer_encode_us_per_tok,1.483747,us/tok,lower,15.0
+tokenizer_encode_toks_per_sec,673969.512023,tok/s,higher,15.0

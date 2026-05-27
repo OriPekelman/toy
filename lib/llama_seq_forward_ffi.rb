@@ -371,6 +371,13 @@ class LlamaSeqForwardFFICache
       end
     end
 
+    # GH#7 — block-causal attention mask for B>1 (see realize_for_mmap
+    # for the same pattern). Caller sets cache.seq_b = N before realize.
+    if @seq_b > 1
+      tb_alloc = @seq_t * @seq_b
+      @t_seq_attn_mask = TinyNN.tnn_input_2d_f32_persistent(@sess, tb_alloc, tb_alloc)
+    end
+
     TinyNN.tnn_finalize_weights(@sess)
 
     # Upload llama3-style RoPE freq_factors once the backend buffer
@@ -381,6 +388,10 @@ class LlamaSeqForwardFFICache
         @seq_rope_scaling.orig_max_pos, @seq_rope_scaling.factor,
         @seq_rope_scaling.low_freq_factor, @seq_rope_scaling.high_freq_factor)
       TinyNN.tnn_upload_from_float_array(@sess, @t_seq_rope_freq_factors, ff, ff.length)
+    end
+
+    if @seq_b > 1
+      upload_block_causal_mask!
     end
 
     # Load all weight bytes from the GGUF into the now-allocated
@@ -727,6 +738,15 @@ class LlamaSeqForwardFFICache
       end
     end
 
+    # GH#7 — block-causal attention mask for B>1. Caller opts in by
+    # setting `cache.seq_b = N` BEFORE realize_for_mmap. At B=1 the
+    # mask stays NULL and build_seq_qhead uses diag_mask_inf + softmax
+    # (bit-identical to pre-GH#7).
+    if @seq_b > 1
+      tb_alloc = @seq_t * @seq_b
+      @t_seq_attn_mask = TinyNN.tnn_input_2d_f32_persistent(@sess, tb_alloc, tb_alloc)
+    end
+
     TinyNN.tnn_finalize_weights(@sess)
 
     if @seq_rope_scaling.kind == :llama3
@@ -735,6 +755,10 @@ class LlamaSeqForwardFFICache
         @seq_rope_scaling.orig_max_pos, @seq_rope_scaling.factor,
         @seq_rope_scaling.low_freq_factor, @seq_rope_scaling.high_freq_factor)
       TinyNN.tnn_upload_from_float_array(@sess, @t_seq_rope_freq_factors, ff, ff.length)
+    end
+
+    if @seq_b > 1
+      upload_block_causal_mask!
     end
 
     # Zero-init persistent AdamW moments. Same contract as F1.2 step 6b
@@ -959,6 +983,13 @@ class LlamaSeqForwardFFICache
       end
     end
 
+    # GH#7 — block-causal attention mask for B>1 (see realize_for_mmap
+    # for the same pattern). Caller sets cache.seq_b = N before realize.
+    if @seq_b > 1
+      tb_alloc = @seq_t * @seq_b
+      @t_seq_attn_mask = TinyNN.tnn_input_2d_f32_persistent(@sess, tb_alloc, tb_alloc)
+    end
+
     TinyNN.tnn_finalize_weights(@sess)
 
     if @seq_rope_scaling.kind == :llama3
@@ -967,6 +998,10 @@ class LlamaSeqForwardFFICache
         @seq_rope_scaling.orig_max_pos, @seq_rope_scaling.factor,
         @seq_rope_scaling.low_freq_factor, @seq_rope_scaling.high_freq_factor)
       TinyNN.tnn_upload_from_float_array(@sess, @t_seq_rope_freq_factors, ff, ff.length)
+    end
+
+    if @seq_b > 1
+      upload_block_causal_mask!
     end
 
     # Post-finalize: load every writable weight from the GGUF.

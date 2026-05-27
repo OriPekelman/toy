@@ -4,6 +4,14 @@
 # averaged over the last N-WARMUP steps; the first step is excluded
 # because graph realize/finalize dominates and is one-shot.
 #
+# Knobs:
+#   STEPS=N   total step count (default 10).
+#   BATCH=N   GH#7 micro-batching. BATCH=1 (default) is the legacy
+#             single-sequence path. BATCH>1 lays N copies of TOKENS
+#             side-by-side with a block-causal mask. Reported numbers
+#             are still ms/step (not ms/sample) so a B>1 column tells
+#             you how step time scales with effective batch size.
+#
 # Output format (last lines, parsed by bench/check.rb):
 #   BENCH lora_step_ms <float>
 #   BENCH lora_steady_state_ms <float>
@@ -15,28 +23,53 @@ require_relative "../lib/llama_seq_forward_ffi"
 
 GGUF   = ENV["GGUF"]   || "data/smollm2-135m-native.gguf"
 STEPS  = (ENV["STEPS"] || "10").to_i
+BATCH  = (ENV["BATCH"] || "1").to_i
 WARMUP = 2
 
 cfg   = SmolLM2ConfigLoader.read(GGUF)
 flags = GGUFLoad.detect_smollm2_flags(GGUF)
 gguf  = TinyNN.tnn_gguf_load(GGUF)
 
-TOKENS = [12092, 4845, 253, 1429]
+TOKENS_PER_SEQ = [12092, 4845, 253, 1429]
+T_SEQ = TOKENS_PER_SEQ.length
+
+# Build flat [T*B] token + position arrays. Each batch element holds
+# the same TOKENS payload (a synthetic bench input — content doesn't
+# matter, only the shape does).
+tokens_flat = [0]; tokens_flat.pop
+positions   = [0]; positions.pop
+b_idx = 0
+while b_idx < BATCH
+  ki = 0
+  while ki < T_SEQ
+    tokens_flat.push(TOKENS_PER_SEQ[ki])
+    positions.push(ki)
+    ki = ki + 1
+  end
+  b_idx = b_idx + 1
+end
+
 seq = LlamaSeqForwardFFICache.new
 seq.enable_lora_q!(8)
 seq.enable_lora_q_adamw!
-seq.realize_for_mmap(gguf, cfg, TOKENS.length, flags.untied, flags.qkv_bias)
+# GH#7 — caller opts in to micro-batching via attr_accessor BEFORE
+# realize. realize_for_mmap reads @seq_b, allocates + uploads the
+# block-causal mask when > 1.
+seq.seq_b = BATCH
+seq.realize_for_mmap(gguf, cfg, T_SEQ, flags.untied, flags.qkv_bias)
 seq.upload_lora_q_init!(42, 0.01)
 result   = seq.build_training_step
 t_loss   = result[0]
 t_labels = result[1]
 t_hp     = result[2]
 
-m_labels = Mat.new(TOKENS.length, cfg.vocab)
+# Label matrix is (T*B) rows × vocab cols, one-hot target token 99
+# per row (synthetic bench input).
+m_labels = Mat.new(T_SEQ * BATCH, cfg.vocab)
 i = 0
-while i < TOKENS.length * cfg.vocab; m_labels.flat[i] = 0.0; i = i + 1; end
+while i < T_SEQ * BATCH * cfg.vocab; m_labels.flat[i] = 0.0; i = i + 1; end
 ti = 0
-while ti < TOKENS.length
+while ti < T_SEQ * BATCH
   m_labels.flat[ti * cfg.vocab + 99] = 1.0
   ti = ti + 1
 end
@@ -44,8 +77,6 @@ end
 m_hp = Mat.new(1, 7)
 m_hp.flat[0] = 0.001; m_hp.flat[1] = 0.9; m_hp.flat[2] = 0.999
 m_hp.flat[3] = 1.0e-8; m_hp.flat[4] = 0.0
-
-positions = [0, 1, 2, 3]
 
 # Per-step timings.
 times = [0.0]; times.pop
@@ -60,7 +91,7 @@ while step <= STEPS
   else
     TinyNN.tnn_graph_reset_grads_only(seq.sess)
   end
-  TinyNN.upload_int_array(seq.sess, seq.t_seq_token_ids, TOKENS)
+  TinyNN.upload_int_array(seq.sess, seq.t_seq_token_ids, tokens_flat)
   TinyNN.upload_int_array(seq.sess, seq.t_seq_positions, positions)
   TinyNN.upload_row_major(seq.sess, t_labels, m_labels)
   TinyNN.upload_row_major(seq.sess, t_hp,     m_hp)
@@ -86,5 +117,14 @@ while i < times.length
 end
 mean_warm = n_warm > 0 ? sum_warm / n_warm.to_f : mean_all
 
-puts "BENCH lora_step_ms " + mean_all.to_s
-puts "BENCH lora_steady_state_ms " + mean_warm.to_s
+# Emit batch-suffixed metrics so multiple BATCH runs can coexist in
+# the bench harness (bench/check.rb merges all observed metrics into
+# one map — duplicate keys collide). At BATCH=1 we ALSO emit the
+# legacy unsuffixed name so the pre-GH#7 baseline row keeps its anchor.
+suffix = "_b" + BATCH.to_s
+puts "BENCH lora_step" + suffix + "_ms " + mean_all.to_s
+puts "BENCH lora_steady_state" + suffix + "_ms " + mean_warm.to_s
+if BATCH == 1
+  puts "BENCH lora_step_ms " + mean_all.to_s
+  puts "BENCH lora_steady_state_ms " + mean_warm.to_s
+end

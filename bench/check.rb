@@ -22,7 +22,12 @@ ROOT = File.expand_path("../..", __FILE__)
 # Each bench has a Ruby source and a built binary; the binary path
 # is relative to ROOT. Env vars apply only to that bench's invocation.
 BENCHES = [
-  { binary: "bench/build/lora_step",   env: { "STEPS" => "8" }, source: "bench/lora_step.rb" },
+  # B=1 — legacy single-sequence LoRA step. Emits both the b1-suffixed
+  # metric AND the unsuffixed legacy name (baseline-row compatibility).
+  { binary: "bench/build/lora_step",   env: { "STEPS" => "8", "BATCH" => "1" }, source: "bench/lora_step.rb" },
+  # B=4 — micro-batched LoRA step (GH#7). Tracks how step time scales
+  # with effective batch size; reports `lora_step_b4_ms` only.
+  { binary: "bench/build/lora_step",   env: { "STEPS" => "8", "BATCH" => "4" }, source: "bench/lora_step.rb" },
   { binary: "bench/build/inference",   env: { "N_NEW" => "32" }, source: "bench/inference.rb" },
   { binary: "bench/build/tokenizer",   env: {},                  source: "bench/tokenizer.rb" },
 ]
