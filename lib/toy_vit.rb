@@ -12,6 +12,31 @@
 # This produces the [d_model, N_patches] expected by the transformer
 # block (same shape as the [d_model, T] sequence input on the LM side).
 
+# ViTTinyConfig — hyperparams for the ViT-Tiny variant.
+# Reference: vit_tiny_patch16_224 (timm) — image 224×224, patch 16,
+# d_model 192, n_heads 3 (d_head 64), d_ff 768, n_layers 12.
+# For the smoke we run at smaller dims (image 16×16, patch 4,
+# d_model 64, n_heads 4, d_ff 128, n_layers 2).
+class ViTTinyConfig
+  attr_accessor :image_size, :patch_size, :num_channels,
+                :d_model, :n_heads, :d_head, :d_ff, :n_layers,
+                :num_classes, :ln_eps
+
+  def initialize(image_size, patch_size, num_channels, d_model, n_heads,
+                 d_ff, n_layers, num_classes, ln_eps)
+    @image_size   = image_size
+    @patch_size   = patch_size
+    @num_channels = num_channels
+    @d_model      = d_model
+    @n_heads      = n_heads
+    @d_head       = n_heads > 0 ? d_model / n_heads : 0
+    @d_ff         = d_ff
+    @n_layers     = n_layers
+    @num_classes  = num_classes
+    @ln_eps       = ln_eps
+  end
+end
+
 module ToyVit
   # Returns the patch-embedding tensor handle. Caller is responsible
   # for set_param-ing the kernel (training) + downstream graph build.
