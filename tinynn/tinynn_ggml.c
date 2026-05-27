@@ -204,6 +204,7 @@ typedef struct {
     int                     weights_finalized;
     int                     last_graph;            /* 0 = none, 1 = a, 2 = b */
     int                     scratch_overflow_warned; /* once-per-session diag */
+    int                     graph_capacity;        /* GH#17: persists across rebuilds */
 } tnn_session;
 
 /* Pinned-memory allocator hooks. Weak defaults below fall back to
@@ -255,8 +256,9 @@ void *tnn_session_new(int backend_kind)
      * seq-mode training (Qwen2.5-3B, T<=32, LoRA + AdamW + pinned
      * graph_b) — matches the engine sched hash-set size. Cost is one
      * int slot per node header. */
-    s->graph   = ggml_new_graph_custom(s->ctx, 65536, false);
-    s->graph_b = ggml_new_graph_custom(s->ctx, 65536, false);
+    s->graph_capacity = 65536;
+    s->graph   = ggml_new_graph_custom(s->ctx, (size_t)s->graph_capacity, false);
+    s->graph_b = ggml_new_graph_custom(s->ctx, (size_t)s->graph_capacity, false);
 
     /* Weights ctx pool. Sized for ~1024 weight tensors -- generous
      * upper bound that covers FullForwardFFICache at LLM scale
@@ -1507,6 +1509,54 @@ int tnn_build_forward_only(void *sess, void *result)
  * Use for side-effect ops (ggml_cpy into a view) that aren't reachable
  * from the final result tensor — without this they'd be pruned. The
  * realize-target's tree is appended later by tnn_realize itself. */
+/* GH#17 — re-allocate the session's forward + backward graphs with a
+ * larger node-count budget. Must be called BEFORE realize so the ctx
+ * hasn't yet stored any compute tensors.
+ *
+ * Why this exists: per-head attention decomposition makes node count
+ * scale as O(n_layers × n_heads); the default 65536 cap overflows on
+ * 24L × 16-head Qwen-shape models at backward-expand time. Callers in
+ * realize_for_random_init / _mmap pass a size derived from cfg.
+ *
+ * Implementation: this tears down the compute ctx and re-inits it with
+ * a buffer large enough to hold:
+ *   - the forward graph (capacity nodes)
+ *   - the backward graph (capacity nodes, with grads → 2× tensor-ptr
+ *     arrays + a hash_set sized proportional to capacity)
+ *   - rebuild headroom for many decode steps (the original 32 MB slack
+ *     served distil-GPT-2 at 10k rebuilds; we keep that slack additive)
+ * The persistent-weights ctx (ctx_w) is untouched. */
+int tnn_session_set_graph_capacity(void *sess, int capacity)
+{
+    if (!sess) return -1;
+    tnn_session *s = (tnn_session *)sess;
+    if (capacity <= 0) return -2;
+    if (s->realized) return -3;
+
+    /* Size the buffer so two grad-flagged graphs at this capacity fit
+     * comfortably, plus the original rebuild slack. */
+    size_t graph_bytes = ggml_graph_overhead_custom((size_t)capacity, true);
+    size_t needed = graph_bytes * 2
+                  + ggml_tensor_overhead() * 262144   /* preserve original tensor-header slack */
+                  + 32 * 1024 * 1024;                 /* rebuild headroom */
+    if (needed > s->ctx_buf_size) {
+        ggml_free(s->ctx);
+        free(s->ctx_buf);
+        s->ctx_buf_size = needed;
+        s->ctx_buf = (uint8_t *)calloc(1, s->ctx_buf_size);
+        struct ggml_init_params params = {
+            /*.mem_size   =*/ s->ctx_buf_size,
+            /*.mem_buffer =*/ s->ctx_buf,
+            /*.no_alloc   =*/ true,
+        };
+        s->ctx = ggml_init(params);
+    }
+    s->graph_capacity = capacity;
+    s->graph   = ggml_new_graph_custom(s->ctx, (size_t)s->graph_capacity, false);
+    s->graph_b = ggml_new_graph_custom(s->ctx, (size_t)s->graph_capacity, false);
+    return 0;
+}
+
 int tnn_add_to_graph(void *sess, void *tensor)
 {
     if (!sess || !tensor) return -1;
@@ -1552,11 +1602,11 @@ int tnn_reset_for_rebuild(void *sess)
             /*.no_alloc   =*/ true,
         };
         s->ctx        = ggml_init(params);
-        s->graph_b    = ggml_new_graph_custom(s->ctx, 16384, false);
+        s->graph_b    = ggml_new_graph_custom(s->ctx, (size_t)s->graph_capacity, false);
         s->realized_b = 0;
     }
     s->realized = 0;
-    s->graph    = ggml_new_graph_custom(s->ctx, 16384, false);
+    s->graph    = ggml_new_graph_custom(s->ctx, (size_t)s->graph_capacity, false);
     s->last_graph = 0;
     return 0;
 }

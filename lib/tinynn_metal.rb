@@ -87,6 +87,7 @@ module TinyNNMetal
 
   ffi_func :tnn_session_new,      [:int],                   :ptr
   ffi_func :tnn_session_free,     [:ptr],                   :void
+  ffi_func :tnn_session_set_graph_capacity, [:ptr, :int],   :int
   ffi_func :tnn_shutdown_engines, [],                       :void
   # _exit() trampoline — skips C++ static destructors. Use at end of
   # main on Metal programs. See tinynn_backend_metal.m for the why.

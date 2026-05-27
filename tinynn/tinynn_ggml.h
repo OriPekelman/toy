@@ -49,6 +49,12 @@ void  *tnn_session_new(int backend_kind);    /* 0 = CPU, 1 = CUDA, 2 = Metal —
                                               * backend archive isn't linked in */
 void   tnn_session_free(void *sess);
 
+/* GH#17: bump compute-graph node capacity beyond the default 65536.
+ * Call before any realize / input / build op. Returns 0 on success;
+ * non-zero if sess is null, capacity <= 0, or realize has already
+ * been called. */
+int    tnn_session_set_graph_capacity(void *sess, int capacity);
+
 /* Idempotent teardown of cached engines (CPU + CUDA + Metal). Call
  * before main returns when targeting Metal — its static destructor
  * asserts on undrained residency sets otherwise. Safe to call on
