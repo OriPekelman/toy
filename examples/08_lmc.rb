@@ -103,7 +103,7 @@ while ai < alphas_arr.length
   puts "α=" + alpha.to_s + " realizing …"
 
   fcache = LlamaSeqForwardFFICache.new
-  fcache.realize_for_random_init(cfg, SEQ_LEN, false, false, SEED, 1.0)
+  fcache.realize_for_random_init(cfg, SEQ_LEN, 1, false, false, SEED, 1.0)
 
   result   = fcache.build_training_step
   t_loss   = result[0]

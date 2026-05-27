@@ -106,6 +106,38 @@ layers anymore.
   with `LlamaSeqForwardFFICache`, loss 6.44 → 6.32, `events.jsonl`
   emitted with full provenance.
 
+### Training maturity — micro-batching (toy#7)
+
+- **B>1 in `realize_for_random_init`**. New `t_batch` arg (now 7
+  positionals; the from-scratch example exposes it as the `BATCH`
+  env knob). Lays B sequences side-by-side as a flat `[T*B]`
+  token + position vector. RoPE applies the right per-batch
+  positional encoding because `rope_ext` reads `positions[k]` for
+  each `ne[2]` slot; positions cycle `0..T-1` per batch element.
+- **Block-causal attention mask**. New `@t_seq_attn_mask`
+  persistent `f32 ne=[T*B, T*B]` tensor, uploaded once at realize
+  via `upload_block_causal_mask!`: `0.0` for `(query, key)` pairs
+  in the same batch with `key <= query`, `-1.0e30` everywhere else
+  (`exp(-1e30) == 0.0` in f32). Applied via
+  `tnn_soft_max_ext(scores, mask, scale, 0.0)`, which folds
+  `scale + mask + softmax` into one op.
+- **B=1 stays on the legacy path** (bit-identical to pre-GH#7):
+  no mask tensor allocated, `tnn_scale + tnn_diag_mask_inf +
+  tnn_softmax` triple. The conditional is `if @seq_b > 1` in
+  `build_seq_qhead`; everywhere else the `T*B` arithmetic
+  collapses to `T` at B=1 with no branch.
+- **Verified bit-identical at B=1** on CPU + CUDA (CE step-1
+  6.490198 unchanged); verified learning at `B=4, B=8` on both
+  backends; CUDA's per-step time drops with `B=8` (19.5 ms vs
+  24.2 ms at B=1, T=16) — launch overhead amortizes. Larger
+  shape `T=64 B=8 STEPS=20`: CE 6.51 → 4.84 in 12 ms/step on
+  CUDA.
+- 06_train_from_scratch.rb emits `config.batch` on `run_start`
+  and `step.tokens = CONTEXT * BATCH`. Other realize-path
+  callers (`08_lmc`, `09_warm_start_train`,
+  `smoke_projection_lens`) pass `t_batch=1` — those experiments
+  stay on the single-sequence path by design.
+
 ### Roadmap docs
 
 - [`docs/roadmap/e1-e2-scope-2026-05-27.md`](docs/roadmap/e1-e2-scope-2026-05-27.md)

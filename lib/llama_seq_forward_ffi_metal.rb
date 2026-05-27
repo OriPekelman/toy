@@ -85,11 +85,11 @@ class LlamaSeqForwardFFICacheMetal
                 :t_seq_token_embed, :t_seq_final_norm_gamma, :t_seq_output,
                 :seq_has_untied_output, :seq_has_qkv_bias,
                 :seq_blocks_ffi,
-                :seq_t, :seq_d_model, :seq_d_ff, :seq_n_heads, :seq_n_kv,
+                :seq_t, :seq_b, :seq_d_model, :seq_d_ff, :seq_n_heads, :seq_n_kv,
                 :seq_d_head, :seq_group_size, :seq_n_layers, :seq_vocab_size,
                 :seq_rope_base, :seq_rope_scaling, :t_seq_rope_freq_factors,
                 :seq_rms_eps, :seq_realized,
-                :t_seq_token_ids, :t_seq_positions,
+                :t_seq_token_ids, :t_seq_positions, :t_seq_attn_mask,
                 :t_seq_x_embed, :t_seq_x_final, :t_seq_logits,
                 :seq_gguf_handle_keepalive,
                 # M3 step 3 LoRA flags. Both must be set BEFORE
@@ -123,6 +123,7 @@ class LlamaSeqForwardFFICacheMetal
   def initialize
     @seq_realized   = false
     @seq_t          = 0
+    @seq_b          = 1
     @seq_d_model    = 0
     @seq_d_ff       = 0
     @seq_n_heads    = 0
@@ -145,6 +146,11 @@ class LlamaSeqForwardFFICacheMetal
     @seq_gguf_handle_keepalive = TinyNNMetal.tnn_null_ptr
     @t_seq_token_ids = TinyNNMetal.tnn_null_ptr
     @t_seq_positions = TinyNNMetal.tnn_null_ptr
+    # GH#7 — batched-training block-causal attention mask. Allocated
+    # only when @seq_b > 1 (realize_for_random_init with t_batch > 1);
+    # otherwise stays NULL and build_seq_qhead falls back to the
+    # diag_mask_inf + softmax path (bit-identical to today at B=1).
+    @t_seq_attn_mask = TinyNNMetal.tnn_null_ptr
     @t_seq_x_embed   = TinyNNMetal.tnn_null_ptr
     @t_seq_x_final   = TinyNNMetal.tnn_null_ptr
     @t_seq_logits    = TinyNNMetal.tnn_null_ptr
@@ -996,11 +1002,16 @@ class LlamaSeqForwardFFICacheMetal
   # Currently Llama-arch only (RMSNorm + GQA + RoPE + SwiGLU). Other
   # architectures (GPT-2 LN, MHA + biases) need a separate trainer
   # cache class; deferred until we actually need GPT-2 from-scratch.
-  def realize_for_random_init(cfg, t_seq, untied, qkv_bias, seed, init_scale)
+  def realize_for_random_init(cfg, t_seq, t_batch, untied, qkv_bias, seed, init_scale)
     @ft_train_embeddings_enabled = true   # forces persistent-F32 alloc of embeddings
     @seq_full_finetune_enabled   = true   # build_training_step gates on this
 
     @seq_t          = t_seq
+    # GH#7 — micro-batching. B=1 keeps the codepath bit-identical to
+    # the pre-GH#7 single-sequence training. B>1 lays out tokens as a
+    # flat [T*B] vector with a block-causal attention mask uploaded
+    # post-finalize and applied via soft_max_ext.
+    @seq_b          = t_batch
     @seq_d_model    = cfg.d_model
     @seq_d_ff       = cfg.d_ff
     @seq_n_heads    = cfg.n_heads
@@ -1150,6 +1161,17 @@ class LlamaSeqForwardFFICacheMetal
       gi = gi + 1
     end
 
+    # GH#7 — batched-training attention mask. Allocated in ctx_w as
+    # f32 persistent (so it survives reset_for_rebuild without being
+    # re-uploaded each step), shape ne=[T*B, T*B]. NOT marked as a
+    # param — backward must not compute its gradient. Values uploaded
+    # post-finalize. Only allocated when B>1; B=1 keeps the legacy
+    # diag_mask_inf + softmax path with @t_seq_attn_mask=NULL.
+    if @seq_b > 1
+      tb_alloc = @seq_t * @seq_b
+      @t_seq_attn_mask = TinyNNMetal.tnn_input_2d_f32_persistent(@sess, tb_alloc, tb_alloc)
+    end
+
     TinyNNMetal.tnn_finalize_weights(@sess)
 
     if @seq_rope_scaling.kind == :llama3
@@ -1160,6 +1182,10 @@ class LlamaSeqForwardFFICacheMetal
       TinyNNMetal.tnn_upload_from_float_array(@sess, @t_seq_rope_freq_factors, ff, ff.length)
     end
 
+    if @seq_b > 1
+      upload_block_causal_mask!
+    end
+
     # Random-init every weight + zero biases + ones gammas.
     upload_random_init!(seed, init_scale, qkv_bias, untied)
     ft_zero_init_adam(qkv_bias)
@@ -1168,6 +1194,39 @@ class LlamaSeqForwardFFICacheMetal
     build_forward_in_current_ctx
     TinyNNMetal.tnn_realize(@sess, @t_seq_logits)
     @seq_realized = true
+  end
+
+  # GH#7 — build + upload the block-causal attention mask for B>1.
+  # Layout: scores from matmul(K[d_head, T*B], Q[d_head, T*B]) have
+  # ne=[T*B, T*B] where ne0 indexes keys and ne1 indexes queries
+  # (ggml column-major: flat[ne0_idx + ne1_idx * T*B]). For query
+  # position i1 = b_q*T + p_q and key position i0 = b_k*T + p_k:
+  #   mask = 0.0  iff b_k == b_q AND p_k <= p_q   (intra-batch causal)
+  #   mask = NEG  otherwise                      (cross-batch + future)
+  # NEG = -1.0e30 so exp(NEG) == 0.0 in f32 (avoids Float::INFINITY,
+  # which would also work but is one less Spinel codegen variable).
+  def upload_block_causal_mask!
+    tb = @seq_t * @seq_b
+    neg = -1.0e30
+    mask_arr = [0.0]; mask_arr.pop
+    i1 = 0
+    while i1 < tb
+      b_q = i1 / @seq_t
+      p_q = i1 % @seq_t
+      i0 = 0
+      while i0 < tb
+        b_k = i0 / @seq_t
+        p_k = i0 % @seq_t
+        if b_k == b_q && p_k <= p_q
+          mask_arr.push(0.0)
+        else
+          mask_arr.push(neg)
+        end
+        i0 = i0 + 1
+      end
+      i1 = i1 + 1
+    end
+    TinyNNMetal.tnn_upload_from_float_array(@sess, @t_seq_attn_mask, mask_arr, mask_arr.length)
   end
 
   # Fill every persistent weight tensor with N(0, std) values.
@@ -1437,8 +1496,14 @@ class LlamaSeqForwardFFICacheMetal
   # forward + loss + backward + opt_step all in one rebuilt ctx).
   # Stores the per-graph tensor handles back on `self`.
   def build_forward_in_current_ctx
-    @t_seq_token_ids = TinyNNMetal.tnn_input_1d_i32(@sess, @seq_t)
-    @t_seq_positions = TinyNNMetal.tnn_input_1d_i32_ctx(@sess, @seq_t)
+    # GH#7 — at B=1, @seq_t * @seq_b == @seq_t (legacy behaviour).
+    # At B>1, the layout is flat [T*B]: per-batch positions cycle
+    # 0..T-1 (the caller-built positions array is responsible for
+    # that ordering); RoPE applies per-batch positional encoding
+    # because rope_ext reads positions[k] for each ne[2] slot.
+    tb = @seq_t * @seq_b
+    @t_seq_token_ids = TinyNNMetal.tnn_input_1d_i32(@sess, tb)
+    @t_seq_positions = TinyNNMetal.tnn_input_1d_i32_ctx(@sess, tb)
 
     eps   = @seq_rms_eps
     scale = 1.0 / Math.sqrt(@seq_d_head.to_f)
@@ -1487,11 +1552,11 @@ class LlamaSeqForwardFFICacheMetal
     TinyNNMetal.tnn_reset_for_rebuild(@sess)
     build_forward_in_current_ctx
 
-    # Label tensor: same shape as logits, ggml ne=[vocab, T]. Our
+    # Label tensor: same shape as logits, ggml ne=[vocab, T*B]. Our
     # wrapper takes (rows, cols) and emits ggml(cols, rows), so pass
-    # (T, vocab) here to get ne=[vocab, T]. One-hot per ne1-column
-    # (i.e. per position).
-    t_labels = TinyNNMetal.tnn_input_2d_f32(@sess, @seq_t, @seq_vocab_size)
+    # (T*B, vocab) here to get ne=[vocab, T*B]. One-hot per ne1-column
+    # (i.e. per (batch, position) slot). At B=1, identical to legacy.
+    t_labels = TinyNNMetal.tnn_input_2d_f32(@sess, @seq_t * @seq_b, @seq_vocab_size)
     # Hyper-params vector for AdamW: alpha, beta1, beta2, eps, wd, beta1h, beta2h.
     t_hp = TinyNNMetal.tnn_input_1d_f32(@sess, 7)
 
@@ -1626,10 +1691,12 @@ class LlamaSeqForwardFFICacheMetal
         t_k_pre = t_k_raw
       end
       # ggml_rope_ext requires a->ne[2] == positions->ne[0]. Our K is
-      # ne=[d_head, T] (ne[2]=1); reshape to ne=[d_head, 1, T] so ne[2]==T,
-      # then reshape back after rope. Reshape is metadata-only (no copy)
-      # on contiguous tensors. At T=1 this is a no-op (1 == 1).
-      t_k_pre3 = TinyNNMetal.tnn_reshape_3d(@sess, t_k_pre, @seq_d_head, 1, @seq_t)
+      # ne=[d_head, T*B] (ne[2]=1); reshape to ne=[d_head, 1, T*B] so
+      # ne[2]==T*B, then reshape back after rope. Reshape is metadata-
+      # only (no copy) on contiguous tensors. At T=1, B=1 this is a
+      # no-op (1 == 1).
+      tb = @seq_t * @seq_b
+      t_k_pre3 = TinyNNMetal.tnn_reshape_3d(@sess, t_k_pre, @seq_d_head, 1, tb)
       t_k3     = TinyNNMetal.tnn_rope_ext(@sess, t_k_pre3, @t_seq_positions,
                                        @seq_d_head, @seq_rope_base,
                                        @seq_rope_scaling.freq_scale,
@@ -1638,7 +1705,7 @@ class LlamaSeqForwardFFICacheMetal
                                        @seq_rope_scaling.beta_fast,
                                        @seq_rope_scaling.beta_slow,
                                        @t_seq_rope_freq_factors)
-      t_k      = TinyNNMetal.tnn_reshape_2d(@sess, t_k3, @seq_d_head, @seq_t)
+      t_k      = TinyNNMetal.tnn_reshape_2d(@sess, t_k3, @seq_d_head, tb)
       t_k_per_kv.push(t_k)
 
       t_v_raw = TinyNNMetal.tnn_matmul(@sess, blk.t_seq_w_v[hkv], t_h)
@@ -1708,7 +1775,8 @@ class LlamaSeqForwardFFICacheMetal
       t_q_pre = t_q_raw
     end
     # Same rope-shape lift as the K path; see comment in build_seq_block.
-    t_q_pre3 = TinyNNMetal.tnn_reshape_3d(@sess, t_q_pre, @seq_d_head, 1, @seq_t)
+    tb = @seq_t * @seq_b
+    t_q_pre3 = TinyNNMetal.tnn_reshape_3d(@sess, t_q_pre, @seq_d_head, 1, tb)
     t_q3     = TinyNNMetal.tnn_rope_ext(@sess, t_q_pre3, @t_seq_positions,
                                      @seq_d_head, @seq_rope_base,
                                      @seq_rope_scaling.freq_scale,
@@ -1717,17 +1785,24 @@ class LlamaSeqForwardFFICacheMetal
                                      @seq_rope_scaling.beta_fast,
                                      @seq_rope_scaling.beta_slow,
                                      @t_seq_rope_freq_factors)
-    t_q      = TinyNNMetal.tnn_reshape_2d(@sess, t_q3, @seq_d_head, @seq_t)
+    t_q      = TinyNNMetal.tnn_reshape_2d(@sess, t_q3, @seq_d_head, tb)
 
-    # scores ne=[T_keys, T_queries]. Same shape as decode_step's
-    # matmul(K_hist, q) at T_keys = pos+1, T_queries = 1.
+    # scores ne=[T_keys, T_queries]. At B=1, scores=[T, T]; at B>1,
+    # scores=[T*B, T*B] (every query attends every key in the matmul;
+    # the block-causal mask zeroes cross-batch + future positions).
     t_scores = TinyNNMetal.tnn_matmul(@sess, t_k_per_kv[hkv], t_q)
-    t_scaled = TinyNNMetal.tnn_scale(@sess, t_scores, scale)
-    # Causal mask: pos j > pos i (col > row) becomes -inf. n_past=0 is
-    # the full-sequence case (no prior context outside the T window).
-    t_masked = TinyNNMetal.tnn_diag_mask_inf(@sess, t_scaled, 0)
-    t_attn   = TinyNNMetal.tnn_softmax(@sess, t_masked)
-    # head ne=[d_head, T]
+    if @seq_b > 1
+      # GH#7 — soft_max_ext folds scale + mask + softmax. The mask
+      # tensor was uploaded at realize time (upload_block_causal_mask!).
+      t_attn = TinyNNMetal.tnn_soft_max_ext(@sess, t_scores, @t_seq_attn_mask, scale, 0.0)
+    else
+      # B=1 legacy path — bit-identical to pre-GH#7. Causal triangle
+      # mask + softmax. scale folded as a separate op.
+      t_scaled = TinyNNMetal.tnn_scale(@sess, t_scores, scale)
+      t_masked = TinyNNMetal.tnn_diag_mask_inf(@sess, t_scaled, 0)
+      t_attn   = TinyNNMetal.tnn_softmax(@sess, t_masked)
+    end
+    # head ne=[d_head, T*B]
     TinyNNMetal.tnn_matmul(@sess, t_vt_per_kv[hkv], t_attn)
   end
 

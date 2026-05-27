@@ -36,7 +36,7 @@ puts "config: vocab=" + cfg.vocab.to_s +
      " L=" + cfg.n_layers.to_s
 
 fcache = LlamaSeqForwardFFICache.new
-fcache.realize_for_random_init(cfg, CONTEXT, true, false, SEED, 1.0)
+fcache.realize_for_random_init(cfg, CONTEXT, 1, true, false, SEED, 1.0)
 puts "realize OK"
 
 # Walk PARAM tensors, log names — confirm token_embd is NOT a PARAM
