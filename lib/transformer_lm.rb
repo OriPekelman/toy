@@ -24,6 +24,7 @@ require_relative "arch"
 require_relative "sampler"
 require_relative "toy_smollm2_loader"
 require_relative "toy_smollm2_ffi_kv"
+require_relative "toy_logprobs"
 
 class ToyLM
   attr_reader :arch, :backend, :tokenizer, :max_T
@@ -167,6 +168,25 @@ class ToyLM
       return nil
     end
     SmolLM2KV.decode_step(@kv_cpu, token_id, pos)
+  end
+
+  # toy#decode-logprobs (#151) — single-step decode that also returns
+  # log_softmax(logits) + the top-K (id, logprob) pairs. Building block
+  # for Tep's future /v1/chat/completions with `logprobs=true`.
+  #
+  # Returns [logits_mat, logprobs_mat, top_ids, top_vals] where:
+  #   logits_mat   — Mat[1, vocab] raw logits (same as decode_step)
+  #   logprobs_mat — Mat[1, vocab] numerically stable log-softmax
+  #   top_ids      — Array<Int>   length top_k, sorted by logprob desc
+  #   top_vals     — Array<Float> length top_k, parallel to top_ids
+  def decode_step_with_logprobs(token_id, pos, top_k)
+    logits = decode_step(token_id, pos)
+    if logits == nil
+      return [nil, nil, [0], [0.0]]   # never reached on CPU; CUDA prints+returns
+    end
+    logprobs = ToyLogProbs.log_softmax(logits)
+    pair     = ToyLogProbs.top_k(logprobs, top_k)
+    [logits, logprobs, pair[0], pair[1]]
   end
 
   # toy#embed-api (#145) — return the token-embedding row for each
