@@ -966,18 +966,23 @@ class LlamaSeqForwardFFICache
       @t_seq_rope_freq_factors = TinyNN.tnn_null_ptr
     end
 
-    # Globals — all trainable persistent F32.
+    # Globals — all trainable persistent F32. Each gets a llama.cpp-
+    # convention name so drift/grad/checkpoint consumers can align
+    # across runs (toy#semantic-tensor-names, GH#11).
     @t_seq_token_embed = TinyNN.tnn_input_2d_f32_persistent(@sess,
                            @seq_vocab_size, @seq_d_model)
     ft_add_global_2d(@t_seq_token_embed, @seq_vocab_size, @seq_d_model)
+    ft_name_last_global("token_embd.weight")
 
     @t_seq_final_norm_gamma = TinyNN.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
     ft_add_global_1d(@t_seq_final_norm_gamma)
+    ft_name_last_global("output_norm.weight")
 
     if untied
       @t_seq_output = TinyNN.tnn_input_2d_f32_persistent(@sess,
                         @seq_vocab_size, @seq_d_model)
       ft_add_global_2d(@t_seq_output, @seq_vocab_size, @seq_d_model)
+      ft_name_last_global("output.weight")
     end
 
     # Per-block weights — identical structure to realize_for_full_finetune.
@@ -991,11 +996,14 @@ class LlamaSeqForwardFFICache
     li = 0
     while li < @seq_n_layers
       blk = @seq_blocks_ffi[li]
+      prefix = "blk." + li.to_s + "."
 
       blk.t_seq_rn1_gamma = TinyNN.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
       blk.t_seq_rn2_gamma = TinyNN.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
       ft_add_1d(blk, blk.t_seq_rn1_gamma)
+      ft_name_last(blk, prefix + "attn_norm.weight")
       ft_add_1d(blk, blk.t_seq_rn2_gamma)
+      ft_name_last(blk, prefix + "ffn_norm.weight")
 
       blk.t_seq_w_q = [TinyNN.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model)]
       hq = 1
@@ -1006,6 +1014,7 @@ class LlamaSeqForwardFFICache
       hq2 = 0
       while hq2 < @seq_n_heads
         ft_add_2d(blk, blk.t_seq_w_q[hq2], @seq_d_head, @seq_d_model)
+        ft_name_last(blk, prefix + "attn_q.head_" + hq2.to_s + ".weight")
         hq2 = hq2 + 1
       end
 
@@ -1020,7 +1029,9 @@ class LlamaSeqForwardFFICache
       hkv2 = 0
       while hkv2 < @seq_n_kv
         ft_add_2d(blk, blk.t_seq_w_k[hkv2], @seq_d_head, @seq_d_model)
+        ft_name_last(blk, prefix + "attn_k.head_" + hkv2.to_s + ".weight")
         ft_add_2d(blk, blk.t_seq_w_v[hkv2], @seq_d_head, @seq_d_model)
+        ft_name_last(blk, prefix + "attn_v.head_" + hkv2.to_s + ".weight")
         hkv2 = hkv2 + 1
       end
 
@@ -1029,9 +1040,13 @@ class LlamaSeqForwardFFICache
       blk.t_seq_w_up   = TinyNN.tnn_input_2d_f32_persistent(@sess, @seq_d_ff,    @seq_d_model)
       blk.t_seq_w_down = TinyNN.tnn_input_2d_f32_persistent(@sess, @seq_d_model, @seq_d_ff)
       ft_add_2d(blk, blk.t_seq_w_o,    @seq_d_model, @seq_n_heads * @seq_d_head)
+      ft_name_last(blk, prefix + "attn_output.weight")
       ft_add_2d(blk, blk.t_seq_w_gate, @seq_d_ff,    @seq_d_model)
+      ft_name_last(blk, prefix + "ffn_gate.weight")
       ft_add_2d(blk, blk.t_seq_w_up,   @seq_d_ff,    @seq_d_model)
+      ft_name_last(blk, prefix + "ffn_up.weight")
       ft_add_2d(blk, blk.t_seq_w_down, @seq_d_model, @seq_d_ff)
+      ft_name_last(blk, prefix + "ffn_down.weight")
 
       wi = 0
       while wi < blk.ft_weights.length
@@ -1178,6 +1193,24 @@ class LlamaSeqForwardFFICache
     blk.ft_weights.push(weight)
     blk.ft_m.push(TinyNN.tnn_input_1d_f32_persistent(@sess, n))
     blk.ft_v.push(TinyNN.tnn_input_1d_f32_persistent(@sess, n))
+  end
+
+  # Name the most-recently-pushed (weight, m, v) triple in a block.
+  # Used right after ft_add_2d / ft_add_1d so drift/grad event consumers
+  # see llama.cpp-convention names like "blk.0.attn_norm.weight" instead
+  # of ggml's auto-generated "node_N". toy#semantic-tensor-names.
+  def ft_name_last(blk, name)
+    last = blk.ft_weights.length - 1
+    TinyNN.tnn_tensor_set_name(blk.ft_weights[last], name)
+    TinyNN.tnn_tensor_set_name(blk.ft_m[last],       name + ".m")
+    TinyNN.tnn_tensor_set_name(blk.ft_v[last],       name + ".v")
+  end
+
+  def ft_name_last_global(name)
+    last = @ft_globals_weights.length - 1
+    TinyNN.tnn_tensor_set_name(@ft_globals_weights[last], name)
+    TinyNN.tnn_tensor_set_name(@ft_globals_m[last],       name + ".m")
+    TinyNN.tnn_tensor_set_name(@ft_globals_v[last],       name + ".v")
   end
 
   # Same shape as ft_add_2d / ft_add_1d but writes to the cache-level

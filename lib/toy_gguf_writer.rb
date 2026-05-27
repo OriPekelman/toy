@@ -21,18 +21,14 @@
 #     Array<:ptr> inside the module to avoid recurring landmine #1.
 
 module ToyGGUFWriter
-  # Name each PARAM tensor with a stable "param_N" convention, where N
-  # is the param's position in the graph walk. This is opaque to
-  # llama.cpp but deterministic and self-describing across writes (a
-  # given seed → same graph order → same name assignment), so a
-  # toy-side reloader can match by position.
+  # Preserve the names set during realize (toy#semantic-tensor-names, GH#11).
+  # The realize_for_* paths now annotate each PARAM with llama.cpp-convention
+  # names ("token_embd.weight", "blk.N.attn_q.head_h.weight", …) so we no
+  # longer overwrite with "param_N". A tensor without a name (older training
+  # graphs that haven't been migrated to set names) falls back to whatever
+  # ggml's auto-named it — no-op here.
   def self.name_params(plist)
-    i = 0
-    while i < plist.length
-      n = "param_" + i.to_s
-      TinyNN.tnn_tensor_set_name(plist[i], n)
-      i = i + 1
-    end
+    # Intentionally empty. See header comment.
   end
 
   # Write a checkpoint. `cfg` carries the model hyperparams; `plist`
@@ -60,7 +56,7 @@ module ToyGGUFWriter
     TinyNN.tnn_gguf_w_set_u32(ctx, "llama.attention.head_count",     cfg.n_heads)
     TinyNN.tnn_gguf_w_set_u32(ctx, "llama.attention.head_count_kv",  cfg.n_kv)
     TinyNN.tnn_gguf_w_set_u32(ctx, "llama.context_length",  cfg.ctx)
-    TinyNN.tnn_gguf_w_set_f32(ctx, "llama.attention.layer_norm_rms_epsilon", cfg.eps)
+    TinyNN.tnn_gguf_w_set_f32(ctx, "llama.attention.layer_norm_rms_epsilon", cfg.rms_eps)
     TinyNN.tnn_gguf_w_set_f32(ctx, "llama.rope.freq_base",  cfg.rope_base)
     # Provenance — the toy-side checkpoint format version.
     TinyNN.tnn_gguf_w_set_str(ctx, "toy.checkpoint_format", "toy-from-scratch/v1")
