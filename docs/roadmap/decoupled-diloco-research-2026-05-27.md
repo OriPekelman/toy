@@ -4,8 +4,22 @@
 **Context:** companion to `backends-and-scale-2026-05-27.md`. That doc
 covers single-host DP / multi-host DP at a high level; this one drills
 into a specific algorithm family (DiLoCo, Decoupled DiLoCo) and the
-specific dream of "start training on a MacBook, have a CUDA box join in
-mid-run."
+specific dream of "start training on a single local machine, then have
+a beefier CUDA host join in mid-run."
+
+**The concrete asymmetry profile** (updated 2026-05-27 per user
+clarification): the imagined pair is **a 128 GB MacBook Pro (M3/M4 Max)
+or the GB10 box** as the local "owner," with a **multi-GPU machine like
+8× RTX 5090** as the joiner. Realistic compute gaps:
+
+| Local owner | Joiner | bf16 TFLOPS gap |
+| --- | --- | --- |
+| M3 Max 128 GB | 8× 5090 | ~30–60× (M3 Max ~17, 8×5090 ~840–1700) |
+| GB10 | 8× 5090 | ~5–10× (GB10 ~125, 8×5090 ~840–1700) |
+
+So the **GB10 → 8×5090 case is in the right range for DiLoCo to make
+algorithmic sense.** The MacBook-as-owner case is still 30×+, near the
+edge of where this family of algorithms produces an interesting result.
 
 ## TL;DR
 
@@ -16,12 +30,14 @@ mid-run."
   under massive simulated failures, with competitive quality.
 - **Structurally** it fits the "join mid-training" idea: explicit
   learner-recovery, asynchronous attachment, K=1 quorum (one learner
-  alone can drive progress). It **does not** validate the extreme
-  asymmetry the user is imagining (laptop ↔ cloud-GPU, ~50× compute
-  gap, Tailscale 100ms RTT, household-grade reliability). Closer-fit
-  published variants for that story: **OpenDiLoCo** (Prime Intellect
-  2024) and **Async-Local-SGD / Asynchronous DiLoCo** (Liu 2024,
-  Pluralis 2025).
+  alone can drive progress). The paper's heterogeneity envelope (~18%
+  slowdown gap between fastest and slowest learners) covers the
+  **GB10 → 8×5090 case (~5–10× gap) well**, and pushes the
+  **M3 Max → 8×5090 case (~30–60× gap) past validation** — but DiLoCo
+  family methods plausibly still produce useful gradient signal there.
+  Closer-fit published variants for the higher-asymmetry tail:
+  **OpenDiLoCo** (Prime Intellect 2024) and **Async-Local-SGD** (Liu
+  2024, Pluralis 2025).
 - For toy, smallest credible primitive: **synchronous vanilla DiLoCo
   over a 2-process socket transport**. Each replica trains its own
   full model on its own shard; every H steps they exchange pseudo-
@@ -85,9 +101,12 @@ gracefully down-weights a slow contributor; async push fits Tailscale.
 But the paper's regime is **homogeneous datacenter pods on 2-5 Gbps
 links**, not consumer laptop + cloud GPU. Not validated:
 
-- **Extreme compute asymmetry** (50×). Paper reports "slowest learners
+- **Compute asymmetry beyond ~18%.** Paper reports "slowest learners
   trailed fastest by 18%" on mixed TPUv5e/v5p — that's the published
-  heterogeneity envelope. M-series ↔ GB10 is 50-100×.
+  envelope. **GB10 → 8×5090 (~5–10×) is past it but in the same
+  order of magnitude**; M3 Max → 8×5090 (~30–60×) is one to two
+  orders out and where token-weighted merging starts deflating the
+  laptop's contribution to near-noise.
 - **Adversarial reachability.** 100ms RTT is fine (DiLoCo pushes once
   per H steps), but Tailscale connections silently die / re-establish.
   The paper's failure model is "TPU rebooted," not "home internet
@@ -177,12 +196,15 @@ fine; NCCL/GLOO overkill at DiLoCo's once-per-H-steps cadence. (4)
   pseudo-gradients; outer step compounds it. Mitigation: f32 master
   weights everywhere; bit-identical outer step (sorted reduce, Kahan).
   Single most likely failure mode.
-- **Effective single-worker training.** If laptop is 50× slower and
-  token-weighted merging down-weights it accordingly, laptop is ~2% of
-  the signal. CUDA box is essentially training alone with mild noise.
-  Not a bug — that's the math — but it calls the "heterogeneous
-  training" framing into question. Honest version: "laptop participates
-  symbolically; CUDA does the work."
+- **Asymmetric contribution at high gaps.** With token-weighted merging,
+  the local owner contributes proportionally to its compute. In the
+  **GB10 → 8×5090 case (~5–10× gap)** the local owner is still 10–20%
+  of the signal — meaningful. In the **M3 Max → 8×5090 case
+  (~30–60× gap)** it drops to 2–5% — the joiner is essentially
+  training alone with mild noise from the local side. This is the
+  math, not a bug, but it means the headline framing depends on the
+  pair: GB10 + 8×5090 is genuinely heterogeneous co-training; M3 Max +
+  8×5090 is "M3 Max participates symbolically; 8×5090 does the work."
 - **Tailscale flakiness.** 100ms steady-state RTT is fine. Connections
   that die and silently re-establish over 30s are not, if the protocol
   assumes a stable socket. Need explicit per-message timeout +
