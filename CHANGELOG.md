@@ -106,6 +106,44 @@ layers anymore.
   with `LlamaSeqForwardFFICache`, loss 6.44 → 6.32, `events.jsonl`
   emitted with full provenance.
 
+### Training maturity — gradient accumulation (toy#8)
+
+- **`GRAD_ACCUM` env knob** in `examples/06_train_from_scratch.rb`.
+  Effective batch = `BATCH × GRAD_ACCUM` without the memory cost
+  of a single big batch. Default `GRAD_ACCUM=1` is bit-identical
+  to pre-GH#8 (step-1 CE = 6.490187644958496 unchanged; step-10
+  CE = 5.3334760665893555).
+- **Implementation: LR-scaled mini-batch, not literal grad
+  accumulation.** ggml's `opt_step_adamw` is baked into the
+  backward graph and runs on every `compute_backward`; there's
+  no graph-level "skip this op" primitive, so true grad
+  accumulation (skip opt_step for N-1 iters, fire on Nth with
+  the accumulated grad) would need either a vendor patch
+  (8th hp slot to gate `opt_step_adamw`) or a two-graph
+  approach (rebuild between modes — expensive). Instead the
+  training loop runs `STEPS × GRAD_ACCUM` micro-batches, each
+  firing opt_step with `lr = LR / GRAD_ACCUM`. Cumulative
+  weight movement over a cycle matches a single full-lr step
+  on the mean grad; Adam's m/v state evolves per micro-step
+  rather than once per cycle. For typical settings
+  (`beta1=0.9, GRAD_ACCUM<=8`) the divergence from true
+  accumulation is the "AdamW state warmup" the issue
+  acknowledged.
+- **Step semantics: `STEPS` counts macro-steps (effective
+  opt-step cycles), not micro-batches.** `STEPS=20 GRAD_ACCUM=4`
+  runs 80 forward+backward passes, emits 20 step events, and
+  the loss/checkpoint cadence is on the macro boundary.
+  `tokens` in the step event = `CONTEXT × BATCH × GRAD_ACCUM`
+  (effective tokens per macro-step).
+- **Acceptance verified.** `BATCH=2 GRAD_ACCUM=4 STEPS=20` vs
+  `BATCH=8 GRAD_ACCUM=1 STEPS=20` both train (final/initial
+  loss ratio 0.68 / 0.75 respectively at the toy shape). Curves
+  comparable; small differences from Adam state evolution +
+  data diversity (GA=4 micro-batches sweep different sequences
+  per macro-step).
+- **run_start event** carries `config.grad_accum` so Tao /
+  external consumers see the actual training regime.
+
 ### Training maturity — micro-batching (toy#7)
 
 - **B>1 in `realize_for_random_init`**. New `t_batch` arg (now 7

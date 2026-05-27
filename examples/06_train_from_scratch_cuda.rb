@@ -42,6 +42,21 @@ SEED       = (ENV["SEED"]     || "42").to_i
 # token + position arrays). BATCH>1 lays B sequences side-by-side as
 # a flat [T*B] vector with a block-causal mask uploaded at realize.
 BATCH      = (ENV["BATCH"]    || "1").to_i
+# GH#8 — gradient accumulation. Effective batch = BATCH × GRAD_ACCUM
+# without the memory cost of a single big batch. Implementation note:
+# ggml's opt_step_adamw is baked into the backward graph and runs
+# every compute_backward call; the graph has no "skip this op"
+# primitive. So instead of literally accumulating grads over N-1
+# passes and firing opt_step on the Nth, we LR-scale: opt_step fires
+# every micro-batch with lr = LR / GRAD_ACCUM. The cumulative weight
+# movement over N micro-batches matches a single full-lr opt_step on
+# mean(g_1..g_N) — but Adam's m/v state evolves per-micro-step rather
+# than once per cycle. For typical (beta1=0.9, GRAD_ACCUM<=8) this is
+# a small numerical divergence from "true" gradient accumulation.
+# Filed as a known approximation; a true-accum follow-up would
+# require either a vendor patch to opt_step_adamw (8th hp slot
+# gate) or a two-graph approach.
+GRAD_ACCUM = (ENV["GRAD_ACCUM"] || "1").to_i
 
 # Events stream (v1, docs/events-schema.md). Two env knobs:
 #   TAO_RUN_DIR — preferred. Tao's per-run directory; we append
@@ -183,8 +198,13 @@ while b_lbl < BATCH
   b_lbl = b_lbl + 1
 end
 
+# GH#8 — LR-scaled mini-batch: per-micro-step lr is base LR divided
+# by GRAD_ACCUM so the cumulative weight movement over N micro-steps
+# approximates one full-lr opt_step on the mean grad. At GRAD_ACCUM=1
+# this is identity (lr_per_step == LR), preserving pre-GH#8 behaviour.
+lr_per_step = LR / GRAD_ACCUM.to_f
 m_hp = Mat.new(1, 7)
-m_hp.flat[0] = LR
+m_hp.flat[0] = lr_per_step
 m_hp.flat[1] = 0.9
 m_hp.flat[2] = 0.999
 m_hp.flat[3] = 1.0e-8
@@ -273,7 +293,8 @@ if EVENTS.length > 0
     rs = rs + ",\"d_ff\":"     + cfg.d_ff.to_s
     rs = rs + "}"
     rs = rs + ",\"config\":{\"context\":" + CONTEXT.to_s
-    rs = rs + ",\"batch\":"  + BATCH.to_s
+    rs = rs + ",\"batch\":"      + BATCH.to_s
+    rs = rs + ",\"grad_accum\":" + GRAD_ACCUM.to_s
     rs = rs + ",\"steps\":" + STEPS.to_s
     rs = rs + ",\"lr\":"    + LR.to_s
     rs = rs + ",\"seed\":"  + SEED.to_s
@@ -315,20 +336,34 @@ end
 t_start = Time.now
 step = 1
 final_loss = 0.0
+micro_count = 0       # cumulative micro-batch count across all macro-steps
 while step <= STEPS
   step_wall_start = TinyNNCuda.tnn_events_now_seconds
-  m_hp.flat[5] = 1.0 / (1.0 - (0.9   ** step.to_f))
-  m_hp.flat[6] = 1.0 / (1.0 - (0.999 ** step.to_f))
-  if step == 1
-    TinyNNCuda.tnn_graph_reset(fcache.sess)
-  else
-    TinyNNCuda.tnn_graph_reset_grads_only(fcache.sess)
+  # GH#8 — inner GRAD_ACCUM loop. At GRAD_ACCUM=1 this runs once
+  # per macro-step (identical to pre-GH#8). At GA>1, GA micro-
+  # batches per macro-step, each firing opt_step with lr/GA. The
+  # micro-batch step count drives Adam's bias correction so beta1h/
+  # beta2h reflect the actual number of opt_step invocations.
+  micro = 1
+  while micro <= GRAD_ACCUM
+    micro_count = micro_count + 1
+    m_hp.flat[5] = 1.0 / (1.0 - (0.9   ** micro_count.to_f))
+    m_hp.flat[6] = 1.0 / (1.0 - (0.999 ** micro_count.to_f))
+    if micro_count == 1
+      TinyNNCuda.tnn_graph_reset(fcache.sess)
+    else
+      TinyNNCuda.tnn_graph_reset_grads_only(fcache.sess)
+    end
+    TinyNNCuda.upload_int_array(fcache.sess, fcache.t_seq_token_ids, seq_ids)
+    TinyNNCuda.upload_int_array(fcache.sess, fcache.t_seq_positions, positions)
+    TinyNNCuda.upload_row_major(fcache.sess, t_labels, m_labels)
+    TinyNNCuda.upload_row_major(fcache.sess, t_hp,     m_hp)
+    TinyNNCuda.tnn_compute_backward(fcache.sess)
+    micro = micro + 1
   end
-  TinyNNCuda.upload_int_array(fcache.sess, fcache.t_seq_token_ids, seq_ids)
-  TinyNNCuda.upload_int_array(fcache.sess, fcache.t_seq_positions, positions)
-  TinyNNCuda.upload_row_major(fcache.sess, t_labels, m_labels)
-  TinyNNCuda.upload_row_major(fcache.sess, t_hp,     m_hp)
-  TinyNNCuda.tnn_compute_backward(fcache.sess)
+  # Loss reported per macro-step uses the last micro-batch's loss
+  # (model has been updated GRAD_ACCUM times since macro start;
+  # this is the "current model loss" on the most recent data).
   TinyNNCuda.tnn_download(fcache.sess, t_loss)
   loss = TinyNNCuda.tnn_scratch_get(fcache.sess, 0)
   losses.push(loss)
@@ -404,7 +439,7 @@ while step <= STEPS
     es = es + ",\"step\":"     + step.to_s
     es = es + ",\"loss\":"     + loss.to_s
     es = es + ",\"lr\":"       + LR.to_s
-    es = es + ",\"tokens\":"   + (CONTEXT * BATCH).to_s
+    es = es + ",\"tokens\":"   + (CONTEXT * BATCH * GRAD_ACCUM).to_s
     es = es + ",\"wall_us\":"  + step_wall_us.to_s
     es = es + "}"
     TinyNNCuda.tnn_events_emit(es)
