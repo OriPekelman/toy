@@ -78,24 +78,36 @@ TAP_ENABLED = (ENV["TOY_TAP"] || "0") == "1"
 # JSON serialization). N=0 disables; N=1 emits every step.
 CKA_EVERY = (ENV["TOY_CKA"] || "0").to_i
 
+# tao#describe-flow-clean-stdout — when TOY_DESCRIBE=json the stdout
+# must be a single valid JSON document so `… | jq .` works without a
+# preamble strip. Suppress the human-facing config/realize lines for
+# the JSON case. text/mermaid keep their preamble (human-facing).
+# Spinel has no STDERR — there's nothing to redirect *to* — so we
+# skip the prints entirely.
+DESCRIBE = ENV["TOY_DESCRIBE"] || ""
+DESCRIBE_QUIET = (DESCRIBE == "json")
+
 cfg = Toy::SmolLM2Config.new(VOCAB_SIZE, D_MODEL, N_HEADS, N_HEADS,
                               D_FF, N_LAYERS, CONTEXT, 10000.0, 1.0e-5)
-puts "config: vocab=" + cfg.vocab.to_s +
-     " d=" + cfg.d_model.to_s +
-     " heads=" + cfg.n_heads.to_s +
-     " d_ff=" + cfg.d_ff.to_s +
-     " L=" + cfg.n_layers.to_s +
-     " head_dim=" + cfg.head_dim.to_s
+if !DESCRIBE_QUIET
+  puts "config: vocab=" + cfg.vocab.to_s +
+       " d=" + cfg.d_model.to_s +
+       " heads=" + cfg.n_heads.to_s +
+       " d_ff=" + cfg.d_ff.to_s +
+       " L=" + cfg.n_layers.to_s +
+       " head_dim=" + cfg.head_dim.to_s
+end
 
 t_realize = Time.now
 fcache = LlamaSeqForwardFFICacheCuda.new
 fcache.realize_for_random_init(cfg, CONTEXT, false, false, SEED, 1.0)
-puts "realize_for_random_init: " + ((Time.now - t_realize).to_f * 1000.0).to_s + " ms"
+if !DESCRIBE_QUIET
+  puts "realize_for_random_init: " + ((Time.now - t_realize).to_f * 1000.0).to_s + " ms"
+end
 
 # tao#kv-describe-flow: opt-in DAG dump. Three formats; consumer
 # picks via env (text | json | mermaid). Exits after printing so
 # downstream tools can capture the structured form alone.
-DESCRIBE = ENV["TOY_DESCRIBE"] || ""
 if DESCRIBE.length > 0
   if DESCRIBE == "json"
     puts ToyDescribeFlow.json(fcache.sess)
@@ -105,6 +117,18 @@ if DESCRIBE.length > 0
     puts ToyDescribeFlow.text(fcache.sess)
   end
   exit 0
+end
+
+# tao#flow-json-emit — when TAO_RUN_DIR is set, drop a flow.json
+# alongside events.jsonl so the same run bundle is self-describing.
+# Cheap: one graph walk at startup; Tao's report/describe pipeline
+# reads `<run_dir>/flow.json` directly. Removes the need for a
+# separate TOY_DESCRIBE pre-pass.
+if TAO_RUN_DIR.length > 0
+  flow_path = TAO_RUN_DIR + "/flow.json"
+  File.open(flow_path, "w") do |f|
+    f.write(ToyDescribeFlow.json(fcache.sess))
+  end
 end
 
 # Read first TinyStories sequence (Array<Integer>).
