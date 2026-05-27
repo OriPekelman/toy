@@ -2,51 +2,55 @@
 # post_vendor_tep.rb — thin post-vendor step for the spinelgems flow.
 #
 # `spinel-compat vendor` places tep's lib/ into vendor/spinel/tep/lib/
-# verbatim, including the `@TEP_*@` placeholders that upstream's
-# bin/tep normally rewrites at build time. This script handles that
-# rewrite — and ONLY that rewrite — pointing at tep's pre-built .o
-# files in-place (no copy).
+# verbatim, including `@TEP_*@` placeholders that bin/tep normally
+# rewrites at build time. This script does that rewrite.
 #
-# This is the spinelgems-side counterpart of what prep/sync_tep.rb
-# does (and the only remaining concern after rsync is replaced by
-# `spinel-compat vendor`). See
-# docs/roadmap/spinelgems-tep-adoption-2026-05-27.md and
-# https://github.com/OriPekelman/spinelgems/blob/main/docs/adoption.md.
+# Reads `vendor/spinel/tep/lib/tep/ffi_manifest.rb`
+# (`Tep::FFIManifest::ENTRIES`) as the single source of truth for
+# tep's FFI shape — same manifest bin/tep reads on the tep side.
+# See OriPekelman/tep#97 for the design. Manifest is BUILD-TIME
+# CRuby (lib/tep.rb never requires it under Spinel).
+#
+# Resolution policy (consumer-side, env-first to honor caller wishes):
+#   1. ENV[entry's obj_env / libs_env / cflags_env]      — overrides win
+#   2. pkg-config <entry[:pkg_config]>                   — distro-managed libs
+#   3. spec[:libs_default] OR entry[:pkg_config_fallback] — last resort
+#
+# Opt-outs (TEP_DISABLE=pg,sqlite,...): each optional entry's
+# placeholders are substituted with `-DNO_<MOD> -lc`. The file still
+# compiles (Spinel rejects empty ffi_cflags); calls into the disabled
+# battery fail at runtime.
 #
 # Run:
-#   uv run prep/preprocess_images.py   # (unrelated, just an example uv)
-#   # — or just:
-#   ./prep/post_vendor_tep.rb            # defaults to ~/sites/tep
+#   ./prep/post_vendor_tep.rb                  # default TEP_SRC=~/sites/tep
 #   TEP_SRC=/path ./prep/post_vendor_tep.rb
-#
-# Expectations:
-#   - vendor/spinel/tep/lib/ exists (i.e. `spinel-compat vendor` ran)
-#   - TEP_SRC/lib/tep/sphttp.o etc. exist (i.e. `make` was run in tep)
-#
-# Bails loud if anything's missing — never silently degrade.
+#   TEP_DISABLE=pg ./prep/post_vendor_tep.rb   # skip pg battery
 
 require "fileutils"
 
-TEP_SRC = ENV.fetch("TEP_SRC", File.expand_path("~/sites/tep"))
+TEP_SRC  = ENV.fetch("TEP_SRC", File.expand_path("~/sites/tep"))
 VENDORED = File.expand_path("../vendor/spinel/tep/lib", __dir__)
+TEP_LIB  = File.join(TEP_SRC, "lib")
 
 def die(msg)
   $stderr.puts "[post_vendor_tep] FAIL: #{msg}"
   exit 1
 end
 
-die "TEP_SRC=#{TEP_SRC} doesn't exist"           unless Dir.exist?(TEP_SRC)
+die "TEP_SRC=#{TEP_SRC} doesn't exist" unless Dir.exist?(TEP_SRC)
 die "vendor/spinel/tep/lib not found — run `spinel-compat vendor` first" unless Dir.exist?(VENDORED)
-die "TEP_SRC has no lib/tep/sphttp.o (run `make` in the tep checkout)" unless File.exist?("#{TEP_SRC}/lib/tep/sphttp.o")
-die "TEP_SRC has no lib/tep/tep_sqlite.o" unless File.exist?("#{TEP_SRC}/lib/tep/tep_sqlite.o")
-die "TEP_SRC has no lib/tep/tep_pg.o"     unless File.exist?("#{TEP_SRC}/lib/tep/tep_pg.o")
 
-# Resolve system libs for sqlite and postgres via pkg-config — same
-# recipe as prep/sync_tep.rb (the version of truth for the
-# placeholder values). macOS Homebrew workaround included.
+manifest_path = File.join(VENDORED, "tep", "ffi_manifest.rb")
+die "no ffi_manifest.rb in vendored tree — vendored tep predates tep#97" unless File.exist?(manifest_path)
+
+# CRuby `load`. The manifest is build-time-only — Spinel never sees it.
+load(manifest_path)
+die "ffi_manifest.rb didn't define Tep::FFIManifest::ENTRIES" unless defined?(Tep::FFIManifest::ENTRIES)
+
+# macOS Homebrew keeps libpq / sqlite as keg-only; surface their pkg-configs.
 if RUBY_PLATFORM.include?("darwin")
   extra_pc = []
-  ["libpq", "sqlite"].each do |formula|
+  %w[libpq sqlite].each do |formula|
     prefix = `brew --prefix #{formula} 2>/dev/null`.strip
     next if prefix.empty?
     pc = "#{prefix}/lib/pkgconfig"
@@ -58,53 +62,89 @@ if RUBY_PLATFORM.include?("darwin")
 end
 
 def pkgconfig(pkg, flavor)
+  return nil if pkg.nil?
   out = `pkg-config --#{flavor} #{pkg} 2>/dev/null`.strip
   out.empty? ? nil : out
 end
 
-sqlite_cflags = ENV["TEP_SQLITE_CFLAGS"] || pkgconfig("sqlite3", "cflags") || ""
-sqlite_libs   = ENV["TEP_SQLITE_LIBS"]   || pkgconfig("sqlite3", "libs")   || "-lsqlite3"
-pg_cflags     = ENV["TEP_PG_CFLAGS"]     || pkgconfig("libpq", "cflags")
-pg_libs       = ENV["TEP_PG_LIBS"]       || pkgconfig("libpq", "libs")
+# Resolve one placeholder's value per its spec.
+def resolve_placeholder(entry, spec)
+  default_obj = File.join(TEP_LIB, entry[:obj])
+  obj = spec[:obj_env] ? ENV.fetch(spec[:obj_env].to_s, default_obj) : default_obj
+  pkg = entry[:pkg_config]
 
-if pg_cflags.nil? || pg_libs.nil?
-  $stderr.puts "[post_vendor_tep] libpq not found via pkg-config."
-  $stderr.puts ""
-  $stderr.puts "  Tep::PG needs libpq's headers + library at Spinel-compile time."
-  $stderr.puts "  Spinel rejects empty ffi_cflags. Two ways forward:"
-  $stderr.puts ""
-  $stderr.puts "    1. Install the PG dev package:"
-  $stderr.puts "         apt install libpq-dev    # Debian/Ubuntu"
-  $stderr.puts "         brew install libpq       # macOS"
-  $stderr.puts "         dnf install libpq-devel  # Fedora/RHEL"
-  $stderr.puts ""
-  $stderr.puts "    2. If you don't actually use Tep::PG, opt out at sub time:"
-  $stderr.puts "         TEP_PG_CFLAGS=-DNO_PG TEP_PG_LIBS=-lc ./prep/post_vendor_tep.rb"
-  $stderr.puts "       Tep::PG then fails at runtime if any code calls into it."
-  exit 1
-end
-
-subs = {
-  "@TEP_SPHTTP_O@"  => "#{TEP_SRC}/lib/tep/sphttp.o",
-  "@TEP_SQLITE_O@"  => "#{TEP_SRC}/lib/tep/tep_sqlite.o #{sqlite_libs}",
-  "@TEP_PG_O@"      => "#{TEP_SRC}/lib/tep/tep_pg.o",
-  "@TEP_PG_CFLAGS@" => "#{pg_cflags} #{pg_libs}".strip,
-}
-
-touched = 0
-Dir.glob("#{VENDORED}/**/*.rb").each do |f|
-  src = File.read(f)
-  out = src.dup
-  subs.each { |k, v| out.gsub!(k, v) }
-  if out != src
-    File.write(f, out)
-    touched += 1
+  case spec[:kind]
+  when :obj
+    File.exist?(obj) or die "missing #{obj} (run `make` in the tep checkout)"
+    obj
+  when :obj_plus_libs
+    File.exist?(obj) or die "missing #{obj} (run `make` in the tep checkout)"
+    libs = ENV[spec[:libs_env].to_s] ||
+           pkgconfig(pkg, "libs") ||
+           entry[:pkg_config_fallback] ||
+           ""
+    "#{obj} #{libs}".strip
+  when :cflags_plus_libs
+    cflags = ENV[spec[:cflags_env].to_s] ||
+             pkgconfig(pkg, "cflags") ||
+             ""
+    libs   = ENV[spec[:libs_env].to_s] ||
+             pkgconfig(pkg, "libs") ||
+             spec[:libs_default] ||
+             entry[:pkg_config_fallback]
+    if libs.nil?
+      die "#{entry[:module]}: pkg-config #{pkg} not found, no fallback. " \
+          "Install the dev package OR set #{spec[:cflags_env]}/#{spec[:libs_env]} OR TEP_DISABLE=#{entry[:module]}."
+    end
+    "#{cflags} #{libs}".strip
+  else
+    die "unknown placeholder kind: #{spec[:kind].inspect}"
   end
 end
 
-# Sanity check — make sure no @TEP_*@ placeholders survive.
+# Disabled placebo. Non-empty literal so Spinel accepts it; -DNO_<MOD>
+# makes it visible in the binary that this battery isn't really linked.
+def disabled_value(mod_upper)
+  "-DNO_#{mod_upper} -lc"
+end
+
+disabled = Tep::FFIManifest.respond_to?(:disabled) ? Tep::FFIManifest.disabled : []
+touched_files  = []
+disabled_files = []
+processed_targets = []
+
+Tep::FFIManifest::ENTRIES.each do |entry|
+  target_file = File.join(VENDORED, entry[:file])
+  die "manifest references #{entry[:file]} which doesn't exist in #{VENDORED}" unless File.exist?(target_file)
+  processed_targets << File.expand_path(target_file)
+
+  src = File.read(target_file)
+  out = src.dup
+
+  if entry[:optional] && disabled.include?(entry[:module])
+    placebo = disabled_value(entry[:module].upcase)
+    entry[:placeholders].each_key { |ph| out.gsub!(ph, placebo) }
+    disabled_files << entry[:file]
+  else
+    entry[:placeholders].each do |placeholder, spec|
+      out.gsub!(placeholder, resolve_placeholder(entry, spec))
+    end
+  end
+
+  if out != src
+    File.write(target_file, out)
+    touched_files << entry[:file]
+  end
+end
+
+# Sanity: every manifest-referenced target file has zero `@TEP_*@`
+# placeholders left. We deliberately ONLY check the manifest's target
+# files — the manifest itself contains `@TEP_*@` *as data* (the
+# placeholder names are keys in the entries' :placeholders hashes),
+# so a blanket grep across all .rb files would false-positive on
+# ffi_manifest.rb.
 leftovers = []
-Dir.glob("#{VENDORED}/**/*.rb").each do |f|
+processed_targets.each do |f|
   File.foreach(f).with_index do |line, i|
     leftovers << "#{f}:#{i + 1}: #{line.strip}" if line.include?("@TEP_")
   end
@@ -115,5 +155,7 @@ unless leftovers.empty?
   exit 1
 end
 
-puts "[post_vendor_tep] substituted #{touched} file(s) under #{VENDORED}"
+puts "[post_vendor_tep] substituted #{touched_files.length} file(s) under #{VENDORED}"
 puts "  TEP_SRC=#{TEP_SRC}"
+puts "  TEP_DISABLE=#{disabled.join(',')}"  unless disabled.empty?
+puts "  disabled (placebo subs only): #{disabled_files.join(', ')}" unless disabled_files.empty?
