@@ -76,7 +76,15 @@ Requires Ruby, [Spinel](https://github.com/matz/spinel) at
 Python converter.
 
 ```sh
-make setup-ggml                              # one-time, ~30 s
+make hello                                   # one-shot first run:
+                                             # setup → fetch model → run inference
+```
+
+Idempotent; takes ~1 min on first run, ~3 s on subsequent runs.
+For the same flow broken into pieces:
+
+```sh
+make setup                                   # auto-detect CPU/Metal/CUDA, ~15 s
 make example_list_models                     # what's cached locally
 ./examples/example_list_models               # HF / Ollama / LM Studio / ./data
 ```
@@ -88,7 +96,9 @@ prep/fetch_model.sh bartowski/SmolLM2-135M-Instruct-GGUF SmolLM2-135M-Instruct-Q
 ```
 
 …or use `huggingface-cli download`, `ollama pull`, or LM Studio
-— they all land in caches the next list-models will see.
+— they all land in caches the next list-models will see. The
+fetcher also drops a `data/<file>.gguf` symlink so the default
+`GGUF=` path in the examples resolves without extra typing.
 
 Then run:
 

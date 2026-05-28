@@ -29,24 +29,83 @@ require_relative "../lib/tinynn_metal"
 require_relative "../lib/transformer_lm_metal"
 require_relative "../lib/tokenizer"
 
-GGUF   = ENV["GGUF"]   || "data/smollm2-135m-f32.gguf"
-PROMPT = ENV["PROMPT"] || "Once upon a time"
-N_NEW  = (ENV["N_NEW"] || "16").to_i
+DEFAULT_GGUF = "data/smollm2-135m-f32.gguf"
+GGUF_ENV     = ENV["GGUF"]
+GGUF         = GGUF_ENV || DEFAULT_GGUF
+PROMPT       = ENV["PROMPT"] || "Once upon a time"
+N_NEW        = (ENV["N_NEW"] || "16").to_i
 
-arch = Arch.from_gguf(GGUF)
+# Auto-fallback: if the default GGUF is missing and the user didn't pass
+# GGUF=, scan the standard caches via TinyNNMetal.tnn_list_ggufs (the
+# Metal binary loads tinynn_metal not tinynn, so we can't `require`
+# model_index.rb here without dragging in the CPU module).
+gguf = GGUF
+if GGUF_ENV == nil && TinyNNMetal.tnn_file_size(gguf) == 0
+  home = ENV["HOME"] || "/"
+  # Seed-then-pop to pin Spinel's type inference to String[].
+  search = [""]; search.pop
+  env = ENV["TOY_MODEL_DIR"]
+  if env != nil && env.length > 0; search.push(env); end
+  search.push("./data")
+  search.push("./models")
+  search.push(home + "/.cache/huggingface/hub")
+  search.push(home + "/.ollama/models")
+  search.push(home + "/.lmstudio/models")
+  search.push(home + "/models")
+  found = ""
+  si = 0
+  while si < search.length && found.length == 0
+    blob = TinyNNMetal.tnn_list_ggufs(search[si])
+    if blob != nil && blob.length > 0
+      lines = blob.split("\n")
+      li = 0
+      while li < lines.length
+        ln = lines[li]
+        if ln.length > 0
+          # Only accept if Arch loads — skip non-llama-family GGUFs.
+          test_arch = Arch.from_gguf(ln)
+          if test_arch != nil && test_arch.vocab_size > 0 &&
+             test_arch.d_model > 0 && test_arch.n_layers > 0
+            found = ln
+            li = lines.length
+          end
+        end
+        li = li + 1
+      end
+    end
+    si = si + 1
+  end
+  if found.length > 0
+    gguf = found
+    puts "[example_inference_metal] no GGUF= set and " + DEFAULT_GGUF + " missing."
+    puts "[example_inference_metal] auto-selected: " + gguf
+    is_instruct = gguf.include?("instruct") || gguf.include?("Instruct") ||
+                  gguf.include?("INSTRUCT") || gguf.include?("-it-") ||
+                  gguf.include?("-chat") || gguf.include?("Chat")
+    if is_instruct
+      puts "[example_inference_metal] NOTE: this looks like an instruction-tuned"
+      puts "[example_inference_metal]   model. Raw completion prompts may produce"
+      puts "[example_inference_metal]   incoherent text. Pass GGUF= to a base"
+      puts "[example_inference_metal]   checkpoint, or PROMPT= with the model's"
+      puts "[example_inference_metal]   chat template."
+    end
+  end
+end
+arch = Arch.from_gguf(gguf)
 if arch == nil
-  puts "example_inference_metal: could not load " + GGUF +
-       " — set GGUF= to a valid file (see examples/example_list_models)."
+  puts "example_inference_metal: could not load " + gguf +
+       " — set GGUF= to a valid file (see examples/example_list_models),"
+  puts "  or run `make hello` for a guided first-run."
   TinyNNMetal.tnn_force_exit(1)
 end
 puts arch.summary
 
 lm = ToyLMMetal.new(arch)
-lm.load(GGUF)
+lm.load(gguf)
 
 # Try to load an embedded tokenizer. If absent, fall back to hardcoded
 # SmolLM2 prompt IDs and emit raw IDs.
-tok = Tokenizer.from_gguf(GGUF)
+tok = Tokenizer.from_gguf(gguf)
 
 if tok.present
   in_ids = tok.encode(PROMPT)

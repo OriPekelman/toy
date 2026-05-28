@@ -18,7 +18,29 @@
 # only with full Xcode). Kernels get JIT-compiled at first device load.
 
 SPINEL_DIR  ?= $(HOME)/sites/spinel
-SPINEL      ?= $(SPINEL_DIR)/spinel
+SPINEL_BIN  ?= $(SPINEL_DIR)/spinel
+
+# --- DevEx polish knobs (cosmetic, never gate correctness) ----------------
+# QUIET=1 (default) routes known-harmless build chatter through the
+# prep/quietly + prep/progress helpers so the terminal stays readable
+# on a fresh clone. QUIET=0 disables all filtering (useful when chasing
+# a Spinel codegen issue or a cmake misconfig).
+#   - prep/quietly silences exact-substring patterns; exit code is
+#     ALWAYS the child's, so real errors still propagate.
+#   - prep/progress draws a single-line [NN%] bar over cmake/make's
+#     own progress markers; full output is tee'd to a .log file in
+#     vendor/ggml/. On non-zero exit it dumps the log tail to stderr.
+QUIET    ?= 1
+QUIETLY  := $(CURDIR)/prep/quietly
+PROGRESS := $(CURDIR)/prep/progress
+ifeq ($(QUIET),0)
+  SPINEL = $(SPINEL_BIN)
+else
+  SPINEL = $(QUIETLY) \
+      'cannot resolve call to' \
+      'ignoring duplicate libraries' \
+      -- $(SPINEL_BIN)
+endif
 # Sentinel deps so example/demo Spinel-compiled binaries get re-spun
 # when the Spinel compiler itself changes. Without this, stale .o /
 # .a in tinynn/ combined with newer Spinel C codegen can produce
@@ -61,10 +83,35 @@ CUDA_DIR    ?= /usr/local/cuda
 # All three roll up into the `vendor-tep` target. Bails loud on
 # missing libpq / libsqlite3 — same diagnostic as the retired
 # prep/sync_tep.rb did.
+#
+# Sibling-checkout precheck: bundle lock will gladly write garbage
+# into Gemfile.lock if ../tep doesn't exist (Gemfile uses
+# `path: "../tep"`). Short-circuit with a clear message instead.
 vendor-tep:
+	@if [ ! -d ../tep ] || [ ! -d ../spinelgems ]; then \
+	    echo ""; \
+	    echo "  ✗ vendor-tep needs sibling checkouts (see docs/roadmap/spinelgems-tep-adoption-2026-05-27.md):"; \
+	    [ -d ../tep ]        || echo "      missing: ../tep"; \
+	    [ -d ../spinelgems ] || echo "      missing: ../spinelgems"; \
+	    echo ""; \
+	    echo "    From this directory's parent ($$(cd .. && pwd)):"; \
+	    echo "      git clone https://github.com/OriPekelman/tep"; \
+	    echo "      git clone https://github.com/OriPekelman/spinelgems"; \
+	    echo ""; \
+	    echo "    Or symlink existing checkouts (common dev layout in ~/sites):"; \
+	    echo "      ln -s ~/sites/tep        ../tep"; \
+	    echo "      ln -s ~/sites/spinelgems ../spinelgems"; \
+	    echo ""; \
+	    exit 1; \
+	fi
 	bundle lock
 	SPINEL_DIR=$(HOME)/sites/spinel ../spinelgems/exe/spinel-compat vendor
 	./prep/post_vendor_tep.rb
+
+# Build vendor/spinel/tep/lib/tep.rb on demand for tep_demo/* targets.
+# Triggers vendor-tep, which gates on sibling checkouts.
+vendor/spinel/tep/lib/tep.rb:
+	@$(MAKE) vendor-tep
 
 # --- pure-Spinel drivers ----------------------------------------------------
 # Source lives in demos/. We expose short top-level target names
@@ -104,6 +151,63 @@ setup:
 	echo ""; \
 	echo "Done. Next: run 'make help' for the entry points."
 
+# --- `make hello` — guided first-run experience ----------------------------
+# One command from a fresh clone to "I see tokens on the screen":
+#   1. setup the backend (CPU + Metal/CUDA if detected) — idempotent
+#   2. convert HuggingFaceTB/SmolLM2-135M (the base, not Instruct) to
+#      data/smollm2-135m-f32.gguf via the project's own converter, so
+#      raw completion prompts produce coherent text. Requires `uv`
+#      (autoinstalls deps inline).
+#   3. build example_inference (Metal on macOS, CPU elsewhere) and run
+#      it with a default prompt.
+# Each step is a no-op if its output already exists. Safe to re-run.
+.PHONY: hello _hello_model _hello_run
+
+hello:
+	@echo "▶ toy hello — guided first-run"
+	@$(MAKE) -s setup
+	@$(MAKE) -s _hello_model
+	@$(MAKE) -s _hello_run
+	@echo ""
+	@echo "▶ done. Next:  make help     (see all entry points)"
+
+_hello_model:
+	@if [ ! -e data/smollm2-135m-f32.gguf ]; then \
+	    if ! command -v uv >/dev/null 2>&1; then \
+	        echo "[hello] uv not found. Install from https://docs.astral.sh/uv/"; \
+	        echo "[hello] (or fetch any GGUF via prep/fetch_model.sh and re-run)."; \
+	        exit 1; \
+	    fi; \
+	    echo "[hello] converting HuggingFaceTB/SmolLM2-135M → data/smollm2-135m-f32.gguf"; \
+	    echo "[hello]   (first time pulls ~270 MB safetensors via huggingface_hub; ~30 s)"; \
+	    ./prep/convert_smollm2_to_gguf.py --with-tokenizer >prep/_convert.log 2>&1 || { \
+	        echo "[hello] converter failed — tail of prep/_convert.log:"; \
+	        tail -30 prep/_convert.log; \
+	        exit 1; \
+	    }; \
+	    echo "[hello] data/smollm2-135m-f32.gguf ready"; \
+	else \
+	    echo "[hello] data/smollm2-135m-f32.gguf already present"; \
+	fi
+
+_hello_run:
+ifeq ($(UNAME_S),Darwin)
+	@$(MAKE) -s example_inference_metal
+	@echo ""
+	@echo "[hello] running example_inference_metal — Metal-accelerated"
+	@echo "[hello]   (first Metal run JIT-compiles kernels, ~15 s, then cached)"
+	@echo ""
+	@GGML_LOG_LEVEL=2 PROMPT="Once upon a time" $(QUIETLY) \
+	    '^ggml_metal_' \
+	    -- ./examples/example_inference_metal
+else
+	@$(MAKE) -s example_inference
+	@echo ""
+	@echo "[hello] running example_inference — CPU"
+	@echo ""
+	@PROMPT="Once upon a time" ./examples/example_inference
+endif
+
 # --- help / time-to-joy entry points --------------------------------------
 # `make help` is the discoverable index for someone who just cloned.
 # Keep it short — pointers to the heavier docs (examples/README.md,
@@ -116,6 +220,14 @@ help:
 	@echo "  toy — a transformer LM in Ruby, Spinel-compiled."
 	@echo "  Full docs: README.md, examples/README.md, docs/INDEX.md."
 	@echo ""
+	@if [ ! -f vendor/ggml/build/src/libggml.a ] && \
+	    [ ! -f vendor/ggml/build-metal/src/libggml.a ] && \
+	    [ ! -f vendor/ggml/build-cuda/src/libggml.a ]; then \
+	    echo "  ▶ FIRST TIME HERE?"; \
+	    echo "      make hello              one-shot: setup + fetch a model + run inference"; \
+	    echo "      make setup              just build the backend (CPU + Metal/CUDA if detected)"; \
+	    echo ""; \
+	fi
 	@echo "  ONE-TIME SETUP"
 	@echo "    make setup               auto-detect platform; pick CUDA/Metal/CPU"
 	@echo "    make setup-ggml          force CPU build (~2 min)"
@@ -145,6 +257,9 @@ help:
 	@echo "    make tep_demo/openai_api_llama     OpenAI-compatible server for any llama-family GGUF"
 	@echo "                                       MODEL_PATH=… MODEL_NAME=… ./tep_demo/openai_api_llama -p 4567"
 	@echo "    make tep_demo/hello                minimal Tep HTTP smoke"
+	@if [ ! -f vendor/spinel/tep/lib/tep.rb ]; then \
+	    printf "    (prereq: run %s first — needs ../tep + ../spinelgems checkouts)\n" "'make vendor-tep'"; \
+	fi
 	@if [ "$$(uname -s)" = "Darwin" ]; then \
 	    echo ""; \
 	    echo "    Note: tep_demo/openai_api_llama uses the CPU FFI bridge — Metal serving"; \
@@ -167,7 +282,7 @@ help:
 # --- examples/ getting-started entry points --------------------------------
 # Compact, one-file demos covering the main use cases. See
 # examples/README.md.
-examples/example_inference: examples/01_inference.rb lib/arch.rb lib/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/tokenizer.rb tinynn/libtinynn_ggml.a
+examples/example_inference: examples/01_inference.rb lib/arch.rb lib/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/tokenizer.rb lib/model_index.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 example_inference: examples/example_inference
 
@@ -342,24 +457,79 @@ $(GGML_DIR)/CMakeLists.txt:
 # ships libomp (LLVM), not libgomp (GNU); ggml's own thread pool covers
 # CPU parallelism either way. Same setting used on Linux for build
 # parity (and so lib/tinynn.rb doesn't need ffi_lib "gomp").
-setup-ggml: $(GGML_DIR)/.patched
-	cd $(GGML_DIR) && $(CMAKE_ENV) cmake -B build \
+#
+# Build output is routed through prep/progress, which:
+#   - tees full cmake/build output to vendor/ggml/<dir>.log
+#   - draws a one-line [NN%] progress bar on a TTY (plain "[NN%] msg"
+#     lines on CI / non-tty stdout, no overdraw)
+#   - on non-zero exit, dumps the last 40 lines of the log + exits
+#     with the child's status. NEVER swallows errors.
+# Disable with QUIET=0 (passes through stdout unchanged).
+# (PROGRESS / QUIET / QUIETLY are defined near the top of this file
+# alongside SPINEL_BIN — see the DevEx polish knobs block.)
+
+# Helper: run a `cd $(GGML_DIR) && cmake -B <DIR> <FLAGS>` configure
+# step. Routes output to a logfile when QUIET=1; on failure dumps the
+# log tail and propagates the exit code. QUIET=0 passes through.
+# Args: $(1) = build dir name (build / build-metal / build-cuda)
+#       $(2) = cmake invocation (everything after the cd)
+define ggml_configure
+	@if [ "$(QUIET)" = "1" ]; then \
+	    log="$(CURDIR)/$(GGML_DIR)/$(1).config.log"; \
+	    ( cd $(GGML_DIR) && $(2) ) >"$$log" 2>&1 || { \
+	        echo "  ✗ cmake configure ($(1)) failed; tail of $$log:"; \
+	        tail -30 "$$log"; exit 1; }; \
+	else \
+	    cd $(GGML_DIR) && $(2) ; \
+	fi
+endef
+
+# Helper: run a `cmake --build <DIR> -j<N>` step. Routes through
+# prep/progress when QUIET=1 (single-line [NN%] bar, log tee). QUIET=0
+# passes through.
+# Args: $(1) = build dir name; $(2) = label tag (cpu/metal/cuda);
+#       $(3) = cmake --build command
+define ggml_build
+	@if [ "$(QUIET)" = "1" ]; then \
+	    LOG="$(CURDIR)/$(GGML_DIR)/$(1).build.log" LABEL="ggml-$(2)" \
+	        $(PROGRESS) -- sh -c "cd $(GGML_DIR) && $(3)"; \
+	else \
+	    cd $(GGML_DIR) && $(3) ; \
+	fi
+endef
+
+# setup-ggml-* targets are user-facing phonies; the real work happens
+# in the libggml.a sentinel rules below so re-running setup is a no-op
+# once the static archive is built. Lets `make hello` chain through
+# without redoing the ~5 s incremental cmake check on every invocation.
+.PHONY: setup-ggml setup-ggml-cuda setup-ggml-metal
+
+setup-ggml: $(GGML_DIR)/build/src/libggml.a
+setup-ggml-cuda: $(GGML_DIR)/build-cuda/src/libggml.a
+setup-ggml-metal: $(GGML_DIR)/build-metal/src/libggml.a
+
+$(GGML_DIR)/build/src/libggml.a: $(GGML_DIR)/.patched
+	@echo "  → configure  ggml (cpu)"
+	$(call ggml_configure,build,$(CMAKE_ENV) cmake -B build \
 	  -DBUILD_SHARED_LIBS=OFF -DGGML_STATIC=ON \
 	  -DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_VULKAN=OFF \
 	  -DGGML_OPENCL=OFF -DGGML_BLAS=OFF -DGGML_OPENMP=OFF -DGGML_ACCELERATE=OFF \
 	  -DGGML_BUILD_EXAMPLES=OFF -DGGML_BUILD_TESTS=OFF \
-	  -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-	cd $(GGML_DIR) && $(CMAKE_ENV) cmake --build build -j$(NJOBS)
+	  -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON)
+	@echo "  → build      ggml (cpu, $(NJOBS) jobs)"
+	$(call ggml_build,build,cpu,$(CMAKE_ENV) cmake --build build -j$(NJOBS))
 
-setup-ggml-cuda: $(GGML_DIR)/.patched
-	cd $(GGML_DIR) && PATH=$(CUDA_DIR)/bin:$$PATH $(CMAKE_ENV) cmake -B build-cuda \
+$(GGML_DIR)/build-cuda/src/libggml.a: $(GGML_DIR)/.patched
+	@echo "  → configure  ggml (cuda, sm_$(GGML_CUDA_ARCH))"
+	$(call ggml_configure,build-cuda,PATH=$(CUDA_DIR)/bin:$$PATH $(CMAKE_ENV) cmake -B build-cuda \
 	  -DBUILD_SHARED_LIBS=OFF -DGGML_STATIC=ON \
 	  -DGGML_CUDA=ON -DGGML_METAL=OFF -DGGML_VULKAN=OFF \
 	  -DGGML_OPENCL=OFF -DGGML_BLAS=OFF -DGGML_OPENMP=OFF -DGGML_ACCELERATE=OFF \
 	  -DGGML_BUILD_EXAMPLES=OFF -DGGML_BUILD_TESTS=OFF \
 	  -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-	  -DCMAKE_CUDA_ARCHITECTURES=$(GGML_CUDA_ARCH) -DGGML_NATIVE=OFF
-	cd $(GGML_DIR) && PATH=$(CUDA_DIR)/bin:$$PATH $(CMAKE_ENV) cmake --build build-cuda -j$(NJOBS)
+	  -DCMAKE_CUDA_ARCHITECTURES=$(GGML_CUDA_ARCH) -DGGML_NATIVE=OFF)
+	@echo "  → build      ggml (cuda, $(NJOBS) jobs)"
+	$(call ggml_build,build-cuda,cuda,PATH=$(CUDA_DIR)/bin:$$PATH $(CMAKE_ENV) cmake --build build-cuda -j$(NJOBS))
 
 # Metal build (macOS only). GGML_METAL_EMBED_LIBRARY=ON bakes the
 # .metal shader source into the static archive as raw bytes; the
@@ -367,18 +537,20 @@ setup-ggml-cuda: $(GGML_DIR)/.patched
 # whole pipeline work with the Command Line Tools (xcrun metal /
 # metallib are full-Xcode-only). On a Mac with full Xcode you can
 # flip GGML_METAL_EMBED_LIBRARY=OFF for AOT-compiled kernels.
-setup-ggml-metal: $(GGML_DIR)/.patched
+$(GGML_DIR)/build-metal/src/libggml.a: $(GGML_DIR)/.patched
 ifneq ($(UNAME_S),Darwin)
 	@echo "setup-ggml-metal: Metal is macOS-only (uname -s = $(UNAME_S))"; exit 1
 endif
-	cd $(GGML_DIR) && $(CMAKE_ENV) cmake -B build-metal \
+	@echo "  → configure  ggml (metal)"
+	$(call ggml_configure,build-metal,$(CMAKE_ENV) cmake -B build-metal \
 	  -DBUILD_SHARED_LIBS=OFF -DGGML_STATIC=ON \
 	  -DGGML_CUDA=OFF -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON \
 	  -DGGML_VULKAN=OFF -DGGML_OPENCL=OFF -DGGML_BLAS=OFF \
 	  -DGGML_OPENMP=OFF -DGGML_ACCELERATE=OFF \
 	  -DGGML_BUILD_EXAMPLES=OFF -DGGML_BUILD_TESTS=OFF \
-	  -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-	cd $(GGML_DIR) && $(CMAKE_ENV) cmake --build build-metal -j$(NJOBS)
+	  -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON)
+	@echo "  → build      ggml (metal, $(NJOBS) jobs)"
+	$(call ggml_build,build-metal,metal,$(CMAKE_ENV) cmake --build build-metal -j$(NJOBS))
 
 # --- tinynn shim (CPU build) ------------------------------------------------
 GGML_INC := -I$(GGML_DIR)/include -I$(GGML_DIR)/src

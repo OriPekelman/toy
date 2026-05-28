@@ -16,26 +16,57 @@
 require_relative "../lib/arch"
 require_relative "../lib/transformer_lm"
 require_relative "../lib/tokenizer"
+require_relative "../lib/model_index"
 
-GGUF   = ENV["GGUF"]   || "data/smollm2-135m-f32.gguf"
-PROMPT = ENV["PROMPT"] || "Once upon a time"
-N_NEW  = (ENV["N_NEW"] || "16").to_i
+DEFAULT_GGUF = "data/smollm2-135m-f32.gguf"
+GGUF_ENV     = ENV["GGUF"]
+GGUF         = GGUF_ENV || DEFAULT_GGUF
+PROMPT       = ENV["PROMPT"] || "Once upon a time"
+N_NEW        = (ENV["N_NEW"] || "16").to_i
 
-arch = Arch.from_gguf(GGUF)
+# Resolve the GGUF: if the user passed GGUF= explicitly we honor it; if
+# the default is missing on disk we fall back to whatever ModelIndex
+# finds in the local caches (HF / Ollama / LM Studio / data / models).
+# Keeps a fresh clone from face-planting with "no such file".
+gguf = GGUF
+if GGUF_ENV == nil && TinyNN.tnn_file_size(gguf) == 0
+  entries = ModelIndex.scan_sources(ModelIndex.default_sources)
+  if entries.length > 0
+    gguf = entries[0].path
+    puts "[example_inference] no GGUF= set and " + DEFAULT_GGUF + " missing."
+    puts "[example_inference] auto-selected: " + entries[0].name +
+         " (" + entries[0].source + ")"
+    puts "[example_inference]   " + gguf
+    # Heuristic warning: Instruct/Chat models with a raw completion prompt
+    # produce incoherent text. Cheap check — name-based.
+    lname = gguf
+    is_instruct = lname.include?("instruct") || lname.include?("Instruct") ||
+                  lname.include?("INSTRUCT") || lname.include?("-it-") ||
+                  lname.include?("-chat") || lname.include?("Chat")
+    if is_instruct
+      puts "[example_inference] NOTE: this looks like an instruction-tuned model."
+      puts "[example_inference]   Raw completion prompts may produce incoherent"
+      puts "[example_inference]   text. Pass GGUF= to a base checkpoint, or"
+      puts "[example_inference]   PROMPT= with the model's chat template."
+    end
+  end
+end
+arch = Arch.from_gguf(gguf)
 if arch == nil
-  puts "example_inference: could not load " + GGUF +
-       " — set GGUF= to a valid file (see examples/example_list_models)."
+  puts "example_inference: could not load " + gguf +
+       " — set GGUF= to a valid file (see examples/example_list_models),"
+  puts "  or run `make hello` for a guided first-run."
   exit 1
 end
 puts arch.summary
 
 lm = ToyLM.new(arch, :cpu)
-lm.load(GGUF)
+lm.load(gguf)
 
 # Try to load an embedded tokenizer. If absent (the converter was run
 # without --with-tokenizer), fall back to the hardcoded SmolLM2 prompt
 # IDs and emit raw IDs instead of decoded text.
-tok = Tokenizer.from_gguf(GGUF)
+tok = Tokenizer.from_gguf(gguf)
 
 if tok.present
   in_ids = tok.encode(PROMPT)
