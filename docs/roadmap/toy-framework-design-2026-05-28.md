@@ -1,8 +1,12 @@
-# Toy as a framework: design doc (DRAFT v2)
+# Toy as a framework: design doc (DRAFT v3)
 
-**Status:** design doc for review. No implementation yet.
-**Date:** 2026-05-28 (rev 2 after first round of in-place review).
+**Status:** design doc; v3 after second review round. All open
+questions answered; this is the "what" — the roadmap doc
+([`toy-framework-roadmap-2026-05-28.md`](toy-framework-roadmap-2026-05-28.md))
+is the "how".
+**Date:** 2026-05-28.
 **Companion docs:**
+[`toy-framework-roadmap-2026-05-28.md`](toy-framework-roadmap-2026-05-28.md),
 [`lowerer-design.md`](lowerer-design.md),
 [`spinelgems-tep-adoption-2026-05-27.md`](spinelgems-tep-adoption-2026-05-27.md),
 [`backends-and-scale-2026-05-27.md`](backends-and-scale-2026-05-27.md).
@@ -14,11 +18,11 @@ Spinel-compiled experiment" to **"framework you create projects
 inside of"** — `toy new myproj`, `toy train ...`, `toy serve ...`,
 with a CLI that owns the per-project plumbing.
 
-The lever: **`Toy::Card` as the IR contract**, organized in five
-granularity layers (Primitive / Block / Arch / Recipe / Experiment)
-and filled by five kind slots (Arch / Trainer / Decoder / Eval /
-Server, + a likely DataSpec). The Card describes the work; the
-framework composes, introspects, and runs.
+The lever: **`Toy::Card` as the IR contract**, organized in four
+granularity layers (Primitive / Block / Arch / Recipe — L5 is Tao
+territory) and filled by five kind slots (Arch / Trainer /
+Decoder / Eval / Server, plus DataSpec). The Card describes the
+work; the framework composes, introspects, and runs.
 
 Key insight from review: **Cards are derived, not authored.** Users
 write the realize implementation; the framework derives the Card
@@ -77,8 +81,8 @@ project directory**. The CLI runs there, not inside toy's checkout.
 
 | Axis | What it specifies |
 | --- | --- |
-| **Card LAYER** (§5) | Granularity of the IR — how big a unit is. Primitive / Block / Arch / Recipe / Experiment. |
-| **Kind SLOT** (§6) | Role of the unit in a workflow — what it does. Arch / Trainer / Decoder / Eval / Server / DataSpec. |
+| **Card LAYER** (§4) | Granularity of the IR — how big a unit is. Primitive / Block / Arch / Recipe. (L5 Experiment is Tao territory.) |
+| **Kind SLOT** (§5) | Role of the unit in a workflow — what it does. Arch / Trainer / Decoder / Eval / Server / DataSpec. |
 
 A *Recipe* (Layer 4) might be "FromScratch trainer + Llama arch +
 TinyStories dataset" — composing one of each Kind. A Layer-1
@@ -111,22 +115,12 @@ want training, `toy-train`. Weird agents wanting only event stream
 **Add-ons:** same interface as Stdlib modules. Stdlib is just
 "what ships with toy by default" — no privileged status.
 
-## 4. Distribution via `rv`
+**Distribution.** Ship as a published gem with a `toy` binstub.
+`gem install toy` works. Whatever Ruby manager / installer the
+user prefers (rbenv, rv, asdf, system Ruby) is fine — the
+framework doesn't care.
 
-Spinel-Coop's [`rv`](https://github.com/spinel-coop/rv) is the
-`uv`/`pipx` equivalent for Ruby.
-
-| Command | Use case |
-| --- | --- |
-| `rvx toy install` | Ephemeral one-shot |
-| `rv tool install toy` | Persistent install (recommended) |
-| `rv clean-install` (in project) | Project-pinned Ruby + gems |
-
-`rv` adoption is documented as the recommended install path, not
-required. `gem install toy` stays as a fallback. The CLI doesn't
-shell out to `rv` from its own code.
-
-## 5. The five Card layers (granularity)
+## 4. The four Card layers (granularity)
 
 A Card exists at every level. Same IR type; layered composition.
 
@@ -135,13 +129,35 @@ A Card exists at every level. Same IR type; layered composition.
 | **L1 Primitive** | A single named op | `LayerNorm`, `RMSNorm`, `RoPE`, `Softmax`, `MHA`, `GQA`, `SwiGLU`, `PatchEmbed` | Implementation of one op |
 | **L2 Block** | One state-threading unit | `TransformerBlock`, `SSMBlock` (Mamba) | Which primitives, with what cfg |
 | **L3 Arch** | Stack of blocks + embedding + head | `LlamaArch`, `GPT2Arch`, `ViTArch`, `MambaArch` | Block count, per-layer overrides, embedding/head choice |
-| **L4 Recipe** | Arch + Trainer + DataSpec + Decoder + Eval | `FromScratchRecipe`, `LoRARecipe`, `WarmStartRecipe` | Optimizer choice, schedule, dataset |
-| **L5 Experiment** | Vary a Recipe along an axis | Granite-style sweeps, ablations, LMC | The axis itself |
+| **L4 Recipe** | A training plan — one or more stages, each composing Arch + Trainer + DataSpec (+ optional Decoder + Eval) | `FromScratchRecipe`, `LoRARecipe`, `WarmStartRecipe`, `CurriculumRecipe` | Stage sequence, optimizer choice, schedule, dataset progression |
+
+**Recipes include curriculum.** A Recipe is "a training plan",
+which may be one stage (single dataset, single optimizer, one
+loop) or several (curriculum learning — progressively harder data,
+phase transitions, schedule changes). Each stage composes Arch +
+Trainer + DataSpec; state threads between stages; the Recipe owns
+the sequence.
+
+```ruby
+recipe = Toy::Recipes::Curriculum
+  .arch(:llama)
+  .stage(:warmup,    trainer: :from_scratch, data: :tinystories_short, steps: 100)
+  .stage(:expand,    trainer: :from_scratch, data: :tinystories_full,  steps: 500)
+  .stage(:finetune,  trainer: :lora,         data: :domain_specific,   steps: 200)
+```
+
+One-stage Recipes are the default; multi-stage curricula are
+a strict superset.
+
+**L5 Experiment** (varying a Recipe along an axis — sweeps,
+ablations, LMC pairs) is **Tao's territory**, not toy's. Tao reads
+the Recipe Card to know what knobs exist, then drives the sweep.
+Toy's top layer is L4.
 
 Every layer is a file you can read and copy. Layer N composes
 Layer N-1.
 
-## 6. The five Kind slots (role)
+## 5. The five Kind slots (role)
 
 Each Kind has its own contract — what it receives, owns, emits.
 
@@ -153,17 +169,17 @@ Each Kind has its own contract — what it receives, owns, emits.
 | **Eval** | arch_cache, corpus | metric computation | `eval` events |
 | **Server** | state, transport | endpoint dispatch | server-side events with `phase: "serve"` |
 
-**Sixth kind (PROPOSED): DataSpec.** A unified "this is the
-data" object (tokenizer + corpus loader + sequence shape). Today
-split between Ruby loaders and Python pretokenizers. A first-class
-Kind for it removes the "where does the data come from" footnote
-from every other kind.
+**Sixth kind: DataSpec.** A unified "this is the data" object
+(tokenizer + corpus loader + sequence shape + curriculum stage
+marker). Today split between Ruby loaders and Python
+pretokenizers. First-class to remove the "where does the data
+come from" footnote from every other kind.
 
 None of these depend on toy-ggml directly. They use whatever
 session was built with — be it ggml, future pure-Ruby, or
-something else. Backend is a separate axis (§9).
+something else. Backend is a separate axis (§8).
 
-## 7. The Block contract
+## 6. The Block contract
 
 Generalized enough to fit transformers AND Mamba/SSM AND future:
 
@@ -193,7 +209,7 @@ Explicit shapes are not optional. They drive:
 - Shape annotations in the derived Card without runtime probing.
 - Error messages that say "expected `[T, D]`, got `[T, D_h]`".
 
-## 8. Composition operators (the API surface)
+## 7. Composition operators (the API surface)
 
 Cards (at any layer) expose:
 
@@ -206,7 +222,7 @@ Cards (at any layer) expose:
 | `card.make_trainable(param)` | Convert a constant to a trainable param (e.g., learnable `rope_base`) |
 | `card.replace_primitive(name, impl)` | Swap a registered primitive without subclassing |
 
-These compose Cards declaratively. Researchers write recipes like:
+These compose Cards declaratively. Researchers write:
 
 ```ruby
 recipe = Toy::Recipes::FromScratch
@@ -218,9 +234,13 @@ recipe = Toy::Recipes::FromScratch
 ```
 
 `per_layer` is first-class. Without it, "vary anything across L"
-forces fork-and-edit. With it, heterogeneous archs are a one-liner.
+forces fork-and-edit.
 
-## 9. Cards are derived, not authored
+The operator set is machine-readable so Tao (L5) can introspect
+what knobs a given Recipe Card exposes and systematically vary
+them across sweep arms.
+
+## 8. Cards are derived, not authored
 
 The biggest concern from review: hand-writing
 `step_update("v^j", "x · W_V^j + b_V^j", "v^j ∈ R^{T×D_h}", "V not rotated")`
@@ -249,7 +269,7 @@ Introspection is automatic.
 when the lowerer ships — because there's only one source of
 truth.
 
-## 10. DRY: require, don't copy
+## 9. DRY: require, don't copy
 
 `toy g arch my-llama --based-on llama` does NOT copy stdlib's
 primitives into the user's project. It scaffolds a thin
@@ -263,6 +283,7 @@ require "toy/llm/blocks"        # TransformerBlock
 
 class MyLlama < Toy::Arch
   arch_name "my-llama"
+  arch_family "llama"            # for cross-arch tooling; further-precision allowed
   config :d_model, :n_layers, :n_heads, :vocab
 
   def realize(cfg, sess, mode)
@@ -285,7 +306,7 @@ keeps requiring from the framework. No bulk copy.
 This balances "single file per arch" (the file is yours, readable
 top to bottom) with DRY (shared math doesn't get duplicated).
 
-## 11. Multi-backend extensibility
+## 10. Multi-backend extensibility
 
 Today's per-class mirror generation (CPU + CUDA + Metal mirrors
 generated by `prep/gen_cuda_mirror.rb`) is a Spinel-poly workaround,
@@ -304,7 +325,7 @@ Three pragmatic paths for add-on algos:
 (b) is the recommended path; (a) is the fallback for algos with
 custom ops; (c) is upstream-dependent.
 
-## 12. CC-tools-friendly defaults
+## 11. CC-tools-friendly defaults
 
 - `toy <cmd> --json` everywhere — structured for CC, pretty for
   humans by default.
@@ -317,7 +338,7 @@ custom ops; (c) is upstream-dependent.
 Slash commands / skills are wrappers around the CLI, not separate
 surfaces.
 
-## 13. The Tep-generator non-goal
+## 12. The Tep-generator non-goal
 
 Tep would also benefit from a generator. Resist extracting
 "spinelgen" base library in v1. Web-shape and ML-shape projects
@@ -328,130 +349,26 @@ across Toy and Tep, extract then.
 
 Don't design *for* extraction. Don't design *against* it either.
 
-## 14. Decisions locked (after review round 1)
+## 13. Decisions (all locked after review round 2)
 
-- ✅ **Card layers** — five layers (Primitive / Block / Arch /
-  Recipe / Experiment).
-- ✅ **Kind slots** — five plus DataSpec (proposed sixth).
-- ✅ **Block contract** — `(input, state) → (output, state)` with
-  explicit shape declarations.
-- ✅ **Composition operators** — `with_hyper`, `per_layer`,
-  `replace_step`, `tap`, `make_trainable`, `replace_primitive`.
-- ✅ **Cards are derived, not authored** — `def card` is optional
-  override only.
-- ✅ **DRY for primitives** — `toy g` scaffolds require the
-  framework's primitives; user vendors specific ones to override.
-  No bulk copy.
-- ✅ **rv as recommended install** — `gem install` as fallback;
-  CLI doesn't shell out to `rv`.
-
-## 15. Remaining open questions
-
-- **Q1.** Tao coordination: `runs/<id>/` layout. Lock before
-  `toy new` ships. Should we file a Tao-side issue?
-- **Q2.** `toy.yml` minimum contents — backend choice, data dir,
-  default run-id template, default algo-discovery path?
-- **Q3.** Naming + discovery: is `arch_name "llama"` enough, or
-  do algo classes need a richer manifest (version, deps, license)?
-- **Q4.** First concrete deliverable: a `toy new` + MVP commands
-  (install / list / fetch / describe) that proves the on-ramp, OR
-  a Card-derivation refactor that proves §9 against `Toy::SmolLM2`
-  + `LlamaArch` before any user-facing surface ships? Lean
-  strongly toward the second — see §17.
-- **Q5.** Framework gem packaging: one `toy` gem (CLI + Core +
-  Stdlib facade) or split (`toy-framework` CLI/Core, `toy` the
-  existing lib-vendoring gem, `toy-llm` etc. as separate gems)?
-- **Q6.** Pin Spinel? Framework gem vendors a known-good revision,
-  or always uses whatever the user has? Lean toward pin
-  (reproducibility matters; landmines retire on a schedule).
-- **Q7.** Should L5 (Experiment) be a toy concept or a Tao one?
-  Tao already runs sweeps / comparisons. If L5 is Tao's, toy's
-  top layer is L4 (Recipe). Probably yes — defer L5 to Tao.
-
-## 16. Sequencing
-
-**Phase 0** — design lock (this doc + Tao coord on Q1 + Q4
-answered).
-
-**Phase 1** — derive Cards from realize. Implement the runtime
-probe path in Core; refactor `Toy::SmolLM2` and the seq-mode
-training graph to produce Cards via derivation rather than the
-hand-written `algorithm` methods. **Critically inside toy's repo**,
-not yet in user-facing land. Proves §9 holds.
-
-**Phase 2** — refactor stdlib archs into the five-layer hierarchy
-(L1 primitives, L2 blocks, L3 archs). Llama-family first (most
-exercise); ViT-Tiny second (proves generality). Recipes (L4)
-follow naturally.
-
-**Phase 3** — Core + CLI MVP. `bin/toy` as CRuby. Five commands:
-`new`, `install`, `list`, `fetch`, `describe`. No `train` /
-`serve` yet — focus on "can a new user get from clone to identified
-model".
-
-**Phase 4** — `toy infer`, `toy serve`, `toy train`, `toy eval`.
-Each composes the algo classes from phase 2.
-
-**Phase 5** — Generators (`toy g arch`, `toy g recipe`). After
-patterns settle.
-
-**Phase 6** — Prism lowerer (the static derivation path). When
-the runtime path's limits start hurting.
-
-Phases 1–4 don't paint into corners. Phase 5 is where opinions
-start to bake; lock the contract first.
+| Decision | Resolution |
+| --- | --- |
+| **Card layers** | Four layers in toy (Primitive / Block / Arch / Recipe). L5 Experiment is Tao's. |
+| **Kind slots** | Five plus DataSpec (the sixth). |
+| **Block contract** | `(input, state) → (output, state)` with explicit shape declarations. |
+| **Composition operators** | `with_hyper / per_layer / replace_step / tap / make_trainable / replace_primitive`. |
+| **Cards derived, not authored** | `def card` is optional override only. |
+| **DRY for primitives** | `toy g` scaffolds require framework primitives; user vendors specific ones to override. |
+| **Recipes include curriculum** | Multi-stage by design; single-stage is the common case. |
+| **Tao coordination** | We file a Tao-side issue noting the layout. We decide here; Tao follows. |
+| **`toy.yml`** | Minimal — defaults for run-id template + algo-discovery path. Backend is runtime (achieves parity); not in config. |
+| **Naming + discovery** | Minimal `arch_name "llama"`; allow further precision (`"llama2"`, `"qwen3.6"`, etc.). `arch_family` for cross-arch tooling. |
+| **First deliverable** | Card-derivation refactor (proves §8 against `Toy::SmolLM2` + `LlamaArch` *inside toy's repo*) **before** any user-facing CLI surface ships. |
+| **Framework gem packaging** | One `toy` gem for now. Split as needed later. |
+| **Pin Spinel** | **NO.** Early days; toy is a test-case for Spinel. Breakage is good signal. Always use whatever Spinel the user has. |
+| **L5 ownership** | Tao. Toy's top layer is L4 (Recipe). |
 
 ---
 
-## Appendix — what the CLI surface *might* look like (sketch)
-
-Not locked. Illustrative.
-
-```sh
-# Install toy (rv path recommended)
-brew install rv && rv tool install toy
-# or: gem install toy
-
-# Bootstrap a project (outside any toy repo)
-toy new myproj && cd myproj
-
-# Install the right backend for this host
-toy install                       # auto-detect; or --backend cpu|cuda|metal
-
-# Discover + fetch models
-toy list
-toy fetch bartowski/SmolLM2-135M-Instruct-GGUF SmolLM2-135M-Instruct-Q8_0.gguf
-
-# Describe a model (Card + GGUF metadata)
-toy describe SmolLM2-135M-Instruct-Q8_0
-
-# Run inference (CLI resolves model name through `toy list`)
-toy infer SmolLM2-135M-Instruct-Q8_0 --prompt "Once upon" --max-tokens 32
-
-# Serve
-toy serve SmolLM2-135M-Instruct-Q8_0 --port 4567
-
-# Scaffold a new arch (DRY — requires framework primitives, doesn't copy)
-toy g arch my-llama --based-on llama
-
-# Train using a Recipe (composes Arch + Trainer + DataSpec)
-toy train from-scratch --arch my-llama --data tinystories \
-  --d-model 512 --heads-per-layer "[16,16,8,4,2,1]"   # per_layer in action
-
-# Evaluate
-toy eval lmc --ckpt runs/abc/weights/latest --other runs/def/weights/latest
-
-# Inspect events
-toy events runs/abc                  # tail
-toy events runs/abc --kind sample    # filter
-
-# Discover the surface (for CC etc.)
-toy --manifest                       # JSON of commands + args
-toy <any-cmd> --json                 # JSON output instead of pretty
-```
-
----
-
-_Draft v2. Amend in place; mark resolved questions with
-`[ANSWERED]`, contested ones with `[DEBATE]`, add new ones
-as they surface._
+_Draft v3. Open follow-ups now live in the roadmap doc, not here.
+This doc is the contract; the roadmap is the execution plan._

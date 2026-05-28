@@ -65,6 +65,13 @@ Project-level READMEs sit next to their code: [`README.md`](../README.md),
 
 ## Roadmap (future work)
 
+- **Toy as a framework** (the big arc):
+  - [`roadmap/toy-framework-design-2026-05-28.md`](roadmap/toy-framework-design-2026-05-28.md)
+    — the contract: four Card layers, six Kind slots, derived-not-
+    authored Cards, the operating philosophy.
+  - [`roadmap/toy-framework-roadmap-2026-05-28.md`](roadmap/toy-framework-roadmap-2026-05-28.md)
+    — the execution plan: six phases with gates, cleanup arcs,
+    risks. Lands the "very clean repo on the other side" state.
 - [`roadmap/modern-llm-primitives-2026-05-22.md`](roadmap/modern-llm-primitives-2026-05-22.md) —
   what's missing to run Qwen3, DeepSeek V3, Llama 3.3/4, Gemma 2/3,
   Mixtral, Phi-3, GLM-4. Three priority bindings unblock most of it.
