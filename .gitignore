@@ -43,6 +43,10 @@ data/gpt2-bpe-vocab.tsv
 data/gpt2-bpe-merges.tsv
 data/gpt2-bpe-bytechars.tsv
 prep/_hf_cache/
+# Scratch logs from `make hello` / progress wrappers
+prep/_convert.log
+vendor/ggml/*.config.log
+vendor/ggml/*.build.log
 # tinynn shim build artifacts
 tinynn/*.o
 tinynn/*.a

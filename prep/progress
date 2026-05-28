@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# prep/progress — run a build command with a single-line progress bar
+# driven by [NN%] markers in the child's output (cmake/make print
+# these natively). Full output is teed to LOG so nothing is lost.
+#
+# On non-zero exit:
+#   - the progress line is finalised on its own line
+#   - the last 40 lines of LOG are dumped to stderr
+#   - the script propagates the child's exit code
+# Errors are NEVER silenced; the LOG always contains the full output.
+#
+# Usage:
+#   LOG=path/to/build.log LABEL="ggml-cpu" prep/progress -- CMD [ARG...]
+#
+# Honoured env vars:
+#   LOG     (required) tee target
+#   LABEL   (optional) short tag printed alongside the bar
+#   NO_TTY  (optional) force plain "[NN%] msg" lines (CI / pipes)
+#
+# bash 3.2+ (macOS default ships 3.2). Uses awk for the line filter,
+# tee for the log split, a tmpfile for the exit code (PIPESTATUS would
+# also work but tmpfile keeps the structure parallel to prep/quietly).
+
+set -e -u -o pipefail
+
+LOG=${LOG:?prep/progress: LOG=path is required}
+LABEL=${LABEL:-build}
+
+# Strip a leading -- separator if present (so callers can write
+# `prep/progress -- cmake --build …` for symmetry with prep/quietly).
+if [ "${1:-}" = "--" ]; then
+  shift
+fi
+if [ $# -eq 0 ]; then
+  echo "prep/progress: missing command" >&2
+  exit 2
+fi
+
+# Make the log directory; don't fail if LOG=/dev/stderr or similar.
+log_dir=$(dirname "$LOG" 2>/dev/null || true)
+if [ -n "$log_dir" ] && [ "$log_dir" != "." ] && [ ! -d "$log_dir" ]; then
+  mkdir -p "$log_dir"
+fi
+
+# Detect TTY for the bar / cursor-hide. NO_TTY=1 forces plain mode for
+# CI logs (where \r would just produce one long line per percent).
+if [ -t 1 ] && [ -z "${NO_TTY:-}" ]; then
+  TTY=1
+else
+  TTY=0
+fi
+
+status_file=$(mktemp -t toy-progress.XXXXXX)
+cleanup() {
+  if [ "$TTY" = "1" ]; then printf '\033[?25h'; fi
+  rm -f "$status_file"
+}
+trap cleanup EXIT INT TERM
+
+if [ "$TTY" = "1" ]; then printf '\033[?25l'; fi  # hide cursor
+
+# Subshell: run the build, merge stderr→stdout, capture exit code.
+# tee splits to the logfile (everything, unfiltered).
+# awk parses [NN%] and redraws a single-line progress bar.
+( set +e; "$@" 2>&1; echo $? > "$status_file" ) \
+  | tee "$LOG" \
+  | LABEL="$LABEL" TTY="$TTY" awk '
+      BEGIN {
+        label = ENVIRON["LABEL"]; tty = ENVIRON["TTY"] + 0
+        last_pct = -1
+        bar_len = 30
+      }
+      function bar(pct,    filled, b, i) {
+        filled = int(pct * bar_len / 100)
+        b = ""
+        for (i = 0; i < filled; i++) b = b "="
+        if (filled < bar_len) { b = b ">"; i++ }
+        for (; i < bar_len; i++) b = b " "
+        return b
+      }
+      {
+        line = $0
+        # Match [NN%] or [ N%] or [100%] at start of line. cmake/make
+        # both emit this. Anything else passes through silently (the
+        # log has it all; we want the terminal quiet).
+        if (match(line, /^\[ *[0-9]+%\]/)) {
+          end = index(line, "%]")
+          pct = substr(line, 2, end - 2) + 0
+          msg = substr(line, end + 2)
+          sub(/^[[:space:]]+/, "", msg)
+          # Truncate msg so the bar line fits in ~110 cols total.
+          if (length(msg) > 70) msg = substr(msg, 1, 67) "..."
+          if (tty) {
+            if (pct != last_pct) {
+              printf "\r\033[K  [%s] %3d%%  %-12s  %s", bar(pct), pct, label, msg
+              fflush()
+              last_pct = pct
+            }
+          } else {
+            printf "  [%3d%%] %s  %s\n", pct, label, msg
+            fflush()
+          }
+        }
+      }
+      END {
+        if (tty) { printf "\n" }
+      }
+    '
+
+status=$(cat "$status_file")
+if [ "$status" != "0" ]; then
+  echo "" >&2
+  echo "  ✗ $LABEL failed (exit $status). Last 40 lines of $LOG:" >&2
+  echo "  ─────────────────────────────────────────────────────" >&2
+  tail -40 "$LOG" >&2 || true
+  echo "  ─────────────────────────────────────────────────────" >&2
+fi
+exit "$status"

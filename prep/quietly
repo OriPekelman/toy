@@ -1,0 +1,64 @@
+#!/bin/sh
+# prep/quietly — filter known-harmless output lines while preserving
+# the child command's exit code. Patterns are extended-regex; lines
+# matching ANY pattern (anywhere in the line) are dropped. Stdout and
+# stderr are merged (both are filtered the same way) — this is meant
+# for cosmetic noise reduction, not for hiding real diagnostics.
+#
+# Usage:
+#   prep/quietly PATTERN [PATTERN...] -- CMD [ARG...]
+#
+# Example:
+#   prep/quietly 'cannot resolve call to' 'ignoring duplicate libraries' -- \
+#     spinel examples/foo.rb -o examples/foo
+#
+# Errors are NEVER silenced: the exit code of CMD is the exit code of
+# this script. If you see no output at all, that's an indicator the
+# patterns are too broad — narrow them.
+#
+# POSIX sh (bash 3.x / dash / busybox sh / zsh-emulated-sh). Uses
+# awk (universally available) for the line filter.
+
+set -eu
+
+patterns=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --)
+      shift
+      break
+      ;;
+    *)
+      if [ -z "$patterns" ]; then
+        patterns=$1
+      else
+        patterns="$patterns|$1"
+      fi
+      shift
+      ;;
+  esac
+done
+
+if [ $# -eq 0 ]; then
+  echo "prep/quietly: missing command (use -- to separate patterns from command)" >&2
+  exit 2
+fi
+
+if [ -z "$patterns" ]; then
+  exec "$@"
+fi
+
+# Capture child exit code via a tmpfile written from inside the
+# subshell. POSIX-portable; PIPESTATUS is bash-only.
+status_file=$(mktemp -t quietly.XXXXXX)
+trap 'rm -f "$status_file"' EXIT INT TERM
+
+# Subshell: run the child with stderr merged into stdout so a single
+# pipeline can filter both. Disable `set -e` inside the subshell so a
+# non-zero exit from the child doesn't short-circuit before we record
+# its status — that's the whole point of saving it.
+( set +e; "$@" 2>&1; echo $? > "$status_file" ) | \
+    awk -v pat="$patterns" 'BEGIN{re="(" pat ")"} $0 !~ re {print}'
+
+# awk exit code is irrelevant — we want the child's.
+exit "$(cat "$status_file")"
