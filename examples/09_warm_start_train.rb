@@ -31,6 +31,24 @@
 # Acceptance: a 20-step run produces a monotonically-decreasing loss
 # trajectory and emits a well-formed events.jsonl. The Tao-side
 # `quality_gate` lands as part of run_end.
+#
+# GH#14 — Qwen-2.5-1.5B → 410M-shape transfer invocation:
+#
+#   mkdir -p /tmp/qwen410
+#   DONOR_GGUF=data/qwen25-1.5b-f32.gguf \
+#     VOCAB=151936 DONOR_D=1536 D_MODEL=1024 \
+#     N_LAYERS=24 N_HEADS=8 D_FF=4096 \
+#     CONTEXT=256 STEPS=1000 SEED=0 INIT=warm \
+#     CORPUS=<your_pretokenized_corpus.bin> \
+#     TAO_RUN_DIR=/tmp/qwen410 \
+#     ./examples/example_warm_start_train
+#
+# The Qwen-2.5-1.5B GGUF supplies token_embd.weight directly (no
+# separate extractor needed — 09 reads only token_embd from the
+# donor). The 410M target shape is (1024, 24L, 8H, GQA-2-KV, 4096
+# FFN) ≈ 380-400M params with tied embeddings (the projection
+# lens adds another ~1.5M). For the FineWeb-Edu corpus loader
+# (see issue #14 acceptance), see follow-up issue.
 
 require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
@@ -276,6 +294,21 @@ end
 puts "initial=" + initial_loss.to_s + " final=" + final_loss.to_s + " ratio=" + ratio.to_s + " gate=" + quality_gate
 
 if EVENTS.length > 0
+  # toy/v1 eval event — final loss snapshot, name="final".
+  # GH#14 acceptance: Tao's report consumes this as the "validation"
+  # eval at run end. (For a real held-out eval, point a separate
+  # corpus at this through a new --eval-corpus knob; the current
+  # snapshot is the training-set loss at the last step, which is
+  # adequate for the wire-format acceptance.)
+  t_eval = TinyNN.tnn_events_now_seconds
+  ev = "{\"kind\":\"eval\",\"phase\":\"train\""
+  ev = ev + ",\"t\":"     + t_eval.to_s
+  ev = ev + ",\"step\":"  + STEPS.to_s
+  ev = ev + ",\"name\":\"final\""
+  ev = ev + ",\"loss\":"  + final_loss.to_s
+  ev = ev + "}"
+  TinyNN.tnn_events_emit(ev)
+
   t_close = TinyNN.tnn_events_now_seconds
   re = "{\"kind\":\"run_end\",\"phase\":\"train\""
   re = re + ",\"t\":"      + t_close.to_s
