@@ -88,10 +88,14 @@ all: demos/train demos/smollm2
 setup:
 	@uname_s="$$(uname -s)"; \
 	if [ "$$uname_s" = "Darwin" ]; then \
-	    echo "[setup] macOS detected → setup-ggml-metal"; \
+	    echo "[setup] macOS detected → setup-ggml + setup-ggml-metal"; \
+	    echo "          (CPU examples link against vendor/ggml/build/;"; \
+	    echo "           Metal examples link against vendor/ggml/build-metal/.)"; \
+	    $(MAKE) setup-ggml; \
 	    $(MAKE) setup-ggml-metal; \
 	elif command -v nvcc >/dev/null 2>&1; then \
-	    echo "[setup] nvcc on PATH → setup-ggml-cuda"; \
+	    echo "[setup] nvcc on PATH → setup-ggml + setup-ggml-cuda"; \
+	    $(MAKE) setup-ggml; \
 	    $(MAKE) setup-ggml-cuda; \
 	else \
 	    echo "[setup] CPU only → setup-ggml"; \

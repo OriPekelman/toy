@@ -730,16 +730,33 @@ static void tnn_list_walk(const char *path) {
         if (lstat(buf, &st) != 0) continue;
         if (S_ISDIR(st.st_mode)) {
             tnn_list_walk(buf);
-        } else if (S_ISREG(st.st_mode)) {
-            size_t name_len = strlen(e->d_name);
-            if (name_len >= 5 &&
-                memcmp(e->d_name + name_len - 5, ".gguf", 5) == 0) {
-                size_t need = (size_t)n + 1;   /* path + newline */
-                if (tnn_list_len + need + 1 > TNN_LIST_BUF_BYTES) continue;
-                memcpy(tnn_list_buf + tnn_list_len, buf, (size_t)n);
-                tnn_list_len += (size_t)n;
-                tnn_list_buf[tnn_list_len++] = '\n';
-                tnn_list_buf[tnn_list_len] = '\0';
+        } else {
+            int is_reg = S_ISREG(st.st_mode);
+            if (S_ISLNK(st.st_mode)) {
+                /* Hugging Face cache layout puts .gguf files as
+                 * symlinks: hub/models--…/snapshots/<sha>/<name>.gguf
+                 * → ../../blobs/<hash>. lstat says LNK; stat-follow
+                 * to determine if the target is a regular file.
+                 * Without this, HF-cached GGUFs were silently
+                 * invisible to example_list_models on macOS (the
+                 * Mac fresh-clone walkthrough 2026-05-28 hit this
+                 * — the GGUF was downloaded but never listed). */
+                struct stat tgt;
+                if (stat(buf, &tgt) == 0 && S_ISREG(tgt.st_mode)) {
+                    is_reg = 1;
+                }
+            }
+            if (is_reg) {
+                size_t name_len = strlen(e->d_name);
+                if (name_len >= 5 &&
+                    memcmp(e->d_name + name_len - 5, ".gguf", 5) == 0) {
+                    size_t need = (size_t)n + 1;   /* path + newline */
+                    if (tnn_list_len + need + 1 > TNN_LIST_BUF_BYTES) continue;
+                    memcpy(tnn_list_buf + tnn_list_len, buf, (size_t)n);
+                    tnn_list_len += (size_t)n;
+                    tnn_list_buf[tnn_list_len++] = '\n';
+                    tnn_list_buf[tnn_list_len] = '\0';
+                }
             }
         }
     }
