@@ -83,6 +83,10 @@ end
 class LlamaSeqForwardFFICacheCuda
   attr_accessor :sess,
                 :t_seq_token_embed, :t_seq_final_norm_gamma, :t_seq_output,
+                # E2.3 / GH#14 — projection-lens W_proj exposed for
+                # external init (PCA-init script writes here before
+                # the first training step). Random-init by default.
+                :t_seq_w_proj,
                 :seq_has_untied_output, :seq_has_qkv_bias,
                 :seq_blocks_ffi,
                 :seq_t, :seq_b, :seq_d_model, :seq_d_ff, :seq_n_heads, :seq_n_kv,

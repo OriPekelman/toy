@@ -35,12 +35,17 @@
 # GH#14 — Qwen-2.5-1.5B → 410M-shape transfer invocation:
 #
 #   mkdir -p /tmp/qwen410
-#   # 1. pretokenize FineWeb-Edu (see toy#22 / prep/pretokenize_fineweb_edu.py)
+#   # 1. pretokenize FineWeb-Edu (toy#22 / prep/pretokenize_fineweb_edu.py)
 #   uv run prep/pretokenize_fineweb_edu.py --tokens 10_000_000 \
 #     --out data/fineweb_edu_10m.bin
 #
-#   # 2. train (TOKENS knob derives STEPS = ceil(TOKENS / CONTEXT))
+#   # 2. PCA-init the projection lens (GH#14 / prep/pca_init_qwen_lens.py)
+#   uv run prep/pca_init_qwen_lens.py --donor data/qwen25-1.5b-f32.gguf \
+#     --d-model 1024 --out data/qwen_pca_lens.gguf
+#
+#   # 3. train (TOKENS knob derives STEPS = ceil(TOKENS / CONTEXT))
 #   DONOR_GGUF=data/qwen25-1.5b-f32.gguf \
+#     PCA_GGUF=data/qwen_pca_lens.gguf \
 #     VOCAB=151936 DONOR_D=1536 D_MODEL=1024 \
 #     N_LAYERS=24 N_HEADS=8 D_FF=4096 \
 #     CONTEXT=256 TOKENS=10_000_000 SEED=0 INIT=warm \
@@ -102,6 +107,15 @@ VOCAB    = (ENV["VOCAB"]    || "627").to_i
 # claiming scientific alignment.
 INIT        = ENV["INIT"]        || "scratch"
 DONOR_GGUF  = ENV["DONOR_GGUF"]  || "data/qwen25-1.5b-f32.gguf"
+# GH#14 — PCA-init the projection lens W_proj. Independent of INIT
+# (the donor-embed-load knob); set PCA_GGUF= to a GGUF written by
+# prep/pca_init_qwen_lens.py and the lens.proj.weight tensor is
+# uploaded to fcache.t_seq_w_proj before the first step. Empty
+# string = random-init (current behaviour). Matches the issue's
+# "PCA-initialised against donor activations" line — we treat the
+# donor embed rows AS the donor activations (they are the
+# activations immediately post-embedding-lookup).
+PCA_GGUF    = ENV["PCA_GGUF"]    || ""
 
 TAO_RUN_DIR = ENV["TAO_RUN_DIR"] || ""
 EVENTS      = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/events.jsonl") : ""
@@ -167,6 +181,51 @@ if INIT == "warm"
   TinyNN.tnn_gguf_free(ggh)
   puts "INIT=warm: loaded " + n_to_read.to_s + " floats (" + VOCAB.to_s +
        " × " + DONOR_D.to_s + ") from " + DONOR_GGUF + " token_embd.weight"
+end
+
+# GH#14 — PCA-init the projection lens W_proj. Independent of INIT;
+# can be combined with INIT=warm for the full Tao-acceptance shape.
+if PCA_GGUF.length > 0
+  unless File.exist?(PCA_GGUF)
+    puts "PCA_GGUF: file not found at " + PCA_GGUF
+    puts "  generate via: uv run prep/pca_init_qwen_lens.py --donor " +
+         DONOR_GGUF + " --d-model " + D_MODEL.to_s + " --out " + PCA_GGUF
+    exit 1
+  end
+  pgh = TinyNN.tnn_gguf_load(PCA_GGUF)
+  if pgh == nil || pgh == TinyNN.tnn_null_ptr
+    puts "PCA_GGUF: failed to open " + PCA_GGUF
+    exit 1
+  end
+  pca_donor_d = TinyNN.tnn_gguf_get_u32(pgh, "lens.donor_d_in")
+  pca_d_model = TinyNN.tnn_gguf_get_u32(pgh, "lens.d_model")
+  if pca_donor_d != DONOR_D
+    puts "PCA_GGUF: lens.donor_d_in=" + pca_donor_d.to_s +
+         " but cfg.donor_d_in=" + DONOR_D.to_s + " — re-run the PCA " +
+         "script with --d-model " + D_MODEL.to_s + " against the matching donor"
+    exit 1
+  end
+  if pca_d_model != D_MODEL
+    puts "PCA_GGUF: lens.d_model=" + pca_d_model.to_s +
+         " but D_MODEL=" + D_MODEL.to_s + " — re-run the PCA script"
+    exit 1
+  end
+  pw_idx = TinyNN.tnn_gguf_find_index(pgh, "lens.proj.weight")
+  if pw_idx < 0
+    puts "PCA_GGUF: missing lens.proj.weight tensor"
+    exit 1
+  end
+  n_pca = D_MODEL * DONOR_D
+  pw_buf = Mat.new(1, n_pca)
+  rc = TinyNN.tnn_gguf_read_f32_to_doubles(pgh, pw_idx, pw_buf.flat, n_pca)
+  if rc != 0
+    puts "PCA_GGUF: read failed rc=" + rc.to_s + " on lens.proj.weight"
+    exit 1
+  end
+  TinyNN.tnn_upload_from_float_array(fcache.sess, fcache.t_seq_w_proj, pw_buf.flat, n_pca)
+  TinyNN.tnn_gguf_free(pgh)
+  puts "PCA_GGUF: loaded " + n_pca.to_s + " floats (" + D_MODEL.to_s +
+       " × " + DONOR_D.to_s + ") from " + PCA_GGUF + " lens.proj.weight"
 end
 
 result   = fcache.build_training_step
