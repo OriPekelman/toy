@@ -1,8 +1,7 @@
-# Toy as a framework: design doc (DRAFT)
+# Toy as a framework: design doc (DRAFT v2)
 
 **Status:** design doc for review. No implementation yet.
-**Date:** 2026-05-28.
-**Audience:** ourselves, Tao maintainers (layout coordination).
+**Date:** 2026-05-28 (rev 2 after first round of in-place review).
 **Companion docs:**
 [`lowerer-design.md`](lowerer-design.md),
 [`spinelgems-tep-adoption-2026-05-27.md`](spinelgems-tep-adoption-2026-05-27.md),
@@ -13,15 +12,26 @@
 Promote toy from "library you `require_relative` from your own
 Spinel-compiled experiment" to **"framework you create projects
 inside of"** — `toy new myproj`, `toy train ...`, `toy serve ...`,
-with a CLI that absorbs the per-project plumbing the lived Mac
-fresh-clone walkthrough showed is currently friction.
+with a CLI that owns the per-project plumbing.
 
-The lever: **`Toy::Card` as the IR contract** between user code and
-framework tooling. Cards already exist; today they're hand-written
-on Arch classes. Promoting them to the contract surface that
-Trainers, Decoders, Evals, and Servers also produce/consume lets
-the framework compose pieces without baking ML-specific opinions
-into Core.
+The lever: **`Toy::Card` as the IR contract**, organized in five
+granularity layers (Primitive / Block / Arch / Recipe / Experiment)
+and filled by five kind slots (Arch / Trainer / Decoder / Eval /
+Server, + a likely DataSpec). The Card describes the work; the
+framework composes, introspects, and runs.
+
+Key insight from review: **Cards are derived, not authored.** Users
+write the realize implementation; the framework derives the Card
+via graph-walk (today, leveraging `ToyDescribeFlow`) or AST walk
+(future, via the Prism lowerer). No more hand-writing
+`step_update("v^j", "x · W_V^j + b_V^j", ...)`.
+
+**Why this matters.** ML practitioners currently deal with a lot
+of Python ugliness and ceremony; for newcomers it makes
+understanding the actual ML flow difficult. Toy comes from the
+belief that ML is going to be a larger part of our lives — so
+understanding the structure and algorithms is primordial. We want
+to avoid gate-keeping and ceremony.
 
 Explicit non-goal in v1: a generic "Spinel project generator base
 library". We may *accidentally* land something extractable; we will
@@ -29,336 +39,251 @@ not design *for* it.
 
 ---
 
-## 1. Why now — the moment + the lever
+## 1. Why now — the lever
 
-Two observations are converging.
+Two observations converging.
 
-**(a) On-Boarding** There is currently friction on the on-boarding of
-a new Toy based project. Part of it is installation woes that can 
-be handled by the `make` flow - part of it is a question of 
-responsibilities (for example for a consumer like Tao that
-wants to generate code).
+**(a) On-boarding friction is real.** A new Toy-based project
+currently has installation woes (the `make` flow is addressing
+those) and, more importantly, a question of *responsibilities*.
+What does the framework own? What does the user own? What does a
+consumer like Tao that wants to generate or operate on toy code
+own? Without a contract surface, every consumer has to
+reverse-engineer toy's internals.
 
 **(b) `Toy::Card` is already an IR.** It exists at
-`lib/toy_card.rb`. SmolLM2 + SmolLM2Block already build Cards from
-their `algorithm` methods. The lowerer roadmap
-([`lowerer-design.md`](lowerer-design.md)) is explicitly about
-generating those Cards from Prism. The IR is real; what's missing
-is the framework layer that consumes it.
+`lib/toy_card.rb`. `SmolLM2` and `SmolLM2Block` build Cards from
+`algorithm` methods. `lib/toy_describe_flow.rb` walks the runtime
+compute graph and emits structured descriptions. The pieces of the
+introspection substrate are in place; what's missing is the
+framework layer that *consumes* them and surfaces them through a
+CLI.
 
-Together: there's a CLI shape that eliminates the onboerding pains *by
-construction*, and a contract substrate that lets us add commands
-without inheriting opinions.
+**Operating philosophy.** Conventions (Rails-style) remove
+decisions the user shouldn't be making, but compose explicit
+primitives, not magic. We are in **explicit territory** —
+no metaprogramming "advanced magic". Code generation is cheap
+these days; clarity and simplicity aren't. Every convention has
+an escape hatch; every abstraction is one file you can read.
 
-Conventions (Rails style) remove decisions the user shouldn't be making, 
-but does so by composing explicit primitives, not by hiding magic. We aim
-for the same — if the convention doesn't fit, escape hatches everywhere.
-We are in "explicit territory" without Metaprogramming "advanced magic"
-Code generation is cheap these days: clarity and simplicity aren't.
+## 2. Two distinctions that matter
 
-## 2. Library vs framework (where toy is, where we want)
+**Library vs framework:** today toy is consumable as a library
+(gemspec shipped 2026-05-27, toy#19). The framework layer adds a
+*third* place beyond toy's `lib/` and `examples/`: the **user's
+project directory**. The CLI runs there, not inside toy's checkout.
 
-| | Library | Framework |
-| --- | --- | --- |
-| **You require it from** | your code | your project |
-| **It owns the entry point** | no | yes (the CLI) |
-| **It dictates layout** | no | yes (project dir conventions) |
-| **It composes pieces for you** | no | yes (Arch × Trainer × Decoder × …) |
-| **Toy today** | ✅ (gemspec shipped 2026-05-27, toy#19) | partial — `examples/*` play this role manually |
+**Card layers vs algo kinds — orthogonal axes.** Don't conflate.
 
-The lib-vs-example architectural rule from
-[`feedback_lib_vs_example_scope.md`](../../.claude/projects/-home-oripekelman-sites-toy-ruby-neural-network/memory/feedback_lib_vs_example_scope.md)
-still holds: experiment-specific configs in `examples/` or `prep/`,
-generic primitives in `lib/`. The framework layer doesn't change
-that — it adds a *third* place: the **project directory**, which is
-neither examples/ (toy's repo) nor lib/. It's the user's working
-directory.
+| Axis | What it specifies |
+| --- | --- |
+| **Card LAYER** (§5) | Granularity of the IR — how big a unit is. Primitive / Block / Arch / Recipe / Experiment. |
+| **Kind SLOT** (§6) | Role of the unit in a workflow — what it does. Arch / Trainer / Decoder / Eval / Server / DataSpec. |
 
-## 3. A Rails-moment ambition + the risks
+A *Recipe* (Layer 4) might be "FromScratch trainer + Llama arch +
+TinyStories dataset" — composing one of each Kind. A Layer-1
+Primitive (`RMSNorm`) is also one of a Kind (Arch-side primitive).
+Layers describe *size*; Kinds describe *role*.
 
-**Ambition:** We can hope Toy could do for Spinel what Rails did for Ruby —
-provide a credible, batteries-included on-ramp for an ML project,
-with conventions that get out of the way when you outgrow them.
-Currently ML practicioners have to deal with a lot of Python
-ugliness and ceremony and for new-comers it makes understanding
-the actual ML flow difficult. Toy comes from the belief that
-ML is going to be a larger part of our lives - so understanding
-the structure and algorithms is primordial. We also want to avoid
-gate-keeping and ceremony.
-
-**The risks the user already named:**
-
-1. **Over-opinionated framework paints into a corner.** ML hasn't
-   converged on shapes the way web did on MVC/REST. A weird
-   agent / MoE-music user shouldn't have to fork around our
-   opinions to use Spinel-flavoured numerics.
-2. **YAGNI on the meta-framework.** "A generic Spinel scaffold
-   library" is tempting (Tep would also benefit from one). Resist:
-   ML and web converge differently. Build a great toy first; if
-   patterns crystallize that obviously generalize, extract later.
-3. **Hand-rolled CLI vs Thor/dry-cli vs Spinel-compiled binary.**
-   First cut should be CRuby (fast iteration). Spinel-compiling
-   the CLI itself comes later if ever.
-
-**The mitigations:**
-
-- Core is **thin**. Stdlib is **modular** (drop any module). Algos
-  are **gem-shaped**, not built-in. (See §6.)
-- The contract is the **Card IR**, not behavioural interfaces
-  (no "implement these 7 methods"). If your algo produces a Card,
-  the framework can introspect / compose / serve it.
-- Every convention has an escape hatch. `toy infer` resolves names
-  via `toy list`, but `GGUF=...` still works. `toy serve` accepts
-  raw paths.
-
-## 4. Mac onboarding as design input
-
-The walkthrough revealed not bugs (those got fixed in
-a98b136 / d34e00d) but **friction points** — each is a CLI
-invariant.
-
-| Mac pain | Today's friction | Framework invariant |
-| --- | --- | --- |
-| `make` no-args | Fails on vendor-tep | `toy` (no args) → shows commands; never fails |
-| Backend choice | User picks setup-ggml-{,cuda,metal} | `toy install` decides; user doesn't pick |
-| Metal libggml needs Metal framework | CPU example linker fails | Framework links each example with the right framework set |
-| HF cache symlinks invisible | `tnn_list_walk` used lstat | (fixed in d34e00d — invariant: `toy list` always sees what `toy fetch` put down) |
-| `example_inference` default GGUF path missing after `fetch_model.sh` | Hardcoded `data/smollm2-135m-f32.gguf` | `toy fetch` symlinks into project's `data/<basename>.gguf` immediately; `toy infer <model>` resolves names |
-| 4× `fetch_model.sh` invocations because user couldn't see model | Quiet success, no canonical lookup | `toy fetch` reports the resolved local path on stdout + `toy list` shows it next call |
-| Repeated decisions per session | Per-target env vars (GGUF=, DEVICE=) | `toy.yml` project config + per-command `--flag` overrides |
-
-These are the *acceptance criteria* for the CLI MVP. If any of them
-still requires the user to make a decision they shouldn't, we
-haven't shipped the framework yet.
-
-## 5. Three-layer model — what's Core
+## 3. Three concentric circles
 
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  Add-ons (community gems)                               │
-│  toy-diffusion, toy-vision-tower, toy-music-moe, ...   │
+│  toy-diffusion, toy-vision-tower, toy-music-moe, …      │
 ├─────────────────────────────────────────────────────────┤
-│  Stdlib (bundled but each its own module)               │
+│  Stdlib (bundled, each its own gem-shaped module)       │
 │  toy-ggml · toy-llm · toy-train · toy-serve · toy-bench │
 ├─────────────────────────────────────────────────────────┤
-│  Core (the always-thin framework)                       │
+│  Core (always thin)                                     │
 │  CLI · project layout · Toy::Card IR · event stream     │
-│  backend interface (NOT impls) · skill manifest         │
+│  composition operators · backend interface · manifest   │
 └─────────────────────────────────────────────────────────┘
 ```
 
-**Core invariants:**
+**Core invariants:** ~500-1000 LOC. No GGML dependency. No Gemfile
+assumption. All commands return JSON when `--json` is passed.
 
-- ~500-1000 LOC.
-- No GGML dependency at this layer.
-- No Gemfile assumption.
-- No Spinel assumption at the API level (Core could in theory power
-  a pure-CRuby project — though the algos in stdlib will all need
-  Spinel for performance).
-- All commands return JSON when `--json` is passed; pretty otherwise.
+**Stdlib boundary:** if you want LLMs, you pull `toy-llm`. If you
+want training, `toy-train`. Weird agents wanting only event stream
++ CLI: just Core.
 
-**Stdlib boundary:** if you want to write an LLM, you pull
-`toy-llm`. If you want training infrastructure, you pull
-`toy-train`. If you're doing weird agents and want only the event
-stream + project layout + CLI dispatch, you pull none of stdlib —
-just Core.
+**Add-ons:** same interface as Stdlib modules. Stdlib is just
+"what ships with toy by default" — no privileged status.
 
-**Add-ons:** same interface as stdlib modules. There is no privileged
-status; stdlib is just "the modules that ship with toy by default".
-
-## 5.5 Distribution + install path — `rv` / `rvx`
+## 4. Distribution via `rv`
 
 Spinel-Coop's [`rv`](https://github.com/spinel-coop/rv) is the
-`uv`/`pipx` equivalent for Ruby — fast Ruby version + gem manager
-from the same team that's investing in Spinel. Three install shapes
-fall out naturally if toy ships as a gem with a `toy` binstub:
+`uv`/`pipx` equivalent for Ruby.
 
-| Command | Shape | Use case |
-| --- | --- | --- |
-| `rvx toy install` | Ephemeral run (pull + execute) | One-shot: a new user wants to try toy without commitment |
-| `rv tool install toy` | Persistent isolated install (`toy` on PATH) | "I'll be using this regularly" — same UX as a `brew install` |
-| `rv clean-install` (in a project) | Install project's pinned Ruby + gems | Inside a `toy new`-created project, after `Gemfile.lock` lands |
+| Command | Use case |
+| --- | --- |
+| `rvx toy install` | Ephemeral one-shot |
+| `rv tool install toy` | Persistent install (recommended) |
+| `rv clean-install` (in project) | Project-pinned Ruby + gems |
 
-**Why this matters for the framework story:**
+`rv` adoption is documented as the recommended install path, not
+required. `gem install toy` stays as a fallback. The CLI doesn't
+shell out to `rv` from its own code.
 
-- Removes the "which Ruby" decision from the on-ramp. `rv` installs
-  the right Ruby version in ~2s if missing.
-- Cross-platform consistency (macOS, Linux, Windows). The Mac
-  fresh-clone walkthrough wouldn't have needed any platform-specific
-  troubleshooting.
-- CC-friendly: `rv tool install toy && toy --manifest` is two
-  commands to get from "nothing" to "agent-discoverable surface".
+## 5. The five Card layers (granularity)
 
-**The distribution model becomes:**
+A Card exists at every level. Same IR type; layered composition.
 
-- Toy is a published gem (`toy-framework` or just `toy` — naming
-  TBD; current `toy.gemspec` already exists for the lib-vendoring
-  story, may need a sibling for the CLI binstub or a single
-  gemspec with both). - currently the namespace is taken by
-  https://rubygems.org/gems/toy - but probably could be liberated.
-- The gem includes the `toy` binstub.
-- Stdlib modules (`toy-llm`, `toy-train`, etc.) are separate gems
-  the framework gem depends on by default.
-- Add-on gems install via standard `gem install` or
-  `rv tool install`; the framework discovers them via standard
-  gem path walks (or an explicit `toy plugin add ...`).
-
-**Risks to flag:**
-
-- `rv` is new (active development, pre-1.0 territory). Adopting
-  it as the *recommended* install path is a small bet. The fallback
-  (`gem install toy`) always works for users without `rv`.
-- Toy's gem must keep Ruby-version compat broad (3.2+) since `rv`
-  manages whichever version the user lands on.
-
-**Decision:** ship toy as a published gem with a `toy`
-binstub. Document `rv tool install toy` as the recommended
-install path. Keep `gem install toy` working as a no-friction
-fallback. Don't make `rv` a hard requirement.
-
-## 6. Project layout (project dir, NOT framework dir)
-
-`toy new myproj` creates:
-
-```
-myproj/
-├── toy.yml              # project config (backend choice, data dir, ...)
-├── algos/               # user algorithm classes — one per file
-│   └── my_arch.rb       #   each registers itself on require
-├── data/                # GGUFs (symlinks to HF cache or local), corpora
-├── runs/                # event streams + checkpoints (Tao reads here)
-│   └── <run_id>/
-│       ├── events.jsonl
-│       └── weights/{step_N.gguf, latest}
-├── bin/toy              # thin binstub → resolves the framework
-└── (no Gemfile required, no Rakefile, no Makefile)
-```
-
-**Coordinate with Tao** on the `runs/` layout. Tao already has
-opinions about per-run subdirs. Lock this before `toy new` ships.
-
-**The big design point:** the `toy` CLI runs in *this* directory, not
-inside the framework's checkout. The framework lives in a gem
-(via spinelgems vendor or system gem) and provides the binstub.
-
-## 7. Algo class taxonomy
-
-**Five kinds.** Each is a category of Card it produces, plus the
-framework concept it slots into.
-
-| Kind | Produces | Today's example | Framework slot |
+| Layer | Unit | Examples (stdlib) | What practitioners vary |
 | --- | --- | --- | --- |
-| **Arch** | Forward-pass graph | `Toy::SmolLM2`, `ViTTinyConfig` | `toy infer`, `toy describe` |
-| **Trainer** | Loop that updates an Arch's params | `examples/06_train_from_scratch.rb` | `toy train` |
-| **Decoder** | Generation strategy on a realized Arch | KV-cache decode | (used by `toy infer` + `toy serve`) |
-| **Eval** | Reads a checkpoint, emits eval events | `examples/08_lmc.rb` | `toy eval` |
-| **Server** | Wires Arch + Decoder behind a transport | `tep_demo/openai_api_llama.rb` | `toy serve` |
+| **L1 Primitive** | A single named op | `LayerNorm`, `RMSNorm`, `RoPE`, `Softmax`, `MHA`, `GQA`, `SwiGLU`, `PatchEmbed` | Implementation of one op |
+| **L2 Block** | One state-threading unit | `TransformerBlock`, `SSMBlock` (Mamba) | Which primitives, with what cfg |
+| **L3 Arch** | Stack of blocks + embedding + head | `LlamaArch`, `GPT2Arch`, `ViTArch`, `MambaArch` | Block count, per-layer overrides, embedding/head choice |
+| **L4 Recipe** | Arch + Trainer + DataSpec + Decoder + Eval | `FromScratchRecipe`, `LoRARecipe`, `WarmStartRecipe` | Optimizer choice, schedule, dataset |
+| **L5 Experiment** | Vary a Recipe along an axis | Granite-style sweeps, ablations, LMC | The axis itself |
 
-**Status (OPEN):** is this taxonomy right? Two questions:
+Every layer is a file you can read and copy. Layer N composes
+Layer N-1.
 
-- Should **Trainer** and **Decoder** be one kind (both are "loops over
-  an Arch")? Probably not — Trainer mutates weights, Decoder reads
-  them. The mutation distinction is structural enough to keep them
-  separate.
-- Is there a sixth kind for **DatasetLoader**? Currently
-  `lib/toy_corpus_loader.rb` and `prep/pretokenize_fineweb_edu.py`
-  are split between Ruby and Python. A unified "data spec" might be
-  its own kind. Lean: yes, sixth kind = **DataSpec**.
+## 6. The five Kind slots (role)
 
-## 8. Card-as-contract spec (PROPOSED)
-
-The minimum-viable algo class — sketched against today's Cards:
-
-```ruby
-class MyArch < Toy::Arch
-  arch_name "my-arch"
-  config :d_model, :n_layers, :n_heads, :vocab
-
-  # Required: produce a Card for static introspection.
-  def card
-    Toy::Card.new(arch_name, kind: :arch)
-      .add_input("x", "{1..V}^T", "token IDs")
-      .add_hyper("D", cfg.d_model.to_s)
-      .step_bind("e", "embed(x)", "[T, D]")
-      # ... etc.
-  end
-
-  # Required: realize the forward graph against a backend session.
-  # The framework allocates session + ctx_w (for the requested mode).
-  # Returns a cache object exposing the documented public surface:
-  #   sess, t_logits, t_token_ids, t_positions (Arch contract).
-  def realize(cfg, sess, mode)
-    # mode ∈ {:infer, :train}
-  end
-
-  # Optional: declare backend support. Default: framework infers
-  # from operations used.
-  backends [:cpu, :cuda, :metal]
-end
-```
-
-Trainer:
-
-```ruby
-class FromScratch < Toy::Trainer
-  trainer_name "from-scratch"
-
-  def card
-    Toy::Card.new(trainer_name, kind: :trainer)
-      .add_param("optimizer", "AdamW")
-      .add_hyper("lr", cfg.lr.to_s)
-      # ... step pseudocode, dataset spec, schedule
-  end
-
-  # Framework calls this. Event-stream emission (step / drift /
-  # sample) is automatic — wrap of `step` records the event.
-  def step(arch_cache, batch)
-    # one forward + backward + opt_step against arch_cache
-  end
-end
-```
-
-**Card-shape question (OPEN):**
-
-- **Path A:** One `Toy::Card` type with optional fields per kind
-  (current trajectory).
-- **Path B:** `Toy::ArchCard`, `Toy::TrainerCard`, etc. as
-  subclasses — separate field sets, separate renderers.
-
-Recommend **path B** for Spinel-friendliness — one Card type with
-optional fields invites poly-dispatch landmines (see
-[`feedback_spinel_type_inference_landmines.md`](../../.claude/projects/-home-oripekelman-sites-toy-ruby-neural-network/memory/feedback_spinel_type_inference_landmines.md)).
-
-## 9. Composition / interop
-
-Three composition axes, each orthogonal:
-
-1. **Vertical**: Trainer × Arch × Decoder × Eval. Any trainer pairs
-   with any arch matching its dataset spec (vocab, sequence shape).
-   Card declares the shape; framework checks compat before running.
-2. **Horizontal**: An Algo gem ships a coherent set (`toy-diffusion`
-   provides an Arch + a Decoder + an Eval that reference each
-   other). Or à-la-carte. Discovery via `arch_name` /
-   `trainer_name` registration on require.
-3. **Backend**: Set at session-creation time. Arch authors writing
-   in `toy-ggml` primitives get multi-backend automatically. CUDA
-   mirror generation for Spinel-poly workarounds is a build-time
-   step the framework owns (`toy generate-mirror algos/my.rb`).
-
-## 10. Assumptions each kind makes (the seams)
+Each Kind has its own contract — what it receives, owns, emits.
 
 | Kind | Receives | Owns | Emits |
 | --- | --- | --- | --- |
-| Arch | cfg, sess, mode | forward graph, cache object | (none) |
-| Trainer | arch_cache, batch | opt step | `step`, `drift`, `grad`, `sample` events |
-| Decoder | arch_cache, prompt | autoregressive loop, sampling | token IDs |
-| Eval | arch_cache, corpus | metric computation | `eval` events |
-| Server | State, transport | endpoint dispatch | server-side `step`/`eval` events |
+| **Arch** | cfg, sess, mode | forward graph, cache | (none) |
+| **Trainer** | arch_cache, batch | opt step | `step`, `drift`, `grad`, `sample` events |
+| **Decoder** | arch_cache, prompt | autoregressive loop, sampling | token IDs |
+| **Eval** | arch_cache, corpus | metric computation | `eval` events |
+| **Server** | state, transport | endpoint dispatch | server-side events with `phase: "serve"` |
 
-Critically: **none of these depend on toy-ggml directly**. They
-use whatever session was built with — be it a future pure-Ruby
-backend, ggml, or something else. The Card is backend-agnostic
-authored-intent; `.describe` (graph walk) is what actually ran.
+**Sixth kind (PROPOSED): DataSpec.** A unified "this is the
+data" object (tokenizer + corpus loader + sequence shape). Today
+split between Ruby loaders and Python pretokenizers. A first-class
+Kind for it removes the "where does the data come from" footnote
+from every other kind.
+
+None of these depend on toy-ggml directly. They use whatever
+session was built with — be it ggml, future pure-Ruby, or
+something else. Backend is a separate axis (§9).
+
+## 7. The Block contract
+
+Generalized enough to fit transformers AND Mamba/SSM AND future:
+
+```ruby
+class Toy::Block
+  # Explicit shape declarations — used for static compat checking
+  # and for shape annotations in derived Cards.
+  input  :x,         shape: "[T, D]"             # main input
+  state  :s_in,      shape: "[L_max, 2, T, D_h]" # state from previous step
+  output :h,         shape: "[T, D]"             # main output
+  state_out :s_out,  shape: "[L_max, 2, T+1, D_h]"
+
+  # Required: realize against a backend session.
+  # mode ∈ {:infer, :train}.
+  # Returns a cache exposing (h_tensor, s_out_tensor).
+  def realize(cfg, sess, mode); ...; end
+end
+```
+
+State is **the** abstraction that lets a Block be a transformer
+block (state = KV cache), a Mamba block (state = SSM hidden),
+diffusion (state = timestep), etc.
+
+Explicit shapes are not optional. They drive:
+- Compatibility checks before realize (does this Arch fit this
+  Block?).
+- Shape annotations in the derived Card without runtime probing.
+- Error messages that say "expected `[T, D]`, got `[T, D_h]`".
+
+## 8. Composition operators (the API surface)
+
+Cards (at any layer) expose:
+
+| Operator | Effect |
+| --- | --- |
+| `card.with_hyper(k, v)` | Override a scalar hyperparameter |
+| `card.per_layer(field, list)` | Vary a field across the layer axis (the killer one — supports heads-per-layer `[16,16,8,4,2,1]`) |
+| `card.replace_step(name, new_step)` | Swap a named step (e.g., replace attention with ALiBi-attn) |
+| `card.tap(name) { |tensor| ... }` | Runtime hook on a named intermediate |
+| `card.make_trainable(param)` | Convert a constant to a trainable param (e.g., learnable `rope_base`) |
+| `card.replace_primitive(name, impl)` | Swap a registered primitive without subclassing |
+
+These compose Cards declaratively. Researchers write recipes like:
+
+```ruby
+recipe = Toy::Recipes::FromScratch
+  .arch(:llama)
+  .with_hyper(:d_model, 512)
+  .per_layer(:n_heads, [16, 16, 8, 4, 2, 1])     # pyramid-down
+  .replace_primitive(:attention, :mha_with_alibi)
+  .make_trainable(:rope_base)
+```
+
+`per_layer` is first-class. Without it, "vary anything across L"
+forces fork-and-edit. With it, heterogeneous archs are a one-liner.
+
+## 9. Cards are derived, not authored
+
+The biggest concern from review: hand-writing
+`step_update("v^j", "x · W_V^j + b_V^j", "v^j ∈ R^{T×D_h}", "V not rotated")`
+is dangerous. Easy to get wrong; silently drifts from code over
+time; high bar for users.
+
+**Resolution:** users do not write Cards. Users write `realize`.
+The framework derives the Card.
+
+Two derivation paths, both producing the same Card type:
+
+| Path | When | Mechanism |
+| --- | --- | --- |
+| **Runtime probe** (today) | Always available | Probe session with tiny dims → `realize` → walk the resulting compute graph (extend `lib/toy_describe_flow.rb`) → emit structural Card |
+| **Static (Prism lowerer)** (future) | Build time | Walk AST of `realize` → emit Card with conditional/loop branches a runtime probe couldn't see → optionally also emit Spinel-friendly lowered Ruby ([`lowerer-design.md`](lowerer-design.md)) |
+
+A `def card` method becomes **optional** — only used to override
+the derived version with hand-tuned prose (Phuong-Hutter
+pseudocode descriptions, math notation, etc.). The default is
+"derived from realize, rendered as pseudocode by the framework".
+
+This eliminates the drift footgun. Code IS the contract.
+Introspection is automatic.
+
+`make check-cards` (today's Ripper-based drift detector) retires
+when the lowerer ships — because there's only one source of
+truth.
+
+## 10. DRY: require, don't copy
+
+`toy g arch my-llama --based-on llama` does NOT copy stdlib's
+primitives into the user's project. It scaffolds a thin
+`algos/my_llama.rb` that *requires* the primitives from the
+framework and composes them:
+
+```ruby
+# algos/my_llama.rb — scaffolded by toy g arch my-llama --based-on llama
+require "toy/llm/primitives"   # RMSNorm, RoPE, GQA, SwiGLU, ...
+require "toy/llm/blocks"        # TransformerBlock
+
+class MyLlama < Toy::Arch
+  arch_name "my-llama"
+  config :d_model, :n_layers, :n_heads, :vocab
+
+  def realize(cfg, sess, mode)
+    tok = Toy::Primitives::TokenEmbed.new(cfg.vocab, cfg.d_model)
+    blocks = cfg.n_layers.times.map do |li|
+      Toy::Blocks::Transformer.new(cfg,
+        attn: Toy::Primitives::GQA.new(cfg.n_heads, cfg.n_kv),
+        norm: Toy::Primitives::RMSNorm.new(cfg.d_model, cfg.rms_eps),
+        ffn:  Toy::Primitives::SwiGLU.new(cfg.d_model, cfg.d_ff))
+    end
+    # ... wire them up; framework derives the Card from this body
+  end
+end
+```
+
+To override a specific primitive, the user vendors just that
+primitive into their project's `algos/` and registers it. The rest
+keeps requiring from the framework. No bulk copy.
+
+This balances "single file per arch" (the file is yours, readable
+top to bottom) with DRY (shared math doesn't get duplicated).
 
 ## 11. Multi-backend extensibility
 
@@ -369,246 +294,164 @@ not a fundamental constraint.
 Three pragmatic paths for add-on algos:
 
 - **(a) CPU-only first.** Algo ships only the CPU path. User runs
-  `toy generate-mirror algos/my.rb` to get CUDA/Metal mirrors when
-  acceleration matters.
+  `toy generate-mirror algos/my.rb` for CUDA/Metal when needed.
 - **(b) Use only `toy-ggml` primitives.** Those already dispatch
-  through `lib/tinynn{,_cuda,_metal}.rb`. Your algo is automatically
-  multi-backend.
-- **(c) Future:** if Spinel ships polymorphism, mirrors retire
-  entirely. The Card stays valid regardless.
+  through `lib/tinynn{,_cuda,_metal}.rb`. Your algo is
+  automatically multi-backend.
+- **(c) Future:** if Spinel ships polymorphism, mirrors retire.
+  The Card stays valid regardless.
 
-(b) is the recommended path; (a) is the fallback for algos that need
-custom ops; (c) is dependence-on-upstream.
+(b) is the recommended path; (a) is the fallback for algos with
+custom ops; (c) is upstream-dependent.
 
-## 12. Prism lowerer integration (when built)
+## 12. CC-tools-friendly defaults
 
-The lowerer ([`lowerer-design.md`](lowerer-design.md)) integrates as
-a build step over `algos/*.rb`:
+- `toy <cmd> --json` everywhere — structured for CC, pretty for
+  humans by default.
+- `toy --manifest` — JSON manifest of commands + args. CC
+  discovers the surface without parsing `--help`.
+- Exit codes distinguish "your input was wrong" (2) from "I failed
+  to do the thing" (1).
+- Stable error JSON shape.
 
-- `toy build` runs the lowerer → emits Spinel-friendly specialized
-  Ruby → Spinel compiles → native binary.
-- Same walker produces the algo's `Toy::Card` → registration is
-  automatic; no hand-written `card` method needed.
-- Algos opting out (custom Card) write it themselves (current
-  pattern).
+Slash commands / skills are wrappers around the CLI, not separate
+surfaces.
 
-**Relationship to `.describe`:** Card = authored intent (static,
-Prism-derived or hand-written). `.describe` = runtime graph walk
-(actual execution shape). Two views of the same thing. `toy
-describe my_algo` could use either path; framework checks they
-agree.
+## 13. The Tep-generator non-goal
 
-Lowerer is *not* a prerequisite for the framework. Framework first,
-lowerer when justified.
+Tep would also benefit from a generator. Resist extracting
+"spinelgen" base library in v1. Web-shape and ML-shape projects
+diverge sharply. Common base would be ~200 LOC of orthogonal
+plumbing (argv parsing, dispatch, JSON output, manifest). Build
+toy first; if after shipping the plumbing is genuinely identical
+across Toy and Tep, extract then.
 
-## 13. CC-tools-friendly defaults (minimal)
+Don't design *for* extraction. Don't design *against* it either.
 
-For Claude Code adoption, the framework needs:
+## 14. Decisions locked (after review round 1)
 
-- `toy <cmd> --json` everywhere — structured output for CC, pretty
-  for humans.
-- `toy --manifest` — JSON manifest of commands + args +
-  descriptions. Enough for CC to discover the surface without
-  parsing `--help`.
-- Exit codes that distinguish "your input was wrong" (2) from "I
-  failed to do the thing" (1).
-- Stable error JSON shape (no flapping between runs).
+- ✅ **Card layers** — five layers (Primitive / Block / Arch /
+  Recipe / Experiment).
+- ✅ **Kind slots** — five plus DataSpec (proposed sixth).
+- ✅ **Block contract** — `(input, state) → (output, state)` with
+  explicit shape declarations.
+- ✅ **Composition operators** — `with_hyper`, `per_layer`,
+  `replace_step`, `tap`, `make_trainable`, `replace_primitive`.
+- ✅ **Cards are derived, not authored** — `def card` is optional
+  override only.
+- ✅ **DRY for primitives** — `toy g` scaffolds require the
+  framework's primitives; user vendors specific ones to override.
+  No bulk copy.
+- ✅ **rv as recommended install** — `gem install` as fallback;
+  CLI doesn't shell out to `rv`.
 
-Slash commands / skills are *wrappers around the CLI*, not separate
-surfaces. Build the CLI; the wrappers follow.
+## 15. Remaining open questions
 
-## 14. The Tep-generator YAGNI question
+- **Q1.** Tao coordination: `runs/<id>/` layout. Lock before
+  `toy new` ships. Should we file a Tao-side issue?
+- **Q2.** `toy.yml` minimum contents — backend choice, data dir,
+  default run-id template, default algo-discovery path?
+- **Q3.** Naming + discovery: is `arch_name "llama"` enough, or
+  do algo classes need a richer manifest (version, deps, license)?
+- **Q4.** First concrete deliverable: a `toy new` + MVP commands
+  (install / list / fetch / describe) that proves the on-ramp, OR
+  a Card-derivation refactor that proves §9 against `Toy::SmolLM2`
+  + `LlamaArch` before any user-facing surface ships? Lean
+  strongly toward the second — see §17.
+- **Q5.** Framework gem packaging: one `toy` gem (CLI + Core +
+  Stdlib facade) or split (`toy-framework` CLI/Core, `toy` the
+  existing lib-vendoring gem, `toy-llm` etc. as separate gems)?
+- **Q6.** Pin Spinel? Framework gem vendors a known-good revision,
+  or always uses whatever the user has? Lean toward pin
+  (reproducibility matters; landmines retire on a schedule).
+- **Q7.** Should L5 (Experiment) be a toy concept or a Tao one?
+  Tao already runs sweeps / comparisons. If L5 is Tao's, toy's
+  top layer is L4 (Recipe). Probably yes — defer L5 to Tao.
 
-The user raised: Tep would also benefit from a generator. Should we
-extract a "base library for Spinel generators" that toy and tep
-both consume?
+## 16. Sequencing
 
-**Argument for now:** doing it twice and extracting is the honest
-path. Doing it generic from day 1 means designing without knowing
-which abstractions hold.
+**Phase 0** — design lock (this doc + Tao coord on Q1 + Q4
+answered).
 
-**Argument against now:** even if Tep needs a generator, web-shape
-projects and ML-shape projects diverge sharply. Tep's `tep new` would
-scaffold routes/handlers/views (Sinatra-style). Toy's `toy new`
-scaffolds algos/runs/data. The CLI commands barely overlap. A common
-base would mostly be: argv parsing, command dispatch, JSON output,
-skill manifest. That's ~200 LOC of orthogonal-to-the-domain
-plumbing.
+**Phase 1** — derive Cards from realize. Implement the runtime
+probe path in Core; refactor `Toy::SmolLM2` and the seq-mode
+training graph to produce Cards via derivation rather than the
+hand-written `algorithm` methods. **Critically inside toy's repo**,
+not yet in user-facing land. Proves §9 holds.
 
-**Recommendation:** build `toy` first, in CRuby, in toy's own gem.
-If after shipping we notice the dispatch/manifest/output plumbing
-is genuinely the same across Toy and Tep, extract `spinelgen` (or
-similar) and have both consume it. Not before.
+**Phase 2** — refactor stdlib archs into the five-layer hierarchy
+(L1 primitives, L2 blocks, L3 archs). Llama-family first (most
+exercise); ViT-Tiny second (proves generality). Recipes (L4)
+follow naturally.
 
-Explicit non-goal in v1: don't design `toy` such that it
-*precludes* a future extraction. Don't design *for* one either.
+**Phase 3** — Core + CLI MVP. `bin/toy` as CRuby. Five commands:
+`new`, `install`, `list`, `fetch`, `describe`. No `train` /
+`serve` yet — focus on "can a new user get from clone to identified
+model".
 
-## 15. Decisions to lock first
+**Phase 4** — `toy infer`, `toy serve`, `toy train`, `toy eval`.
+Each composes the algo classes from phase 2.
 
-In dependency order:
+**Phase 5** — Generators (`toy g arch`, `toy g recipe`). After
+patterns settle.
 
-1. **Algo categories** — exactly the five (or six with DataSpec)
-   from §7, or a different cut? Locking this defines the contract
-   surface every algo authors against.
+**Phase 6** — Prism lowerer (the static derivation path). When
+the runtime path's limits start hurting.
 
-2. **Card-shape: path A (one type) vs path B (subclasses)?**
-   Recommend **B**. Lock before refactoring Cards.
-
-3. **Project layout coordination with Tao** — `runs/<id>/` shape,
-   events.jsonl location, checkpoint subdir. Lock before `toy new`
-   ships.
-
-4. **What goes in Core, exactly?** Recommend the list in §5.
-
-5. **`toy install` behaviour** — detect+install Spinel. Lock before the first
-   onboarding pass against the new CLI.
-
-## 16. Open questions for review
-
-These are *not yet decided*; flagged for amend during review:
-
-- **Q1.** Is the five-kind taxonomy right, or do we need
-  DataSpec / others?
-- **Q2.** Path A vs B for Cards.
-- **Q3.** What `toy.yml` actually contains. Backend choice, data
-  dir, default run-id template, default model, default
-  algo-discovery path? Minimum viable subset?
-- **Q4.** Coordination with Tao: does Tao read `runs/<id>/` from
-  the toy project, or does Tao have its own dir? Locking this
-  affects the project layout. Should we open a Tao-side issue
-  asking?
-- **Q5.** Is `toy build` (Spinel compile of algos/) the right
-  command, or should compile be implicit on first `toy infer`
-  / `toy train`?
-- **Q6.** Naming + discovery: is `arch_name "llama"` enough? Or do
-  algo classes need a richer manifest (version, deps, license)?
-- **Q7.** First concrete deliverable: a `toy new` + MVP commands
-  (install / list / fetch / infer / describe) that proves the
-  on-ramp, OR a Card-refactor pass that turns `examples/06`,
-  `examples/09`, etc. into proper `Toy::Trainer` subclasses so we
-  *see the abstraction working under real pressure* before users
-  meet it?
-- **Q8.** Do we want the framework gem to vendor a known-good
-  Spinel revision (pin) or always use whatever the user has? Lean
-  toward pin (Spinel landmines are real; reproducibility matters).
-- **Q9.** `rv` adoption depth: document as the *recommended*
-  install path (proposed §5.5), or go further and *require* it for
-  some commands (e.g. `toy install` shells out to
-  `rv` for Ruby management)? Recommend the lighter touch —
-  document `rv tool install toy` as the canonical install, keep
-  `gem install` working, don't shell out to `rv` from the CLI's
-  own code.
-- **Q10.** Gem packaging: one `toy` gem with the CLI binstub +
-  lib, or split `toy-framework` (CLI + Core) from `toy` (lib for
-  vendoring, the current gemspec)? Affects how `toy.gemspec` and
-  `consuming-toy.md` evolve.
-
-## 17. Recommended sequencing
-
-Assuming the above is broadly OK after review:
-
-**Phase 0 — design lock** (this doc + Tao coord + Q1/Q2 answered).
-
-**Phase 1 — refactor existing examples to the contract.** Take
-`examples/06_train_from_scratch.rb`, `examples/09_warm_start_train.rb`,
-`examples/03_finetune_lora.rb`, `tep_demo/openai_api_llama.rb` and
-re-express them as `Toy::Trainer` / `Toy::Server` subclasses against
-the proposed Arch contract. **Critically: this happens in toy's
-repo, not yet in user-facing land.** It proves the abstraction
-holds without committing the user-facing CLI to a shape that won't
-survive pressure.
-
-**Phase 2 — Core + CLI MVP.** `bin/toy` as CRuby. Five commands:
-`new`, `install`, `list`, `fetch`, `describe`. No `train` / `serve`
-yet — focus on "can a new user get from clone to identified model".
-
-**Phase 3 — `toy infer`, `toy serve`, `toy train`, `toy eval`.** Each
-composes the algo classes refactored in phase 1.
-
-**Phase 4 — Generators (`toy g algo`, `toy g trainer`).** Only after
-the patterns settle and we know what the boilerplate-to-replace is.
-
-**Phase 5 — Prism lowerer integration** (if + when patterns from
-phase 4 justify it).
-
-Phases 1–3 don't paint into corners. Phase 4 is where opinions
+Phases 1–4 don't paint into corners. Phase 5 is where opinions
 start to bake; lock the contract first.
 
 ---
 
-## Appendix A — known gotchas to encode in the framework
-
-These are the lived realities the CLI should make invisible:
-
-- The 7-file consolidation (toy#188) shows Spinel
-  module-constant inference can be sketchy. The CLI should never
-  *exec* a Spinel-compiled binary with env vars the binary's
-  module constants depend on — instead, write a config file and
-  pass its path.
-- HF cache symlinks (fixed in d34e00d) — `toy fetch` should always
-  also drop a `data/<basename>.gguf` symlink so the user sees the
-  model land.
-- `make example_inference` failing because libggml in build-metal/
-  needs Metal framework — `toy install` should always build both
-  CPU + accelerator libs on platforms that support them.
-- The default GGUF path mismatch (`smollm2-135m-f32.gguf` doesn't
-  exist after fetching Q8) — `toy infer <name>` always goes through
-  `toy list` resolution; never a hardcoded path.
-
-## Appendix B — what the CLI surface *might* look like (sketch)
+## Appendix — what the CLI surface *might* look like (sketch)
 
 Not locked. Illustrative.
 
 ```sh
-# Install toy itself (one-time, via rv tool install — recommended)
-brew install rv                   # or curl install
-rv tool install toy               # `toy` now on PATH in an isolated env
-# Alternatively:
-#   gem install toy               # works without rv
-#   rvx toy <subcommand>          # ephemeral; no install at all
+# Install toy (rv path recommended)
+brew install rv && rv tool install toy
+# or: gem install toy
 
-# Bootstrap a new project (outside any toy repo)
+# Bootstrap a project (outside any toy repo)
 toy new myproj && cd myproj
 
 # Install the right backend for this host
 toy install                       # auto-detect; or --backend cpu|cuda|metal
 
 # Discover + fetch models
-toy list                          # walks project data/, HF, Ollama, LM Studio caches
+toy list
 toy fetch bartowski/SmolLM2-135M-Instruct-GGUF SmolLM2-135M-Instruct-Q8_0.gguf
 
-# Describe a model (introspection via Card + GGUF metadata)
+# Describe a model (Card + GGUF metadata)
 toy describe SmolLM2-135M-Instruct-Q8_0
 
 # Run inference (CLI resolves model name through `toy list`)
 toy infer SmolLM2-135M-Instruct-Q8_0 --prompt "Once upon" --max-tokens 32
 
-# Serve over HTTP
+# Serve
 toy serve SmolLM2-135M-Instruct-Q8_0 --port 4567
 
-# Train from scratch
-toy train --arch llama --trainer from-scratch \
-          --data data/tinystories.bin --steps 200 \
-          --d-model 64 --n-layers 2 --n-heads 4
+# Scaffold a new arch (DRY — requires framework primitives, doesn't copy)
+toy g arch my-llama --based-on llama
+
+# Train using a Recipe (composes Arch + Trainer + DataSpec)
+toy train from-scratch --arch my-llama --data tinystories \
+  --d-model 512 --heads-per-layer "[16,16,8,4,2,1]"   # per_layer in action
 
 # Evaluate
-toy eval --ckpt runs/abc123/weights/latest --metric lmc \
-         --other runs/def456/weights/latest
+toy eval lmc --ckpt runs/abc/weights/latest --other runs/def/weights/latest
 
 # Inspect events
-toy events runs/abc123                  # tails the events.jsonl
-toy events runs/abc123 --kind sample    # filter
+toy events runs/abc                  # tail
+toy events runs/abc --kind sample    # filter
 
-# Discover the CLI surface (for CC etc.)
-toy --manifest                          # JSON of commands + args
-toy <any-cmd> --json                    # JSON output instead of pretty
+# Discover the surface (for CC etc.)
+toy --manifest                       # JSON of commands + args
+toy <any-cmd> --json                 # JSON output instead of pretty
 ```
-
-All of these compose existing primitives. None require new ML
-research. The framework is the on-ramp; the algos do the work.
 
 ---
 
-_End of draft. Amend in place; mark resolved questions with
-`[ANSWERED]`, contested ones with `[DEBATE]`, and add new ones as
-they surface._
+_Draft v2. Amend in place; mark resolved questions with
+`[ANSWERED]`, contested ones with `[DEBATE]`, add new ones
+as they surface._
