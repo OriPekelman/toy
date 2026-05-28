@@ -33,14 +33,11 @@ not design *for* it.
 
 Two observations are converging.
 
-**(a) The lived Mac fresh-clone walkthrough** (2026-05-28) showed
-that today's surface is too low-level. The user's path was: clone →
-`make` (fails on vendor-tep) → `make help` → `make setup-ggml-metal`
-(builds only metal libs) → `make example_inference` (fails: linker
-can't find libggml from build-metal/) → `make example_list_models`
-(builds; runs; "No GGUF models found" despite a successful
-`prep/fetch_model.sh` of the right repo). Each of those is a
-decision the user shouldn't have been asked to make.
+**(a) On-Boarding** There is currently friction on the on-boarding of
+a new Toy based project. Part of it is installation woes that can 
+be handled by the `make` flow - part of it is a question of 
+responsibilities (for example for a consumer like Tao that
+wants to generate code).
 
 **(b) `Toy::Card` is already an IR.** It exists at
 `lib/toy_card.rb`. SmolLM2 + SmolLM2Block already build Cards from
@@ -49,14 +46,15 @@ their `algorithm` methods. The lowerer roadmap
 generating those Cards from Prism. The IR is real; what's missing
 is the framework layer that consumes it.
 
-Together: there's a CLI shape that eliminates the Mac pains *by
+Together: there's a CLI shape that eliminates the onboerding pains *by
 construction*, and a contract substrate that lets us add commands
 without inheriting opinions.
 
-The Rails-moment lever (DHH's original): convention removes
-decisions the user shouldn't be making, but does so by composing
-explicit primitives, not by hiding magic. We aim for the same — if
-the convention doesn't fit, escape hatches everywhere.
+Conventions (Rails style) remove decisions the user shouldn't be making, 
+but does so by composing explicit primitives, not by hiding magic. We aim
+for the same — if the convention doesn't fit, escape hatches everywhere.
+We are in "explicit territory" without Metaprogramming "advanced magic"
+Code generation is cheap these days: clarity and simplicity aren't.
 
 ## 2. Library vs framework (where toy is, where we want)
 
@@ -76,11 +74,17 @@ that — it adds a *third* place: the **project directory**, which is
 neither examples/ (toy's repo) nor lib/. It's the user's working
 directory.
 
-## 3. The Rails-moment ambition + the risks
+## 3. A Rails-moment ambition + the risks
 
-**Ambition:** Toy could do for Spinel what Rails did for Ruby —
+**Ambition:** We can hope Toy could do for Spinel what Rails did for Ruby —
 provide a credible, batteries-included on-ramp for an ML project,
 with conventions that get out of the way when you outgrow them.
+Currently ML practicioners have to deal with a lot of Python
+ugliness and ceremony and for new-comers it makes understanding
+the actual ML flow difficult. Toy comes from the belief that
+ML is going to be a larger part of our lives - so understanding
+the structure and algorithms is primordial. We also want to avoid
+gate-keeping and ceremony.
 
 **The risks the user already named:**
 
@@ -182,8 +186,6 @@ fall out naturally if toy ships as a gem with a `toy` binstub:
 - Cross-platform consistency (macOS, Linux, Windows). The Mac
   fresh-clone walkthrough wouldn't have needed any platform-specific
   troubleshooting.
-- Coordinates with Spinel-Coop's tooling direction — same team
-  ships Spinel and `rv`, so adopting it isn't a bet on a stranger.
 - CC-friendly: `rv tool install toy && toy --manifest` is two
   commands to get from "nothing" to "agent-discoverable surface".
 
@@ -192,7 +194,8 @@ fall out naturally if toy ships as a gem with a `toy` binstub:
 - Toy is a published gem (`toy-framework` or just `toy` — naming
   TBD; current `toy.gemspec` already exists for the lib-vendoring
   story, may need a sibling for the CLI binstub or a single
-  gemspec with both).
+  gemspec with both). - currently the namespace is taken by
+  https://rubygems.org/gems/toy - but probably could be liberated.
 - The gem includes the `toy` binstub.
 - Stdlib modules (`toy-llm`, `toy-train`, etc.) are separate gems
   the framework gem depends on by default.
@@ -208,7 +211,7 @@ fall out naturally if toy ships as a gem with a `toy` binstub:
 - Toy's gem must keep Ruby-version compat broad (3.2+) since `rv`
   manages whichever version the user lands on.
 
-**Decision (PROPOSED):** ship toy as a published gem with a `toy`
+**Decision:** ship toy as a published gem with a `toy`
 binstub. Document `rv tool install toy` as the recommended
 install path. Keep `gem install toy` working as a no-friction
 fallback. Don't make `rv` a hard requirement.
@@ -457,8 +460,7 @@ In dependency order:
 
 4. **What goes in Core, exactly?** Recommend the list in §5.
 
-5. **`toy install` behaviour** — does it just build ggml? Does it
-   detect+install Spinel if missing? Lock before the first
+5. **`toy install` behaviour** — detect+install Spinel. Lock before the first
    onboarding pass against the new CLI.
 
 ## 16. Open questions for review
