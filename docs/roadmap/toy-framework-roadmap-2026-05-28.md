@@ -29,6 +29,15 @@ Reach a state where:
 This roadmap is the path to that state. Six phases; each has a
 deliverable, an exit gate, and a cleanup arc.
 
+**No backward compatibility constraints.** Zero external users.
+Tep + Tao are the only integrations and we own both. Breaking
+changes land freely; the same arc that breaks them re-adapts
+them. Cleanup arcs are aggressive — code that's superseded
+**deletes in-phase**, not waiting for some "deprecated for safety"
+window. The two parity tools (the temp parity test in P1, the
+runtime/lowerer parity in P6) exist for *correctness*, not for
+compatibility.
+
 ## Critical path summary
 
 ```
@@ -110,11 +119,13 @@ hand-written one, asserted equivalent.
 
 **Cleanup arc:**
 
-- Hand-written `algorithm` methods on `Toy::SmolLM2`,
-  `Toy::SmolLM2Block`, `Toy::GPT2`, etc. are **deprecated** (kept
-  for the parity test; not deleted until P6).
+- Once parity test passes, **delete** all hand-written
+  `algorithm` methods on `Toy::SmolLM2`, `Toy::SmolLM2Block`,
+  `Toy::GPT2`, etc. The parity test was the validation; once
+  validated, the duplicate dies.
+- `make check-cards` retires (no more two sources to keep in sync).
 - `lib/toy_card.rb`'s authoring API (`step_bind`, `step_update`,
-  etc.) becomes "framework-internal" — users never call it.
+  etc.) becomes framework-internal; not exposed to users.
 
 **Estimated effort:** 5-7 days (the parity test surface area is
 the long pole; the derivation itself is ~300 LOC).
@@ -209,13 +220,15 @@ tree. `toy --manifest` lands.
   outside a project should give a clear error, not a stack
   trace).
 
-**Cleanup arc:**
+**Cleanup arc (aggressive, in-phase):**
 
-- `examples/05_list_models.rb` retires (superseded by `toy list`).
-- `prep/fetch_model.sh` either becomes `toy fetch`'s
-  implementation or stays as the script that `toy fetch` shells
-  out to. Decide based on which is simpler at the gate.
-- `make hello` retires (replaced by `toy new myproj` flow).
+- `examples/05_list_models.rb` deletes (superseded by `toy list`).
+- `examples/04_serve_http.rb` deletes (known-broken; not worth
+  porting).
+- `prep/fetch_model.sh` folds into `toy fetch` — pick the
+  cleaner implementation, delete the other.
+- `make hello` deletes (replaced by `toy new myproj` flow).
+- The "FIRST TIME" banner in `make help` deletes.
 
 **Estimated effort:** 5-7 days.
 
@@ -252,22 +265,28 @@ wraps the inner loop).
 - Tao integration may surface gaps in the Card spec. Tao file
   issues; we fix during P4.
 
-**Cleanup arc:**
+**Cleanup arc (aggressive, in-phase):**
 
-- `examples/01`, `06`, `08`, `09` retire to a
-  `docs/scenarios/` directory as canonical references (or get
-  rewritten as `Toy::Recipes::*` definitions that the CLI just
-  invokes).
-- `examples/03_finetune_lora.rb` retires (replaced by `toy
-  train lora ...`).
-- `examples/04_serve_http.rb` deletes (already known-broken;
-  `toy serve` replaces it).
+- `examples/01`, `02`, `03`, `06`, `07`, `08`, `09`,
+  `smoke_*.rb` all delete. Anything worth keeping moves to
+  `docs/scenarios/` as a CLI invocation example. The CLI
+  command and its `--help` are the spec; `examples/` retires
+  as a directory.
 - `tep_demo/openai_api_llama.rb`'s endpoint code moves into
-  `lib/toy/serve/openai/` as a Server class.
-- `tep_demo/openai_api.rb` (the legacy GPT-2 server) either
-  modernises into a registered Server or retires.
+  `lib/toy/serve/openai/` as a Server class. The `tep_demo/`
+  directory deletes (the legacy GPT-2 `openai_api.rb` either
+  moves into `lib/toy/serve/openai/gpt2.rb` or deletes — no
+  Tep-side users to preserve compat for).
+- `Makefile` shrinks substantially. Anything `toy` does, the
+  Makefile drops.
+- **Tep + Tao re-adaptation lands in the same arc.** When
+  `lib/toy/serve/openai/` exists, Tep's openai_api wrapping
+  shifts to consume it. When `toy events` is the canonical
+  event-tailer, Tao's reader updates. Same arc; no separate
+  "migration phase".
 
-**Estimated effort:** 10-12 days.
+**Estimated effort:** 10-12 days (including Tep + Tao
+re-adaptation).
 
 ---
 
@@ -402,40 +421,66 @@ repo. (This is why P1 + P2 happen first.)
 
 ## Cleanup arc — the "on the other side" state
 
-By end of P6 the repo should look like:
+By end of P6 the repo looks like:
 
 ```
 toy/
-├── bin/toy                  # the CLI binstub (CRuby)
-├── lib/toy/                 # framework Core + Stdlib
-│   ├── core/                # CLI dispatch, Card IR, registry, …
-│   ├── llm/                 # toy-llm: primitives, blocks, archs, recipes
-│   ├── ggml/                # toy-ggml: the FFI bridge (lib/tinynn*.rb consolidates here)
-│   ├── train/               # toy-train: the trainer base + standard trainers
-│   ├── serve/               # toy-serve: openai_api server class + transport
-│   └── bench/               # toy-bench: the regression-gate framework
-├── prep/                    # data-side scripts (HF converters, pretokenizers)
-├── docs/                    # current reference + roadmap + archive
-└── (no examples/ — retired or moved to docs/scenarios/)
-└── (no tep_demo/ — folded into lib/toy/serve)
+├── bin/toy                       # the CLI binstub (CRuby)
+│
+├── lib/toy/                      # framework Core + Stdlib, layered
+│   ├── core/                     # CLI dispatch, Card IR, registry, events
+│   │   ├── card.rb · card_renderer.rb · registry.rb · backend.rb · events.rb
+│   │   └── cli/                  # one file per CLI command
+│   ├── ggml/                     # toy-ggml: backend impl on ggml
+│   │   ├── tinynn.rb · tinynn_cuda.rb · tinynn_metal.rb
+│   │   └── …
+│   ├── llm/                      # toy-llm: LLM stdlib
+│   │   ├── primitives/           # L1
+│   │   ├── blocks/               # L2
+│   │   ├── archs/                # L3
+│   │   └── recipes/              # L4
+│   ├── train/                    # toy-train: trainer base + optimizers + schedules
+│   ├── serve/                    # toy-serve
+│   │   └── openai/               # the OpenAI-shape server class + handlers
+│   └── bench/                    # toy-bench: regression-gate framework
+│
+├── tinynn/                       # the C shim — ggml FFI bridge
+├── vendor/                       # ggml + ggml-cuda + ggml-metal builds
+├── prep/                         # data-side scripts (HF converters, pretokenizers)
+├── bench/                        # baselines + check.rb (the gate)
+└── docs/                         # current reference + roadmap + archive
 ```
 
-What deletes between today and P6 end:
+**What deletes between today and P6 end (in-phase, no soft
+deprecation):**
 
-- `examples/*.rb` (retired or moved)
-- `tep_demo/openai_api*.rb` (folded into lib/toy/serve)
-- `tep_demo/_tep_lib/` (already retired)
-- `prep/gen_cuda_mirror.rb` (potentially, if generators subsume)
-- `Makefile` shrinks dramatically (the `toy` CLI replaces most targets)
+| Directory / file | Deletes in | Replacement |
+| --- | --- | --- |
+| `examples/*.rb` (all of them) | P3-P4 | `toy <cmd>` invocations; canonical recipes in `docs/scenarios/` |
+| `tep_demo/openai_api*.rb` | P4 | `lib/toy/serve/openai/` |
+| `tep_demo/_tep_lib/` | already gone | — |
+| `lib/llama_seq_forward_ffi*.rb` (the monolith + mirrors) | P2 | split across `lib/toy/llm/{primitives,blocks,archs}/` |
+| `lib/transformer.rb` (Mat + Toy::*Block classes) | P2 | absorbed into `lib/toy/llm/` or `lib/toy/ggml/` as appropriate |
+| `lib/toy_*.rb` legacy flat files (`toy_card.rb`, `toy_smollm2.rb`, etc.) | P2 | move under `lib/toy/` with the layered structure |
+| Hand-written `algorithm` methods on `Toy::*` | P1 | derived Cards |
+| `prep/gen_cuda_mirror.rb` | P5 (likely) | `toy generate-mirror` subsumes |
+| `make hello`, `make example_*`, most Makefile targets | P3-P4 | `toy` CLI |
+| `make check-cards` | P1 | retires with derivation |
+| `Makefile` overall | P4 | shrinks to ~50 lines (vendor builds + CI hooks) |
 
-What stays (the framework's home):
+**What stays:**
 
-- `lib/toy/` as above
-- `tinynn/` (the C shim — the FFI bridge to ggml is still there)
-- `vendor/` (ggml + ggml-cuda + ggml-metal builds)
-- `prep/` (data-side; not algo-side)
-- `docs/`
+- `bin/toy` (the CLI binstub)
+- `lib/toy/` (the layered framework)
+- `tinynn/` (the C FFI bridge)
+- `vendor/` (ggml + variant builds)
+- `prep/` (data-side scripts; pretokenizers, HF converters)
 - `bench/` (regression baselines + check.rb)
+- `docs/`
+
+**Tep + Tao adapt in the same arcs that break them.** No
+deprecation window; both repos re-build against the new surfaces
+as P4 lands. Three repos, one coordinated cut-over per cleanup.
 
 ---
 

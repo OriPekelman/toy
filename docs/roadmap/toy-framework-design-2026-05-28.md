@@ -120,6 +120,90 @@ want training, `toy-train`. Weird agents wanting only event stream
 user prefers (rbenv, rv, asdf, system Ruby) is fine — the
 framework doesn't care.
 
+## 3.5 Filesystem layout (framework + project)
+
+The layering is real, so it shows in the directory tree. Not
+everything flat in `lib/`. Filesystem structure mirrors the
+contract.
+
+**Framework side** (the `toy` gem):
+
+```
+lib/toy/
+├── core/                    # the always-thin framework
+│   ├── card.rb              # Toy::Card IR
+│   ├── card_renderer.rb     # → pseudocode / mermaid / json
+│   ├── registry.rb          # arch_name / trainer_name registration
+│   ├── cli/                 # one file per CLI command
+│   │   ├── new.rb · install.rb · list.rb · fetch.rb · describe.rb
+│   │   └── infer.rb · serve.rb · train.rb · eval.rb · manifest.rb
+│   ├── backend.rb           # backend interface (not impls)
+│   └── events.rb            # toy/v1 event stream emitter
+│
+├── ggml/                    # toy-ggml: backend impl on ggml
+│   ├── tinynn.rb · tinynn_cuda.rb · tinynn_metal.rb  (consolidated)
+│   └── …
+│
+├── llm/                     # toy-llm: LLM-specific stdlib
+│   ├── primitives/          # L1 — one file per named op
+│   │   ├── rms_norm.rb · rope.rb · softmax.rb
+│   │   ├── mha.rb · gqa.rb · swiglu.rb
+│   │   ├── token_embed.rb · patch_embed.rb · …
+│   ├── blocks/              # L2
+│   │   ├── transformer.rb
+│   │   └── ssm.rb           # for Mamba; proves Block contract generalises
+│   ├── archs/               # L3 — one file per arch
+│   │   ├── llama.rb · gpt2.rb · vit.rb · mamba.rb
+│   └── recipes/             # L4 — one file per training plan
+│       ├── from_scratch.rb · lora.rb · warm_start.rb
+│       └── curriculum.rb
+│
+├── train/                   # toy-train: training infrastructure
+│   ├── trainer.rb · optimizers/ · schedule/
+│
+├── serve/                   # toy-serve: HTTP serving
+│   ├── openai/              # server class + endpoint handlers
+│   └── transport/
+│
+└── bench/                   # toy-bench: regression-gate framework
+    └── check.rb · …
+```
+
+The five stdlib modules (`ggml`, `llm`, `train`, `serve`, `bench`)
+each map to a published gem. `core/` ships in the main `toy`
+gem. Add-on gems (`toy-diffusion`, `toy-music-moe`) follow the
+same shape under their own `lib/<gem>/`.
+
+**Project side** (what `toy new myproj` creates):
+
+```
+myproj/
+├── toy.yml                  # minimal config (run-id template, algo path)
+├── algos/                   # user code — same layering as framework's llm/
+│   ├── primitives/          # custom primitives (rare)
+│   ├── blocks/              # custom blocks (rare)
+│   ├── archs/               # custom architectures (common)
+│   │   └── my_llama.rb
+│   └── recipes/             # training plans / curricula (common)
+│       └── my_curriculum.rb
+├── data/                    # GGUFs (HF-cache symlinks ok), corpora
+├── runs/                    # event streams + checkpoints (Tao reads here)
+│   └── <run_id>/
+│       ├── events.jsonl
+│       └── weights/{step_N.gguf, latest}
+└── bin/toy                  # optional binstub
+```
+
+User project mirrors framework shape. A custom arch lives at the
+same logical path inside the user's project (`algos/archs/`) as a
+stdlib arch lives inside the framework (`lib/toy/llm/archs/`).
+The framework's registry / discovery walks both transparently.
+
+Subdirectories under `algos/` are optional — a project with just
+a single custom arch can drop `algos/my_llama.rb` and the
+framework infers the layer. The convention scales up to deeper
+projects without imposing on small ones.
+
 ## 4. The four Card layers (granularity)
 
 A Card exists at every level. Same IR type; layered composition.
@@ -277,7 +361,7 @@ primitives into the user's project. It scaffolds a thin
 framework and composes them:
 
 ```ruby
-# algos/my_llama.rb — scaffolded by toy g arch my-llama --based-on llama
+# algos/archs/my_llama.rb — scaffolded by toy g arch my-llama --based-on llama
 require "toy/llm/primitives"   # RMSNorm, RoPE, GQA, SwiGLU, ...
 require "toy/llm/blocks"        # TransformerBlock
 
@@ -367,6 +451,7 @@ Don't design *for* extraction. Don't design *against* it either.
 | **Framework gem packaging** | One `toy` gem for now. Split as needed later. |
 | **Pin Spinel** | **NO.** Early days; toy is a test-case for Spinel. Breakage is good signal. Always use whatever Spinel the user has. |
 | **L5 ownership** | Tao. Toy's top layer is L4 (Recipe). |
+| **Backward compatibility** | **NONE required.** Zero external users; Tep + Tao are the only integrations and we own them. Breaking changes land freely; Tep + Tao re-adapt in the same arc that breaks them. Aggressive cleanup over soft deprecation. |
 
 ---
 
