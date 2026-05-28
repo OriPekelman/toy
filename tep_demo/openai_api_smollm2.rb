@@ -14,6 +14,8 @@
 # Endpoints (OpenAI-compatible where it makes sense):
 #
 #   GET  /v1/models                  list available models
+#   POST /v1/embeddings             expects `input: [int, int, ...]`; returns
+#                                    mean-pooled embedding (OpenAI shape)
 #   POST /v1/completions             expects `prompt: [int, int, ...]`
 #                                    returns choices[0].text = ""
 #                                    plus a non-standard
@@ -54,6 +56,7 @@
 require_relative "../lib/toy_smollm2_ffi_kv"
 require_relative "../lib/toy_smollm2_loader"
 require_relative "../vendor/spinel/deps"
+require_relative "embeddings_handler"
 
 # Local helper: parse a JSON value at `start_pos` as an int array.
 # Returns Array<Int> (empty on absent / non-array / non-int-element).
@@ -317,7 +320,8 @@ class IndexHandler < Tep::Handler
     "Run <code>prep/qwen25_tokens.py encode \"...\"</code> to get IDs.</p>" +
     "<p>Endpoints:</p><ul>" +
     "<li><code>POST /v1/completions</code> — body <code>{\"prompt\":[int,...],\"max_tokens\":N}</code></li>" +
-    "<li><code>POST /v1/chat/completions</code> — 501 (tokenizer required)</li>" +
+    "<li><code>POST /v1/chat/completions</code> — 501 (tokenizer required)</li>" 
+    "<li><code>POST /v1/embeddings</code> — body <code>{\"input\":[int,...]}</code> → mean-pooled vector</li>" ++
     "<li><code>GET /v1/models</code></li>" +
     "<li><code>GET /health</code></li>" +
     "</ul></body></html>"
@@ -329,6 +333,7 @@ Tep.get  "/health",               HealthHandler.new
 Tep.get  "/v1/models",            ModelsHandler.new
 Tep.post "/v1/completions",       CompletionsHandler.new
 Tep.post "/v1/chat/completions",  ChatCompletionsHandler.new
+Tep.post "/v1/embeddings",        EmbeddingsHandler.new(STATE, MODEL_NAME)
 
 # CLI: -p PORT -w WORKERS -q (quiet)
 __port = 4567
