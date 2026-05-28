@@ -70,7 +70,35 @@ vendor-tep:
 # Source lives in demos/. We expose short top-level target names
 # (`make train_minimal`, `make distilgpt2_demo_text`) that build into
 # demos/. Run the resulting binaries from the repo root.
+# `make` with no args = `make help`. Previously it ran `all` which
+# triggered vendor-tep and failed on machines without ../tep checked
+# out (DevEx footgun a fresh-clone-on-Mac hit 2026-05-28). `make help`
+# is always safe + discoverable; `make all` still works for the
+# original behaviour.
+.DEFAULT_GOAL := help
+
 all: demos/train demos/smollm2
+
+# `make setup` auto-detects the best backend for this host and runs
+# the right setup-ggml-* variant. macOS → metal; nvcc on PATH → cuda;
+# else CPU. Sentinels in setup-ggml-* make this a no-op if already
+# done. Saves new users from picking the wrong setup target.
+.PHONY: setup
+
+setup:
+	@uname_s="$$(uname -s)"; \
+	if [ "$$uname_s" = "Darwin" ]; then \
+	    echo "[setup] macOS detected → setup-ggml-metal"; \
+	    $(MAKE) setup-ggml-metal; \
+	elif command -v nvcc >/dev/null 2>&1; then \
+	    echo "[setup] nvcc on PATH → setup-ggml-cuda"; \
+	    $(MAKE) setup-ggml-cuda; \
+	else \
+	    echo "[setup] CPU only → setup-ggml"; \
+	    $(MAKE) setup-ggml; \
+	fi; \
+	echo ""; \
+	echo "Done. Next: run 'make help' for the entry points."
 
 # --- help / time-to-joy entry points --------------------------------------
 # `make help` is the discoverable index for someone who just cloned.
@@ -85,9 +113,10 @@ help:
 	@echo "  Full docs: README.md, examples/README.md, docs/INDEX.md."
 	@echo ""
 	@echo "  ONE-TIME SETUP"
-	@echo "    make setup-ggml          clone + build vendored ggml (CPU; ~2 min)"
-	@echo "    make setup-ggml-cuda     same, with CUDA backend"
-	@echo "    make setup-ggml-metal    same, with Metal backend (macOS)"
+	@echo "    make setup               auto-detect platform; pick CUDA/Metal/CPU"
+	@echo "    make setup-ggml          force CPU build (~2 min)"
+	@echo "    make setup-ggml-cuda     force CUDA backend"
+	@echo "    make setup-ggml-metal    force Metal backend (macOS)"
 	@echo ""
 	@echo "  GETTING STARTED — examples/"
 	@echo "    make example_list_models           list GGUFs cached locally / in HF / Ollama / LM Studio"

@@ -344,7 +344,15 @@ module TinyNN
   # container, etc.) from upgrading `Array<:ptr>` -> IntArray cc
   # warnings to errors. The pointer round-trips through mrb_int
   # cleanly on 64-bit; filed upstream as matz/spinel#492.
-  ffi_cflags "-L. -Ltinynn -Lvendor/ggml/build/src -Lvendor/ggml/build/src/ggml-cpu -Wno-int-conversion"
+  # DevEx fix 2026-05-28: also look in build-metal/ and build-cuda/.
+  # The CPU FFI bridge only needs libggml + libggml-cpu, which are
+  # built into ALL three setup-ggml{,-cuda,-metal} variants. On a
+  # Mac that only ran `make setup-ggml-metal`, the build/ subdir
+  # doesn't exist but build-metal/ has libggml + libggml-cpu —
+  # linker scans both, finds the libs, examples link cleanly. The
+  # "search path ... not found" linker warning for the missing
+  # variants is harmless.
+  ffi_cflags "-L. -Ltinynn -Lvendor/ggml/build/src -Lvendor/ggml/build/src/ggml-cpu -Lvendor/ggml/build-metal/src -Lvendor/ggml/build-metal/src/ggml-cpu -Lvendor/ggml/build-cuda/src -Lvendor/ggml/build-cuda/src/ggml-cpu -Wno-int-conversion"
 
   ffi_func :tnn_session_new,      [:int],                   :ptr
   # GH#3 — multi-GPU mode 1. tnn_session_new_on(kind, device) pins
