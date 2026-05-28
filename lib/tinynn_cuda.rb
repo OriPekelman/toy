@@ -93,6 +93,9 @@ module TinyNNCuda
   ffi_cflags "-L. -Ltinynn -Lvendor/ggml/build-cuda/src -Lvendor/ggml/build-cuda/src/ggml-cpu -Lvendor/ggml/build-cuda/src/ggml-cuda -L/usr/local/cuda/lib64 -Wno-int-conversion"
 
   ffi_func :tnn_session_new,      [:int],                   :ptr
+  # GH#3 — multi-GPU mode 1 device-aware session ctor.
+  ffi_func :tnn_session_new_on,   [:int, :int],             :ptr
+  ffi_func :tnn_cuda_get_device_count, [],                  :int
   ffi_func :tnn_session_free,     [:ptr],                   :void
   ffi_func :tnn_session_set_graph_capacity, [:ptr, :int],   :int
   ffi_func :tnn_embed_lookup_to_doubles, [:ptr, :ptr, :int, :float_array, :int], :int

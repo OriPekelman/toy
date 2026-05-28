@@ -46,7 +46,23 @@ extern "C" {
 
 void  *tnn_session_new(int backend_kind);    /* 0 = CPU, 1 = CUDA, 2 = Metal — falls
                                               * back to CPU if the requested GPU
-                                              * backend archive isn't linked in */
+                                              * backend archive isn't linked in.
+                                              * Equivalent to tnn_session_new_on(kind, 0). */
+/* GH#3 — multi-GPU mode 1 (replicated inference). `device` selects
+ * a specific CUDA GPU (0..tnn_cuda_get_device_count()-1); ignored
+ * for CPU/Metal. Each (kind, device) pair gets its own cached
+ * backend/sched engine, so sessions on GPU 0 and GPU 1 don't share
+ * sched state. Returns NULL on out-of-range device or if the
+ * backend archive isn't linked.
+ *
+ * NOTE: scaffolding shipped 2026-05-28; the device > 0 path is
+ * untested on the gx10 single-GPU box. Once a multi-GPU host is
+ * available, validate by spinning up two sessions on different
+ * devices and checking they progress independently. */
+void  *tnn_session_new_on(int backend_kind, int device);
+/* GH#3 — runtime GPU count. Returns 0 if CUDA archive isn't
+ * linked. */
+int    tnn_cuda_get_device_count(void);
 void   tnn_session_free(void *sess);
 
 /* toy#embed-api (#145): single-row dequantize-aware read from a

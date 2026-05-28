@@ -76,21 +76,60 @@ typedef struct {
     const char          *backend_name;
 } tnn_engine;
 
+/* GH#3 — multi-GPU mode 1 (replicated inference). CUDA engine cache
+ * widened from a scalar to a per-device array so each GPU can have
+ * its own backend/sched and sessions can be pinned to a device via
+ * tnn_session_new_on(kind, device). CPU and Metal stay scalar (Metal
+ * = single Apple GPU; CPU = single host).
+ *
+ * Bound is conservative — 8 GPUs on one host is more than any
+ * realistic toy deployment. If you need more, bump and rebuild. */
+#define TNN_MAX_CUDA_DEVICES 8
+
 static tnn_engine *g_engine_cpu   = NULL;
-static tnn_engine *g_engine_cuda  = NULL;
+static tnn_engine *g_engine_cuda[TNN_MAX_CUDA_DEVICES] = { NULL };
 static tnn_engine *g_engine_metal = NULL;
 
-/* backend_kind: 0 = CPU, 1 = CUDA, 2 = Metal.
+/* CUDA backend init with device selection. Weak stub returns NULL;
+ * strong override lives in tinynn_backend_cuda.c. */
+__attribute__((weak))
+ggml_backend_t tnn_backend_cuda_init_internal_on(int device) {
+    (void)device;
+    return NULL;
+}
+
+/* Bind ggml_backend_cuda_get_device_count so Ruby can discover the
+ * GPU count without hard-coding. Weak stub returns 0 on CPU-only
+ * builds; strong override in tinynn_backend_cuda.c calls the real
+ * ggml API. */
+__attribute__((weak))
+int tnn_cuda_get_device_count_internal(void) {
+    return 0;
+}
+
+int tnn_cuda_get_device_count(void) {
+    return tnn_cuda_get_device_count_internal();
+}
+
+/* backend_kind: 0 = CPU, 1 = CUDA, 2 = Metal. device: for CUDA, the
+ * GPU index (0..TNN_MAX_CUDA_DEVICES-1); ignored for CPU and Metal.
  * Falls back to CPU if the requested GPU backend isn't linked into
- * the binary (weak init stub returns NULL). The original name was
- * `prefer_cuda` (binary); kept as an int for source compat — Ruby
- * callers pass the integer directly.
- */
-static tnn_engine *tnn_engine_get(int backend_kind)
+ * the binary (weak init stub returns NULL). */
+static tnn_engine *tnn_engine_get_on(int backend_kind, int device)
 {
     tnn_engine **slot;
     switch (backend_kind) {
-        case 1:  slot = &g_engine_cuda;  break;
+        case 1: {
+            if (device < 0 || device >= TNN_MAX_CUDA_DEVICES) {
+                fprintf(stderr,
+                        "[tnn] tnn_engine_get_on: CUDA device=%d out of range "
+                        "[0,%d). Bump TNN_MAX_CUDA_DEVICES if you really have "
+                        "this many GPUs.\n", device, TNN_MAX_CUDA_DEVICES);
+                return NULL;
+            }
+            slot = &g_engine_cuda[device];
+            break;
+        }
         case 2:  slot = &g_engine_metal; break;
         default: slot = &g_engine_cpu;   break;
     }
@@ -101,7 +140,7 @@ static tnn_engine *tnn_engine_get(int backend_kind)
     if (!e) return NULL;
 
     if (backend_kind == 1) {
-        e->backend = tnn_backend_cuda_init_internal();
+        e->backend = tnn_backend_cuda_init_internal_on(device);
         if (e->backend) e->backend_name = "cuda";
     } else if (backend_kind == 2) {
         e->backend = tnn_backend_metal_init_internal();
@@ -148,15 +187,26 @@ static tnn_engine *tnn_engine_get(int backend_kind)
  * GPU between phases. */
 void tnn_shutdown_engines(void)
 {
-    tnn_engine **slots[] = { &g_engine_cpu, &g_engine_cuda, &g_engine_metal };
-    for (int i = 0; i < 3; ++i) {
-        tnn_engine *e = *slots[i];
+    /* CPU + Metal: single slot each. */
+    tnn_engine **scalar_slots[] = { &g_engine_cpu, &g_engine_metal };
+    for (int i = 0; i < 2; ++i) {
+        tnn_engine *e = *scalar_slots[i];
         if (!e) continue;
         if (e->sched)        ggml_backend_sched_free(e->sched);
         if (e->cpu_backend)  ggml_backend_free(e->cpu_backend);
         if (e->backend)      ggml_backend_free(e->backend);
         free(e);
-        *slots[i] = NULL;
+        *scalar_slots[i] = NULL;
+    }
+    /* CUDA: walk the per-device array (GH#3 multi-GPU mode 1). */
+    for (int dev = 0; dev < TNN_MAX_CUDA_DEVICES; ++dev) {
+        tnn_engine *e = g_engine_cuda[dev];
+        if (!e) continue;
+        if (e->sched)        ggml_backend_sched_free(e->sched);
+        if (e->cpu_backend)  ggml_backend_free(e->cpu_backend);
+        if (e->backend)      ggml_backend_free(e->backend);
+        free(e);
+        g_engine_cuda[dev] = NULL;
     }
 }
 
@@ -218,9 +268,21 @@ void *tnn_pinned_alloc(size_t bytes) { return calloc(1, bytes); }
 __attribute__((weak))
 void  tnn_pinned_free(void *p)       { free(p); }
 
+/* Source-compat: pre-GH#3 single-device entry point. Existing callers
+ * keep working unchanged — CPU sessions and Metal sessions never had
+ * a device choice, and CUDA defaulted to device 0. */
 void *tnn_session_new(int backend_kind)
 {
-    tnn_engine *e = tnn_engine_get(backend_kind);
+    return tnn_session_new_on(backend_kind, 0);
+}
+
+/* GH#3 — multi-GPU device-aware session constructor. For backend_kind
+ * == 1 (CUDA), `device` is the GPU index. For CPU/Metal the device
+ * argument is ignored. Returns NULL if the requested backend isn't
+ * linked or if the device index is out of range. */
+void *tnn_session_new_on(int backend_kind, int device)
+{
+    tnn_engine *e = tnn_engine_get_on(backend_kind, device);
     if (!e) return NULL;
 
     tnn_session *s = (tnn_session *)calloc(1, sizeof(tnn_session));

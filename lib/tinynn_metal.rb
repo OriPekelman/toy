@@ -86,6 +86,10 @@ module TinyNNMetal
   ffi_cflags "-L. -Ltinynn -Lvendor/ggml/build-metal/src -Lvendor/ggml/build-metal/src/ggml-cpu -Lvendor/ggml/build-metal/src/ggml-metal -Wno-int-conversion -framework Foundation -framework Metal -framework MetalKit"
 
   ffi_func :tnn_session_new,      [:int],                   :ptr
+  # GH#3 — multi-GPU mode 1 ctor (no-op variation on Metal: device
+  # arg ignored since Apple boxes have a single GPU).
+  ffi_func :tnn_session_new_on,   [:int, :int],             :ptr
+  ffi_func :tnn_cuda_get_device_count, [],                  :int
   ffi_func :tnn_session_free,     [:ptr],                   :void
   ffi_func :tnn_session_set_graph_capacity, [:ptr, :int],   :int
   ffi_func :tnn_embed_lookup_to_doubles, [:ptr, :ptr, :int, :float_array, :int], :int

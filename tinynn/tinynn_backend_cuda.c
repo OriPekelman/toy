@@ -21,6 +21,28 @@ ggml_backend_t tnn_backend_cuda_init_internal(void)
     return ggml_backend_cuda_init(0);
 }
 
+/* GH#3 — multi-GPU mode 1. Strong override of the weak stub in
+ * tinynn_ggml.c. CPU-only builds keep the weak stub (returns NULL);
+ * CUDA programs link the archive and get device-parametric init.
+ *
+ * Device validation lives upstream in tnn_engine_get_on; we just
+ * pass through. Returns NULL if the device index isn't a valid
+ * CUDA device (ggml_backend_cuda_init will assert/abort on
+ * out-of-range, so callers should check device_count first). */
+ggml_backend_t tnn_backend_cuda_init_internal_on(int device)
+{
+    return ggml_backend_cuda_init(device);
+}
+
+/* GH#3 — bind ggml_backend_cuda_get_device_count for runtime
+ * enumeration. Weak stub in tinynn_ggml.c returns 0; this strong
+ * override returns the real GPU count when the CUDA archive is
+ * linked. */
+int tnn_cuda_get_device_count_internal(void)
+{
+    return ggml_backend_cuda_get_device_count();
+}
+
 /* Phase 2 BYO-pointer on CUDA: wraps an mmap'd region in a
  * ggml_backend_cuda_buffer_from_ptr (vendored patch — see
  * docs/cuda-byo-pointer-design.md). Strong override of the weak

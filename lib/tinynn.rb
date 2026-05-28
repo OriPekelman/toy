@@ -347,6 +347,12 @@ module TinyNN
   ffi_cflags "-L. -Ltinynn -Lvendor/ggml/build/src -Lvendor/ggml/build/src/ggml-cpu -Wno-int-conversion"
 
   ffi_func :tnn_session_new,      [:int],                   :ptr
+  # GH#3 — multi-GPU mode 1. tnn_session_new_on(kind, device) pins
+  # the CUDA session to a specific GPU. tnn_session_new(kind) ==
+  # tnn_session_new_on(kind, 0); device > 0 is untested scaffolding
+  # (no multi-GPU host available at scaffolding time).
+  ffi_func :tnn_session_new_on,   [:int, :int],             :ptr
+  ffi_func :tnn_cuda_get_device_count, [],                  :int
   ffi_func :tnn_session_free,     [:ptr],                   :void
   ffi_func :tnn_session_set_graph_capacity, [:ptr, :int],   :int
   ffi_func :tnn_embed_lookup_to_doubles, [:ptr, :ptr, :int, :float_array, :int], :int
