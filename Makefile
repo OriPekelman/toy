@@ -207,25 +207,15 @@ tep_demo/api: tep_demo/inference_api.rb vendor/spinel/tep/lib/tep.rb lib/transfo
 # OpenAI-compatible API backed by SmolLM2/Qwen-family models via the
 # direct GGUF→FFI loader. Accepts pre-tokenized integer IDs (no
 # server-side tokenizer — keeps the single-binary deployment story).
-# Hard-codes the model GGUF path; copy + edit for other sizes.
-tep_demo/openai_api_smollm2: tep_demo/openai_api_smollm2.rb vendor/spinel/tep/lib/tep.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb tinynn/libtinynn_ggml.a
-	$(SPINEL) tep_demo/openai_api_smollm2.rb -o tep_demo/openai_api_smollm2
-
-# Larger-size variants of the same API. Per-binary GGUF path because
-# Spinel mistypes env-var-driven constants — copy + sed-edit is the
-# convention. Add new sizes by following the pattern (see
-# tep_demo/openai_api_qwen25_1.5b.rb for the canonical 2-line diff).
-OPENAI_QWEN_SOURCES   = $(wildcard tep_demo/openai_api_qwen25_*.rb)
-OPENAI_QWEN_TARGETS   = $(OPENAI_QWEN_SOURCES:.rb=)
-OPENAI_QWEN_DEPS      = vendor/spinel/tep/lib/tep.rb \
-                        lib/toy_smollm2_ffi_kv.rb \
-                        lib/toy_smollm2_loader.rb \
-                        tinynn/libtinynn_ggml.a
-
-openai-qwen-all: $(OPENAI_QWEN_TARGETS)
-
-tep_demo/openai_api_qwen25_%: tep_demo/openai_api_qwen25_%.rb $(OPENAI_QWEN_DEPS)
-	$(SPINEL) $< -o $@
+# Model GGUF path comes from MODEL_PATH env at run time; one binary
+# serves any llama-family GGUF. GH#188 consolidated from 7 near-
+# duplicate per-model sources (openai_api_smollm2.rb + 6 Qwen2.5
+# variants). Run:
+#   make tep_demo/openai_api_llama
+#   MODEL_PATH=data/qwen25-1.5b-native-q8.gguf MODEL_NAME=qwen25-1.5b-q8 \
+#     ./tep_demo/openai_api_llama -p 4567 -w 1
+tep_demo/openai_api_llama: tep_demo/openai_api_llama.rb vendor/spinel/tep/lib/tep.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb tinynn/libtinynn_ggml.a
+	$(SPINEL) tep_demo/openai_api_llama.rb -o tep_demo/openai_api_llama
 
 # --- ggml vendor ------------------------------------------------------------
 # Vendor patches that must land before any ggml build target. See

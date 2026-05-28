@@ -1,4 +1,4 @@
-# tep_demo/openai_api_qwen25_1.5b.rb -- OpenAI-compatible API backed by
+# tep_demo/openai_api_llama.rb -- OpenAI-compatible API backed by
 # Toy::SmolLM2KVFFICache (llama-family architecture: SmolLM2, Qwen2.5,
 # TinyLlama, Llama-3.x with appropriate weights).
 #
@@ -32,22 +32,33 @@
 #   GET  /                           HTML landing page.
 #
 # Build + run (from project root):
-#   ~/sites/spinel/spinel tep_demo/openai_api_smollm2.rb \
-#       -o tep_demo/openai_api_smollm2
-#   ./tep_demo/openai_api_smollm2 -p 4567 -w 1
+#   make tep_demo/openai_api_llama
+#   ./tep_demo/openai_api_llama -p 4567 -w 1                # SmolLM2-135M default
+#   MODEL_PATH=data/qwen25-1.5b-native-q8.gguf \
+#     ./tep_demo/openai_api_llama -p 4567 -w 1              # Qwen-1.5B Q8
 #
 # Smoke test:
 #   # tokenise on the client side:
 #   IDS=$(prep/qwen25_tokens.py encode "Hello, my name is" 2>&1 | tail -1)
 #   curl -X POST http://127.0.0.1:4567/v1/completions \
 #        -H 'Content-Type: application/json' \
-#        -d "{\"model\":\"qwen25-0.5b\",\"prompt\":[$(echo $IDS | tr ' ' ',')],\"max_tokens\":16}"
+#        -d "{\"model\":\"qwen25-1.5b\",\"prompt\":[$(echo $IDS | tr ' ' ',')],\"max_tokens\":16}"
 #   # decode the response ids client-side.
 #
-# Per-model: this binary hard-codes the GGUF path. Spinel mistypes
-# env-var-driven module constants (see "Gotchas" in docs/handoff.md);
-# the workaround is per-binary source files. Want a 7B server? Copy
-# this file, change `GGUF_PATH` and `MODEL_NAME`, rebuild.
+# Model selection (GH#188 — consolidated from 7 near-duplicate
+# servers in v0.6.0-pre-alpha). Env knobs at boot:
+#
+#   MODEL_PATH   path to any llama-family GGUF (default
+#                data/smollm2-135m-native.gguf)
+#   MODEL_NAME   user-facing label in /v1/models + completion
+#                responses. Defaults to GGUF basename minus .gguf.
+#   MAX_T        max context for the KV cache (default 256)
+#
+# Previously each (model, quantization) pair had its own
+# tep_demo/openai_api_<name>.rb because Spinel module-constant
+# inference was sketchy on env-driven values. After landmines
+# #11/#15 retired and the codegen settled, env-driven constants
+# work; one binary serves them all.
 #
 # Built directly with `$(SPINEL)` (no `tep build` translation step) —
 # this file uses the explicit `Tep::Handler` form, same pattern as
@@ -122,9 +133,26 @@ module ApiJson
   end
 end
 
-GGUF_PATH  = "data/qwen25-1.5b-native.gguf"
-MODEL_NAME = "qwen25-1.5b"
-MAX_T      = 256
+# GH#188 — model selection via env. Consolidated from 7 near-duplicate
+# servers (openai_api_smollm2.rb + openai_api_qwen25_{0.5,1.5,3,7}b{,_q8}.rb).
+# Defaults to SmolLM2-135M for a cheap-to-test smoke; override for any
+# llama-family GGUF (SmolLM2, Qwen2.5, TinyLlama, Llama-3.x, …).
+#
+#   MODEL_PATH=data/qwen25-1.5b-native-q8.gguf MODEL_NAME=qwen25-1.5b-q8 \
+#     ./tep_demo/openai_api_llama -p 4567
+#
+# If MODEL_NAME isn't set, it defaults to the basename of MODEL_PATH
+# minus the ".gguf" suffix — close enough for the /v1/models response.
+GGUF_PATH = ENV["MODEL_PATH"] || "data/smollm2-135m-native.gguf"
+MODEL_NAME_ENV = ENV["MODEL_NAME"] || ""
+# Derive a default model name from the GGUF basename when not given.
+# basename: strip everything before the last "/"; then strip ".gguf".
+_mn_last_slash = GGUF_PATH.rindex("/")
+_mn_basename   = _mn_last_slash == nil ? GGUF_PATH : GGUF_PATH[_mn_last_slash + 1..-1]
+_mn_dot_gguf   = _mn_basename.rindex(".gguf")
+_mn_default    = _mn_dot_gguf == nil ? _mn_basename : _mn_basename[0...(_mn_dot_gguf)]
+MODEL_NAME = MODEL_NAME_ENV.length > 0 ? MODEL_NAME_ENV : _mn_default
+MAX_T      = (ENV["MAX_T"] || "256").to_i
 
 # ---- Inference state. Class instance held as a CONSTANT so spinel
 #      emits a typed slot for it (same pattern as inference_api.rb /
@@ -141,29 +169,37 @@ class State
   end
 end
 STATE = State.new
+# GH#188 — explicit re-assignment AFTER STATE.new. State#initialize
+# captures `@model_name = MODEL_NAME` but Spinel's ivar typing
+# appears to evaluate it before the MODEL_NAME ternary resolves
+# (the embeddings handler receives MODEL_NAME via constructor at
+# boot and prints it correctly; STATE.model_name accessed at
+# request time shows empty). Setting it explicitly here works
+# around it cleanly without touching the State class.
+STATE.model_name = MODEL_NAME
 
-puts "[openai_api_qwen25_1.5b] loading config from " + GGUF_PATH
+puts "[openai_api_llama] loading config from " + GGUF_PATH
 STATE.cfg = SmolLM2ConfigLoader.read(GGUF_PATH)
-puts "[openai_api_qwen25_1.5b] vocab=" + STATE.cfg.vocab.to_s +
+puts "[openai_api_llama] vocab=" + STATE.cfg.vocab.to_s +
      " d=" + STATE.cfg.d_model.to_s +
      " L=" + STATE.cfg.n_layers.to_s +
      " n_heads=" + STATE.cfg.n_heads.to_s +
      " n_kv=" + STATE.cfg.n_kv.to_s
 
 flags = GGUFLoad.detect_smollm2_flags(GGUF_PATH)
-puts "[openai_api_qwen25_1.5b] flags: untied=" + flags.untied.to_s +
+puts "[openai_api_llama] flags: untied=" + flags.untied.to_s +
      " qkv_bias=" + flags.qkv_bias.to_s
 
 # Auto-dispatch: native GGUFs get BYO-pointer mmap (Phase 2);
 # legacy GGUFs fall through to realize_for + load_weights copy.
 # Regenerate with `--ggml-native` (and optionally `--quantize q8_0`)
 # to unlock the mmap fast path on this binary.
-puts "[openai_api_qwen25_1.5b] realising (MAX_T=" + MAX_T.to_s + ")..."
+puts "[openai_api_llama] realising (MAX_T=" + MAX_T.to_s + ")..."
 STATE.kv = SmolLM2KVFFICache.new
 STATE.gguf = STATE.kv.realize_and_load_auto(GGUF_PATH, MAX_T, STATE.cfg, flags)
 
 STATE.ready = true
-puts "[openai_api_qwen25_1.5b] ready; serving"
+puts "[openai_api_llama] ready; serving"
 
 # ---- Helpers ----
 
