@@ -1,5 +1,141 @@
 # Changelog
 
+## v0.6.0-pre-alpha — 2026-05-28
+
+**Headline.** Tao's two fresh asks shipped same-day (toy#20 per-token
+drift + corpus freq; toy#21 sample events). `/v1/embeddings` lives on
+all 7 `tep_demo/openai_api_*` servers — mean-pooled OpenAI-shape
+response over the dequantize-aware embed_lookup primitive. GH#13
+(ViT-Tiny) closed — 200-step acceptance verified, events.jsonl
+well-formed. GH#14 (Qwen-2.5-1.5B → 410M transfer) ~85% done; missing
+piece is FineWeb-Edu data, filed as toy#22. GH#3 (multi-GPU mode 1)
+got its C-side scaffolding (device-index plumbing in tnn_session_new);
+runtime testing deferred until multi-GPU hardware. GH#9
+(mixed-precision) API foundation shipped (tnn_cast + mp_matmul); full
+implementation blocked on ggml autograd accepting BF16 srcs +
+completing F16 backward sched paths. Spinel landmines #11 + #15
+(File.open + FFI / non-block writes) fixed upstream; cleanup pass
+removed stale workaround comments + memorialized probes as regression
+tests.
+
+### Tao asks shipped (same-day)
+
+- **Per-token embedding drift + corpus frequency (toy#20).** New
+  `lib/toy_token_drift.rb` module; `TOY_TOKEN_DRIFT=N` env knob in
+  06_train_from_scratch emits one `drift` event per vocab row per
+  N macro-steps with `cos_to_init`, `l2_to_init`, and `freq`
+  (training-corpus occurrence). Tao renders this as the freq↔drift
+  figure (granite_transfer Pearson r = -0.835 headline).
+- **Sample generation events (toy#21).** New `lib/toy_sample.rb`
+  module; `TOY_SAMPLES=N` decodes N completions from training-
+  sequence prompts at run end and emits toy/v1 `sample` events
+  `{prompt, text, step}`. Uses `tnn_compute` (forward graph only)
+  so weights are not mutated by sample emission. Cheap-when-off.
+- **`/v1/embeddings` on every openai_api server** (closes the
+  toy-side of Tao's embedding ask). `tep_demo/embeddings_handler.rb`
+  (shared) + route registration in all 7 servers
+  (`openai_api_smollm2`, `openai_api_qwen25_{0.5,1.5,3,7}b` × {f32,
+  q8}). OpenAI-shape response; mean-pool over input token IDs;
+  dequantize-aware (works on F32 + Q8 + Q4 weight tables). Smoke
+  on SmolLM2-135M returns 576-dim vector; on Qwen-0.5B returns
+  896-dim.
+
+### Training maturity follow-ups
+
+- **GH#7 micro-batching** + **GH#8 LR-scaled grad accumulation**
+  shipped (commits 87800fa, 0ae99ac — full details below in
+  v0.5.0-pre-alpha). 06_train_from_scratch.rb gains BATCH +
+  GRAD_ACCUM env knobs; defaults bit-identical to pre-GH#7.
+- **bench BATCH knob** in `bench/lora_step.rb` — emits per-batch
+  metrics (`lora_step_b1_ms`, `lora_step_b4_ms`, etc.). Track how
+  step time scales with effective batch. B=4 baseline at SmolLM2-
+  135M / gx10 CPU: 104.42 ms (vs 58.13 at B=1 → 1.80× wall for 4×
+  effective → 2.22× throughput).
+
+### GitHub issue triage / closures
+
+- **GH#13 ViT-Tiny — closed.** Primary acceptance verified:
+  `examples/07_train_vit_tiny.rb` runs 200 steps, emits 202-line
+  events.jsonl in toy/v1 schema, final loss 5.7e-4 ≪ initial 2.30.
+  Scope items (arch, timm loader, training driver, image loader)
+  all in main. The "E1 reproduces granite_transfer #28" follow-up
+  is downstream Tao work.
+- **GH#14 Qwen-2.5-1.5B → 410M transfer — ~85% done.**
+  Trainer + projection lens (E2.3) + warm-start donor load
+  (`examples/09_warm_start_train.rb`) all working. Final `eval`
+  event added at run end (`name:"final"`, matches issue's
+  acceptance schema). Qwen-410M invocation pattern documented in
+  09's header. Smoke verified loading 233M-float donor embed from
+  `data/qwen25-1.5b-f32.gguf`. **Remaining gap is data, not code:**
+  FineWeb-Edu pretokenizer filed as toy#22. Once #22 lands +
+  TOKENS knob added, a full 10M-token run on the GB10 would close
+  the acceptance loop.
+- **GH#10 activation recomputation — closed as blocked on
+  upstream ggml.** Investigation found no recompute/checkpoint API
+  in current ggml (no matches for "checkpoint", "recompute",
+  "rematerial" anywhere in `vendor/ggml/`). Issue body's premise
+  ("ggml supports this via sched-recompute") doesn't map to a real
+  ggml feature. Real implementation paths (vendor patch or
+  two-pass approach) are much bigger than the "Ruby-side change to
+  realize_for_random_init" the issue suggested. Revisit when toy
+  hits the activation-memory wall (1B+ at long context).
+- **GH#9 mixed-precision — API foundation shipped; full impl
+  blocked on ggml.** `tnn_cast` FFI binding + `mp_matmul` helper
+  in `LlamaSeqForwardFFICache` + `WEIGHT_DTYPE` env in
+  06_train_from_scratch. At WEIGHT_DTYPE=0 (default, F32):
+  bit-identical to pre-GH#9. At WEIGHT_DTYPE=30 (BF16): fails at
+  `ggml.c:7052` (autograd builder rejects BF16 src). At
+  WEIGHT_DTYPE=1 (F16): autograd accepts but sched can't place a
+  backward op (`ggml-backend.cpp:1242`) on either CPU or CUDA.
+  Both walls are upstream-ggml. Forward-only F16 cast works
+  (probe verified).
+- **GH#3 multi-GPU mode 1 — C-side scaffolding shipped.**
+  `tnn_session_new_on(kind, device)` + `tnn_cuda_get_device_count`
+  C entry points; engine cache widened from a scalar to a
+  per-device array (`g_engine_cuda[TNN_MAX_CUDA_DEVICES=8]`). The
+  device > 0 path is untested at runtime (gx10 = 1 GPU); the
+  device = 0 path (= legacy behavior) is bit-equivalent (CUDA
+  example_train_from_scratch_cuda step-1 CE unchanged at
+  6.490198612213135).
+- **GH#22 (new) — FineWeb-Edu pretokenizer.** Filed; blocks
+  GH#14's full acceptance run. ~150 LOC Python: streams
+  FineWeb-Edu via uv datasets, tokenizes via Qwen-2.5
+  tokenizer, packs i32 binary matching `lib/toy_corpus_loader.rb`.
+- **Status comments on the keep-open issues** (#3, #4, #5, #6,
+  #14) — each got a concise current-state note. #5 retains its
+  "no action expected" framing; #6 is cross-repo (Tep streaming
+  handler); #4/#5 blocked on multi-GPU hardware.
+
+### Spinel landmines retired
+
+- **#11 — block-form `File.open(r)` + FFI session-init crash —
+  FIXED.** Verified on Spinel a03bb49 (commit 39438d8
+  "non-block File.open with sp_File handle" modernized File.open
+  codegen end-to-end). Probe at `tinynn/probe_file_block_ffi.rb`
+  passes. Existing `File.read(path).split("\\n")` sites stay
+  because they're the natural primitive; workaround comments
+  removed.
+- **#15 — non-block `File.open(path, "w")` silent no-op —
+  FIXED** (same commit). Probe at `tinynn/probe_file_nonblock.rb`
+  writes "hello from non-block File.open" + reads back; verified
+  on disk.
+- **#9, #4, #13 — re-verified active.** Probes
+  (`probe_hash_missing_key`, `probe_default_args`,
+  `probe_nested_mixed_array`) kept as regression checks for
+  future Spinel updates. Hash[missing_key]=0 still returns 0;
+  cross-module default-args poison can't be reproduced in
+  single-file probes but treat as active; nested-mixed-array
+  startup-segfault still active with the same
+  `incompatible types ... 'sp_IntArray *' from type 'sp_RbVal'`
+  diagnostic.
+
+### Bug fixes
+
+- `tep_demo/openai_api_smollm2.rb` defaults restored to
+  SmolLM2-135M (file was serving Qwen-0.5B due to a
+  copy-paste artifact — `GGUF_PATH` and `MODEL_NAME` pointed at
+  qwen25-0.5b despite the filename).
+
 ## v0.5.0-pre-alpha — 2026-05-27
 
 **Headline.** Tao Tier-3 fully unblocked: trustworthy drift/grad, LMC,

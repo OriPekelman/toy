@@ -122,8 +122,8 @@ module ApiJson
   end
 end
 
-GGUF_PATH  = "data/qwen25-0.5b-native.gguf"
-MODEL_NAME = "qwen25-0.5b"
+GGUF_PATH  = "data/smollm2-135m-native.gguf"
+MODEL_NAME = "smollm2-135m"
 MAX_T      = 256
 
 # ---- Inference state. Class instance held as a CONSTANT so spinel
