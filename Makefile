@@ -118,9 +118,18 @@ help:
 	@echo "    make setup-ggml-cuda     force CUDA backend"
 	@echo "    make setup-ggml-metal    force Metal backend (macOS)"
 	@echo ""
+	@if [ "$$(uname -s)" = "Darwin" ]; then \
+	    echo "  ⚡ macOS detected — for GPU acceleration use the _metal example"; \
+	    echo "      variants below (they link against libggml-metal + KV kernels)."; \
+	    echo "      The plain example_inference still works but is CPU-only."; \
+	    echo ""; \
+	fi
 	@echo "  GETTING STARTED — examples/"
 	@echo "    make example_list_models           list GGUFs cached locally / in HF / Ollama / LM Studio"
-	@echo "    make example_inference             load a GGUF, generate 16 tokens"
+	@echo "    make example_inference             load a GGUF, generate 16 tokens (CPU)"
+	@if [ "$$(uname -s)" = "Darwin" ]; then \
+	    echo "    make example_inference_metal       same, Metal-accelerated (macOS) — use this on Mac"; \
+	fi
 	@echo "    make example_train                 tiny GPT trained from scratch on TinyStories"
 	@echo "    make example_train_from_scratch    modern Llama-shape from-scratch trainer (CPU + CUDA)"
 	@echo "    make example_finetune              LoRA / QLoRA fine-tune on a GGUF base"
@@ -132,6 +141,12 @@ help:
 	@echo "    make tep_demo/openai_api_llama     OpenAI-compatible server for any llama-family GGUF"
 	@echo "                                       MODEL_PATH=… MODEL_NAME=… ./tep_demo/openai_api_llama -p 4567"
 	@echo "    make tep_demo/hello                minimal Tep HTTP smoke"
+	@if [ "$$(uname -s)" = "Darwin" ]; then \
+	    echo ""; \
+	    echo "    Note: tep_demo/openai_api_llama uses the CPU FFI bridge — Metal serving"; \
+	    echo "    is a separate codepath (lib/tinynn_metal.rb) not yet wired into the HTTP"; \
+	    echo "    server. CPU serving works fine on Mac, just won't hit the Metal kernels."; \
+	fi
 	@echo ""
 	@echo "  BENCH + CHECKS"
 	@echo "    make bench                         routine perf regression gate (vs bench/baselines.csv)"
