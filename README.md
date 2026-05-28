@@ -118,10 +118,26 @@ flavors auto-detected: byte-level BPE, SPM-BPE, SPM-Unigram. Without
 an embedded tokenizer the example falls back to a fixed token-ID
 prompt and prints raw IDs.
 
-[`examples/`](examples/README.md) has five focused entry points
-(inference / train-from-scratch / LoRA fine-tune / HTTP serve /
-model discovery), each one Ruby file under ~100 lines compiled to
-a single native binary.
+**Serve as an HTTP API:**
+
+```sh
+make tep_demo/openai_api_llama
+./tep_demo/openai_api_llama -p 4567               # serves SmolLM2-135M (default)
+MODEL_PATH=data/qwen25-1.5b-native-q8.gguf \
+  ./tep_demo/openai_api_llama -p 4567             # any llama-family GGUF
+
+curl -X POST http://127.0.0.1:4567/v1/embeddings \
+  -H 'Content-Type: application/json' -d '{"input":[1,2,3]}'
+```
+
+OpenAI-shape `/v1/{models,completions,embeddings}` over the same
+KV-cache inference path. See [`tep_demo/`](tep_demo/README.md).
+
+[`examples/`](examples/README.md) has the focused entry points
+(inference, train-from-scratch, LoRA fine-tune, model discovery,
+ViT-Tiny, warm-start, LMC, …). Each one is a single Ruby file
+compiled to a native binary; `make help` lists the top targets
+with a one-line description each.
 
 **CUDA:** `make setup-ggml-cuda` then `*_cuda` example variants.
 

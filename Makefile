@@ -72,6 +72,50 @@ vendor-tep:
 # demos/. Run the resulting binaries from the repo root.
 all: demos/train demos/smollm2
 
+# --- help / time-to-joy entry points --------------------------------------
+# `make help` is the discoverable index for someone who just cloned.
+# Keep it short — pointers to the heavier docs (examples/README.md,
+# tep_demo/README.md, docs/INDEX.md) for the details.
+
+.PHONY: help
+
+help:
+	@echo ""
+	@echo "  toy — a transformer LM in Ruby, Spinel-compiled."
+	@echo "  Full docs: README.md, examples/README.md, docs/INDEX.md."
+	@echo ""
+	@echo "  ONE-TIME SETUP"
+	@echo "    make setup-ggml          clone + build vendored ggml (CPU; ~2 min)"
+	@echo "    make setup-ggml-cuda     same, with CUDA backend"
+	@echo "    make setup-ggml-metal    same, with Metal backend (macOS)"
+	@echo ""
+	@echo "  GETTING STARTED — examples/"
+	@echo "    make example_list_models           list GGUFs cached locally / in HF / Ollama / LM Studio"
+	@echo "    make example_inference             load a GGUF, generate 16 tokens"
+	@echo "    make example_train                 tiny GPT trained from scratch on TinyStories"
+	@echo "    make example_train_from_scratch    modern Llama-shape from-scratch trainer (CPU + CUDA)"
+	@echo "    make example_finetune              LoRA / QLoRA fine-tune on a GGUF base"
+	@echo "    make example_train_vit_tiny        ViT-Tiny image-classifier + warm-start from timm"
+	@echo "    make example_warm_start_train      Qwen-style warm-start trainer with projection lens"
+	@echo "    make example_lmc                   linear-mode-connectivity blend of two checkpoints"
+	@echo ""
+	@echo "  HTTP SERVING — tep_demo/"
+	@echo "    make tep_demo/openai_api_llama     OpenAI-compatible server for any llama-family GGUF"
+	@echo "                                       MODEL_PATH=… MODEL_NAME=… ./tep_demo/openai_api_llama -p 4567"
+	@echo "    make tep_demo/hello                minimal Tep HTTP smoke"
+	@echo ""
+	@echo "  BENCH + CHECKS"
+	@echo "    make bench                         routine perf regression gate (vs bench/baselines.csv)"
+	@echo "    make bench-vs-pytorch              same workloads, gated vs PyTorch (ratio, not absolute ms)"
+	@echo "    make coverage                      regenerate the ggml-op coverage matrix"
+	@echo "    make coverage-check                CI form (no diff means in sync)"
+	@echo "    make test                          all tinynn FFI smoke binaries"
+	@echo ""
+	@echo "  COMMON MAKE FLAGS"
+	@echo "    DEVICE=cuda                        on example_train_from_scratch / example_finetune_cuda"
+	@echo "    GGUF=path/to/model.gguf            on example_inference / example_finetune"
+	@echo ""
+
 # --- examples/ getting-started entry points --------------------------------
 # Compact, one-file demos covering the main use cases. See
 # examples/README.md.
