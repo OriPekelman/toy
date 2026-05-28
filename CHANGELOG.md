@@ -129,12 +129,47 @@ tests.
   `incompatible types ... 'sp_IntArray *' from type 'sp_RbVal'`
   diagnostic.
 
+### Tep server consolidation (toy#188)
+
+- **7 → 1 server.** Replaced the seven near-duplicate
+  `tep_demo/openai_api_{smollm2,qwen25_{0.5,1.5,3,7}b{,_q8}}.rb`
+  files with one env-driven `tep_demo/openai_api_llama.rb`.
+  `MODEL_PATH` + `MODEL_NAME` env at boot select any
+  llama-family GGUF; `MODEL_NAME` auto-derives from the GGUF
+  basename when not given. Net: -2128 LOC, +63 LOC.
+- The 7 sources existed because Spinel module-constant
+  inference was sketchy on env-driven values when the
+  convention was set. With landmines #11/#15 retired this
+  release, env-driven constants work cleanly.
+- The original `tep_demo/openai_api.rb` (GPT-2 / DistilGPT2)
+  stays as the legacy server with the server-side tokenizer.
+
+### DevEx + docs pass
+
+- **README** version bumped to v0.6.0-pre-alpha.
+- **examples/README.md** table now covers 06-09 (modern
+  from-scratch trainer, ViT-Tiny, LMC, warm-start) and the
+  smoke_*.rb wire tests. Serving section points at
+  `tep_demo/openai_api_llama` as the canonical HTTP path.
+- **tep_demo/README.md** updated for the 4-server reality;
+  `openai_api_llama` quick-start added with all the env knobs
+  + `/v1/embeddings` + `/v1/completions` curl recipes.
+- **events-schema.md** now documents the `sample` event
+  (toy#21) and the per-token `drift` variant (token_id + freq,
+  toy#20) — both producer + consumer notes.
+- **examples/04_serve_http.rb** status note refreshed: the
+  original startup segfault is fixed, but `Tep.run!` exits
+  immediately because the file still uses the pre-spinelgems
+  vendored Tep. The header now points users at
+  `tep_demo/openai_api_llama` as the working serving binary.
+
 ### Bug fixes
 
 - `tep_demo/openai_api_smollm2.rb` defaults restored to
   SmolLM2-135M (file was serving Qwen-0.5B due to a
   copy-paste artifact — `GGUF_PATH` and `MODEL_NAME` pointed at
-  qwen25-0.5b despite the filename).
+  qwen25-0.5b despite the filename). File then renamed to
+  `openai_api_llama.rb` as part of the toy#188 consolidation.
 
 ## v0.5.0-pre-alpha — 2026-05-27
 

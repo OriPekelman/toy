@@ -301,6 +301,54 @@ Distance of a parameter from its init value. Emitted on a schedule
 0.0 = orthogonal). `l2_to_init` is the L2 of the delta. Together they
 give "how far has this weight moved, and in what direction."
 
+#### `drift` with `token_id` + `freq` (per-token, toy#20)
+
+Per-vocab-row drift on the embedding table — one event per
+vocab row per tick. Adds `token_id` (the row index) and `freq`
+(training-corpus occurrence count from a one-time histogram).
+
+```json
+{
+  "kind": "drift",
+  "phase": "train",
+  "t": 12.4,
+  "step": 100,
+  "param": "token_embd.weight",
+  "token_id": 7,
+  "cos_to_init": 0.94,
+  "l2_to_init": 0.080,
+  "freq": 153
+}
+```
+
+Producer: `lib/toy_token_drift.rb` via `TOY_TOKEN_DRIFT=N` in
+`examples/06_train_from_scratch.rb`. Consumer: Tao's compare
+renders the freq↔drift correlation figure (granite_transfer
+Pearson r = -0.835 headline).
+
+### `sample` (toy#21)
+
+A decoded completion from a fixed prompt — gives report
+consumers a sense of *what the model produces* alongside
+loss/ppl. Typically emitted at run end (and optionally on an
+eval schedule).
+
+```json
+{
+  "kind": "sample",
+  "phase": "decode",
+  "t": 506.1,
+  "step": 200,
+  "prompt": "Once upon",
+  "text": "Once upon a time there was a cat."
+}
+```
+
+`prompt` and `text` are already-detokenized strings. Producer:
+`lib/toy_sample.rb` via `TOY_SAMPLES=N` in
+`examples/06_train_from_scratch.rb`. Consumer: Tao's
+`report --html` renders an "Example generations" section.
+
 ### `eval`
 
 A held-out evaluation result. Phase changes to `"eval"`. May appear

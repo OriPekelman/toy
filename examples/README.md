@@ -12,8 +12,13 @@ runtime to install — `make`, run.
 | `02_train_custom_gpt.rb` | Train a tiny GPT from scratch on TinyStories. Bumping EPOCHS makes a model that writes English. | ~3 min default |
 | `03_finetune_lora.rb`    | LoRA / **QLoRA** fine-tune via the sequence-mode forward graph (CPU). Needs a native-layout GGUF — see prep step below. | ~30 s |
 | `03_finetune_lora_cuda.rb` | CUDA mirror of the above. F32 by default; pass `Q8=1` for QLoRA (Q8-stays-Q8 path via `realize_for_q8_copy`). | ~10 s on GB10 |
-| `04_serve_http.rb`       | HTTP API reference shape. **Currently segfaults at startup** — Spinel codegen bug (matz/spinel#647), see file header. | — |
+| `04_serve_http.rb`       | HTTP API reference shape. Boots cleanly but `Tep.run!` exits immediately (uses old vendored Tep); for a working serving binary see [`tep_demo/openai_api_llama`](../tep_demo/README.md). | — |
 | `05_list_models.rb`      | Walk HF / Ollama / LM Studio / `./data` / `$TOY_MODEL_DIR` caches; print every GGUF with family + params + size. | < 1 s |
+| `06_train_from_scratch.rb` | **Modern from-scratch trainer.** Llama-shape (RMSNorm + GQA + RoPE + SwiGLU); CPU + CUDA (DEVICE=cuda). Emits toy/v1 events. BATCH + GRAD_ACCUM + WEIGHT_DTYPE knobs. Tao's experiment harness rides this. | seconds–minutes |
+| `07_train_vit_tiny.rb`   | ViT-Tiny image classifier with timm IN-21k AugReg donor warm-start. Patch embed + class token + 12 blocks + MLP head; CIFAR-shape smoke. | ~30 s for 200 steps |
+| `08_lmc.rb`              | Linear Mode Connectivity blend of two from-scratch checkpoints over an α grid; emits one `eval` per α. Tao's `Analyze.lmc` consumes these. | seconds |
+| `09_warm_start_train.rb` | Warm-start trainer w/ donor `token_embd` + optional PCA-init projection lens (Qwen-2.5-1.5B → 410M-shape transfer; see file header for the full invocation). | seconds–hours |
+| `smoke_*.rb`             | Single-purpose wire smokes: corpus loader, decode logprobs, embed API, image loader, projection lens, ckpt reload, ViT-Tiny. Each verifies one primitive end-to-end. | < 5 s each |
 
 ## First run — find or fetch a model
 
@@ -139,27 +144,35 @@ training afterwards. Pass `Q8=1` to the CUDA example to switch paths.
 
 ## Serving
 
-> **Status:** working on Spinel master (commit `0adca86` and later)
-> after [matz/spinel#647](https://github.com/matz/spinel/issues/647)
-> landed. Token-IDs in / token-IDs out by design; for text I/O wire
-> in `lib/tokenizer.rb` server-side (same path
-> `examples/01_inference.rb` uses, or see `tep_demo/openai_api_*`).
-
-The intended shape:
+The working HTTP serving path is **`tep_demo/openai_api_llama`** —
+one consolidated env-driven binary that serves any llama-family
+GGUF (SmolLM2, Qwen2.5, TinyLlama, Llama-3.x …) with an
+OpenAI-compatible surface (`/v1/models`, `/v1/completions`,
+`/v1/embeddings`). See [`tep_demo/`](../tep_demo/README.md).
 
 ```sh
-make example_serve
-./examples/example_serve &
-curl -s localhost:4567/generate \
+make tep_demo/openai_api_llama
+./tep_demo/openai_api_llama -p 4567                    # SmolLM2-135M default
+MODEL_PATH=data/qwen25-1.5b-native-q8.gguf \
+  ./tep_demo/openai_api_llama -p 4567 -w 1             # any llama-family GGUF
+
+curl -X POST http://127.0.0.1:4567/v1/completions \
   -H 'Content-Type: application/json' \
-  -d '{"prompt":[12092,4845,253,1429],"n":16}'
+  -d '{"prompt":[12092,4845,253,1429],"max_tokens":16}'
+
+curl -X POST http://127.0.0.1:4567/v1/embeddings \
+  -H 'Content-Type: application/json' \
+  -d '{"input":[1,2,3]}'
 ```
 
 Token-IDs in, token-IDs out — tokenizer work belongs client-side
-(or wire `lib/tokenizer.rb` in if needed). One binary, no runtime.
+(`prep/qwen25_tokens.py encode "..."`). One binary, no runtime.
 
-For the full OpenAI-compatible API (chat completions / streaming /
-multi-model registry) see [`tep_demo/`](../tep_demo/README.md).
+`04_serve_http.rb` is the older minimal-shape demo; it builds
+clean but `Tep.run!` returns immediately because it uses the
+pre-spinelgems vendored Tep. Wiring it to the modern vendor
+path is a small follow-up; `openai_api_llama` is the canonical
+serving binary today.
 
 ## Inspecting + analysing trained models
 

@@ -16,10 +16,17 @@
 # client-side (or wire in lib/tokenizer.rb if you need it
 # server-side). Same choice tep_demo/openai_api_smollm2 makes.
 #
-# Status (2026-05-23): the startup segfault on `CFG_VOCAB = cfg.vocab`
-# was fixed by Spinel commit 0adca86 ("defer top-level CONST init
-# when RHS reads a main local", matz/spinel#647). Builds and runs
-# end-to-end on Spinel master at d59926a or later.
+# Status (2026-05-28): the original startup segfault on
+# `CFG_VOCAB = cfg.vocab` was fixed by Spinel commit 0adca86. The
+# binary now boots cleanly ("loaded …, serving on :PORT").
+# **But:** `Tep.run!` returns immediately instead of blocking on
+# accept — this example still uses the OLD vendored Tep at
+# `tep_demo/_tep_lib/tep`, not the spinelgems-vendored
+# `vendor/spinel/deps` path. For a working HTTP serving binary
+# today, use `tep_demo/openai_api_llama` instead (env-driven
+# MODEL_PATH; serves /v1/completions + /v1/embeddings + /v1/models
+# OpenAI-compatible). Switching 04 to the modern vendor path is a
+# small follow-up.
 
 require_relative "../tep_demo/_tep_lib/tep"
 require_relative "../lib/toy"
