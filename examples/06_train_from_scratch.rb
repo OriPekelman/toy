@@ -9,10 +9,12 @@
 #   D_MODEL=128 N_LAYERS=4 STEPS=200 ./examples/example_train_from_scratch
 #
 # Implementation notes:
-#   - Reads sequences via File.read + split. The File.open-with-block
-#     form interacts badly with FFI session-init under Spinel d59926a
-#     on gx10 (segfaults during realize_for_random_init). File.read
-#     sidesteps it.
+#   - Reads sequences via File.read + split. The historical Spinel
+#     d59926a/568cf0d crash where File.open-with-block segfaulted
+#     during realize_for_random_init is FIXED as of Spinel a03bb49
+#     (probe at tinynn/probe_file_block_ffi.rb). File.read stays
+#     because it's the natural primitive for "the whole file as
+#     one string", not because the block form is broken.
 #   - VOCAB_SIZE is hardcoded at 627 (TinyStories). Reading
 #     data/ts_vocab.txt would pull Array<String> into main scope and
 #     poison Spinel's polymorphic Array<T> dispatch table inside

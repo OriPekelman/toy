@@ -71,9 +71,11 @@ module ToySample
   end
 
   # Read a vocab file (one token per line; line index = token ID).
-  # File.read avoids the File.open-with-block + FFI-init interaction
-  # noted in 06_train_from_scratch.rb. Pure while-loop walk over the
-  # split lines, no .each — keeps Spinel codegen happy.
+  # File.read is the natural "whole file as one string" primitive
+  # here; the historical Spinel d59926a interaction with File.open-
+  # with-block + FFI-init is fixed as of a03bb49. Pure while-loop
+  # walk over the split lines (no .each) keeps Array<String>
+  # dispatch monomorphic inside this module.
   def self._read_vocab(path)
     raw = File.read(path)
     parts = raw.split("\n")

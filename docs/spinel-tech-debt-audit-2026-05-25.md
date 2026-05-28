@@ -169,16 +169,24 @@ end
 module inference. Until then, smoke-author hygiene rule: use
 project-unique local variable names.
 
-### 8. `File.open ... do |f| ... end` + FFI session-init = runtime crash
+### 8. `File.open ... do |f| ... end` + FFI session-init = runtime crash — **FIXED**
 
-Memory note (landmine #11): block-form File.open in a program that
-also does `tnn_session_new + tnn_finalize_weights` segfaults at
-runtime. Use `File.read(path).split("\n")` or `File.foreach` instead.
+**Status:** FIXED upstream 2026-05-28 in Spinel a03bb49 (commit
+`39438d8 runtime,analyze,codegen: non-block File.open with sp_File
+handle` modernized File.open codegen end-to-end). Probe at
+`tinynn/probe_file_block_ffi.rb` confirms block-form File.open
+followed by `tnn_session_new + tnn_input_2d_f32_persistent +
+tnn_finalize_weights` no longer crashes.
 
-**Site count:** `lib/training.rb`, `lib/bpe.rb`, several
-`tinynn/gpt2_*.rb` files still use the block form — those are
-non-FFI contexts so they work. **Hazard:** any new Spinel-compiled
-program mixing both is a footgun.
+Companion landmine #15 (`File.open(path, "w")` non-block silently
+no-ops) is fixed in the same commit. Probe:
+`tinynn/probe_file_nonblock.rb`.
+
+The remaining `File.read(path).split("\n")` sites in
+06_train_from_scratch.rb / lib/toy_sample.rb / lib/toy_token_drift.rb
+were updated to note the fix (they keep File.read because it's
+the natural primitive for "whole file as one string", not because
+the block form is broken).
 
 **Unlock condition:** Spinel fixes the FFI / block-form interaction.
 

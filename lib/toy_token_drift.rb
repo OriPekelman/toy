@@ -13,9 +13,11 @@
 #   - Mat round-trip via tnn_download_to_f64_array. The full embed
 #     is a single Mat held in main scope across ticks (sp_Mat_ptr_
 #     array isn't generated; one Mat is fine).
-#   - File.read + while-loop walk for the corpus (avoids .each on
-#     Array<String> at the call site, matching the existing
-#     toy_sample / 06_train_from_scratch pattern).
+#   - File.read + while-loop walk for the corpus. The historical
+#     Spinel block-form-File.open + FFI-init crash is fixed
+#     (a03bb49); the pattern here is just the natural primitive
+#     for "whole file as one string" + monomorphic Array<String>
+#     dispatch.
 
 module ToyTokenDrift
   # One-time corpus frequency histogram. Returns Array<Int> of
