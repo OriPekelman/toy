@@ -117,18 +117,33 @@ hand-written one, asserted equivalent.
   runtime probe doesn't see. Document as a known gap; Prism
   lowerer (P6) closes it.
 
-**Cleanup arc:**
+**Cleanup arc (P1):**
 
-- Once parity test passes, **delete** all hand-written
-  `algorithm` methods on `Toy::SmolLM2`, `Toy::SmolLM2Block`,
-  `Toy::GPT2`, etc. The parity test was the validation; once
-  validated, the duplicate dies.
-- `make check-cards` retires (no more two sources to keep in sync).
+- Runtime derivation lands as `ToyDescribeFlow.card(sess)` (or
+  similar). Wired into one CLI-adjacent example so we can run
+  it.
+- Hand-written `algorithm` methods on `Toy::SmolLM2`, etc.
+  **stay** through P1-P5 as the prose-quality override view
+  (per design doc §8). They retire in P6 only when the lowerer
+  can produce textbook-quality renders from AST walk.
+- `make check-cards` stays through P5. It validates `forward ↔
+  algorithm` consistency — independent of the runtime probe
+  which targets `realize`'s compute graph.
 - `lib/toy_card.rb`'s authoring API (`step_bind`, `step_update`,
-  etc.) becomes framework-internal; not exposed to users.
+  etc.) becomes framework-internal — users don't call it; the
+  prose-quality override on stdlib archs does.
 
-**Estimated effort:** 5-7 days (the parity test surface area is
-the long pole; the derivation itself is ~300 LOC).
+**Design note from survey.** Hand-written `algorithm` methods
+produce *textbook-abstraction* Cards (Phuong-Hutter notation,
+math). The runtime probe produces *structural-exhaustive* Cards
+(every op, every shape, every tensor name from the graph). Both
+have value — textbook for reading, structural for compat-check /
+introspection / shape verification. P1 ships the structural
+view; the textbook view stays as the override until P6.
+
+**Estimated effort:** 3-4 days (smaller than originally
+estimated — no parity-with-textbook constraint; just "does the
+derived Card correctly describe the graph").
 
 ---
 
@@ -166,11 +181,17 @@ factored into the L1/L2/L3 hierarchy:
 
 **Risks:**
 
-- The CUDA/Metal mirror generator (`prep/gen_cuda_mirror.rb`)
+- ~~The CUDA/Metal mirror generator (`prep/gen_cuda_mirror.rb`)
   was sized for the monolithic `llama_seq_forward_ffi.rb`. May
-  need extension for the layered structure. Worst case: keep the
-  monolithic mirror generator and have it walk the layered
-  source as input. Decide before refactoring.
+  need extension for the layered structure.~~ **Resolved
+  2026-05-28 (P2.0 survey):** the generator is per-file regex
+  substitution. Extending it for the layered tree = one new
+  `MIRRORABLE` entry + a `subs_for` case per file, same shape
+  as the existing entries. The require-relative rewrite already
+  has precedent in the `examples/06_train_from_scratch.rb`
+  case. No architectural change. **Decision:** keep the
+  generator as-is and add entries per new file; do NOT pursue
+  the "monolithic concat" worst-case (over-engineering).
 - Spinel poly-dispatch landmines around inheritance + ivar typing
   (the same landmines that made us write the per-class mirrors)
   may bite when blocks compose primitives. Mitigation: hold a
@@ -188,6 +209,36 @@ factored into the L1/L2/L3 hierarchy:
   default cfg".
 
 **Estimated effort:** 10-15 days. This is the heaviest refactor.
+
+### P2.0 survey findings (2026-05-28)
+
+`lib/llama_seq_forward_ffi.rb` is 1918 lines but the **forward
+graph itself is ~150 lines** (`build_seq_block` lines 1734-1826
++ `build_seq_qhead` lines 1827-1876). The remaining ~1750 lines
+are:
+
+- **4 realize paths** (mmap / q8_copy / full_finetune /
+  random_init) — these wire weights to tensor handles; not
+  graph construction.
+- **`build_training_step`** — backward graph, parallel to forward.
+- **Upload paths** (`upload_*`, `ft_*`) — weight initialisation.
+
+**Implication for L1 extraction order:** the forward graph
+cleaves naturally into RoPE / SwiGLU / GQAttention / RMSNorm
+units that already factor through the local helpers
+(`mp_matmul`, `build_seq_qhead`). The realize-paths and
+training-step are a SEPARATE refactor concern (handled in P2.6 +
+P2.7 cleanup) — they're class-shape decisions, not graph-shape
+decisions. **Sequence:** extract L1 forward primitives first
+(P2.3), then L2 block (P2.4), then arch (P2.5). Realize paths
+follow once the block is the unit of allocation.
+
+**Pilot primitive for P2.3:** RoPE. Rationale: non-trivial
+parameter signature (8 args), appears in both K and Q paths,
+has no weights (pure config) → cleanest extraction with no
+ivar-typing landmines. RMSNorm is too thin (one tnn call →
+rename theater); GQAttention is too thick (the head loop is
+the whole block half). RoPE is the right Goldilocks.
 
 ---
 
@@ -462,10 +513,10 @@ deprecation):**
 | `lib/llama_seq_forward_ffi*.rb` (the monolith + mirrors) | P2 | split across `lib/toy/llm/{primitives,blocks,archs}/` |
 | `lib/transformer.rb` (Mat + Toy::*Block classes) | P2 | absorbed into `lib/toy/llm/` or `lib/toy/ggml/` as appropriate |
 | `lib/toy_*.rb` legacy flat files (`toy_card.rb`, `toy_smollm2.rb`, etc.) | P2 | move under `lib/toy/` with the layered structure |
-| Hand-written `algorithm` methods on `Toy::*` | P1 | derived Cards |
+| Hand-written `algorithm` methods on `Toy::*` | P6 | lowerer-derived textbook Cards |
 | `prep/gen_cuda_mirror.rb` | P5 (likely) | `toy generate-mirror` subsumes |
 | `make hello`, `make example_*`, most Makefile targets | P3-P4 | `toy` CLI |
-| `make check-cards` | P1 | retires with derivation |
+| `make check-cards` | P6 | retires when textbook view is derived too |
 | `Makefile` overall | P4 | shrinks to ~50 lines (vendor builds + CI hooks) |
 
 **What stays:**
