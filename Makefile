@@ -295,6 +295,12 @@ examples/smoke_toy_ckpt_reload: examples/smoke_toy_ckpt_reload.rb lib/arch.rb li
 examples/smoke_embed_api: examples/smoke_embed_api.rb lib/arch.rb lib/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/tokenizer.rb lib/toy_logprobs.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
+# P1 framework refactor — runtime Card derivation smoke. Loads a
+# llama-family GGUF, realizes the seq-mode cache, derives a
+# structural Toy::Card via ToyDescribeFlow.card, prints + gates.
+examples/smoke_card_derive: examples/smoke_card_derive.rb lib/toy.rb lib/toy_smollm2.rb lib/llama_seq_forward_ffi.rb lib/toy_describe_flow.rb lib/toy_drift_grad.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/toy_card.rb tinynn/libtinynn_ggml.a
+	$(SPINEL) $< -o $@
+
 # toy#decode-logprobs (#151) — smoke for ToyLM#decode_step_with_logprobs.
 examples/smoke_decode_logprobs: examples/smoke_decode_logprobs.rb lib/arch.rb lib/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/tokenizer.rb lib/toy_logprobs.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@

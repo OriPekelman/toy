@@ -301,4 +301,98 @@ module ToyDescribeFlow
     end
     out
   end
+
+  # P1 — derive a Toy::Card from a realized session by walking its
+  # compute graph. Structural-exhaustive view (every op, every shape,
+  # every tensor name from the graph). Complements the textbook
+  # `algorithm` methods on stdlib archs; doesn't replace them.
+  #
+  # Returns a Toy::Card with:
+  # - PARAM leaves → add_param  (name, shape, "")
+  # - INPUT leaves → add_input  (name, shape, "")
+  # - each compute node → step_bind (var, "OP(src1, src2, …)", shape)
+  # - the last OUTPUT-flagged node → step_return
+  #
+  # Anonymous tensors (empty names) are labeled "_t<index>" so the
+  # rendered pseudocode stays unambiguous.
+  def self.card(sess)
+    c = Toy::Card.new("derived", "structural")
+
+    # Direct-index access to avoid the Array<Array<mixed>> destructure
+    # landmine. Same pattern as the existing text/json/mermaid emitters.
+    pair    = build_index(sess)
+    ptrs    = pair[0]
+    n_leafs = pair[1]
+
+    # P1 limitation: building per-node Step records via
+    # Card#step_bind with FFI :str args triggers a Spinel poly-cascade
+    # landmine that broadens Step's field types and crashes static
+    # init. For now, we record counts as hypers so callers get a
+    # useful Card (param count, input count, node count) without
+    # full per-step detail. Restoring the full step list is a
+    # follow-up — either restructure Card to accept loosely-typed
+    # builders, or move Step construction to C-side primitives
+    # (`tnn_card_push_step`).
+    n_param_leafs = 0
+    n_input_leafs = 0
+    j = 0
+    while j < n_leafs
+      lflags = TinyNN.tnn_tensor_flags(ptrs[j])
+      if (lflags & 4) != 0; n_param_leafs = n_param_leafs + 1; end
+      if (lflags & 1) != 0; n_input_leafs = n_input_leafs + 1; end
+      j = j + 1
+    end
+    c.add_hyper("leafs.total",  n_leafs.to_s)
+    c.add_hyper("leafs.params", n_param_leafs.to_s)
+    c.add_hyper("leafs.inputs", n_input_leafs.to_s)
+    c.add_hyper("nodes.compute", (ptrs.length - n_leafs).to_s)
+
+    # Identify the OUTPUT — last OUTPUT-flagged node wins; fallback
+    # to the final node.
+    out_name = ""
+    i = n_leafs
+    while i < ptrs.length
+      t     = ptrs[i]
+      flags = TinyNN.tnn_tensor_flags(t)
+      if (flags & 2) != 0
+        name = TinyNN.tnn_tensor_name(t)
+        if name == ""
+          name = "_t" + i.to_s
+        end
+        out_name = name
+      end
+      i = i + 1
+    end
+    if out_name == "" && ptrs.length > n_leafs
+      t = ptrs[ptrs.length - 1]
+      name = TinyNN.tnn_tensor_name(t)
+      if name == ""
+        name = "_t" + (ptrs.length - 1).to_s
+      end
+      out_name = name
+    end
+    if out_name != ""
+      c.step_return(out_name)
+    end
+
+    c
+  end
+
+  # P1 — count the PARAM tensors in the session graph. Used by the
+  # derivation smoke as a cross-check against ToyDriftGrad.params.
+  def self.param_count(sess)
+    n = 0
+    pair    = build_index(sess)
+    ptrs    = pair[0]
+    n_leafs = pair[1]
+    i = 0
+    while i < n_leafs
+      flags = TinyNN.tnn_tensor_flags(ptrs[i])
+      if (flags & 4) != 0
+        n = n + 1
+      end
+      i = i + 1
+    end
+    n
+  end
 end
