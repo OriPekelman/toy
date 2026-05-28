@@ -28,6 +28,7 @@ require_relative "../lib/toy_drift_grad"
 require_relative "../lib/toy_gguf_writer"
 require_relative "../lib/toy_tap"
 require_relative "../lib/toy_sample"
+require_relative "../lib/toy_token_drift"
 
 VOCAB_SIZE = 627
 D_MODEL    = (ENV["D_MODEL"]  || "64").to_i
@@ -75,6 +76,13 @@ RUN_ID      = ENV["TOY_RUN_ID"] || ""
 # grad event per param per step. Both are cheap-when-off.
 DRIFT_EVERY = (ENV["TOY_DRIFT_EVERY"] || "0").to_i
 GRAD_SENT   = (ENV["TOY_GRAD_SENTINELS"] || "0") == "1"
+# toy#20 — per-vocab-row drift on the embedding table. TOY_TOKEN_DRIFT=N
+# emits one `drift` event per token per N macro-steps with cos_to_init,
+# l2_to_init, freq. Tao renders this as the freq↔drift figure (the
+# granite_transfer Pearson r = -0.835 headline). At vocab=627 each tick
+# emits 627 events (fine). Snapshot taken at step 0; corpus frequency
+# is a one-time histogram. Cheap-when-off.
+TOKEN_DRIFT_EVERY = (ENV["TOY_TOKEN_DRIFT"] || "0").to_i
 
 # tao#gguf-checkpoint-writer. CHECKPOINT_EVERY=N → write a snapshot
 # at step N, 2N, 3N, …, plus a final snapshot at run_end. Lands in
@@ -347,6 +355,19 @@ if (EVENTS.length > 0 && (DRIFT_EVERY > 0 || GRAD_SENT)) || ckpt_enabled
   end
 end
 
+# toy#20 — per-token embedding drift + corpus freq. Independent of
+# the TOY_DRIFT_EVERY whole-tensor drift schedule (both can run; the
+# whole-tensor drift on token_embd is a coarse mean, this is the per-
+# row distribution).
+token_drift_snap = Mat.new(1, 1)
+token_freqs      = [0]; token_freqs.pop
+if EVENTS.length > 0 && TOKEN_DRIFT_EVERY > 0
+  token_drift_snap = ToyTokenDrift.snapshot(fcache.sess, fcache.t_seq_token_embed)
+  token_freqs      = ToyTokenDrift.corpus_freq("data/ts_seqs.txt", VOCAB_SIZE)
+  puts "token-drift: snapshot at step 0, emitting per-vocab-row every " +
+       TOKEN_DRIFT_EVERY.to_s + " macro-steps (vocab=" + VOCAB_SIZE.to_s + ")"
+end
+
 t_start = Time.now
 step = 1
 final_loss = 0.0
@@ -407,6 +428,12 @@ while step <= STEPS
                                         drift_snaps[pi], step, t_now)
         pi = pi + 1
       end
+    end
+    # toy#20 — per-vocab-row drift on the embedding table.
+    if TOKEN_DRIFT_EVERY > 0 && (step % TOKEN_DRIFT_EVERY == 0)
+      ToyTokenDrift.emit_per_token(fcache.sess, fcache.t_seq_token_embed,
+                                     token_drift_snap, token_freqs,
+                                     VOCAB_SIZE, D_MODEL, step, t_now)
     end
     if TAP_ENABLED
       # Demonstration tap. Real region names come from inside the
