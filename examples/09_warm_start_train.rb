@@ -35,11 +35,16 @@
 # GH#14 — Qwen-2.5-1.5B → 410M-shape transfer invocation:
 #
 #   mkdir -p /tmp/qwen410
+#   # 1. pretokenize FineWeb-Edu (see toy#22 / prep/pretokenize_fineweb_edu.py)
+#   uv run prep/pretokenize_fineweb_edu.py --tokens 10_000_000 \
+#     --out data/fineweb_edu_10m.bin
+#
+#   # 2. train (TOKENS knob derives STEPS = ceil(TOKENS / CONTEXT))
 #   DONOR_GGUF=data/qwen25-1.5b-f32.gguf \
 #     VOCAB=151936 DONOR_D=1536 D_MODEL=1024 \
 #     N_LAYERS=24 N_HEADS=8 D_FF=4096 \
-#     CONTEXT=256 STEPS=1000 SEED=0 INIT=warm \
-#     CORPUS=<your_pretokenized_corpus.bin> \
+#     CONTEXT=256 TOKENS=10_000_000 SEED=0 INIT=warm \
+#     CORPUS=data/fineweb_edu_10m.bin \
 #     TAO_RUN_DIR=/tmp/qwen410 \
 #     ./examples/example_warm_start_train
 #
@@ -64,7 +69,16 @@ N_LAYERS = (ENV["N_LAYERS"] || "2").to_i
 N_HEADS  = (ENV["N_HEADS"]  || "4").to_i
 D_FF     = (ENV["D_FF"]     || "128").to_i
 CONTEXT  = (ENV["CONTEXT"]  || "32").to_i
-STEPS    = (ENV["STEPS"]    || "20").to_i
+# GH#14 — TOKENS=N derives STEPS = ceil(N / CONTEXT). At B=1 each
+# step processes CONTEXT tokens; TOKENS is the natural acceptance
+# unit ("train on 10M tokens" — what the issue uses). STEPS takes
+# precedence when both are set so existing STEPS-only runs are
+# unchanged. Computed via a single ternary to keep Spinel's
+# constant-resolution happy (the conditional-assign-inside-if form
+# emits an "uninitialized constant" runtime error).
+STEPS_RAW  = (ENV["STEPS"]  || "0").to_i
+TOKENS_RAW = (ENV["TOKENS"] || "0").to_i
+STEPS = STEPS_RAW > 0 ? STEPS_RAW : (TOKENS_RAW > 0 ? (TOKENS_RAW + CONTEXT - 1) / CONTEXT : 20)
 LR_MAX   = (ENV["LR_MAX"]   || "0.001").to_f
 LR_MIN   = (ENV["LR_MIN"]   || "0.00001").to_f
 WARMUP   = (ENV["WARMUP"]   || "5").to_i
