@@ -83,7 +83,7 @@ class LlamaSeqForwardFFICache
                 :seq_t, :seq_b, :seq_d_model, :seq_d_ff, :seq_n_heads, :seq_n_kv,
                 :seq_d_head, :seq_group_size, :seq_n_layers, :seq_vocab_size,
                 :seq_rope_base, :seq_rope_scaling, :t_seq_rope_freq_factors,
-                :seq_rms_eps, :seq_realized,
+                :seq_rms_eps, :seq_realized, :seq_weight_dtype,
                 :t_seq_token_ids, :t_seq_positions, :t_seq_attn_mask,
                 :t_seq_x_embed, :t_seq_x_final, :t_seq_logits,
                 :seq_gguf_handle_keepalive,
@@ -119,6 +119,13 @@ class LlamaSeqForwardFFICache
     @seq_realized   = false
     @seq_t          = 0
     @seq_b          = 1
+    # GH#9 — mixed-precision compute. 0 = F32 (current behaviour;
+    # bit-identical to pre-GH#9). 1 = F16, 30 = BF16. When != 0,
+    # weight matmuls inside build_seq_block / build_seq_qhead route
+    # through mp_matmul which casts the F32 master to the chosen
+    # dtype inline in the forward graph. F32 master is kept (required
+    # by opt_step_adamw); the cast result lives in transient scratch.
+    @seq_weight_dtype = 0
     @seq_d_model    = 0
     @seq_d_ff       = 0
     @seq_n_heads    = 0
@@ -1032,7 +1039,7 @@ class LlamaSeqForwardFFICache
   # Currently Llama-arch only (RMSNorm + GQA + RoPE + SwiGLU). Other
   # architectures (GPT-2 LN, MHA + biases) need a separate trainer
   # cache class; deferred until we actually need GPT-2 from-scratch.
-  def realize_for_random_init(cfg, t_seq, t_batch, untied, qkv_bias, seed, init_scale)
+  def realize_for_random_init(cfg, t_seq, t_batch, weight_dtype, untied, qkv_bias, seed, init_scale)
     @ft_train_embeddings_enabled = true   # forces persistent-F32 alloc of embeddings
     @seq_full_finetune_enabled   = true   # build_training_step gates on this
 
@@ -1042,6 +1049,10 @@ class LlamaSeqForwardFFICache
     # flat [T*B] vector with a block-causal attention mask uploaded
     # post-finalize and applied via soft_max_ext.
     @seq_b          = t_batch
+    # GH#9 — mixed-precision compute. 0 = F32 (bit-identical to
+    # pre-GH#9). 1 = F16, 30 = BF16. See mp_matmul + ivar comment in
+    # initialize for the master-copy details.
+    @seq_weight_dtype = weight_dtype
     @seq_d_model    = cfg.d_model
     @seq_d_ff       = cfg.d_ff
     @seq_n_heads    = cfg.n_heads
@@ -1663,6 +1674,26 @@ class LlamaSeqForwardFFICache
     [t_loss, t_labels, t_hp]
   end
 
+  # GH#9 — mixed-precision matmul helper. When @seq_weight_dtype != 0,
+  # casts the F32 master weight to the chosen dtype before the matmul
+  # so the math hits the lower-precision tensor-core path. At
+  # @seq_weight_dtype == 0 this is `tnn_matmul` verbatim — bit-
+  # identical to pre-GH#9 graphs.
+  #
+  # The cast is in-graph: ggml_cast emits a CPY-with-typed-dst node
+  # that sched buffers in transient scratch. Once the matmul consumes
+  # the cast result, sched can reuse the buffer. Backward through
+  # the cast flows correctly via GGML_OP_CPY's backward case (grad
+  # of cast(src) preserves src's dtype, so the F32 master receives
+  # its grad as expected).
+  def mp_matmul(w, x)
+    if @seq_weight_dtype != 0
+      wc = TinyNN.tnn_cast(@sess, w, @seq_weight_dtype)
+      return TinyNN.tnn_matmul(@sess, wc, x)
+    end
+    TinyNN.tnn_matmul(@sess, w, x)
+  end
+
   # GGUF type → bytes-per-row stride for per-head slicing. Mirrors the
   # SmolLM2KVFFICache helper of the same name. F32=0, Q8_0=8.
   def head_nbytes(ggml_type, d_head, d_model)
@@ -1714,7 +1745,7 @@ class LlamaSeqForwardFFICache
     t_vt_per_kv = [TinyNN.tnn_null_ptr]; t_vt_per_kv.pop
     hkv = 0
     while hkv < @seq_n_kv
-      t_k_raw = TinyNN.tnn_matmul(@sess, blk.t_seq_w_k[hkv], t_h)
+      t_k_raw = mp_matmul(blk.t_seq_w_k[hkv], t_h)
       if @seq_has_qkv_bias
         t_k_pre = TinyNN.tnn_add(@sess, t_k_raw, blk.t_seq_b_k[hkv])
       else
@@ -1738,7 +1769,7 @@ class LlamaSeqForwardFFICache
       t_k      = TinyNN.tnn_reshape_2d(@sess, t_k3, @seq_d_head, tb)
       t_k_per_kv.push(t_k)
 
-      t_v_raw = TinyNN.tnn_matmul(@sess, blk.t_seq_w_v[hkv], t_h)
+      t_v_raw = mp_matmul(blk.t_seq_w_v[hkv], t_h)
       if @seq_has_qkv_bias
         t_v = TinyNN.tnn_add(@sess, t_v_raw, blk.t_seq_b_v[hkv])
       else
@@ -1767,16 +1798,16 @@ class LlamaSeqForwardFFICache
       hq2 = hq2 + 1
     end
 
-    t_out_proj = TinyNN.tnn_matmul(@sess, blk.t_seq_w_o, t_concat)
+    t_out_proj = mp_matmul(blk.t_seq_w_o, t_concat)
     t_x_attn   = TinyNN.tnn_add(@sess, t_x, t_out_proj)
 
     # SwiGLU FFN.
     t_h2    = TinyNN.tnn_rms_norm(@sess, t_x_attn, blk.t_seq_rn2_gamma, eps)
-    t_gate  = TinyNN.tnn_matmul(@sess, blk.t_seq_w_gate, t_h2)
-    t_up    = TinyNN.tnn_matmul(@sess, blk.t_seq_w_up,   t_h2)
+    t_gate  = mp_matmul(blk.t_seq_w_gate, t_h2)
+    t_up    = mp_matmul(blk.t_seq_w_up,   t_h2)
     t_silug = TinyNN.tnn_silu(@sess, t_gate)
     t_gated = TinyNN.tnn_mul(@sess, t_silug, t_up)
-    t_dn    = TinyNN.tnn_matmul(@sess, blk.t_seq_w_down, t_gated)
+    t_dn    = mp_matmul(blk.t_seq_w_down, t_gated)
     # GH#15 — tap the FFN output (pre-residual). set_output to pin.
     blk.tap_ffn_out = t_dn
     TinyNN.tnn_set_output(t_dn)
@@ -1791,7 +1822,7 @@ class LlamaSeqForwardFFICache
 
   def build_seq_qhead(t_h, blk, hq, t_k_per_kv, t_vt_per_kv, scale)
     hkv = hq / @seq_group_size
-    t_q_raw = TinyNN.tnn_matmul(@sess, blk.t_seq_w_q[hq], t_h)
+    t_q_raw = mp_matmul(blk.t_seq_w_q[hq], t_h)
     # M3 step 3 — LoRA splice on Q (same as decode_step). With B
     # zero-initialized this is a no-op at step 0.
     if @seq_lora_q_enabled

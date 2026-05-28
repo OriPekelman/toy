@@ -46,6 +46,13 @@ SEED       = (ENV["SEED"]     || "42").to_i
 # token + position arrays). BATCH>1 lays B sequences side-by-side as
 # a flat [T*B] vector with a block-causal mask uploaded at realize.
 BATCH      = (ENV["BATCH"]    || "1").to_i
+# GH#9 — mixed-precision compute. 0=F32 (default; bit-identical to
+# pre-GH#9), 1=F16, 30=BF16. When non-zero, weight matmuls inside the
+# transformer block route through mp_matmul which casts the F32
+# master to the chosen dtype inline in the forward graph (Tensor
+# Core path on supporting hardware). opt_step still operates on the
+# F32 master — the cast is recomputed each forward, no sidecar.
+WEIGHT_DTYPE = (ENV["WEIGHT_DTYPE"] || "0").to_i
 # GH#8 — gradient accumulation. Effective batch = BATCH × GRAD_ACCUM
 # without the memory cost of a single big batch. Implementation note:
 # ggml's opt_step_adamw is baked into the backward graph and runs
@@ -144,7 +151,7 @@ end
 
 t_realize = Time.now
 fcache = LlamaSeqForwardFFICache.new
-fcache.realize_for_random_init(cfg, CONTEXT, BATCH, false, false, SEED, 1.0)
+fcache.realize_for_random_init(cfg, CONTEXT, BATCH, WEIGHT_DTYPE, false, false, SEED, 1.0)
 if !DESCRIBE_QUIET
   puts "realize_for_random_init: " + ((Time.now - t_realize).to_f * 1000.0).to_s + " ms"
 end
