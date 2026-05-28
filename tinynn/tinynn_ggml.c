@@ -894,6 +894,22 @@ void *tnn_cpy(void *sess, void *a, void *b)
                               (struct ggml_tensor *)b);
 }
 
+/* Cast a tensor to a target dtype (GH#9 mixed-precision training).
+ * Returns a NEW tensor of the requested type with the same shape.
+ * dtype enum values are from ggml_type (0=F32, 1=F16, 30=BF16, …).
+ * Backed by ggml_cast which under the hood is GGML_OP_CPY with a
+ * fresh dst of the target dtype — backward flows correctly through
+ * the cpy backward case (grad of cast(src) = reshape(grad, src)
+ * which preserves src's dtype = the F32 master in the typical
+ * weight-cast-to-bf16 use case). */
+void *tnn_cast(void *sess, void *a, int dtype)
+{
+    if (!sess || !a) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_cast(s->ctx, (struct ggml_tensor *)a,
+                               (enum ggml_type)dtype);
+}
+
 /* Concatenate `a` and `b` along the given dim (0 = ne[0], 1 = ne[1]).
  * Other dims must match. Used to glue per-head attention outputs into
  * a single (d_model, T) tensor by stacking d_head slices along ne0. */
