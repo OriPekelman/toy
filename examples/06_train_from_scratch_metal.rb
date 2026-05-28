@@ -27,6 +27,7 @@ require_relative "../lib/toy_describe_flow"
 require_relative "../lib/toy_drift_grad"
 require_relative "../lib/toy_gguf_writer"
 require_relative "../lib/toy_tap"
+require_relative "../lib/toy_sample"
 
 VOCAB_SIZE = 627
 D_MODEL    = (ENV["D_MODEL"]  || "64").to_i
@@ -82,6 +83,19 @@ GRAD_SENT   = (ENV["TOY_GRAD_SENTINELS"] || "0") == "1"
 # configured).
 CHECKPOINT_EVERY = (ENV["CHECKPOINT_EVERY"] || "0").to_i
 WEIGHTS_DIR      = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/weights") : ""
+
+# toy#21 — sample event emission at run end. TOY_SAMPLES=N decodes N
+# completions from the first-K tokens of training sequences as prompts
+# and emits one `sample` event per generation (toy/v1 schema). Greedy
+# decode via tnn_compute on the trained forward graph (which produces
+# logits without firing opt_step — that lives in graph_b). Cheap-when-
+# off (N=0 disables; the toy_sample require itself is free).
+TOY_SAMPLES = (ENV["TOY_SAMPLES"] || "0").to_i
+# Sample prompts: each prompt is the first SAMPLE_PROMPT_LEN tokens of
+# training sequence i (cycled if fewer lines than samples). N_NEW is
+# how many tokens to generate per sample.
+SAMPLE_PROMPT_LEN = (ENV["SAMPLE_PROMPT_LEN"] || "4").to_i
+SAMPLE_N_NEW      = (ENV["SAMPLE_N_NEW"]      || "12").to_i
 
 # tao#kv-tap-surface — TOY_TAP=1 enables a demonstration tap on the
 # loss scalar after each compute_backward. Real production taps belong
@@ -468,6 +482,44 @@ if ckpt_enabled && (STEPS % CHECKPOINT_EVERY != 0)
   rc = ToyGGUFWriter.write_step(cfg, drift_params, WEIGHTS_DIR, rid, STEPS)
   if rc != 0
     puts "final checkpoint write failed: rc=" + rc.to_s
+  end
+end
+
+# toy#21 — emit sample generations. tnn_compute runs only graph
+# (forward), not graph_b (backward + opt_step), so weights are not
+# mutated by these compute calls. Guard on B=1 — the trainer's flat
+# [T*B] layout means batched generation would interleave samples; a
+# proper B>1 sample path is a follow-up.
+if EVENTS.length > 0 && TOY_SAMPLES > 0
+  if fcache.seq_b > 1
+    puts "TOY_SAMPLES: skipping — only supported at BATCH=1 (current B=" +
+         fcache.seq_b.to_s + ")"
+  else
+    puts "TOY_SAMPLES: decoding " + TOY_SAMPLES.to_s +
+         " samples (prompt_len=" + SAMPLE_PROMPT_LEN.to_s +
+         ", n_new=" + SAMPLE_N_NEW.to_s + ")"
+    n_sample = 0
+    while n_sample < TOY_SAMPLES
+      prompt_ids = [0]; prompt_ids.pop
+      src_line = lines[n_sample % lines.length]
+      src_parts = src_line.split(" ")
+      pi = 0
+      while pi < SAMPLE_PROMPT_LEN && pi < src_parts.length
+        prompt_ids.push(src_parts[pi].to_i)
+        pi = pi + 1
+      end
+      decoded = ToySample.greedy_decode(fcache.sess, fcache.t_seq_logits,
+                                          fcache.t_seq_token_ids,
+                                          fcache.t_seq_positions,
+                                          prompt_ids, SAMPLE_N_NEW,
+                                          CONTEXT, VOCAB_SIZE)
+      prompt_text  = ToySample.detokenize(prompt_ids, "data/ts_vocab.txt")
+      decoded_text = ToySample.detokenize(decoded,    "data/ts_vocab.txt")
+      ToySample.emit_event(prompt_text, decoded_text, STEPS,
+                             TinyNNMetal.tnn_events_now_seconds)
+      puts "  sample " + n_sample.to_s + ": " + decoded_text
+      n_sample = n_sample + 1
+    end
   end
 end
 
