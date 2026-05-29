@@ -26,6 +26,7 @@ require_relative "toy"
 require_relative "toy_smollm2"
 require_relative "tinynn_metal"
 require_relative "toy/llm/primitives/rope_metal"
+require_relative "toy/llm/primitives/swiglu_metal"
 
 # Per-block tensor handles. Distinct from SmolLM2KVBlockFFI so Spinel
 # treats them as independent classes (no shared layout pressure).
@@ -1845,8 +1846,7 @@ class LlamaSeqForwardFFICacheMetal
     t_h2    = TinyNNMetal.tnn_rms_norm(@sess, t_x_attn, blk.t_seq_rn2_gamma, eps)
     t_gate  = mp_matmul(blk.t_seq_w_gate, t_h2)
     t_up    = mp_matmul(blk.t_seq_w_up,   t_h2)
-    t_silug = TinyNNMetal.tnn_silu(@sess, t_gate)
-    t_gated = TinyNNMetal.tnn_mul(@sess, t_silug, t_up)
+    t_gated = Toy::LLM::Primitives::SwiGLU.gate(@sess, t_gate, t_up)
     t_dn    = mp_matmul(blk.t_seq_w_down, t_gated)
     # GH#15 — tap the FFN output (pre-residual). set_output to pin.
     blk.tap_ffn_out = t_dn

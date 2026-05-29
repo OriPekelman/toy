@@ -1,0 +1,41 @@
+# lib/toy/llm/primitives/swiglu.rb — L1 primitive: SwiGLU (SiLU-gated
+# FFN gate composition).
+#
+# Pure module: `self.` methods only, no module ivars, no state, no
+# config object. The block (L2) owns the gate/up/down weight tensors
+# and the mp_matmul projections; this primitive composes only the
+# SiLU-gate step (silu(gate) * up) that sits between the gate/up
+# projections and the down projection. See
+# lib/toy/llm/primitives/README.md for the L1 contract.
+#
+# Spinel hygiene: no Cfg ctor (no default-arg poisoning, landmine #4),
+# no Card/step_bind calls, no FFI :str args (step_bind :str landmine
+# 2026-05-28). Just two FFI passthrough calls in fixed order.
+#
+# This file does NOT `require_relative "tinynn"`: the loading module
+# (lib/llama_seq_forward_ffi.rb) already loads the correct backend's
+# TinyNN before requiring this primitive. The mirror generator picks
+# the backend via the monolith's require rewrite (the CUDA/Metal
+# mirror of the monolith requires swiglu_<backend>, and that mirror's
+# TinyNN. -> TinyNN<Backend>. rename handles the rest).
+
+module Toy
+  module LLM
+    module Primitives
+      module SwiGLU
+        NAME = :swiglu
+
+        # SiLU-gate composition: silu(gate) * up. t_gate and t_up are
+        # the already-projected gate/up tensors (block-owned mp_matmul
+        # outputs). Argument order matters: tnn_mul's first operand
+        # (silu(gate)) is the shape-driver under ggml broadcast
+        # semantics — preserve silu(gate) first, up second. Returns the
+        # gated tensor handle (the input to the down projection).
+        def self.gate(sess, t_gate, t_up)
+          t_silug = TinyNN.tnn_silu(sess, t_gate)
+          TinyNN.tnn_mul(sess, t_silug, t_up)
+        end
+      end
+    end
+  end
+end
