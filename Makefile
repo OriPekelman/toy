@@ -320,6 +320,12 @@ examples/smoke_projection_lens: examples/smoke_projection_lens.rb lib/llama_seq_
 examples/smoke_recipe_from_scratch: examples/smoke_recipe_from_scratch.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb lib/toy_drift_grad.rb lib/toy/llm/recipes/from_scratch.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
+# L4 LoRA recipe gate. Drives the same LoRA fine-tune config as the
+# frozen reference 03_finetune_lora THROUGH Toy::LLM::Recipes::LoRA; its
+# loss curve must byte-equal the reference at the fixed config.
+examples/smoke_recipe_lora: examples/smoke_recipe_lora.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/toy/llm/recipes/lora.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+
 # P2.6 gate — GGUF F32 mmap round-trip parity. Head-fuses a random_init
 # model into the FUSED llama.cpp naming, writes a GGUF, reloads via
 # realize_for_mmap, and asserts the reloaded forward is BIT-IDENTICAL to
