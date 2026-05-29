@@ -314,6 +314,12 @@ example_lmc: examples/example_lmc
 examples/smoke_projection_lens: examples/smoke_projection_lens.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb lib/toy_drift_grad.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
+# P2.6 — GQA-divergent (w_o) gate. Realizes a config with head_dim=24 so
+# n_heads*head_dim (96) != d_model (64), proving the divergent w_o shape
+# [d_model, n_heads*head_dim] allocates and runs forward+backward.
+examples/smoke_gate_gqa_divergent: examples/smoke_gate_gqa_divergent.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb lib/toy_drift_grad.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+
 # P2.6 — L4 FromScratch recipe gate. Drives the same random-init config
 # as smoke_projection_lens THROUGH Toy::LLM::Recipes::FromScratch; its
 # loss curve must byte-equal the projection-lens reference.
