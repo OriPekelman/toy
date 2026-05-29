@@ -28,6 +28,7 @@ require_relative "tinynn_metal"
 require_relative "toy/llm/primitives/rms_norm_metal"
 require_relative "toy/llm/primitives/rope_metal"
 require_relative "toy/llm/primitives/swiglu_metal"
+require_relative "toy/llm/primitives/gqa_metal"
 
 # Per-block tensor handles. Distinct from SmolLM2KVBlockFFI so Spinel
 # treats them as independent classes (no shared layout pressure).
@@ -1881,23 +1882,14 @@ class LlamaSeqForwardFFICacheMetal
             @sess, t_q_pre, @t_seq_positions,
             @t_seq_rope_freq_factors, @seq_rope_cfg, @seq_t, @seq_b)
 
-    # scores ne=[T_keys, T_queries]. At B=1, scores=[T, T]; at B>1,
-    # scores=[T*B, T*B] (every query attends every key in the matmul;
-    # the block-causal mask zeroes cross-batch + future positions).
-    t_scores = TinyNNMetal.tnn_matmul(@sess, t_k_per_kv[hkv], t_q)
-    if @seq_b > 1
-      # GH#7 — soft_max_ext folds scale + mask + softmax. The mask
-      # tensor was uploaded at realize time (upload_block_causal_mask!).
-      t_attn = TinyNNMetal.tnn_soft_max_ext(@sess, t_scores, @t_seq_attn_mask, scale, 0.0)
-    else
-      # B=1 legacy path — bit-identical to pre-GH#7. Causal triangle
-      # mask + softmax. scale folded as a separate op.
-      t_scaled = TinyNNMetal.tnn_scale(@sess, t_scores, scale)
-      t_masked = TinyNNMetal.tnn_diag_mask_inf(@sess, t_scaled, 0)
-      t_attn   = TinyNNMetal.tnn_softmax(@sess, t_masked)
-    end
-    # head ne=[d_head, T*B]
-    TinyNNMetal.tnn_matmul(@sess, t_vt_per_kv[hkv], t_attn)
+    # Attention math (scores -> scaled+masked softmax -> weighted V).
+    # GQA KV-head selection (hkv) stays on the block; the primitive
+    # gets the already-selected K/Vt handles. At B=1 the mask handle
+    # (@t_seq_attn_mask) is NULL and is never read by the B=1 branch.
+    # head ne=[d_head, T*B].
+    Toy::LLM::Primitives::GQA.attention(
+      @sess, t_k_per_kv[hkv], t_q, t_vt_per_kv[hkv],
+      @t_seq_attn_mask, scale, @seq_b)
   end
 
   # Run one forward pass. `ids` and `positions` are length-T Int arrays.
