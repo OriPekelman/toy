@@ -326,6 +326,14 @@ examples/smoke_recipe_from_scratch: examples/smoke_recipe_from_scratch.rb lib/ll
 examples/smoke_recipe_lora: examples/smoke_recipe_lora.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/toy/llm/recipes/lora.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
+# L4 WarmStart recipe gate. Drives the same warm-start config as the
+# frozen reference 09_warm_start_train (INIT=scratch) THROUGH
+# Toy::LLM::Recipes::WarmStart; its loss curve must byte-equal 09's at
+# the fixed config (SEED=0 STEPS=5). The fixture drives the cosine LR
+# schedule + streaming corpus loader (deps below); the recipe stays thin.
+examples/smoke_recipe_warm_start: examples/smoke_recipe_warm_start.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb lib/toy_drift_grad.rb lib/toy_corpus_loader.rb lib/toy_lr_schedule.rb lib/toy/llm/recipes/warm_start.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+
 # P2.6 gate — GGUF F32 mmap round-trip parity. Head-fuses a random_init
 # model into the FUSED llama.cpp naming, writes a GGUF, reloads via
 # realize_for_mmap, and asserts the reloaded forward is BIT-IDENTICAL to
