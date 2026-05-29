@@ -266,12 +266,8 @@ class LlamaSeqForwardFFICacheCuda
                         @seq_vocab_size, @seq_d_model, otyp)
     end
 
-    self.seq_blocks_ffi = [Toy::LLM::Blocks::TransformerBlock.new]
-    li_init = 1
-    while li_init < @seq_n_layers
-      self.seq_blocks_ffi.push(Toy::LLM::Blocks::TransformerBlock.new)
-      li_init = li_init + 1
-    end
+    # P2.6 Step 2 — seeding loop moved onto the arch (LlamaArch#seed_blocks!).
+    @seq_arch.seed_blocks!(@seq_n_layers)
 
     li = 0
     while li < @seq_n_layers
@@ -556,12 +552,8 @@ class LlamaSeqForwardFFICacheCuda
                         @seq_vocab_size, @seq_d_model, otyp, ooff)
     end
 
-    self.seq_blocks_ffi = [Toy::LLM::Blocks::TransformerBlock.new]
-    li_init = 1
-    while li_init < @seq_n_layers
-      self.seq_blocks_ffi.push(Toy::LLM::Blocks::TransformerBlock.new)
-      li_init = li_init + 1
-    end
+    # P2.6 Step 2 — seeding loop moved onto the arch (LlamaArch#seed_blocks!).
+    @seq_arch.seed_blocks!(@seq_n_layers)
 
     li = 0
     while li < @seq_n_layers
@@ -865,12 +857,8 @@ class LlamaSeqForwardFFICacheCuda
       end
     end
 
-    self.seq_blocks_ffi = [Toy::LLM::Blocks::TransformerBlock.new]
-    li_init = 1
-    while li_init < @seq_n_layers
-      self.seq_blocks_ffi.push(Toy::LLM::Blocks::TransformerBlock.new)
-      li_init = li_init + 1
-    end
+    # P2.6 Step 2 — seeding loop moved onto the arch (LlamaArch#seed_blocks!).
+    @seq_arch.seed_blocks!(@seq_n_layers)
 
     # Per-block: allocate writable F32 weights + Adam m/v. Record
     # each (weight, m, v) triple on the block's parallel arrays so
@@ -1104,12 +1092,9 @@ class LlamaSeqForwardFFICacheCuda
     end
 
     # Per-block weights — identical structure to realize_for_full_finetune.
-    self.seq_blocks_ffi = [Toy::LLM::Blocks::TransformerBlock.new]
-    li_init = 1
-    while li_init < @seq_n_layers
-      self.seq_blocks_ffi.push(Toy::LLM::Blocks::TransformerBlock.new)
-      li_init = li_init + 1
-    end
+    # P2.6 Step 2 — the block-array seeding loop now lives on the arch
+    # (LlamaArch#seed_blocks!), which already owns @seq_blocks_ffi.
+    @seq_arch.seed_blocks!(@seq_n_layers)
 
     li = 0
     while li < @seq_n_layers

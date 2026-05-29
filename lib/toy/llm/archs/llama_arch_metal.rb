@@ -91,6 +91,25 @@ module Toy; module LLM; module Archs
       @seq_rope_cfg           = TinyNNMetal.tnn_null_ptr
     end
 
+    # Reset @seq_blocks_ffi and fill it with exactly n_layers fresh
+    # TransformerBlocks. The four cache realize paths each ran this
+    # identical loop verbatim (P2.6 Step 2) — seed one block, then push
+    # n_layers-1 more — so the SHAPE here matches the former cache loop
+    # byte-for-byte (length == n_layers; first element is a fresh block,
+    # exactly like the cache's `[TransformerBlock.new]` seed). The arch
+    # already OWNS this array (ctor seeds it with one block at L83) and
+    # already constructs TransformerBlock.new there, so no new class /
+    # Struct / FFI :str at class load. Each realize path now calls this
+    # via the cache's seq_blocks_ffi delegator chain (self.seq_arch).
+    def seed_blocks!(n_layers)
+      @seq_blocks_ffi = [Toy::LLM::Blocks::TransformerBlock.new]
+      li_init = 1
+      while li_init < n_layers
+        @seq_blocks_ffi.push(Toy::LLM::Blocks::TransformerBlock.new)
+        li_init = li_init + 1
+      end
+    end
+
     # SEQ-MODE forward orchestration. The per-graph INPUT handles
     # (token_ids, positions) are ALLOCATED BY THE CACHE before this call
     # (cache-owned graph I/O, read by forward() and the uploaders) and
