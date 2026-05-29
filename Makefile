@@ -314,6 +314,12 @@ example_lmc: examples/example_lmc
 examples/smoke_projection_lens: examples/smoke_projection_lens.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb lib/toy_drift_grad.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
+# P2.6 — L4 FromScratch recipe gate. Drives the same random-init config
+# as smoke_projection_lens THROUGH Toy::LLM::Recipes::FromScratch; its
+# loss curve must byte-equal the projection-lens reference.
+examples/smoke_recipe_from_scratch: examples/smoke_recipe_from_scratch.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb lib/toy_drift_grad.rb lib/toy/llm/recipes/from_scratch.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+
 # P2.6 gate — GGUF F32 mmap round-trip parity. Head-fuses a random_init
 # model into the FUSED llama.cpp naming, writes a GGUF, reloads via
 # realize_for_mmap, and asserts the reloaded forward is BIT-IDENTICAL to
