@@ -1,0 +1,10 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+# bin/toy — the `toy` CLI entrypoint.
+#
+# Plain MRI Ruby (NOT Spinel-compiled). A thin shebang stub: load the
+# CRuby CLI shell under lib/toy/core/ and dispatch. The shell NEVER pulls
+# in the Spinel-compiled libs (tinynn/arch/transformer/...), so this runs
+# under system ruby with no native build.
+require_relative "../lib/toy/core/cli"
+exit Toy::Core::CLI.run(ARGV)

@@ -52,8 +52,12 @@ Gem::Specification.new do |s|
     "tinynn/tinynn_events.c",
   ].reject { |f| File.directory?(f) }
 
-  s.bindir         = "exe"
-  s.executables    = []
+  # bin/toy is a plain-MRI binstub (the CRuby CLI shell under
+  # lib/toy/core/). RubyGems ships it from bin/. (Was a stale exe/[]
+  # placeholder copied from tep; reconciled in favour of bin/toy, which
+  # every roadmap/design ref and `toy new`'s own scaffold use.)
+  s.bindir         = "bin"
+  s.executables    = ["toy"]
   s.require_paths  = ["lib"]
 
   # No runtime dependencies — toy is Spinel-compiled. Build-time deps
