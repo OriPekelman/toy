@@ -20,6 +20,7 @@ require_relative "transformer"
 require_relative "toy"
 require_relative "toy_smollm2"
 require_relative "tinynn"
+require_relative "toy/llm/primitives/rope"
 
 # Per-block tensor handles. Distinct from SmolLM2KVBlockFFI so Spinel
 # treats them as independent classes (no shared layout pressure).
@@ -140,6 +141,16 @@ class LlamaSeqForwardFFICache
     @seq_vocab_size = 0
     @seq_rope_base            = 10000.0
     @seq_rope_scaling         = Toy::RopeScaling.none
+    # Seed a concrete Cfg from the same defaults so the ivar always
+    # holds a real Toy::LLM::Primitives::RoPE::Cfg (never nil/RbVal).
+    # Rebuilt per realize path once the true dims are known.
+    @seq_rope_cfg             = Toy::LLM::Primitives::RoPE::Cfg.new(
+                                  @seq_d_head, @seq_rope_base,
+                                  @seq_rope_scaling.freq_scale,
+                                  @seq_rope_scaling.ext_factor,
+                                  @seq_rope_scaling.attn_factor,
+                                  @seq_rope_scaling.beta_fast,
+                                  @seq_rope_scaling.beta_slow)
     @t_seq_rope_freq_factors  = TinyNN.tnn_null_ptr
     @seq_rms_eps    = 1.0e-5
     @sess                  = TinyNN.tnn_null_ptr
@@ -231,6 +242,13 @@ class LlamaSeqForwardFFICache
     @seq_vocab_size = cfg.vocab
     @seq_rope_base    = cfg.rope_base
     @seq_rope_scaling = cfg.rope_scaling
+    @seq_rope_cfg     = Toy::LLM::Primitives::RoPE::Cfg.new(
+                          @seq_d_head, @seq_rope_base,
+                          @seq_rope_scaling.freq_scale,
+                          @seq_rope_scaling.ext_factor,
+                          @seq_rope_scaling.attn_factor,
+                          @seq_rope_scaling.beta_fast,
+                          @seq_rope_scaling.beta_slow)
     @seq_rms_eps    = cfg.rms_eps
 
     @seq_gguf_handle_keepalive = gguf_handle
@@ -521,6 +539,13 @@ class LlamaSeqForwardFFICache
     @seq_vocab_size = cfg.vocab
     @seq_rope_base    = cfg.rope_base
     @seq_rope_scaling = cfg.rope_scaling
+    @seq_rope_cfg     = Toy::LLM::Primitives::RoPE::Cfg.new(
+                          @seq_d_head, @seq_rope_base,
+                          @seq_rope_scaling.freq_scale,
+                          @seq_rope_scaling.ext_factor,
+                          @seq_rope_scaling.attn_factor,
+                          @seq_rope_scaling.beta_fast,
+                          @seq_rope_scaling.beta_slow)
     @seq_rms_eps    = cfg.rms_eps
 
     @seq_gguf_handle_keepalive = gguf_handle
@@ -819,6 +844,13 @@ class LlamaSeqForwardFFICache
     @seq_vocab_size = cfg.vocab
     @seq_rope_base    = cfg.rope_base
     @seq_rope_scaling = cfg.rope_scaling
+    @seq_rope_cfg     = Toy::LLM::Primitives::RoPE::Cfg.new(
+                          @seq_d_head, @seq_rope_base,
+                          @seq_rope_scaling.freq_scale,
+                          @seq_rope_scaling.ext_factor,
+                          @seq_rope_scaling.attn_factor,
+                          @seq_rope_scaling.beta_fast,
+                          @seq_rope_scaling.beta_slow)
     @seq_rms_eps    = cfg.rms_eps
 
     @seq_gguf_handle_keepalive = gguf_handle
@@ -1067,6 +1099,13 @@ class LlamaSeqForwardFFICache
     @seq_vocab_size = cfg.vocab
     @seq_rope_base    = cfg.rope_base
     @seq_rope_scaling = cfg.rope_scaling
+    @seq_rope_cfg     = Toy::LLM::Primitives::RoPE::Cfg.new(
+                          @seq_d_head, @seq_rope_base,
+                          @seq_rope_scaling.freq_scale,
+                          @seq_rope_scaling.ext_factor,
+                          @seq_rope_scaling.attn_factor,
+                          @seq_rope_scaling.beta_fast,
+                          @seq_rope_scaling.beta_slow)
     @seq_rms_eps    = cfg.rms_eps
 
     @sess                  = TinyNN.tnn_session_new(0)
@@ -1760,17 +1799,9 @@ class LlamaSeqForwardFFICache
       # ne[2]==T*B, then reshape back after rope. Reshape is metadata-
       # only (no copy) on contiguous tensors. At T=1, B=1 this is a
       # no-op (1 == 1).
-      tb = @seq_t * @seq_b
-      t_k_pre3 = TinyNN.tnn_reshape_3d(@sess, t_k_pre, @seq_d_head, 1, tb)
-      t_k3     = TinyNN.tnn_rope_ext(@sess, t_k_pre3, @t_seq_positions,
-                                       @seq_d_head, @seq_rope_base,
-                                       @seq_rope_scaling.freq_scale,
-                                       @seq_rope_scaling.ext_factor,
-                                       @seq_rope_scaling.attn_factor,
-                                       @seq_rope_scaling.beta_fast,
-                                       @seq_rope_scaling.beta_slow,
-                                       @t_seq_rope_freq_factors)
-      t_k      = TinyNN.tnn_reshape_2d(@sess, t_k3, @seq_d_head, tb)
+      t_k = Toy::LLM::Primitives::RoPE.apply_2d(
+              @sess, t_k_pre, @t_seq_positions,
+              @t_seq_rope_freq_factors, @seq_rope_cfg, @seq_t, @seq_b)
       t_k_per_kv.push(t_k)
 
       t_v_raw = mp_matmul(blk.t_seq_w_v[hkv], t_h)
@@ -1840,17 +1871,9 @@ class LlamaSeqForwardFFICache
       t_q_pre = t_q_raw
     end
     # Same rope-shape lift as the K path; see comment in build_seq_block.
-    tb = @seq_t * @seq_b
-    t_q_pre3 = TinyNN.tnn_reshape_3d(@sess, t_q_pre, @seq_d_head, 1, tb)
-    t_q3     = TinyNN.tnn_rope_ext(@sess, t_q_pre3, @t_seq_positions,
-                                     @seq_d_head, @seq_rope_base,
-                                     @seq_rope_scaling.freq_scale,
-                                     @seq_rope_scaling.ext_factor,
-                                     @seq_rope_scaling.attn_factor,
-                                     @seq_rope_scaling.beta_fast,
-                                     @seq_rope_scaling.beta_slow,
-                                     @t_seq_rope_freq_factors)
-    t_q      = TinyNN.tnn_reshape_2d(@sess, t_q3, @seq_d_head, tb)
+    t_q = Toy::LLM::Primitives::RoPE.apply_2d(
+            @sess, t_q_pre, @t_seq_positions,
+            @t_seq_rope_freq_factors, @seq_rope_cfg, @seq_t, @seq_b)
 
     # scores ne=[T_keys, T_queries]. At B=1, scores=[T, T]; at B>1,
     # scores=[T*B, T*B] (every query attends every key in the matmul;
