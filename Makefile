@@ -358,6 +358,17 @@ examples/smoke_recipe_warm_start: examples/smoke_recipe_warm_start.rb lib/llama_
 examples/smoke_gguf_roundtrip: examples/smoke_gguf_roundtrip.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb lib/toy_gguf_fuse.rb lib/toy_gguf_writer.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
+# P2.6 gate — qkv_bias mmap branch. Loads the real Qwen2.5-0.5B native GGUF
+# (which DOES carry blk.N.attn_{q,k,v}.bias) and realizes via
+# realize_for_mmap with qkv_bias=TRUE, untied=FALSE (output.weight absent =>
+# tied), forcing the bias mmap branch (llama_seq_forward_ffi.rb:635-661) and
+# its transformer_block tnn_add consumer — neither hit by smoke_gguf_roundtrip
+# (qkv_bias=FALSE). Records a deterministic finite-logit baseline. CPU-only;
+# DATA DEPENDENCY: data/qwen25-0.5b-native.gguf (not self-contained). MUST run
+# from repo root. Do NOT auto-mirror to CUDA.
+examples/smoke_gate_qkv_bias: examples/smoke_gate_qkv_bias.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+
 # P2.6 CUDA gate — GPU mirror of the projection-lens smoke. Exercises
 # realize_for_random_init + seq forward on the CUDA backend so the
 # realize-path refactor can be parity-gated on GPU (CUDA self-consistency
