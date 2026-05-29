@@ -25,16 +25,19 @@ require_relative "toy/llm/primitives/rope"
 require_relative "toy/llm/primitives/swiglu"
 require_relative "toy/llm/primitives/gqa"
 require_relative "toy/llm/blocks/transformer_block"
+require_relative "toy/llm/archs/llama_arch"
 
 class LlamaSeqForwardFFICache
   attr_accessor :sess,
-                :t_seq_token_embed, :t_seq_final_norm_gamma, :t_seq_output,
-                # E2.3 / GH#14 — projection-lens W_proj exposed for
-                # external init (PCA-init script writes here before
-                # the first training step). Random-init by default.
-                :t_seq_w_proj,
+                # P2.5 — the five arch-level persistent handles
+                # (t_seq_token_embed, t_seq_final_norm_gamma, t_seq_output,
+                # t_seq_w_proj) and the blocks array now LIVE on @seq_arch
+                # (Toy::LLM::Archs::LlamaArch). Cache delegators below
+                # preserve the public accessor surface so the realize
+                # paths, external PCA-init (fcache.t_seq_w_proj=), and the
+                # examples (fcache.t_seq_*) keep working by name.
+                :seq_arch,
                 :seq_has_untied_output, :seq_has_qkv_bias,
-                :seq_blocks_ffi,
                 :seq_t, :seq_b, :seq_d_model, :seq_d_ff, :seq_n_heads, :seq_n_kv,
                 :seq_d_head, :seq_group_size, :seq_n_layers, :seq_vocab_size,
                 :seq_rope_base, :seq_rope_scaling, :t_seq_rope_freq_factors,
@@ -70,7 +73,27 @@ class LlamaSeqForwardFFICache
                 # (previously hit CUDA's gridDim.y = 65535 cap).
                 :ft_train_embeddings_enabled
 
+  # P2.5 — delegators forwarding the arch-owned handle accessors to
+  # @seq_arch (Toy::LLM::Archs::LlamaArch). These preserve the cache's
+  # former public attr_accessor surface (the realize paths assign via
+  # self.t_seq_token_embed=, external PCA-init writes fcache.t_seq_w_proj=,
+  # examples read fcache.t_seq_*). Single source of truth: the arch.
+  def t_seq_token_embed;        @seq_arch.t_seq_token_embed;        end
+  def t_seq_token_embed=(v);    @seq_arch.t_seq_token_embed = v;    end
+  def t_seq_final_norm_gamma;     @seq_arch.t_seq_final_norm_gamma;     end
+  def t_seq_final_norm_gamma=(v); @seq_arch.t_seq_final_norm_gamma = v; end
+  def t_seq_output;             @seq_arch.t_seq_output;             end
+  def t_seq_output=(v);         @seq_arch.t_seq_output = v;         end
+  def t_seq_w_proj;             @seq_arch.t_seq_w_proj;             end
+  def t_seq_w_proj=(v);         @seq_arch.t_seq_w_proj = v;         end
+  def seq_blocks_ffi;           @seq_arch.seq_blocks_ffi;           end
+  def seq_blocks_ffi=(v);       @seq_arch.seq_blocks_ffi = v;       end
+
   def initialize
+    # P2.5 — the arch owns the arch-level persistent handles + the
+    # blocks array (seeded with one block in the arch ctor, matching the
+    # former cache seed). Constructed first so the delegators are live.
+    @seq_arch       = Toy::LLM::Archs::LlamaArch.new
     @seq_realized   = false
     @seq_t          = 0
     @seq_b          = 1
@@ -104,12 +127,11 @@ class LlamaSeqForwardFFICache
     @t_seq_rope_freq_factors  = TinyNN.tnn_null_ptr
     @seq_rms_eps    = 1.0e-5
     @sess                  = TinyNN.tnn_null_ptr
-    @t_seq_token_embed     = TinyNN.tnn_null_ptr
-    @t_seq_final_norm_gamma = TinyNN.tnn_null_ptr
-    @t_seq_output          = TinyNN.tnn_null_ptr
+    # P2.5 — token_embed / final_norm_gamma / output / w_proj and the
+    # blocks array are seeded on @seq_arch (see arch ctor); the cache
+    # reaches them via the delegators above.
     @seq_has_untied_output = false
     @seq_has_qkv_bias      = false
-    @seq_blocks_ffi        = [Toy::LLM::Blocks::TransformerBlock.new]
     @seq_gguf_handle_keepalive = TinyNN.tnn_null_ptr
     @t_seq_token_ids = TinyNN.tnn_null_ptr
     @t_seq_positions = TinyNN.tnn_null_ptr
@@ -130,11 +152,12 @@ class LlamaSeqForwardFFICache
     @ft_globals_v       = [TinyNN.tnn_null_ptr]; @ft_globals_v.pop
     @ft_train_embeddings_enabled = false
     # E2.3 (towards GH#14) — projection-lens path. donor_d_in is read
-    # from cfg in realize_for_random_init; @t_seq_w_proj is the
+    # from cfg in realize_for_random_init; t_seq_w_proj is the
     # trainable [donor_d_in, d_model] linear inserted after the embed
     # get_rows when donor_d_in > 0.
     @seq_donor_d_in   = 0
-    @t_seq_w_proj     = TinyNN.tnn_null_ptr
+    # P2.5 — t_seq_w_proj is seeded on @seq_arch (arch ctor); cache
+    # reaches it via the t_seq_w_proj delegator.
   end
 
   # F3 — additionally train the embedding / final-norm gamma / untied
@@ -218,26 +241,26 @@ class LlamaSeqForwardFFICache
     # MATCHING type (verbatim copy requires source/target types match).
     eidx = TinyNN.tnn_gguf_find_index(gguf_handle, "token_embd.weight")
     etyp = TinyNN.tnn_gguf_tensor_type(gguf_handle, eidx)
-    @t_seq_token_embed = TinyNN.tnn_input_2d_persistent_typed(@sess,
+    self.t_seq_token_embed = TinyNN.tnn_input_2d_persistent_typed(@sess,
                            @seq_vocab_size, @seq_d_model, etyp)
-    @t_seq_final_norm_gamma = TinyNN.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
+    self.t_seq_final_norm_gamma = TinyNN.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
     if untied
       oidx = TinyNN.tnn_gguf_find_index(gguf_handle, "output.weight")
       otyp = TinyNN.tnn_gguf_tensor_type(gguf_handle, oidx)
-      @t_seq_output = TinyNN.tnn_input_2d_persistent_typed(@sess,
+      self.t_seq_output = TinyNN.tnn_input_2d_persistent_typed(@sess,
                         @seq_vocab_size, @seq_d_model, otyp)
     end
 
-    @seq_blocks_ffi = [Toy::LLM::Blocks::TransformerBlock.new]
+    self.seq_blocks_ffi = [Toy::LLM::Blocks::TransformerBlock.new]
     li_init = 1
     while li_init < @seq_n_layers
-      @seq_blocks_ffi.push(Toy::LLM::Blocks::TransformerBlock.new)
+      self.seq_blocks_ffi.push(Toy::LLM::Blocks::TransformerBlock.new)
       li_init = li_init + 1
     end
 
     li = 0
     while li < @seq_n_layers
-      blk    = @seq_blocks_ffi[li]
+      blk    = self.seq_blocks_ffi[li]
       prefix = "blk." + li.to_s
 
       blk.t_seq_rn1_gamma = TinyNN.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
@@ -339,7 +362,7 @@ class LlamaSeqForwardFFICache
     if @seq_lora_q_enabled
       li2 = 0
       while li2 < @seq_n_layers
-        blk2 = @seq_blocks_ffi[li2]
+        blk2 = self.seq_blocks_ffi[li2]
         hq_p = 0
         while hq_p < @seq_n_heads
           TinyNN.tnn_set_param(blk2.t_seq_w_lora_a_q[hq_p])
@@ -375,17 +398,17 @@ class LlamaSeqForwardFFICache
 
     # Load all weight bytes from the GGUF into the now-allocated
     # backend buffers. Verbatim copy keeps Q8 as Q8.
-    TinyNN.tnn_gguf_copy_verbatim_to_persistent(gguf_handle, eidx, @sess, @t_seq_token_embed)
+    TinyNN.tnn_gguf_copy_verbatim_to_persistent(gguf_handle, eidx, @sess, self.t_seq_token_embed)
     fnidx = TinyNN.tnn_gguf_find_index(gguf_handle, "output_norm.weight")
-    TinyNN.tnn_gguf_copy_1d_to_persistent(gguf_handle, fnidx, @sess, @t_seq_final_norm_gamma)
+    TinyNN.tnn_gguf_copy_1d_to_persistent(gguf_handle, fnidx, @sess, self.t_seq_final_norm_gamma)
     if untied
       oidx2 = TinyNN.tnn_gguf_find_index(gguf_handle, "output.weight")
-      TinyNN.tnn_gguf_copy_verbatim_to_persistent(gguf_handle, oidx2, @sess, @t_seq_output)
+      TinyNN.tnn_gguf_copy_verbatim_to_persistent(gguf_handle, oidx2, @sess, self.t_seq_output)
     end
 
     li_l = 0
     while li_l < @seq_n_layers
-      blk    = @seq_blocks_ffi[li_l]
+      blk    = self.seq_blocks_ffi[li_l]
       prefix = "blk." + li_l.to_s
       rn1_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_norm.weight")
       rn2_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_norm.weight")
@@ -451,7 +474,7 @@ class LlamaSeqForwardFFICache
       while j < @seq_d_head * @seq_lora_q_rank; zb.flat[j] = 0.0; j = j + 1; end
       li_z = 0
       while li_z < @seq_n_layers
-        blk_z = @seq_blocks_ffi[li_z]
+        blk_z = self.seq_blocks_ffi[li_z]
         hqz = 0
         while hqz < @seq_n_heads
           TinyNN.upload_row_major(@sess, blk_z.t_seq_w_lora_a_q_m[hqz], za)
@@ -519,32 +542,32 @@ class LlamaSeqForwardFFICache
     eidx = TinyNN.tnn_gguf_find_index(gguf_handle, "token_embd.weight")
     eoff = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, eidx)
     etyp = TinyNN.tnn_gguf_tensor_type(gguf_handle, eidx)
-    @t_seq_token_embed = TinyNN.tnn_input_2d_persistent_mmap(@sess,
+    self.t_seq_token_embed = TinyNN.tnn_input_2d_persistent_mmap(@sess,
                            @seq_vocab_size, @seq_d_model, etyp, eoff)
 
     fnidx = TinyNN.tnn_gguf_find_index(gguf_handle, "output_norm.weight")
     fnoff = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, fnidx)
-    @t_seq_final_norm_gamma = TinyNN.tnn_input_1d_persistent_mmap(@sess,
+    self.t_seq_final_norm_gamma = TinyNN.tnn_input_1d_persistent_mmap(@sess,
                                 @seq_d_model, 0, fnoff)
 
     if untied
       oidx = TinyNN.tnn_gguf_find_index(gguf_handle, "output.weight")
       ooff = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, oidx)
       otyp = TinyNN.tnn_gguf_tensor_type(gguf_handle, oidx)
-      @t_seq_output = TinyNN.tnn_input_2d_persistent_mmap(@sess,
+      self.t_seq_output = TinyNN.tnn_input_2d_persistent_mmap(@sess,
                         @seq_vocab_size, @seq_d_model, otyp, ooff)
     end
 
-    @seq_blocks_ffi = [Toy::LLM::Blocks::TransformerBlock.new]
+    self.seq_blocks_ffi = [Toy::LLM::Blocks::TransformerBlock.new]
     li_init = 1
     while li_init < @seq_n_layers
-      @seq_blocks_ffi.push(Toy::LLM::Blocks::TransformerBlock.new)
+      self.seq_blocks_ffi.push(Toy::LLM::Blocks::TransformerBlock.new)
       li_init = li_init + 1
     end
 
     li = 0
     while li < @seq_n_layers
-      blk = @seq_blocks_ffi[li]
+      blk = self.seq_blocks_ffi[li]
       prefix = "blk." + li.to_s
 
       rn1_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_norm.weight")
@@ -713,7 +736,7 @@ class LlamaSeqForwardFFICache
     if @seq_lora_q_enabled
       li2 = 0
       while li2 < @seq_n_layers
-        blk2 = @seq_blocks_ffi[li2]
+        blk2 = self.seq_blocks_ffi[li2]
         hq_p = 0
         while hq_p < @seq_n_heads
           TinyNN.tnn_set_param(blk2.t_seq_w_lora_a_q[hq_p])
@@ -758,7 +781,7 @@ class LlamaSeqForwardFFICache
       while j < @seq_d_head * @seq_lora_q_rank; zb.flat[j] = 0.0; j = j + 1; end
       li_z = 0
       while li_z < @seq_n_layers
-        blk_z = @seq_blocks_ffi[li_z]
+        blk_z = self.seq_blocks_ffi[li_z]
         hqz = 0
         while hqz < @seq_n_heads
           TinyNN.upload_row_major(@sess, blk_z.t_seq_w_lora_a_q_m[hqz], za)
@@ -821,19 +844,19 @@ class LlamaSeqForwardFFICache
     # they stay mmap'd / read-only (still need a mmap attach for
     # this branch).
     if @ft_train_embeddings_enabled
-      @t_seq_token_embed = TinyNN.tnn_input_2d_f32_persistent(@sess,
+      self.t_seq_token_embed = TinyNN.tnn_input_2d_f32_persistent(@sess,
                              @seq_vocab_size, @seq_d_model)
-      ft_add_global_2d(@t_seq_token_embed, @seq_vocab_size, @seq_d_model)
+      ft_add_global_2d(self.t_seq_token_embed, @seq_vocab_size, @seq_d_model)
       ft_name_last_global("token_embd.weight")
 
-      @t_seq_final_norm_gamma = TinyNN.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
-      ft_add_global_1d(@t_seq_final_norm_gamma)
+      self.t_seq_final_norm_gamma = TinyNN.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
+      ft_add_global_1d(self.t_seq_final_norm_gamma)
       ft_name_last_global("output_norm.weight")
 
       if untied
-        @t_seq_output = TinyNN.tnn_input_2d_f32_persistent(@sess,
+        self.t_seq_output = TinyNN.tnn_input_2d_f32_persistent(@sess,
                           @seq_vocab_size, @seq_d_model)
-        ft_add_global_2d(@t_seq_output, @seq_vocab_size, @seq_d_model)
+        ft_add_global_2d(self.t_seq_output, @seq_vocab_size, @seq_d_model)
         ft_name_last_global("output.weight")
       end
     else
@@ -844,27 +867,27 @@ class LlamaSeqForwardFFICache
       eidx = TinyNN.tnn_gguf_find_index(gguf_handle, "token_embd.weight")
       eoff = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, eidx)
       etyp = TinyNN.tnn_gguf_tensor_type(gguf_handle, eidx)
-      @t_seq_token_embed = TinyNN.tnn_input_2d_persistent_mmap(@sess,
+      self.t_seq_token_embed = TinyNN.tnn_input_2d_persistent_mmap(@sess,
                              @seq_vocab_size, @seq_d_model, etyp, eoff)
 
       fnidx = TinyNN.tnn_gguf_find_index(gguf_handle, "output_norm.weight")
       fnoff = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, fnidx)
-      @t_seq_final_norm_gamma = TinyNN.tnn_input_1d_persistent_mmap(@sess,
+      self.t_seq_final_norm_gamma = TinyNN.tnn_input_1d_persistent_mmap(@sess,
                                   @seq_d_model, 0, fnoff)
 
       if untied
         oidx = TinyNN.tnn_gguf_find_index(gguf_handle, "output.weight")
         ooff = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, oidx)
         otyp = TinyNN.tnn_gguf_tensor_type(gguf_handle, oidx)
-        @t_seq_output = TinyNN.tnn_input_2d_persistent_mmap(@sess,
+        self.t_seq_output = TinyNN.tnn_input_2d_persistent_mmap(@sess,
                           @seq_vocab_size, @seq_d_model, otyp, ooff)
       end
     end
 
-    @seq_blocks_ffi = [Toy::LLM::Blocks::TransformerBlock.new]
+    self.seq_blocks_ffi = [Toy::LLM::Blocks::TransformerBlock.new]
     li_init = 1
     while li_init < @seq_n_layers
-      @seq_blocks_ffi.push(Toy::LLM::Blocks::TransformerBlock.new)
+      self.seq_blocks_ffi.push(Toy::LLM::Blocks::TransformerBlock.new)
       li_init = li_init + 1
     end
 
@@ -873,7 +896,7 @@ class LlamaSeqForwardFFICache
     # build_training_step can emit opt_step per weight.
     li = 0
     while li < @seq_n_layers
-      blk = @seq_blocks_ffi[li]
+      blk = self.seq_blocks_ffi[li]
       prefix = "blk." + li.to_s + "."
 
       blk.t_seq_rn1_gamma = TinyNN.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
@@ -1086,47 +1109,47 @@ class LlamaSeqForwardFFICache
     # the first block. When 0, behaviour is identical to before.
     if @seq_donor_d_in > 0
       # token_embd ne=[donor_d_in, vocab] — donor-width rows.
-      @t_seq_token_embed = TinyNN.tnn_input_2d_f32_persistent(@sess,
+      self.t_seq_token_embed = TinyNN.tnn_input_2d_f32_persistent(@sess,
                              @seq_vocab_size, @seq_donor_d_in)
       # Frozen — NOT in ft_globals so backward won't compute its grad
       # and build_training_step won't emit an opt_step for it. Caller
       # uploads donor values post-finalize.
-      TinyNN.tnn_tensor_set_name(@t_seq_token_embed, "token_embd.weight")
+      TinyNN.tnn_tensor_set_name(self.t_seq_token_embed, "token_embd.weight")
       # W_proj ne=[donor_d_in, d_model] so matmul(W_proj, embed)
       # contracts donor_d_in → d_model. Trainable.
-      @t_seq_w_proj = TinyNN.tnn_input_2d_f32_persistent(@sess,
+      self.t_seq_w_proj = TinyNN.tnn_input_2d_f32_persistent(@sess,
                         @seq_d_model, @seq_donor_d_in)
-      ft_add_global_2d(@t_seq_w_proj, @seq_d_model, @seq_donor_d_in)
+      ft_add_global_2d(self.t_seq_w_proj, @seq_d_model, @seq_donor_d_in)
       ft_name_last_global("lens.proj.weight")
     else
-      @t_seq_token_embed = TinyNN.tnn_input_2d_f32_persistent(@sess,
+      self.t_seq_token_embed = TinyNN.tnn_input_2d_f32_persistent(@sess,
                              @seq_vocab_size, @seq_d_model)
-      ft_add_global_2d(@t_seq_token_embed, @seq_vocab_size, @seq_d_model)
+      ft_add_global_2d(self.t_seq_token_embed, @seq_vocab_size, @seq_d_model)
       ft_name_last_global("token_embd.weight")
     end
 
-    @t_seq_final_norm_gamma = TinyNN.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
-    ft_add_global_1d(@t_seq_final_norm_gamma)
+    self.t_seq_final_norm_gamma = TinyNN.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
+    ft_add_global_1d(self.t_seq_final_norm_gamma)
     ft_name_last_global("output_norm.weight")
 
     if untied
-      @t_seq_output = TinyNN.tnn_input_2d_f32_persistent(@sess,
+      self.t_seq_output = TinyNN.tnn_input_2d_f32_persistent(@sess,
                         @seq_vocab_size, @seq_d_model)
-      ft_add_global_2d(@t_seq_output, @seq_vocab_size, @seq_d_model)
+      ft_add_global_2d(self.t_seq_output, @seq_vocab_size, @seq_d_model)
       ft_name_last_global("output.weight")
     end
 
     # Per-block weights — identical structure to realize_for_full_finetune.
-    @seq_blocks_ffi = [Toy::LLM::Blocks::TransformerBlock.new]
+    self.seq_blocks_ffi = [Toy::LLM::Blocks::TransformerBlock.new]
     li_init = 1
     while li_init < @seq_n_layers
-      @seq_blocks_ffi.push(Toy::LLM::Blocks::TransformerBlock.new)
+      self.seq_blocks_ffi.push(Toy::LLM::Blocks::TransformerBlock.new)
       li_init = li_init + 1
     end
 
     li = 0
     while li < @seq_n_layers
-      blk = @seq_blocks_ffi[li]
+      blk = self.seq_blocks_ffi[li]
       prefix = "blk." + li.to_s + "."
 
       blk.t_seq_rn1_gamma = TinyNN.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
@@ -1276,14 +1299,14 @@ class LlamaSeqForwardFFICache
     # overwrite with real donor values after realize); the trainable
     # projection W_proj [donor_d_in, d_model] also gets a Gaussian init.
     embed_cols = @seq_donor_d_in > 0 ? @seq_donor_d_in : @seq_d_model
-    upload_gaussian(@t_seq_token_embed, @seq_vocab_size * embed_cols, 0.02, state)
+    upload_gaussian(self.t_seq_token_embed, @seq_vocab_size * embed_cols, 0.02, state)
     if @seq_donor_d_in > 0
-      upload_gaussian(@t_seq_w_proj, @seq_donor_d_in * @seq_d_model,
+      upload_gaussian(self.t_seq_w_proj, @seq_donor_d_in * @seq_d_model,
                        1.0 / Math.sqrt(@seq_donor_d_in.to_f), state)
     end
-    upload_constant(@t_seq_final_norm_gamma, @seq_d_model, 1.0)
+    upload_constant(self.t_seq_final_norm_gamma, @seq_d_model, 1.0)
     if untied
-      upload_gaussian(@t_seq_output, @seq_vocab_size * @seq_d_model, 0.02, state)
+      upload_gaussian(self.t_seq_output, @seq_vocab_size * @seq_d_model, 0.02, state)
     end
 
     inv_sqrt_d   = init_scale / Math.sqrt(@seq_d_model.to_f)
@@ -1291,7 +1314,7 @@ class LlamaSeqForwardFFICache
 
     li = 0
     while li < @seq_n_layers
-      blk = @seq_blocks_ffi[li]
+      blk = self.seq_blocks_ffi[li]
       upload_constant(blk.t_seq_rn1_gamma, @seq_d_model, 1.0)
       upload_constant(blk.t_seq_rn2_gamma, @seq_d_model, 1.0)
 
@@ -1419,12 +1442,12 @@ class LlamaSeqForwardFFICache
   # into their now-allocated backend buffers.
   def ft_load_globals(gguf, untied)
     eidx = TinyNN.tnn_gguf_find_index(gguf, "token_embd.weight")
-    TinyNN.tnn_gguf_copy_to_persistent(gguf, eidx, @sess, @t_seq_token_embed)
+    TinyNN.tnn_gguf_copy_to_persistent(gguf, eidx, @sess, self.t_seq_token_embed)
     fnidx = TinyNN.tnn_gguf_find_index(gguf, "output_norm.weight")
-    TinyNN.tnn_gguf_copy_1d_to_persistent(gguf, fnidx, @sess, @t_seq_final_norm_gamma)
+    TinyNN.tnn_gguf_copy_1d_to_persistent(gguf, fnidx, @sess, self.t_seq_final_norm_gamma)
     if untied
       oidx = TinyNN.tnn_gguf_find_index(gguf, "output.weight")
-      TinyNN.tnn_gguf_copy_to_persistent(gguf, oidx, @sess, @t_seq_output)
+      TinyNN.tnn_gguf_copy_to_persistent(gguf, oidx, @sess, self.t_seq_output)
     end
   end
 
@@ -1443,7 +1466,7 @@ class LlamaSeqForwardFFICache
   def ft_load_from_gguf(gguf, qkv_bias)
     li = 0
     while li < @seq_n_layers
-      blk = @seq_blocks_ffi[li]
+      blk = self.seq_blocks_ffi[li]
       prefix = "blk." + li.to_s
 
       rn1_idx = TinyNN.tnn_gguf_find_index(gguf, prefix + ".attn_norm.weight")
@@ -1513,7 +1536,7 @@ class LlamaSeqForwardFFICache
   def ft_zero_init_adam(qkv_bias)
     li = 0
     while li < @seq_n_layers
-      blk = @seq_blocks_ffi[li]
+      blk = self.seq_blocks_ffi[li]
       i = 0
       while i < blk.ft_weights.length
         TinyNN.tnn_zero_tensor(@sess, blk.ft_m[i])
@@ -1529,6 +1552,15 @@ class LlamaSeqForwardFFICache
   # (e.g. when switching from inference to training, which needs the
   # forward + loss + backward + opt_step all in one rebuilt ctx).
   # Stores the per-graph tensor handles back on `self`.
+  # P2.5 — thin wrapper around Toy::LLM::Archs::LlamaArch#build_forward.
+  # Allocates the per-graph INPUT handles (token_ids, positions) — which
+  # stay CACHE-owned graph I/O, read by forward() and the uploaders —
+  # then hands the realize-set rope_cfg / donor_d_in onto the arch and
+  # calls the lifted orchestration. The three per-graph OUTPUT handles
+  # come back in a LlamaArchForwardOut and are spread onto the cache's
+  # own ivars so every downstream reader (@t_seq_logits accessor,
+  # build_training_step CE-loss consumer, examples/06 fcache.t_seq_logits)
+  # is untouched.
   def build_forward_in_current_ctx
     # GH#7 — at B=1, @seq_t * @seq_b == @seq_t (legacy behaviour).
     # At B>1, the layout is flat [T*B]: per-batch positions cycle
@@ -1539,46 +1571,22 @@ class LlamaSeqForwardFFICache
     @t_seq_token_ids = TinyNN.tnn_input_1d_i32(@sess, tb)
     @t_seq_positions = TinyNN.tnn_input_1d_i32_ctx(@sess, tb)
 
-    eps   = @seq_rms_eps
-    scale = 1.0 / Math.sqrt(@seq_d_head.to_f)
+    # The arch reads seq_rope_cfg / seq_donor_d_in off itself; the cache
+    # rebuilds rope_cfg and sets donor_d_in in each realize prologue, so
+    # mirror the realize-set values onto the arch right before the call.
+    @seq_arch.seq_rope_cfg   = @seq_rope_cfg
+    @seq_arch.seq_donor_d_in = @seq_donor_d_in
 
-    # Per-forward block context: the 13 config/handle values the block
-    # body reads. Positional Struct (no keyword_init) — matches the
-    # TransformerBlockCtx member order exactly. Built once before the
-    # block-stacking loop; shared (read-only) across all blocks.
-    ctx = Toy::LLM::Blocks::TransformerBlockCtx.new(
-      scale, eps, @seq_n_kv, @seq_n_heads, @seq_group_size,
-      @seq_has_qkv_bias, @seq_weight_dtype, @seq_lora_q_enabled,
-      @t_seq_positions, @t_seq_rope_freq_factors, @seq_rope_cfg,
-      @seq_t, @seq_b, @t_seq_attn_mask)
+    out = @seq_arch.build_forward(
+      @sess, @t_seq_token_ids, @t_seq_positions, @t_seq_rope_freq_factors,
+      @t_seq_attn_mask, @seq_rms_eps, @seq_d_head, @seq_n_kv, @seq_n_heads,
+      @seq_group_size, @seq_has_qkv_bias, @seq_weight_dtype,
+      @seq_lora_q_enabled, @seq_t, @seq_b, @seq_n_layers,
+      @seq_has_untied_output)
 
-    @t_seq_x_embed = TinyNN.tnn_get_rows(@sess, @t_seq_token_embed, @t_seq_token_ids)
-    TinyNN.tnn_set_output(@t_seq_x_embed)
-
-    # E2.3 — projection lens. ggml matmul(W, x) with W=[donor_d_in, d_model]
-    # and x=[donor_d_in, T] gives [d_model, T] (contraction on ne[0]).
-    if @seq_donor_d_in > 0
-      t_proj = TinyNN.tnn_matmul(@sess, @t_seq_w_proj, @t_seq_x_embed)
-      TinyNN.tnn_set_output(t_proj)
-      t_cur = t_proj
-    else
-      t_cur = @t_seq_x_embed
-    end
-    li_g = 0
-    while li_g < @seq_n_layers
-      t_cur = @seq_blocks_ffi[li_g].build_forward(@sess, t_cur, ctx)
-      li_g = li_g + 1
-    end
-
-    @t_seq_x_final = Toy::LLM::Primitives::RMSNorm.build(@sess, t_cur, @t_seq_final_norm_gamma, eps)
-    TinyNN.tnn_set_output(@t_seq_x_final)
-
-    if @seq_has_untied_output
-      @t_seq_logits = TinyNN.tnn_matmul(@sess, @t_seq_output, @t_seq_x_final)
-    else
-      @t_seq_logits = TinyNN.tnn_matmul(@sess, @t_seq_token_embed, @t_seq_x_final)
-    end
-    TinyNN.tnn_set_output(@t_seq_logits)
+    @t_seq_x_embed = out.t_seq_x_embed
+    @t_seq_x_final = out.t_seq_x_final
+    @t_seq_logits  = out.t_seq_logits
   end
 
   # M3 step 3 — rebuild the session graph as forward + CE loss + backward
@@ -1619,7 +1627,7 @@ class LlamaSeqForwardFFICache
       # triple. The arrays are populated in realize_for_full_finetune.
       li = 0
       while li < @seq_n_layers
-        blk = @seq_blocks_ffi[li]
+        blk = self.seq_blocks_ffi[li]
         wi = 0
         while wi < blk.ft_weights.length
           tw = blk.ft_weights[wi]
@@ -1647,7 +1655,7 @@ class LlamaSeqForwardFFICache
       # so sched sees the writes.
       li = 0
       while li < @seq_n_layers
-        blk = @seq_blocks_ffi[li]
+        blk = self.seq_blocks_ffi[li]
         hq = 0
         while hq < @seq_n_heads
           t_a       = blk.t_seq_w_lora_a_q[hq]
@@ -1714,7 +1722,7 @@ class LlamaSeqForwardFFICache
     end
     li = 0
     while li < @seq_n_layers
-      blk = @seq_blocks_ffi[li]
+      blk = self.seq_blocks_ffi[li]
       hq = 0
       while hq < @seq_n_heads
         ii = 0

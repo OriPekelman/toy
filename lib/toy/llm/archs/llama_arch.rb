@@ -1,0 +1,148 @@
+# lib/toy/llm/archs/llama_arch.rb — L3 arch: the llama/qwen-family
+# sequence-mode forward orchestration (token-embed get_rows → optional
+# projection-lens matmul → stacked L2 transformer blocks → final RMSNorm
+# → tied/untied logits matmul).
+#
+# Extracted from lib/llama_seq_forward_ffi.rb (P2.5). This is the
+# MINIMAL faithful lift of LlamaSeqForwardFFICache#build_forward_in_current_ctx:
+# the orchestration body is moved VERBATIM (op order unchanged →
+# bit-identical graph). The arch now OWNS the arch-level persistent
+# tensor handles (token_embed, final_norm_gamma, output, w_proj, the
+# blocks array); the cache's four realize paths still ALLOCATE and
+# ASSIGN them through cache delegators (exactly the L2 pattern: the
+# block owns its weights, the cache realize paths allocate+assign them).
+#
+# DIVERGENCE from archs/README sketch: build_forward takes NO cfg and
+# does NO per_layer/with_hyper/build_initial_state/learned-position-
+# embedding. Those are forward-looking sketch only. Reality:
+# positions/RoPE live on the L2 block via the shared read-only
+# TransformerBlockCtx; one ctx is shared across all blocks; the LM head
+# is tied/untied via @seq_has_untied_output; an optional E2.3
+# projection-lens matmul sits between embed and blocks. This is the
+# minimal faithful lift of LlamaSeqForwardFFICache#build_forward_in_current_ctx
+# (P2.5, orchestration only).
+#
+# Spinel hygiene: NEVER Struct.new (landmine #16 / matz/spinel#1043) —
+# LlamaArchForwardOut is a hand-written plain class with an explicit
+# positional ctor; LlamaArch#initialize takes NO args and has NO
+# default-arg ctor (default-arg poisoning, landmine #4). No
+# Card/step_bind/FFI :str args at class load (step_bind :str landmine
+# 2026-05-28). Member names keep the VERBATIM `@t_seq_*` / `@seq_*`
+# prefixes from the cache for type-isolation and so cache-side
+# realize/train/decode walkers keep working by accessor name.
+#
+# This file does NOT `require_relative "tinynn"`: the loading module
+# (lib/llama_seq_forward_ffi.rb) already loads the correct backend's
+# TinyNN before requiring this arch, exactly like the L1 primitives and
+# the L2 block. The mirror generator picks the backend via the
+# monolith's require rewrite.
+
+module Toy; module LLM; module Archs
+  # Carries the three per-graph OUTPUT handles back to the cache caller,
+  # which spreads them onto its OWN ivars so every existing downstream
+  # reader (@t_seq_logits accessor, build_training_step CE-loss consumer,
+  # examples/06 fcache.t_seq_logits) is untouched.
+  #
+  # Hand-written plain class with a positional ctor — NEVER Struct.new
+  # (landmine #16 / matz/spinel#1043): a Struct's synthesized accessors
+  # would unify across modules and mis-compile unrelated callers. The
+  # member names reuse the cache's `t_seq_*` prefixes (type-isolated, no
+  # collision, same rationale as TransformerBlockCtx). Carries values,
+  # no behavior.
+  class LlamaArchForwardOut
+    attr_accessor :t_seq_x_embed, :t_seq_x_final, :t_seq_logits
+
+    def initialize(t_seq_x_embed, t_seq_x_final, t_seq_logits)
+      @t_seq_x_embed = t_seq_x_embed
+      @t_seq_x_final = t_seq_x_final
+      @t_seq_logits  = t_seq_logits
+    end
+  end
+
+  # The llama-family sequence-mode arch. Owns the arch-level persistent
+  # handles (the cache realize paths allocate+assign them via cache
+  # delegators). Field names are UNCHANGED from the former cache ivars so
+  # the cache-side realize / train / decode / tap walkers keep working by
+  # accessor name.
+  class LlamaArch
+    attr_accessor :t_seq_token_embed, :t_seq_final_norm_gamma, :t_seq_output,
+                  :t_seq_w_proj, :seq_blocks_ffi,
+                  # Orchestration-gating carriers — bare cache ivars with
+                  # no accessor before P2.5. The lens-branch guard reads
+                  # seq_donor_d_in; the shared ctx reads seq_rope_cfg.
+                  # The cache wrapper sets both from the realize-set
+                  # values before build_forward runs.
+                  :seq_donor_d_in, :seq_rope_cfg
+
+    def initialize
+      @t_seq_token_embed      = TinyNN.tnn_null_ptr
+      @t_seq_final_norm_gamma = TinyNN.tnn_null_ptr
+      @t_seq_output           = TinyNN.tnn_null_ptr
+      @t_seq_w_proj           = TinyNN.tnn_null_ptr
+      # Seed with one block — matches the former cache init (L112).
+      @seq_blocks_ffi         = [Toy::LLM::Blocks::TransformerBlock.new]
+      @seq_donor_d_in         = 0
+      # The cache overwrites seq_rope_cfg with the real RoPE::Cfg before
+      # build_forward runs (each realize prologue rebuilds it).
+      @seq_rope_cfg           = TinyNN.tnn_null_ptr
+    end
+
+    # SEQ-MODE forward orchestration. The per-graph INPUT handles
+    # (token_ids, positions) are ALLOCATED BY THE CACHE before this call
+    # (cache-owned graph I/O, read by forward() and the uploaders) and
+    # passed in; ditto t_rope_freq_factors and t_attn_mask. The arch
+    # builds: get_rows(token_embed, token_ids) → x_embed (tap), optional
+    # projection-lens matmul(w_proj, x_embed) when seq_donor_d_in>0 (tap),
+    # the shared TransformerBlockCtx built ONCE, the block-stacking loop,
+    # final RMSNorm (tap), tied/untied logits matmul (tap). Returns the
+    # three per-graph output handles in a LlamaArchForwardOut.
+    def build_forward(sess, t_token_ids, t_positions, t_rope_freq_factors,
+                      t_attn_mask, seq_eps, seq_d_head, seq_n_kv, seq_n_heads,
+                      seq_group_size, seq_has_qkv_bias, seq_weight_dtype,
+                      seq_lora_q_enabled, seq_t, seq_b, seq_n_layers,
+                      seq_has_untied_output)
+      eps   = seq_eps
+      scale = 1.0 / Math.sqrt(seq_d_head.to_f)
+
+      # Per-forward block context: the 14 config/handle values the block
+      # body reads. Positional class (no keyword_init) — matches the
+      # TransformerBlockCtx member order exactly. Built once before the
+      # block-stacking loop; shared (read-only) across all blocks.
+      ctx = Toy::LLM::Blocks::TransformerBlockCtx.new(
+        scale, eps, seq_n_kv, seq_n_heads, seq_group_size,
+        seq_has_qkv_bias, seq_weight_dtype, seq_lora_q_enabled,
+        t_positions, t_rope_freq_factors, self.seq_rope_cfg,
+        seq_t, seq_b, t_attn_mask)
+
+      x_embed = TinyNN.tnn_get_rows(sess, self.t_seq_token_embed, t_token_ids)
+      TinyNN.tnn_set_output(x_embed)
+
+      # E2.3 — projection lens. ggml matmul(W, x) with W=[donor_d_in, d_model]
+      # and x=[donor_d_in, T] gives [d_model, T] (contraction on ne[0]).
+      if self.seq_donor_d_in > 0
+        t_proj = TinyNN.tnn_matmul(sess, self.t_seq_w_proj, x_embed)
+        TinyNN.tnn_set_output(t_proj)
+        t_cur = t_proj
+      else
+        t_cur = x_embed
+      end
+      li_g = 0
+      while li_g < seq_n_layers
+        t_cur = self.seq_blocks_ffi[li_g].build_forward(sess, t_cur, ctx)
+        li_g = li_g + 1
+      end
+
+      x_final = Toy::LLM::Primitives::RMSNorm.build(sess, t_cur, self.t_seq_final_norm_gamma, eps)
+      TinyNN.tnn_set_output(x_final)
+
+      if seq_has_untied_output
+        logits = TinyNN.tnn_matmul(sess, self.t_seq_output, x_final)
+      else
+        logits = TinyNN.tnn_matmul(sess, self.t_seq_token_embed, x_final)
+      end
+      TinyNN.tnn_set_output(logits)
+
+      Toy::LLM::Archs::LlamaArchForwardOut.new(x_embed, x_final, logits)
+    end
+  end
+end; end; end
