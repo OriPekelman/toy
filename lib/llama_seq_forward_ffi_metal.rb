@@ -29,60 +29,7 @@ require_relative "toy/llm/primitives/rms_norm_metal"
 require_relative "toy/llm/primitives/rope_metal"
 require_relative "toy/llm/primitives/swiglu_metal"
 require_relative "toy/llm/primitives/gqa_metal"
-
-# Per-block tensor handles. Distinct from SmolLM2KVBlockFFI so Spinel
-# treats them as independent classes (no shared layout pressure).
-class LlamaSeqBlockFFIMetal
-  attr_accessor :t_seq_rn1_gamma, :t_seq_rn2_gamma,
-                :t_seq_w_q,  :t_seq_w_k,  :t_seq_w_v,  :t_seq_w_o,
-                :t_seq_b_q,  :t_seq_b_k,  :t_seq_b_v,
-                :t_seq_w_gate, :t_seq_w_up, :t_seq_w_down,
-                # M3 step 3: LoRA-Q adapter pair + persistent Adam moments.
-                # Same shapes as SmolLM2KVBlockFFI's lora ivars; we keep
-                # them on the seq-block so a future training driver can
-                # share weights with the KV-decode path (both classes
-                # allocate against the same gguf mmap).
-                :t_seq_w_lora_a_q, :t_seq_w_lora_b_q,
-                :t_seq_w_lora_a_q_m, :t_seq_w_lora_a_q_v,
-                :t_seq_w_lora_b_q_m, :t_seq_w_lora_b_q_v,
-                # F3 full fine-tune (CPU + CUDA via gen_cuda_mirror).
-                # Parallel arrays of (weight, m, v) triples — one entry
-                # per trainable weight tensor in this block. Populated
-                # only on the realize_for_full_finetune path; left empty
-                # in the mmap / LoRA-only paths.
-                :ft_weights, :ft_m, :ft_v,
-                # GH#15 — per-block activation tap targets for CKA.
-                # set_output-pinned intermediates so the host can download
-                # them after compute. Region names match the issue text.
-                :tap_attn_norm, :tap_ffn_out, :tap_resid_post
-
-  def initialize
-    @t_seq_rn1_gamma = TinyNNMetal.tnn_null_ptr
-    @t_seq_rn2_gamma = TinyNNMetal.tnn_null_ptr
-    @t_seq_w_q = [TinyNNMetal.tnn_null_ptr]
-    @t_seq_w_k = [TinyNNMetal.tnn_null_ptr]
-    @t_seq_w_v = [TinyNNMetal.tnn_null_ptr]
-    @t_seq_b_q = [TinyNNMetal.tnn_null_ptr]
-    @t_seq_b_k = [TinyNNMetal.tnn_null_ptr]
-    @t_seq_b_v = [TinyNNMetal.tnn_null_ptr]
-    @t_seq_w_o    = TinyNNMetal.tnn_null_ptr
-    @t_seq_w_gate = TinyNNMetal.tnn_null_ptr
-    @t_seq_w_up   = TinyNNMetal.tnn_null_ptr
-    @t_seq_w_down = TinyNNMetal.tnn_null_ptr
-    @t_seq_w_lora_a_q   = [TinyNNMetal.tnn_null_ptr]
-    @t_seq_w_lora_b_q   = [TinyNNMetal.tnn_null_ptr]
-    @t_seq_w_lora_a_q_m = [TinyNNMetal.tnn_null_ptr]
-    @t_seq_w_lora_a_q_v = [TinyNNMetal.tnn_null_ptr]
-    @t_seq_w_lora_b_q_m = [TinyNNMetal.tnn_null_ptr]
-    @t_seq_w_lora_b_q_v = [TinyNNMetal.tnn_null_ptr]
-    @ft_weights = [TinyNNMetal.tnn_null_ptr]; @ft_weights.pop
-    @ft_m       = [TinyNNMetal.tnn_null_ptr]; @ft_m.pop
-    @ft_v       = [TinyNNMetal.tnn_null_ptr]; @ft_v.pop
-    @tap_attn_norm  = TinyNNMetal.tnn_null_ptr
-    @tap_ffn_out    = TinyNNMetal.tnn_null_ptr
-    @tap_resid_post = TinyNNMetal.tnn_null_ptr
-  end
-end
+require_relative "toy/llm/blocks/transformer_block_metal"
 
 class LlamaSeqForwardFFICacheMetal
   attr_accessor :sess,
@@ -167,7 +114,7 @@ class LlamaSeqForwardFFICacheMetal
     @t_seq_output          = TinyNNMetal.tnn_null_ptr
     @seq_has_untied_output = false
     @seq_has_qkv_bias      = false
-    @seq_blocks_ffi        = [LlamaSeqBlockFFIMetal.new]
+    @seq_blocks_ffi        = [Toy::LLM::Blocks::TransformerBlock.new]
     @seq_gguf_handle_keepalive = TinyNNMetal.tnn_null_ptr
     @t_seq_token_ids = TinyNNMetal.tnn_null_ptr
     @t_seq_positions = TinyNNMetal.tnn_null_ptr
@@ -286,10 +233,10 @@ class LlamaSeqForwardFFICacheMetal
                         @seq_vocab_size, @seq_d_model, otyp)
     end
 
-    @seq_blocks_ffi = [LlamaSeqBlockFFIMetal.new]
+    @seq_blocks_ffi = [Toy::LLM::Blocks::TransformerBlock.new]
     li_init = 1
     while li_init < @seq_n_layers
-      @seq_blocks_ffi.push(LlamaSeqBlockFFIMetal.new)
+      @seq_blocks_ffi.push(Toy::LLM::Blocks::TransformerBlock.new)
       li_init = li_init + 1
     end
 
@@ -593,10 +540,10 @@ class LlamaSeqForwardFFICacheMetal
                         @seq_vocab_size, @seq_d_model, otyp, ooff)
     end
 
-    @seq_blocks_ffi = [LlamaSeqBlockFFIMetal.new]
+    @seq_blocks_ffi = [Toy::LLM::Blocks::TransformerBlock.new]
     li_init = 1
     while li_init < @seq_n_layers
-      @seq_blocks_ffi.push(LlamaSeqBlockFFIMetal.new)
+      @seq_blocks_ffi.push(Toy::LLM::Blocks::TransformerBlock.new)
       li_init = li_init + 1
     end
 
@@ -919,10 +866,10 @@ class LlamaSeqForwardFFICacheMetal
       end
     end
 
-    @seq_blocks_ffi = [LlamaSeqBlockFFIMetal.new]
+    @seq_blocks_ffi = [Toy::LLM::Blocks::TransformerBlock.new]
     li_init = 1
     while li_init < @seq_n_layers
-      @seq_blocks_ffi.push(LlamaSeqBlockFFIMetal.new)
+      @seq_blocks_ffi.push(Toy::LLM::Blocks::TransformerBlock.new)
       li_init = li_init + 1
     end
 
@@ -1175,10 +1122,10 @@ class LlamaSeqForwardFFICacheMetal
     end
 
     # Per-block weights — identical structure to realize_for_full_finetune.
-    @seq_blocks_ffi = [LlamaSeqBlockFFIMetal.new]
+    @seq_blocks_ffi = [Toy::LLM::Blocks::TransformerBlock.new]
     li_init = 1
     while li_init < @seq_n_layers
-      @seq_blocks_ffi.push(LlamaSeqBlockFFIMetal.new)
+      @seq_blocks_ffi.push(Toy::LLM::Blocks::TransformerBlock.new)
       li_init = li_init + 1
     end
 
@@ -1600,6 +1547,16 @@ class LlamaSeqForwardFFICacheMetal
     eps   = @seq_rms_eps
     scale = 1.0 / Math.sqrt(@seq_d_head.to_f)
 
+    # Per-forward block context: the 13 config/handle values the block
+    # body reads. Positional Struct (no keyword_init) — matches the
+    # TransformerBlockCtx member order exactly. Built once before the
+    # block-stacking loop; shared (read-only) across all blocks.
+    ctx = Toy::LLM::Blocks::TransformerBlockCtx.new(
+      scale, eps, @seq_n_kv, @seq_n_heads, @seq_group_size,
+      @seq_has_qkv_bias, @seq_weight_dtype, @seq_lora_q_enabled,
+      @t_seq_positions, @t_seq_rope_freq_factors, @seq_rope_cfg,
+      @seq_t, @seq_b, @t_seq_attn_mask)
+
     @t_seq_x_embed = TinyNNMetal.tnn_get_rows(@sess, @t_seq_token_embed, @t_seq_token_ids)
     TinyNNMetal.tnn_set_output(@t_seq_x_embed)
 
@@ -1614,7 +1571,7 @@ class LlamaSeqForwardFFICacheMetal
     end
     li_g = 0
     while li_g < @seq_n_layers
-      t_cur = build_seq_block(t_cur, @seq_blocks_ffi[li_g], scale, eps)
+      t_cur = @seq_blocks_ffi[li_g].build_forward(@sess, t_cur, ctx)
       li_g = li_g + 1
     end
 
@@ -1725,26 +1682,6 @@ class LlamaSeqForwardFFICacheMetal
     [t_loss, t_labels, t_hp]
   end
 
-  # GH#9 — mixed-precision matmul helper. When @seq_weight_dtype != 0,
-  # casts the F32 master weight to the chosen dtype before the matmul
-  # so the math hits the lower-precision tensor-core path. At
-  # @seq_weight_dtype == 0 this is `tnn_matmul` verbatim — bit-
-  # identical to pre-GH#9 graphs.
-  #
-  # The cast is in-graph: ggml_cast emits a CPY-with-typed-dst node
-  # that sched buffers in transient scratch. Once the matmul consumes
-  # the cast result, sched can reuse the buffer. Backward through
-  # the cast flows correctly via GGML_OP_CPY's backward case (grad
-  # of cast(src) preserves src's dtype, so the F32 master receives
-  # its grad as expected).
-  def mp_matmul(w, x)
-    if @seq_weight_dtype != 0
-      wc = TinyNNMetal.tnn_cast(@sess, w, @seq_weight_dtype)
-      return TinyNNMetal.tnn_matmul(@sess, wc, x)
-    end
-    TinyNNMetal.tnn_matmul(@sess, w, x)
-  end
-
   # GGUF type → bytes-per-row stride for per-head slicing. Mirrors the
   # SmolLM2KVFFICache helper of the same name. F32=0, Q8_0=8.
   def head_nbytes(ggml_type, d_head, d_model)
@@ -1755,141 +1692,6 @@ class LlamaSeqForwardFFICacheMetal
     else
       0
     end
-  end
-
-  # One transformer block.
-  #
-  #   h1   = RMSNorm(x)
-  #   per KV head kv_h:
-  #     k_pre = w_k[kv_h] @ h1  (+ b_k[kv_h])         ne=[d_head, T]
-  #     k     = RoPE(k_pre, positions)
-  #     v     = w_v[kv_h] @ h1  (+ b_v[kv_h])         ne=[d_head, T]
-  #     v_t   = transpose(v)                          ne=[T, d_head]
-  #   per Q head q_h (kv_h = q_h / group_size):
-  #     q_pre = w_q[q_h] @ h1  (+ b_q[q_h])           ne=[d_head, T]
-  #     q     = RoPE(q_pre, positions)
-  #     scores = k[kv_h] @ q                          ne=[T_keys, T_queries]
-  #     scaled = scores / sqrt(d_head)
-  #     masked = diag_mask_inf(scaled, 0)              causal triangle
-  #     attn   = softmax(masked)                       ne=[T, T]
-  #     head_h = v_t[kv_h] @ attn                     ne=[d_head, T]
-  #   concat heads along ne0 → ne=[d_model, T]
-  #   x_attn = x + (w_o @ concat)
-  #   h2     = RMSNorm(x_attn)
-  #   ff     = w_down @ (silu(w_gate @ h2) * (w_up @ h2))
-  #   x_out  = x_attn + ff
-  def build_seq_block(t_x, blk, scale, eps)
-    t_h = Toy::LLM::Primitives::RMSNorm.build(@sess, t_x, blk.t_seq_rn1_gamma, eps)
-    # GH#15 — tap the post-attn-norm activation. set_output keeps it
-    # alive across graph computation so the host can download it.
-    blk.tap_attn_norm = t_h
-    TinyNNMetal.tnn_set_output(t_h)
-
-    # K, V over all KV heads. Pre-compute v_t per head so the per-Q-head
-    # attention loop can index it (avoids n_heads × transpose).
-    # See lib/llama_seq_forward_ffi_cuda.rb for the Spinel landmine
-    # (issue #688 partial fix; the function-parameter type for
-    # build_seq_qhead was already locked in as IntArray before the
-    # local-var ptr-push promotion runs). Re-verified 2026-05-26 on
-    # Spinel 2183a92: bare `[]` still fires the warning.
-    t_k_per_kv  = [TinyNNMetal.tnn_null_ptr]; t_k_per_kv.pop
-    t_vt_per_kv = [TinyNNMetal.tnn_null_ptr]; t_vt_per_kv.pop
-    hkv = 0
-    while hkv < @seq_n_kv
-      t_k_raw = mp_matmul(blk.t_seq_w_k[hkv], t_h)
-      if @seq_has_qkv_bias
-        t_k_pre = TinyNNMetal.tnn_add(@sess, t_k_raw, blk.t_seq_b_k[hkv])
-      else
-        t_k_pre = t_k_raw
-      end
-      # ggml_rope_ext requires a->ne[2] == positions->ne[0]. Our K is
-      # ne=[d_head, T*B] (ne[2]=1); reshape to ne=[d_head, 1, T*B] so
-      # ne[2]==T*B, then reshape back after rope. Reshape is metadata-
-      # only (no copy) on contiguous tensors. At T=1, B=1 this is a
-      # no-op (1 == 1).
-      t_k = Toy::LLM::Primitives::RoPE.apply_2d(
-              @sess, t_k_pre, @t_seq_positions,
-              @t_seq_rope_freq_factors, @seq_rope_cfg, @seq_t, @seq_b)
-      t_k_per_kv.push(t_k)
-
-      t_v_raw = mp_matmul(blk.t_seq_w_v[hkv], t_h)
-      if @seq_has_qkv_bias
-        t_v = TinyNNMetal.tnn_add(@sess, t_v_raw, blk.t_seq_b_v[hkv])
-      else
-        t_v = t_v_raw
-      end
-      # head_out = v_t @ attn. v has ne=[d_head, T]; transpose to
-      # ne=[T, d_head] so the second matmul's contraction lines up.
-      t_v_t = TinyNNMetal.tnn_transpose(@sess, t_v)
-      t_vt_per_kv.push(t_v_t)
-      hkv = hkv + 1
-    end
-
-    # Per-Q-head attention. GQA: each Q head reads from kv_h = q_h / group_size.
-    t_head_out0 = build_seq_qhead(t_h, blk, 0, t_k_per_kv, t_vt_per_kv, scale)
-    t_head_outs = [t_head_out0]
-    hq = 1
-    while hq < @seq_n_heads
-      t_head_outs.push(build_seq_qhead(t_h, blk, hq, t_k_per_kv, t_vt_per_kv, scale))
-      hq = hq + 1
-    end
-
-    t_concat = t_head_outs[0]
-    hq2 = 1
-    while hq2 < @seq_n_heads
-      t_concat = TinyNNMetal.tnn_concat(@sess, t_concat, t_head_outs[hq2], 0)
-      hq2 = hq2 + 1
-    end
-
-    t_out_proj = mp_matmul(blk.t_seq_w_o, t_concat)
-    t_x_attn   = TinyNNMetal.tnn_add(@sess, t_x, t_out_proj)
-
-    # SwiGLU FFN.
-    t_h2    = Toy::LLM::Primitives::RMSNorm.build(@sess, t_x_attn, blk.t_seq_rn2_gamma, eps)
-    t_gate  = mp_matmul(blk.t_seq_w_gate, t_h2)
-    t_up    = mp_matmul(blk.t_seq_w_up,   t_h2)
-    t_gated = Toy::LLM::Primitives::SwiGLU.gate(@sess, t_gate, t_up)
-    t_dn    = mp_matmul(blk.t_seq_w_down, t_gated)
-    # GH#15 — tap the FFN output (pre-residual). set_output to pin.
-    blk.tap_ffn_out = t_dn
-    TinyNNMetal.tnn_set_output(t_dn)
-
-    t_resid = TinyNNMetal.tnn_add(@sess, t_x_attn, t_dn)
-    # GH#15 — tap the residual-stream value AFTER this block. Stable,
-    # matched-across-runs region name: resid_post_block.
-    blk.tap_resid_post = t_resid
-    TinyNNMetal.tnn_set_output(t_resid)
-    t_resid
-  end
-
-  def build_seq_qhead(t_h, blk, hq, t_k_per_kv, t_vt_per_kv, scale)
-    hkv = hq / @seq_group_size
-    t_q_raw = mp_matmul(blk.t_seq_w_q[hq], t_h)
-    # M3 step 3 — LoRA splice on Q (same as decode_step). With B
-    # zero-initialized this is a no-op at step 0.
-    if @seq_lora_q_enabled
-      t_lora_a   = TinyNNMetal.tnn_matmul(@sess, blk.t_seq_w_lora_a_q[hq], t_h)
-      t_lora_b_a = TinyNNMetal.tnn_matmul(@sess, blk.t_seq_w_lora_b_q[hq], t_lora_a)
-      t_q_raw    = TinyNNMetal.tnn_add(@sess, t_q_raw, t_lora_b_a)
-    end
-    if @seq_has_qkv_bias
-      t_q_pre = TinyNNMetal.tnn_add(@sess, t_q_raw, blk.t_seq_b_q[hq])
-    else
-      t_q_pre = t_q_raw
-    end
-    # Same rope-shape lift as the K path; see comment in build_seq_block.
-    t_q = Toy::LLM::Primitives::RoPE.apply_2d(
-            @sess, t_q_pre, @t_seq_positions,
-            @t_seq_rope_freq_factors, @seq_rope_cfg, @seq_t, @seq_b)
-
-    # Attention math (scores -> scaled+masked softmax -> weighted V).
-    # GQA KV-head selection (hkv) stays on the block; the primitive
-    # gets the already-selected K/Vt handles. At B=1 the mask handle
-    # (@t_seq_attn_mask) is NULL and is never read by the B=1 branch.
-    # head ne=[d_head, T*B].
-    Toy::LLM::Primitives::GQA.attention(
-      @sess, t_k_per_kv[hkv], t_q, t_vt_per_kv[hkv],
-      @t_seq_attn_mask, scale, @seq_b)
   end
 
   # Run one forward pass. `ids` and `positions` are length-T Int arrays.
