@@ -645,6 +645,86 @@ module Toy; module LLM; module Blocks
       end
     end
 
+    # P2.7 pass-3 Step 2 — fill this block's PERSISTENT backend buffers from
+    # the GGUF for the realize_for_q8_copy path (Q8-stays-Q8 verbatim copy).
+    # Moved VERBATIM from the per-block VERBATIM-COPY loop body in
+    # LlamaSeqForwardFFICache#realize_for_q8_copy (op order unchanged →
+    # bit-identical weights): this is the COPY phase that follows the
+    # alloc_q8_typed_from_gguf! ALLOC phase. The block READS its own
+    # self.t_seq_* handles (allocated by alloc_q8_typed_from_gguf!) and
+    # writes NOTHING on itself — the FFI copy primitives fill the backend
+    # buffers by handle. NO ivar reads off the cache — every value (sess,
+    # the seq dims, qkv_bias, the gguf handle, the layer index `li`) arrives
+    # as an ARG, mirroring alloc_q8_typed_from_gguf! exactly.
+    #
+    # CRITICAL constraints:
+    #   - Per-head slice args are byte-VERBATIM: w_q[hq] takes (hq, n_heads),
+    #     w_k/w_v[hkv] take (hkv, n_kv), the qkv biases take (h, d_head). A
+    #     swapped index produces deterministic-but-WRONG logits that the
+    #     2x-forward byte-identity gate cannot catch — so arg fidelity is the
+    #     load-bearing constraint, not behavior the gate observes.
+    #   - All primitives are tnn_gguf_copy_* / tnn_gguf_find_index. The
+    #     find_index :str arg is issued at RUNTIME (same as
+    #     alloc_q8_typed_from_gguf!), never block class-load scope (#16); this
+    #     path names NO LoRA tensors, so there are no cache back-calls.
+    #   - The GLOBALS verbatim-copy (token embed / final norm / untied output)
+    #     STAYS on the cache realize method — those touch cache-level handles.
+    def copy_q8_bytes_from_gguf!(sess, gguf_handle, li,
+                                 seq_n_heads, seq_n_kv, seq_d_head, qkv_bias)
+      prefix = "blk." + li.to_s
+      rn1_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_norm.weight")
+      rn2_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_norm.weight")
+      TinyNNCuda.tnn_gguf_copy_1d_to_persistent(gguf_handle, rn1_idx, sess, self.t_seq_rn1_gamma)
+      TinyNNCuda.tnn_gguf_copy_1d_to_persistent(gguf_handle, rn2_idx, sess, self.t_seq_rn2_gamma)
+
+      q_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_q.weight")
+      hq = 0
+      while hq < seq_n_heads
+        TinyNNCuda.tnn_gguf_copy_verbatim_head_slice_to_persistent(gguf_handle, q_idx, sess,
+          self.t_seq_w_q[hq], hq, seq_n_heads)
+        hq = hq + 1
+      end
+      k_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_k.weight")
+      v_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_v.weight")
+      hkv = 0
+      while hkv < seq_n_kv
+        TinyNNCuda.tnn_gguf_copy_verbatim_head_slice_to_persistent(gguf_handle, k_idx, sess,
+          self.t_seq_w_k[hkv], hkv, seq_n_kv)
+        TinyNNCuda.tnn_gguf_copy_verbatim_head_slice_to_persistent(gguf_handle, v_idx, sess,
+          self.t_seq_w_v[hkv], hkv, seq_n_kv)
+        hkv = hkv + 1
+      end
+
+      if qkv_bias
+        qb_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_q.bias")
+        kb_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_k.bias")
+        vb_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_v.bias")
+        hbq = 0
+        while hbq < seq_n_heads
+          TinyNNCuda.tnn_gguf_copy_head_bias_slice_to_persistent(gguf_handle, qb_idx, sess,
+            self.t_seq_b_q[hbq], hbq, seq_d_head)
+          hbq = hbq + 1
+        end
+        hbkv = 0
+        while hbkv < seq_n_kv
+          TinyNNCuda.tnn_gguf_copy_head_bias_slice_to_persistent(gguf_handle, kb_idx, sess,
+            self.t_seq_b_k[hbkv], hbkv, seq_d_head)
+          TinyNNCuda.tnn_gguf_copy_head_bias_slice_to_persistent(gguf_handle, vb_idx, sess,
+            self.t_seq_b_v[hbkv], hbkv, seq_d_head)
+          hbkv = hbkv + 1
+        end
+      end
+
+      o_idx    = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_output.weight")
+      gate_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_gate.weight")
+      up_idx   = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_up.weight")
+      down_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_down.weight")
+      TinyNNCuda.tnn_gguf_copy_verbatim_to_persistent(gguf_handle, o_idx,    sess, self.t_seq_w_o)
+      TinyNNCuda.tnn_gguf_copy_verbatim_to_persistent(gguf_handle, gate_idx, sess, self.t_seq_w_gate)
+      TinyNNCuda.tnn_gguf_copy_verbatim_to_persistent(gguf_handle, up_idx,   sess, self.t_seq_w_up)
+      TinyNNCuda.tnn_gguf_copy_verbatim_to_persistent(gguf_handle, down_idx, sess, self.t_seq_w_down)
+    end
+
     private
 
     def build_qhead(sess, ctx, t_h, hq, t_k_per_kv, t_vt_per_kv)

@@ -306,62 +306,22 @@ class LlamaSeqForwardFFICache
       TinyNN.tnn_gguf_copy_verbatim_to_persistent(gguf_handle, oidx2, @sess, self.t_seq_output)
     end
 
+    # P2.7 pass-3 Step 2 — the per-block VERBATIM-COPY loop body moved onto
+    # TransformerBlock#copy_q8_bytes_from_gguf! (verbatim; called ONLY from
+    # here). The copy phase fills the backend buffers allocated by the
+    # alloc_q8_typed_from_gguf! pass; the block reads its OWN t_seq_* handles
+    # and writes nothing on itself. NO ivar reads off the cache — every dim
+    # (n_heads, n_kv, d_head) and the qkv_bias flag arrive as ARGS. All the
+    # moved primitives are tnn_gguf_copy_* / tnn_gguf_find_index — the same
+    # :str-at-runtime pattern alloc_q8_typed_from_gguf! already uses, never
+    # block class-load scope (#16). The GLOBALS verbatim-copy above (token
+    # embed / final norm / untied output) STAYS on the cache — those touch
+    # cache-level t_seq_* handles, not the block.
     li_l = 0
     while li_l < @seq_n_layers
-      blk    = self.seq_blocks_ffi[li_l]
-      prefix = "blk." + li_l.to_s
-      rn1_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_norm.weight")
-      rn2_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_norm.weight")
-      TinyNN.tnn_gguf_copy_1d_to_persistent(gguf_handle, rn1_idx, @sess, blk.t_seq_rn1_gamma)
-      TinyNN.tnn_gguf_copy_1d_to_persistent(gguf_handle, rn2_idx, @sess, blk.t_seq_rn2_gamma)
-
-      q_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_q.weight")
-      hq = 0
-      while hq < @seq_n_heads
-        TinyNN.tnn_gguf_copy_verbatim_head_slice_to_persistent(gguf_handle, q_idx, @sess,
-          blk.t_seq_w_q[hq], hq, @seq_n_heads)
-        hq = hq + 1
-      end
-      k_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_k.weight")
-      v_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_v.weight")
-      hkv = 0
-      while hkv < @seq_n_kv
-        TinyNN.tnn_gguf_copy_verbatim_head_slice_to_persistent(gguf_handle, k_idx, @sess,
-          blk.t_seq_w_k[hkv], hkv, @seq_n_kv)
-        TinyNN.tnn_gguf_copy_verbatim_head_slice_to_persistent(gguf_handle, v_idx, @sess,
-          blk.t_seq_w_v[hkv], hkv, @seq_n_kv)
-        hkv = hkv + 1
-      end
-
-      if qkv_bias
-        qb_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_q.bias")
-        kb_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_k.bias")
-        vb_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_v.bias")
-        hbq = 0
-        while hbq < @seq_n_heads
-          TinyNN.tnn_gguf_copy_head_bias_slice_to_persistent(gguf_handle, qb_idx, @sess,
-            blk.t_seq_b_q[hbq], hbq, @seq_d_head)
-          hbq = hbq + 1
-        end
-        hbkv = 0
-        while hbkv < @seq_n_kv
-          TinyNN.tnn_gguf_copy_head_bias_slice_to_persistent(gguf_handle, kb_idx, @sess,
-            blk.t_seq_b_k[hbkv], hbkv, @seq_d_head)
-          TinyNN.tnn_gguf_copy_head_bias_slice_to_persistent(gguf_handle, vb_idx, @sess,
-            blk.t_seq_b_v[hbkv], hbkv, @seq_d_head)
-          hbkv = hbkv + 1
-        end
-      end
-
-      o_idx    = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_output.weight")
-      gate_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_gate.weight")
-      up_idx   = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_up.weight")
-      down_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_down.weight")
-      TinyNN.tnn_gguf_copy_verbatim_to_persistent(gguf_handle, o_idx,    @sess, blk.t_seq_w_o)
-      TinyNN.tnn_gguf_copy_verbatim_to_persistent(gguf_handle, gate_idx, @sess, blk.t_seq_w_gate)
-      TinyNN.tnn_gguf_copy_verbatim_to_persistent(gguf_handle, up_idx,   @sess, blk.t_seq_w_up)
-      TinyNN.tnn_gguf_copy_verbatim_to_persistent(gguf_handle, down_idx, @sess, blk.t_seq_w_down)
-
+      blk = self.seq_blocks_ffi[li_l]
+      blk.copy_q8_bytes_from_gguf!(@sess, gguf_handle, li_l,
+                                   @seq_n_heads, @seq_n_kv, @seq_d_head, qkv_bias)
       li_l = li_l + 1
     end
 
