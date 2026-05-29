@@ -25,6 +25,7 @@ require_relative "transformer"
 require_relative "toy"
 require_relative "toy_smollm2"
 require_relative "tinynn_cuda"
+require_relative "toy/llm/primitives/rms_norm_cuda"
 require_relative "toy/llm/primitives/rope_cuda"
 require_relative "toy/llm/primitives/swiglu_cuda"
 
@@ -1616,7 +1617,7 @@ class LlamaSeqForwardFFICacheCuda
       li_g = li_g + 1
     end
 
-    @t_seq_x_final = TinyNNCuda.tnn_rms_norm(@sess, t_cur, @t_seq_final_norm_gamma, eps)
+    @t_seq_x_final = Toy::LLM::Primitives::RMSNorm.build(@sess, t_cur, @t_seq_final_norm_gamma, eps)
     TinyNNCuda.tnn_set_output(@t_seq_x_final)
 
     if @seq_has_untied_output
@@ -1777,7 +1778,7 @@ class LlamaSeqForwardFFICacheCuda
   #   ff     = w_down @ (silu(w_gate @ h2) * (w_up @ h2))
   #   x_out  = x_attn + ff
   def build_seq_block(t_x, blk, scale, eps)
-    t_h = TinyNNCuda.tnn_rms_norm(@sess, t_x, blk.t_seq_rn1_gamma, eps)
+    t_h = Toy::LLM::Primitives::RMSNorm.build(@sess, t_x, blk.t_seq_rn1_gamma, eps)
     # GH#15 — tap the post-attn-norm activation. set_output keeps it
     # alive across graph computation so the host can download it.
     blk.tap_attn_norm = t_h
@@ -1843,7 +1844,7 @@ class LlamaSeqForwardFFICacheCuda
     t_x_attn   = TinyNNCuda.tnn_add(@sess, t_x, t_out_proj)
 
     # SwiGLU FFN.
-    t_h2    = TinyNNCuda.tnn_rms_norm(@sess, t_x_attn, blk.t_seq_rn2_gamma, eps)
+    t_h2    = Toy::LLM::Primitives::RMSNorm.build(@sess, t_x_attn, blk.t_seq_rn2_gamma, eps)
     t_gate  = mp_matmul(blk.t_seq_w_gate, t_h2)
     t_up    = mp_matmul(blk.t_seq_w_up,   t_h2)
     t_gated = Toy::LLM::Primitives::SwiGLU.gate(@sess, t_gate, t_up)
