@@ -320,6 +320,17 @@ examples/smoke_projection_lens: examples/smoke_projection_lens.rb lib/llama_seq_
 examples/smoke_gate_gqa_divergent: examples/smoke_gate_gqa_divergent.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb lib/toy_drift_grad.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
+# P2.6 — llama3 RoPE post-rope TENSOR parity gate. Builds a standalone
+# post-rope subgraph from the SAME public primitive (RoPE.apply_2d) the
+# model's K/Q paths call, with a NON-NULL, NON-TRIVIAL llama3 freq_factors
+# ptr (computed via Toy::RopeScaling.compute_llama3_freq_factors). Logit-
+# level is rope-angle-INSENSITIVE, so the gate taps the post-rope tensor:
+# asserts (a) freq_factors non-uniform / kind==:llama3, (b) post-rope output
+# byte-identical run-to-run, plus a contrast guard vs :none (NULL factors).
+# No model file, no lib/ change, no mirror regen. Run from repo root.
+examples/smoke_gate_llama3_tensor: examples/smoke_gate_llama3_tensor.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+
 # P2.6 — B>1 (micro-batch) gate. Realizes with t_batch=2 so @seq_b=2,
 # forcing the block-causal mask alloc + upload (gated on @seq_b>1) and the
 # soft_max_ext attention path (gqa.rb:50). Proves the batched graph
