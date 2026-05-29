@@ -384,28 +384,7 @@ class LlamaSeqForwardFFICacheCuda
       end
     end
 
-    # GH#7 — block-causal attention mask for B>1 (see realize_for_mmap
-    # for the same pattern). Caller sets cache.seq_b = N before realize.
-    if @seq_b > 1
-      tb_alloc = @seq_t * @seq_b
-      @t_seq_attn_mask = TinyNNCuda.tnn_input_2d_f32_persistent(@sess, tb_alloc, tb_alloc)
-    end
-
-    TinyNNCuda.tnn_finalize_weights(@sess)
-
-    # Upload llama3-style RoPE freq_factors once the backend buffer
-    # exists. Per-model constant; never re-uploaded.
-    if @seq_rope_scaling.kind == :llama3
-      ff = Toy::RopeScaling.compute_llama3_freq_factors(
-        @seq_d_head, @seq_rope_base,
-        @seq_rope_scaling.orig_max_pos, @seq_rope_scaling.factor,
-        @seq_rope_scaling.low_freq_factor, @seq_rope_scaling.high_freq_factor)
-      TinyNNCuda.tnn_upload_from_float_array(@sess, @t_seq_rope_freq_factors, ff, ff.length)
-    end
-
-    if @seq_b > 1
-      upload_block_causal_mask!
-    end
+    finalize_weights_and_upload_constants!
 
     # Load all weight bytes from the GGUF into the now-allocated
     # backend buffers. Verbatim copy keeps Q8 as Q8.
@@ -498,9 +477,7 @@ class LlamaSeqForwardFFICacheCuda
       end
     end
 
-    build_forward_in_current_ctx
-    TinyNNCuda.tnn_realize(@sess, @t_seq_logits)
-    @seq_realized = true
+    build_and_realize!
   end
 
   # Allocate persistent weights mmap'd from `gguf_handle` (caller is
@@ -737,28 +714,7 @@ class LlamaSeqForwardFFICacheCuda
       end
     end
 
-    # GH#7 — block-causal attention mask for B>1. Caller opts in by
-    # setting `cache.seq_b = N` BEFORE realize_for_mmap. At B=1 the
-    # mask stays NULL and build_seq_qhead uses diag_mask_inf + softmax
-    # (bit-identical to pre-GH#7).
-    if @seq_b > 1
-      tb_alloc = @seq_t * @seq_b
-      @t_seq_attn_mask = TinyNNCuda.tnn_input_2d_f32_persistent(@sess, tb_alloc, tb_alloc)
-    end
-
-    TinyNNCuda.tnn_finalize_weights(@sess)
-
-    if @seq_rope_scaling.kind == :llama3
-      ff = Toy::RopeScaling.compute_llama3_freq_factors(
-        @seq_d_head, @seq_rope_base,
-        @seq_rope_scaling.orig_max_pos, @seq_rope_scaling.factor,
-        @seq_rope_scaling.low_freq_factor, @seq_rope_scaling.high_freq_factor)
-      TinyNNCuda.tnn_upload_from_float_array(@sess, @t_seq_rope_freq_factors, ff, ff.length)
-    end
-
-    if @seq_b > 1
-      upload_block_causal_mask!
-    end
+    finalize_weights_and_upload_constants!
 
     # Zero-init persistent AdamW moments. Same contract as F1.2 step 6b
     # on SmolLM2KVFFICache — m and v start at 0 per the AdamW update rule.
@@ -784,9 +740,7 @@ class LlamaSeqForwardFFICacheCuda
       end
     end
 
-    build_forward_in_current_ctx
-    TinyNNCuda.tnn_realize(@sess, @t_seq_logits)
-    @seq_realized = true
+    build_and_realize!
   end
 
   # F3 — full fine-tune realize path. Parallel to realize_for_mmap
@@ -968,26 +922,7 @@ class LlamaSeqForwardFFICacheCuda
       end
     end
 
-    # GH#7 — block-causal attention mask for B>1 (see realize_for_mmap
-    # for the same pattern). Caller sets cache.seq_b = N before realize.
-    if @seq_b > 1
-      tb_alloc = @seq_t * @seq_b
-      @t_seq_attn_mask = TinyNNCuda.tnn_input_2d_f32_persistent(@sess, tb_alloc, tb_alloc)
-    end
-
-    TinyNNCuda.tnn_finalize_weights(@sess)
-
-    if @seq_rope_scaling.kind == :llama3
-      ff = Toy::RopeScaling.compute_llama3_freq_factors(
-        @seq_d_head, @seq_rope_base,
-        @seq_rope_scaling.orig_max_pos, @seq_rope_scaling.factor,
-        @seq_rope_scaling.low_freq_factor, @seq_rope_scaling.high_freq_factor)
-      TinyNNCuda.tnn_upload_from_float_array(@sess, @t_seq_rope_freq_factors, ff, ff.length)
-    end
-
-    if @seq_b > 1
-      upload_block_causal_mask!
-    end
+    finalize_weights_and_upload_constants!
 
     # Post-finalize: load every writable weight from the GGUF.
     if @ft_train_embeddings_enabled
@@ -999,9 +934,7 @@ class LlamaSeqForwardFFICacheCuda
       ft_zero_init_adam_globals
     end
 
-    build_forward_in_current_ctx
-    TinyNNCuda.tnn_realize(@sess, @t_seq_logits)
-    @seq_realized = true
+    build_and_realize!
   end
 
   # P2-α: from-scratch training entry. Allocates the same persistent
@@ -1167,39 +1100,14 @@ class LlamaSeqForwardFFICacheCuda
       gi = gi + 1
     end
 
-    # GH#7 — batched-training attention mask. Allocated in ctx_w as
-    # f32 persistent (so it survives reset_for_rebuild without being
-    # re-uploaded each step), shape ne=[T*B, T*B]. NOT marked as a
-    # param — backward must not compute its gradient. Values uploaded
-    # post-finalize. Only allocated when B>1; B=1 keeps the legacy
-    # diag_mask_inf + softmax path with @t_seq_attn_mask=NULL.
-    if @seq_b > 1
-      tb_alloc = @seq_t * @seq_b
-      @t_seq_attn_mask = TinyNNCuda.tnn_input_2d_f32_persistent(@sess, tb_alloc, tb_alloc)
-    end
-
-    TinyNNCuda.tnn_finalize_weights(@sess)
-
-    if @seq_rope_scaling.kind == :llama3
-      ff = Toy::RopeScaling.compute_llama3_freq_factors(
-        @seq_d_head, @seq_rope_base,
-        @seq_rope_scaling.orig_max_pos, @seq_rope_scaling.factor,
-        @seq_rope_scaling.low_freq_factor, @seq_rope_scaling.high_freq_factor)
-      TinyNNCuda.tnn_upload_from_float_array(@sess, @t_seq_rope_freq_factors, ff, ff.length)
-    end
-
-    if @seq_b > 1
-      upload_block_causal_mask!
-    end
+    finalize_weights_and_upload_constants!
 
     # Random-init every weight + zero biases + ones gammas.
     upload_random_init!(seed, init_scale, qkv_bias, untied)
     ft_zero_init_adam(qkv_bias)
     ft_zero_init_adam_globals
 
-    build_forward_in_current_ctx
-    TinyNNCuda.tnn_realize(@sess, @t_seq_logits)
-    @seq_realized = true
+    build_and_realize!
   end
 
   # GH#7 — build + upload the block-causal attention mask for B>1.
@@ -1494,6 +1402,53 @@ class LlamaSeqForwardFFICacheCuda
       end
       li = li + 1
     end
+  end
+
+  # P2.6 — finalize the backend weight buffers and upload the
+  # per-model constants that depend on the buffers existing. This is
+  # the identical head-of-tail shared by all four realize_for_* paths:
+  #   1. allocate the B>1 block-causal mask in ctx_w (NULL at B=1),
+  #   2. tnn_finalize_weights,
+  #   3. upload the llama3 RoPE freq_factors (no-op unless :llama3),
+  #   4. upload the B>1 block-causal mask values.
+  # Stays a CACHE method: the finalize FFI sequencing is session-scoped.
+  # Gate-covered end-to-end by smoke_projection_lens (B=1, non-llama3):
+  # the two inner branches are dead under the gate but relocate verbatim.
+  def finalize_weights_and_upload_constants!
+    # GH#7 — block-causal attention mask for B>1. At B=1 the mask stays
+    # NULL and build_seq_qhead uses diag_mask_inf + softmax. Allocated
+    # in ctx_w as f32 persistent so it survives reset_for_rebuild.
+    if @seq_b > 1
+      tb_alloc = @seq_t * @seq_b
+      @t_seq_attn_mask = TinyNNCuda.tnn_input_2d_f32_persistent(@sess, tb_alloc, tb_alloc)
+    end
+
+    TinyNNCuda.tnn_finalize_weights(@sess)
+
+    # Upload llama3-style RoPE freq_factors once the backend buffer
+    # exists. Per-model constant; never re-uploaded.
+    if @seq_rope_scaling.kind == :llama3
+      ff = Toy::RopeScaling.compute_llama3_freq_factors(
+        @seq_d_head, @seq_rope_base,
+        @seq_rope_scaling.orig_max_pos, @seq_rope_scaling.factor,
+        @seq_rope_scaling.low_freq_factor, @seq_rope_scaling.high_freq_factor)
+      TinyNNCuda.tnn_upload_from_float_array(@sess, @t_seq_rope_freq_factors, ff, ff.length)
+    end
+
+    if @seq_b > 1
+      upload_block_causal_mask!
+    end
+  end
+
+  # P2.6 — the identical tail-of-tail shared by all four realize_for_*
+  # paths: build the forward graph in the current ctx, realize it, and
+  # flip @seq_realized. Stays a CACHE method (build_forward_in_current_ctx
+  # is the cache->arch wrapper; tnn_realize is session-scoped).
+  # Gate-covered by smoke_projection_lens via realize_for_random_init.
+  def build_and_realize!
+    build_forward_in_current_ctx
+    TinyNNCuda.tnn_realize(@sess, @t_seq_logits)
+    @seq_realized = true
   end
 
   # Build the forward graph in the CURRENT compute context. Used both
