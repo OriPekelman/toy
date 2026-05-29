@@ -510,24 +510,12 @@ class LlamaSeqForwardFFICacheCuda
     TinyNNCuda.tnn_session_attach_weight_mmap(@sess, map_base, map_size)
 
     # Embeddings + final norm + optional untied LM head.
-    eidx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, "token_embd.weight")
-    eoff = TinyNNCuda.tnn_gguf_tensor_file_offset(gguf_handle, eidx)
-    etyp = TinyNNCuda.tnn_gguf_tensor_type(gguf_handle, eidx)
-    self.t_seq_token_embed = TinyNNCuda.tnn_input_2d_persistent_mmap(@sess,
-                           @seq_vocab_size, @seq_d_model, etyp, eoff)
-
-    fnidx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, "output_norm.weight")
-    fnoff = TinyNNCuda.tnn_gguf_tensor_file_offset(gguf_handle, fnidx)
-    self.t_seq_final_norm_gamma = TinyNNCuda.tnn_input_1d_persistent_mmap(@sess,
-                                @seq_d_model, 0, fnoff)
-
-    if untied
-      oidx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, "output.weight")
-      ooff = TinyNNCuda.tnn_gguf_tensor_file_offset(gguf_handle, oidx)
-      otyp = TinyNNCuda.tnn_gguf_tensor_type(gguf_handle, oidx)
-      self.t_seq_output = TinyNNCuda.tnn_input_2d_persistent_mmap(@sess,
-                        @seq_vocab_size, @seq_d_model, otyp, ooff)
-    end
+    # P2.6 pass-2 Step 1 — the three arch-owned global mmap allocs moved
+    # onto LlamaArch#load_globals_from_gguf_mmap! (verbatim; called ONLY
+    # from here). Mirrors the seed_blocks! / alloc_trainable_f32_weights!
+    # extraction precedents.
+    @seq_arch.load_globals_from_gguf_mmap!(@sess, gguf_handle,
+                                           @seq_vocab_size, @seq_d_model, untied)
 
     # P2.6 Step 2 — seeding loop moved onto the arch (LlamaArch#seed_blocks!).
     @seq_arch.seed_blocks!(@seq_n_layers)

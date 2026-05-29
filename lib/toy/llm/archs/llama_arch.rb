@@ -106,6 +106,39 @@ module Toy; module LLM; module Archs
       end
     end
 
+    # Allocate the three arch-owned PERSISTENT global tensors from the
+    # mmap'd GGUF: token_embd.weight (2d, native type), output_norm.weight
+    # (1d f32), and — when untied — output.weight (2d, native type). The
+    # cache's realize_for_mmap formerly ran this block inline (P2.6 pass-2
+    # Step 1); it is moved VERBATIM here (same FFI primitives, same
+    # find_index/file_offset/type LITERAL string lookups at runtime, same
+    # untied conditional which the GGUF round-trip gate exercises true).
+    # The arch already OWNS these accessors (L68), so no new class / Struct
+    # / FFI :str at class load. Called ONLY from realize_for_mmap — the
+    # random_init globals and full_finetune's else-branch globals are
+    # structurally different and are NOT routed through this helper.
+    # Mirrors the seed_blocks! / alloc_trainable_f32_weights! precedents.
+    def load_globals_from_gguf_mmap!(sess, gguf_handle, vocab, d_model, untied)
+      eidx = TinyNN.tnn_gguf_find_index(gguf_handle, "token_embd.weight")
+      eoff = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, eidx)
+      etyp = TinyNN.tnn_gguf_tensor_type(gguf_handle, eidx)
+      @t_seq_token_embed = TinyNN.tnn_input_2d_persistent_mmap(sess,
+                             vocab, d_model, etyp, eoff)
+
+      fnidx = TinyNN.tnn_gguf_find_index(gguf_handle, "output_norm.weight")
+      fnoff = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, fnidx)
+      @t_seq_final_norm_gamma = TinyNN.tnn_input_1d_persistent_mmap(sess,
+                                  d_model, 0, fnoff)
+
+      if untied
+        oidx = TinyNN.tnn_gguf_find_index(gguf_handle, "output.weight")
+        ooff = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, oidx)
+        otyp = TinyNN.tnn_gguf_tensor_type(gguf_handle, oidx)
+        @t_seq_output = TinyNN.tnn_input_2d_persistent_mmap(sess,
+                          vocab, d_model, otyp, ooff)
+      end
+    end
+
     # SEQ-MODE forward orchestration. The per-graph INPUT handles
     # (token_ids, positions) are ALLOCATED BY THE CACHE before this call
     # (cache-owned graph I/O, read by forward() and the uploaders) and
