@@ -320,6 +320,14 @@ examples/smoke_projection_lens: examples/smoke_projection_lens.rb lib/llama_seq_
 examples/smoke_gate_gqa_divergent: examples/smoke_gate_gqa_divergent.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb lib/toy_drift_grad.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
+# P2.6 — B>1 (micro-batch) gate. Realizes with t_batch=2 so @seq_b=2,
+# forcing the block-causal mask alloc + upload (gated on @seq_b>1) and the
+# soft_max_ext attention path (gqa.rb:50). Proves the batched graph
+# allocates the [T*B,T*B] mask and runs forward+backward; records a
+# reproducible loss baseline. MUST run from repo root (data/ts_seqs.txt).
+examples/smoke_gate_b_gt_1: examples/smoke_gate_b_gt_1.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb lib/toy_drift_grad.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+
 # P2.6 — L4 FromScratch recipe gate. Drives the same random-init config
 # as smoke_projection_lens THROUGH Toy::LLM::Recipes::FromScratch; its
 # loss curve must byte-equal the projection-lens reference.
