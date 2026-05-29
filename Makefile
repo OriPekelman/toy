@@ -369,6 +369,13 @@ examples/smoke_gguf_roundtrip: examples/smoke_gguf_roundtrip.rb lib/llama_seq_fo
 examples/smoke_gate_qkv_bias: examples/smoke_gate_qkv_bias.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
+# P2.6 gate — Q8-stays-Q8 realize_for_q8_copy branch. Loads the existing
+# Q8 GGUF, asserts blk.0 attn_q weight stays Q8_0 in memory (NOT dequant
+# to F32), deterministic forward x2 byte-identical baseline. Pure-Ruby
+# fixture (no toy_drift_grad dep; seq_blocks_ffi directly).
+examples/smoke_gate_q8_preserve: examples/smoke_gate_q8_preserve.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+
 # P2.6 CUDA gate — GPU mirror of the projection-lens smoke. Exercises
 # realize_for_random_init + seq forward on the CUDA backend so the
 # realize-path refactor can be parity-gated on GPU (CUDA self-consistency
