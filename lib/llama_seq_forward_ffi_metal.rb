@@ -1029,67 +1029,23 @@ class LlamaSeqForwardFFICacheMetal
     # (LlamaArch#seed_blocks!), which already owns @seq_blocks_ffi.
     @seq_arch.seed_blocks!(@seq_n_layers)
 
+    # P2.6 Step 4 — the per-block F32 ALLOC loop body now lives on the
+    # block (TransformerBlock#alloc_trainable_f32_weights!), which already
+    # OWNS these self.t_seq_* handles at forward time. The block takes
+    # @sess + the seq dims + the name prefix as ARGS (no ivar reads on the
+    # block) and calls the cache's ft_add_1d / ft_add_2d / ft_name_last
+    # recorders BACK through the passed `self` reference — those stay on
+    # the cache (they read @sess and issue tnn_tensor_set_name :str at
+    # runtime; never migrate into block class-load scope). w_o keeps its
+    # random_init shape ne=[d_model, n_heads*d_head] inside the block
+    # method (not unified with full_finetune's [d_model,d_model]).
     li = 0
     while li < @seq_n_layers
       blk = self.seq_blocks_ffi[li]
       prefix = "blk." + li.to_s + "."
-
-      blk.t_seq_rn1_gamma = TinyNNMetal.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
-      blk.t_seq_rn2_gamma = TinyNNMetal.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
-      ft_add_1d(blk, blk.t_seq_rn1_gamma)
-      ft_name_last(blk, prefix + "attn_norm.weight")
-      ft_add_1d(blk, blk.t_seq_rn2_gamma)
-      ft_name_last(blk, prefix + "ffn_norm.weight")
-
-      blk.t_seq_w_q = [TinyNNMetal.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model)]
-      hq = 1
-      while hq < @seq_n_heads
-        blk.t_seq_w_q.push(TinyNNMetal.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model))
-        hq = hq + 1
-      end
-      hq2 = 0
-      while hq2 < @seq_n_heads
-        ft_add_2d(blk, blk.t_seq_w_q[hq2], @seq_d_head, @seq_d_model)
-        ft_name_last(blk, prefix + "attn_q.head_" + hq2.to_s + ".weight")
-        hq2 = hq2 + 1
-      end
-
-      blk.t_seq_w_k = [TinyNNMetal.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model)]
-      blk.t_seq_w_v = [TinyNNMetal.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model)]
-      hkv = 1
-      while hkv < @seq_n_kv
-        blk.t_seq_w_k.push(TinyNNMetal.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model))
-        blk.t_seq_w_v.push(TinyNNMetal.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model))
-        hkv = hkv + 1
-      end
-      hkv2 = 0
-      while hkv2 < @seq_n_kv
-        ft_add_2d(blk, blk.t_seq_w_k[hkv2], @seq_d_head, @seq_d_model)
-        ft_name_last(blk, prefix + "attn_k.head_" + hkv2.to_s + ".weight")
-        ft_add_2d(blk, blk.t_seq_w_v[hkv2], @seq_d_head, @seq_d_model)
-        ft_name_last(blk, prefix + "attn_v.head_" + hkv2.to_s + ".weight")
-        hkv2 = hkv2 + 1
-      end
-
-      blk.t_seq_w_o    = TinyNNMetal.tnn_input_2d_f32_persistent(@sess, @seq_d_model, @seq_n_heads * @seq_d_head)
-      blk.t_seq_w_gate = TinyNNMetal.tnn_input_2d_f32_persistent(@sess, @seq_d_ff,    @seq_d_model)
-      blk.t_seq_w_up   = TinyNNMetal.tnn_input_2d_f32_persistent(@sess, @seq_d_ff,    @seq_d_model)
-      blk.t_seq_w_down = TinyNNMetal.tnn_input_2d_f32_persistent(@sess, @seq_d_model, @seq_d_ff)
-      ft_add_2d(blk, blk.t_seq_w_o,    @seq_d_model, @seq_n_heads * @seq_d_head)
-      ft_name_last(blk, prefix + "attn_output.weight")
-      ft_add_2d(blk, blk.t_seq_w_gate, @seq_d_ff,    @seq_d_model)
-      ft_name_last(blk, prefix + "ffn_gate.weight")
-      ft_add_2d(blk, blk.t_seq_w_up,   @seq_d_ff,    @seq_d_model)
-      ft_name_last(blk, prefix + "ffn_up.weight")
-      ft_add_2d(blk, blk.t_seq_w_down, @seq_d_model, @seq_d_ff)
-      ft_name_last(blk, prefix + "ffn_down.weight")
-
-      wi = 0
-      while wi < blk.ft_weights.length
-        TinyNNMetal.tnn_set_param(blk.ft_weights[wi])
-        wi = wi + 1
-      end
-
+      blk.alloc_trainable_f32_weights!(@sess, self, prefix,
+                                       @seq_d_model, @seq_d_ff, @seq_d_head,
+                                       @seq_n_heads, @seq_n_kv)
       li = li + 1
     end
 

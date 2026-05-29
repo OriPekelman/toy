@@ -243,6 +243,95 @@ module Toy; module LLM; module Blocks
       t_resid
     end
 
+    # P2.6 Step 4 — allocate this block's trainable persistent-F32 weight
+    # tensors for the random_init realize path. Moved VERBATIM from the
+    # per-block ALLOC loop body in
+    # LlamaSeqForwardFFICache#realize_for_random_init (op order unchanged
+    # → bit-identical graph): the block now OWNS the alloc + assignment of
+    # its self.t_seq_* handles, exactly as it already owns them at forward
+    # time. NO ivar reads off the cache — every value (sess, the seq dims,
+    # the name prefix) arrives as an ARG.
+    #
+    # The ft_add_1d / ft_add_2d / ft_name_last RECORDING primitives STAY
+    # on the cache and are called BACK through the passed `cache`
+    # reference: they read the cache's @sess to allocate the Adam m/v
+    # moments and (ft_name_last) issue tnn_tensor_set_name with a :str
+    # name at RUNTIME. That :str call MUST remain on the cache's realize
+    # runtime path — never migrated into block class-load scope (step_bind
+    # :str landmine 2026-05-28). They push to THIS block's
+    # ft_weights/ft_m/ft_v arrays (passed in as `self`/`blk`).
+    #
+    # CRITICAL: w_o is allocated ne=[d_model, n_heads*d_head] — VERBATIM
+    # from random_init (NOT [d_model, d_model]; the two differ under
+    # latent GQA where n_heads*d_head != d_model, a divergence the smoke
+    # gate cannot catch). Do NOT unify with realize_for_full_finetune's
+    # w_o alloc. random_init allocates NO qkv biases (the qkv_bias arg is
+    # honoured only by the uploader / Adam-zero paths), so there is no
+    # bias branch here.
+    #
+    # Closes with the per-block set_param loop (former L1082-1086) so the
+    # freshly-recorded ft_weights become graph params, same scope as the
+    # alloc.
+    def alloc_trainable_f32_weights!(sess, cache, prefix,
+                                     seq_d_model, seq_d_ff, seq_d_head,
+                                     seq_n_heads, seq_n_kv)
+      self.t_seq_rn1_gamma = TinyNNMetal.tnn_input_1d_f32_persistent(sess, seq_d_model)
+      self.t_seq_rn2_gamma = TinyNNMetal.tnn_input_1d_f32_persistent(sess, seq_d_model)
+      cache.ft_add_1d(self, self.t_seq_rn1_gamma)
+      cache.ft_name_last(self, prefix + "attn_norm.weight")
+      cache.ft_add_1d(self, self.t_seq_rn2_gamma)
+      cache.ft_name_last(self, prefix + "ffn_norm.weight")
+
+      self.t_seq_w_q = [TinyNNMetal.tnn_input_2d_f32_persistent(sess, seq_d_head, seq_d_model)]
+      hq = 1
+      while hq < seq_n_heads
+        self.t_seq_w_q.push(TinyNNMetal.tnn_input_2d_f32_persistent(sess, seq_d_head, seq_d_model))
+        hq = hq + 1
+      end
+      hq2 = 0
+      while hq2 < seq_n_heads
+        cache.ft_add_2d(self, self.t_seq_w_q[hq2], seq_d_head, seq_d_model)
+        cache.ft_name_last(self, prefix + "attn_q.head_" + hq2.to_s + ".weight")
+        hq2 = hq2 + 1
+      end
+
+      self.t_seq_w_k = [TinyNNMetal.tnn_input_2d_f32_persistent(sess, seq_d_head, seq_d_model)]
+      self.t_seq_w_v = [TinyNNMetal.tnn_input_2d_f32_persistent(sess, seq_d_head, seq_d_model)]
+      hkv = 1
+      while hkv < seq_n_kv
+        self.t_seq_w_k.push(TinyNNMetal.tnn_input_2d_f32_persistent(sess, seq_d_head, seq_d_model))
+        self.t_seq_w_v.push(TinyNNMetal.tnn_input_2d_f32_persistent(sess, seq_d_head, seq_d_model))
+        hkv = hkv + 1
+      end
+      hkv2 = 0
+      while hkv2 < seq_n_kv
+        cache.ft_add_2d(self, self.t_seq_w_k[hkv2], seq_d_head, seq_d_model)
+        cache.ft_name_last(self, prefix + "attn_k.head_" + hkv2.to_s + ".weight")
+        cache.ft_add_2d(self, self.t_seq_w_v[hkv2], seq_d_head, seq_d_model)
+        cache.ft_name_last(self, prefix + "attn_v.head_" + hkv2.to_s + ".weight")
+        hkv2 = hkv2 + 1
+      end
+
+      self.t_seq_w_o    = TinyNNMetal.tnn_input_2d_f32_persistent(sess, seq_d_model, seq_n_heads * seq_d_head)
+      self.t_seq_w_gate = TinyNNMetal.tnn_input_2d_f32_persistent(sess, seq_d_ff,    seq_d_model)
+      self.t_seq_w_up   = TinyNNMetal.tnn_input_2d_f32_persistent(sess, seq_d_ff,    seq_d_model)
+      self.t_seq_w_down = TinyNNMetal.tnn_input_2d_f32_persistent(sess, seq_d_model, seq_d_ff)
+      cache.ft_add_2d(self, self.t_seq_w_o,    seq_d_model, seq_n_heads * seq_d_head)
+      cache.ft_name_last(self, prefix + "attn_output.weight")
+      cache.ft_add_2d(self, self.t_seq_w_gate, seq_d_ff,    seq_d_model)
+      cache.ft_name_last(self, prefix + "ffn_gate.weight")
+      cache.ft_add_2d(self, self.t_seq_w_up,   seq_d_ff,    seq_d_model)
+      cache.ft_name_last(self, prefix + "ffn_up.weight")
+      cache.ft_add_2d(self, self.t_seq_w_down, seq_d_model, seq_d_ff)
+      cache.ft_name_last(self, prefix + "ffn_down.weight")
+
+      wi = 0
+      while wi < self.ft_weights.length
+        TinyNNMetal.tnn_set_param(self.ft_weights[wi])
+        wi = wi + 1
+      end
+    end
+
     private
 
     def build_qhead(sess, ctx, t_h, hq, t_k_per_kv, t_vt_per_kv)
