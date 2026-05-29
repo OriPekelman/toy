@@ -193,18 +193,13 @@ class LlamaSeqForwardFFICache
     @seq_lora_q_adamw_enabled = true
   end
 
-  # F4 alternative realize for CUDA + Q8 base. Allocates every weight
-  # tensor in the standard ggml ctx_w (NOT the BYO mmap region), then
-  # verbatim-copies the GGUF bytes in. Buys correctness on CUDA at the
-  # cost of holding the weights twice transiently (mmap + ctx_w during
-  # load; ctx_w only after). Required because the BYO-pointer cuda
-  # buffer's quantized padding zeroing (cudaMemset past tensor data)
-  # would otherwise crash on Q8 tensors with `ne0 % 512 != 0`.
-  #
-  # Use this realize when (a) the GGUF is Q8 AND (b) the backend is
-  # CUDA. CPU + Q8 stays on realize_for_mmap (no padding issue).
-  def realize_for_q8_copy(gguf_handle, cfg, t_seq, untied, qkv_bias)
-    @seq_t          = t_seq
+  # P2.6 — shared config-prologue helper. Writes the @seq_* shape/RoPE
+  # ivars that every realize_for_* path needs before allocating tensors.
+  # Pure ivar writes reading only cfg.*; no FFI, no graph state. Each
+  # realize path keeps its own `@seq_t = t_seq` (and any path-local
+  # extras) at the call site and then calls this. Byte-identical to the
+  # block that previously lived inline in all four realize_for_* methods.
+  def apply_seq_cfg!(cfg)
     @seq_d_model    = cfg.d_model
     @seq_d_ff       = cfg.d_ff
     @seq_n_heads    = cfg.n_heads
@@ -223,6 +218,21 @@ class LlamaSeqForwardFFICache
                           @seq_rope_scaling.beta_fast,
                           @seq_rope_scaling.beta_slow)
     @seq_rms_eps    = cfg.rms_eps
+  end
+
+  # F4 alternative realize for CUDA + Q8 base. Allocates every weight
+  # tensor in the standard ggml ctx_w (NOT the BYO mmap region), then
+  # verbatim-copies the GGUF bytes in. Buys correctness on CUDA at the
+  # cost of holding the weights twice transiently (mmap + ctx_w during
+  # load; ctx_w only after). Required because the BYO-pointer cuda
+  # buffer's quantized padding zeroing (cudaMemset past tensor data)
+  # would otherwise crash on Q8 tensors with `ne0 % 512 != 0`.
+  #
+  # Use this realize when (a) the GGUF is Q8 AND (b) the backend is
+  # CUDA. CPU + Q8 stays on realize_for_mmap (no padding issue).
+  def realize_for_q8_copy(gguf_handle, cfg, t_seq, untied, qkv_bias)
+    @seq_t          = t_seq
+    apply_seq_cfg!(cfg)
 
     @seq_gguf_handle_keepalive = gguf_handle
     @sess                  = TinyNN.tnn_session_new(0)
@@ -502,24 +512,7 @@ class LlamaSeqForwardFFICache
   # loaded by either class.
   def realize_for_mmap(gguf_handle, cfg, t_seq, untied, qkv_bias)
     @seq_t          = t_seq
-    @seq_d_model    = cfg.d_model
-    @seq_d_ff       = cfg.d_ff
-    @seq_n_heads    = cfg.n_heads
-    @seq_n_kv       = cfg.n_kv
-    @seq_d_head     = cfg.head_dim
-    @seq_group_size = cfg.n_heads / cfg.n_kv
-    @seq_n_layers   = cfg.n_layers
-    @seq_vocab_size = cfg.vocab
-    @seq_rope_base    = cfg.rope_base
-    @seq_rope_scaling = cfg.rope_scaling
-    @seq_rope_cfg     = Toy::LLM::Primitives::RoPE::Cfg.new(
-                          @seq_d_head, @seq_rope_base,
-                          @seq_rope_scaling.freq_scale,
-                          @seq_rope_scaling.ext_factor,
-                          @seq_rope_scaling.attn_factor,
-                          @seq_rope_scaling.beta_fast,
-                          @seq_rope_scaling.beta_slow)
-    @seq_rms_eps    = cfg.rms_eps
+    apply_seq_cfg!(cfg)
 
     @seq_gguf_handle_keepalive = gguf_handle
     @sess                  = TinyNN.tnn_session_new(0)
@@ -807,24 +800,7 @@ class LlamaSeqForwardFFICache
   # gamma stay mmap'd (read-only) — the MVP doesn't train them.
   def realize_for_full_finetune(gguf_handle, cfg, t_seq, untied, qkv_bias)
     @seq_t          = t_seq
-    @seq_d_model    = cfg.d_model
-    @seq_d_ff       = cfg.d_ff
-    @seq_n_heads    = cfg.n_heads
-    @seq_n_kv       = cfg.n_kv
-    @seq_d_head     = cfg.head_dim
-    @seq_group_size = cfg.n_heads / cfg.n_kv
-    @seq_n_layers   = cfg.n_layers
-    @seq_vocab_size = cfg.vocab
-    @seq_rope_base    = cfg.rope_base
-    @seq_rope_scaling = cfg.rope_scaling
-    @seq_rope_cfg     = Toy::LLM::Primitives::RoPE::Cfg.new(
-                          @seq_d_head, @seq_rope_base,
-                          @seq_rope_scaling.freq_scale,
-                          @seq_rope_scaling.ext_factor,
-                          @seq_rope_scaling.attn_factor,
-                          @seq_rope_scaling.beta_fast,
-                          @seq_rope_scaling.beta_slow)
-    @seq_rms_eps    = cfg.rms_eps
+    apply_seq_cfg!(cfg)
 
     @seq_gguf_handle_keepalive = gguf_handle
     @sess                  = TinyNN.tnn_session_new(0)
@@ -1062,24 +1038,7 @@ class LlamaSeqForwardFFICache
     # pre-GH#9). 1 = F16, 30 = BF16. See mp_matmul + ivar comment in
     # initialize for the master-copy details.
     @seq_weight_dtype = weight_dtype
-    @seq_d_model    = cfg.d_model
-    @seq_d_ff       = cfg.d_ff
-    @seq_n_heads    = cfg.n_heads
-    @seq_n_kv       = cfg.n_kv
-    @seq_d_head     = cfg.head_dim
-    @seq_group_size = cfg.n_heads / cfg.n_kv
-    @seq_n_layers   = cfg.n_layers
-    @seq_vocab_size = cfg.vocab
-    @seq_rope_base    = cfg.rope_base
-    @seq_rope_scaling = cfg.rope_scaling
-    @seq_rope_cfg     = Toy::LLM::Primitives::RoPE::Cfg.new(
-                          @seq_d_head, @seq_rope_base,
-                          @seq_rope_scaling.freq_scale,
-                          @seq_rope_scaling.ext_factor,
-                          @seq_rope_scaling.attn_factor,
-                          @seq_rope_scaling.beta_fast,
-                          @seq_rope_scaling.beta_slow)
-    @seq_rms_eps    = cfg.rms_eps
+    apply_seq_cfg!(cfg)
 
     @sess                  = TinyNN.tnn_session_new(0)
     # GH#17 — per-head decomposition makes node count scale as
