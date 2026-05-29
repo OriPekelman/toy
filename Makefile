@@ -314,6 +314,16 @@ example_lmc: examples/example_lmc
 examples/smoke_projection_lens: examples/smoke_projection_lens.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb lib/toy_drift_grad.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
+# P2.6 gate — GGUF F32 mmap round-trip parity. Head-fuses a random_init
+# model into the FUSED llama.cpp naming, writes a GGUF, reloads via
+# realize_for_mmap, and asserts the reloaded forward is BIT-IDENTICAL to
+# the in-memory forward. This is the behavioral gate for realize_for_mmap
+# (previously only realize_for_random_init was gated). CPU-only: the GGUF
+# WRITE half reads host data ptrs (tnn_gguf_w_add_tensor), which the CUDA
+# writer doesn't implement — do NOT auto-mirror this to CUDA.
+examples/smoke_gguf_roundtrip: examples/smoke_gguf_roundtrip.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb lib/toy_gguf_fuse.rb lib/toy_gguf_writer.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+
 # P2.6 CUDA gate — GPU mirror of the projection-lens smoke. Exercises
 # realize_for_random_init + seq forward on the CUDA backend so the
 # realize-path refactor can be parity-gated on GPU (CUDA self-consistency
