@@ -269,104 +269,19 @@ class LlamaSeqForwardFFICacheMetal
     # P2.6 Step 2 — seeding loop moved onto the arch (LlamaArch#seed_blocks!).
     @seq_arch.seed_blocks!(@seq_n_layers)
 
+    # P2.7 pass-3 — the per-block ALLOC-typed loop body moved onto
+    # TransformerBlock#alloc_q8_typed_from_gguf! (verbatim; called ONLY
+    # from here). Mirrors load_from_gguf_mmap!'s arg-passing exactly: every
+    # dim/flag arrives as an arg, NO ivar reads off the block. The q8 path
+    # never names LoRA tensors, so the moved body is :str-free (#16-clean)
+    # — no lora_name_q! back-calls (unlike load_from_gguf_mmap!).
     li = 0
     while li < @seq_n_layers
-      blk    = self.seq_blocks_ffi[li]
-      prefix = "blk." + li.to_s
-
-      blk.t_seq_rn1_gamma = TinyNNMetal.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
-      blk.t_seq_rn2_gamma = TinyNNMetal.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
-
-      q_idx  = TinyNNMetal.tnn_gguf_find_index(gguf_handle, prefix + ".attn_q.weight")
-      q_type = TinyNNMetal.tnn_gguf_tensor_type(gguf_handle, q_idx)
-      blk.t_seq_w_q = [TinyNNMetal.tnn_input_2d_persistent_typed(@sess, @seq_d_head, @seq_d_model, q_type)]
-      hq = 1
-      while hq < @seq_n_heads
-        blk.t_seq_w_q.push(TinyNNMetal.tnn_input_2d_persistent_typed(@sess, @seq_d_head, @seq_d_model, q_type))
-        hq = hq + 1
-      end
-
-      k_idx = TinyNNMetal.tnn_gguf_find_index(gguf_handle, prefix + ".attn_k.weight")
-      v_idx = TinyNNMetal.tnn_gguf_find_index(gguf_handle, prefix + ".attn_v.weight")
-      k_type = TinyNNMetal.tnn_gguf_tensor_type(gguf_handle, k_idx)
-      v_type = TinyNNMetal.tnn_gguf_tensor_type(gguf_handle, v_idx)
-      blk.t_seq_w_k = [TinyNNMetal.tnn_input_2d_persistent_typed(@sess, @seq_d_head, @seq_d_model, k_type)]
-      blk.t_seq_w_v = [TinyNNMetal.tnn_input_2d_persistent_typed(@sess, @seq_d_head, @seq_d_model, v_type)]
-      hkv = 1
-      while hkv < @seq_n_kv
-        blk.t_seq_w_k.push(TinyNNMetal.tnn_input_2d_persistent_typed(@sess, @seq_d_head, @seq_d_model, k_type))
-        blk.t_seq_w_v.push(TinyNNMetal.tnn_input_2d_persistent_typed(@sess, @seq_d_head, @seq_d_model, v_type))
-        hkv = hkv + 1
-      end
-
-      if qkv_bias
-        blk.t_seq_b_q = [TinyNNMetal.tnn_input_1d_f32_persistent(@sess, @seq_d_head)]
-        hbq = 1
-        while hbq < @seq_n_heads
-          blk.t_seq_b_q.push(TinyNNMetal.tnn_input_1d_f32_persistent(@sess, @seq_d_head))
-          hbq = hbq + 1
-        end
-        blk.t_seq_b_k = [TinyNNMetal.tnn_input_1d_f32_persistent(@sess, @seq_d_head)]
-        blk.t_seq_b_v = [TinyNNMetal.tnn_input_1d_f32_persistent(@sess, @seq_d_head)]
-        hbkv = 1
-        while hbkv < @seq_n_kv
-          blk.t_seq_b_k.push(TinyNNMetal.tnn_input_1d_f32_persistent(@sess, @seq_d_head))
-          blk.t_seq_b_v.push(TinyNNMetal.tnn_input_1d_f32_persistent(@sess, @seq_d_head))
-          hbkv = hbkv + 1
-        end
-      end
-
-      o_idx    = TinyNNMetal.tnn_gguf_find_index(gguf_handle, prefix + ".attn_output.weight")
-      gate_idx = TinyNNMetal.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_gate.weight")
-      up_idx   = TinyNNMetal.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_up.weight")
-      down_idx = TinyNNMetal.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_down.weight")
-      blk.t_seq_w_o    = TinyNNMetal.tnn_input_2d_persistent_typed(@sess, @seq_d_model, @seq_d_model,
-                           TinyNNMetal.tnn_gguf_tensor_type(gguf_handle, o_idx))
-      blk.t_seq_w_gate = TinyNNMetal.tnn_input_2d_persistent_typed(@sess, @seq_d_ff, @seq_d_model,
-                           TinyNNMetal.tnn_gguf_tensor_type(gguf_handle, gate_idx))
-      blk.t_seq_w_up   = TinyNNMetal.tnn_input_2d_persistent_typed(@sess, @seq_d_ff, @seq_d_model,
-                           TinyNNMetal.tnn_gguf_tensor_type(gguf_handle, up_idx))
-      blk.t_seq_w_down = TinyNNMetal.tnn_input_2d_persistent_typed(@sess, @seq_d_model, @seq_d_ff,
-                           TinyNNMetal.tnn_gguf_tensor_type(gguf_handle, down_idx))
-
-      # LoRA + Adam allocations (same as realize_for_mmap path).
-      if @seq_lora_q_enabled
-        blk.t_seq_w_lora_a_q = [TinyNNMetal.tnn_input_2d_f32_persistent(@sess,
-                                  @seq_lora_q_rank, @seq_d_model)]
-        blk.t_seq_w_lora_b_q = [TinyNNMetal.tnn_input_2d_f32_persistent(@sess,
-                                  @seq_d_head, @seq_lora_q_rank)]
-        hql = 1
-        while hql < @seq_n_heads
-          blk.t_seq_w_lora_a_q.push(TinyNNMetal.tnn_input_2d_f32_persistent(@sess,
-                                      @seq_lora_q_rank, @seq_d_model))
-          blk.t_seq_w_lora_b_q.push(TinyNNMetal.tnn_input_2d_f32_persistent(@sess,
-                                      @seq_d_head, @seq_lora_q_rank))
-          hql = hql + 1
-        end
-        if @seq_lora_q_adamw_enabled
-          blk.t_seq_w_lora_a_q_m = [TinyNNMetal.tnn_input_2d_f32_persistent(@sess,
-                                      @seq_lora_q_rank, @seq_d_model)]
-          blk.t_seq_w_lora_a_q_v = [TinyNNMetal.tnn_input_2d_f32_persistent(@sess,
-                                      @seq_lora_q_rank, @seq_d_model)]
-          blk.t_seq_w_lora_b_q_m = [TinyNNMetal.tnn_input_2d_f32_persistent(@sess,
-                                      @seq_d_head, @seq_lora_q_rank)]
-          blk.t_seq_w_lora_b_q_v = [TinyNNMetal.tnn_input_2d_f32_persistent(@sess,
-                                      @seq_d_head, @seq_lora_q_rank)]
-          hqm = 1
-          while hqm < @seq_n_heads
-            blk.t_seq_w_lora_a_q_m.push(TinyNNMetal.tnn_input_2d_f32_persistent(@sess,
-                                          @seq_lora_q_rank, @seq_d_model))
-            blk.t_seq_w_lora_a_q_v.push(TinyNNMetal.tnn_input_2d_f32_persistent(@sess,
-                                          @seq_lora_q_rank, @seq_d_model))
-            blk.t_seq_w_lora_b_q_m.push(TinyNNMetal.tnn_input_2d_f32_persistent(@sess,
-                                          @seq_d_head, @seq_lora_q_rank))
-            blk.t_seq_w_lora_b_q_v.push(TinyNNMetal.tnn_input_2d_f32_persistent(@sess,
-                                          @seq_d_head, @seq_lora_q_rank))
-            hqm = hqm + 1
-          end
-        end
-      end
-
+      blk = self.seq_blocks_ffi[li]
+      blk.alloc_q8_typed_from_gguf!(@sess, gguf_handle, li,
+                                    @seq_n_heads, @seq_n_kv, @seq_d_head, @seq_d_model,
+                                    @seq_d_ff, @seq_vocab_size, @seq_lora_q_enabled,
+                                    @seq_lora_q_rank, @seq_lora_q_adamw_enabled, qkv_bias)
       li = li + 1
     end
 
