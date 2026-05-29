@@ -314,6 +314,14 @@ example_lmc: examples/example_lmc
 examples/smoke_projection_lens: examples/smoke_projection_lens.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb lib/toy_drift_grad.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
+# P2.6 CUDA gate — GPU mirror of the projection-lens smoke. Exercises
+# realize_for_random_init + seq forward on the CUDA backend so the
+# realize-path refactor can be parity-gated on GPU (CUDA self-consistency
+# before/after; CUDA floats don't bit-equal CPU). Mirror auto-generated
+# by prep/gen_cuda_mirror.rb. Same force-link recipe as the 06 CUDA entry.
+examples/smoke_projection_lens_cuda: examples/smoke_projection_lens_cuda.rb lib/llama_seq_forward_ffi_cuda.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn_cuda.rb lib/toy_drift_grad.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS)
+	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
+
 # E2.4 (towards GH#14) — streaming corpus loader + cosine LR smoke.
 examples/smoke_corpus_loader: examples/smoke_corpus_loader.rb lib/transformer.rb lib/tinynn.rb lib/toy_corpus_loader.rb lib/toy_lr_schedule.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@

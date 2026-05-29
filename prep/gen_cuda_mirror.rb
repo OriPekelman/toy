@@ -66,6 +66,7 @@ MIRRORABLE = [
   "lib/gpt2_ffi.rb",                    # GPT-2 full-forward FFI (Phase 0.6 step 3)
   "lib/gpt2_ffi_kv.rb",                 # GPT-2 KV-cache decode (Phase 0.6 step 3)
   "examples/06_train_from_scratch.rb",  # #152: from-scratch training entry (CPU/CUDA)
+  "examples/smoke_projection_lens.rb",  # P2.6 CUDA gate: realize_for_random_init forward on GPU
 ]
 
 # Per-backend codegen parameters.
@@ -279,6 +280,18 @@ def subs_for(cpu_path, backend)
       [/\bLlamaSeqForwardFFICache\b/, "LlamaSeqForwardFFICache" + suffix],
     ] + common_module_tail
 
+  when "examples/smoke_projection_lens.rb"
+    # P2.6 CUDA gate — mirror of the projection-lens smoke so the
+    # realize_for_random_init forward can be parity-gated on the GPU
+    # backend (CUDA self-consistency, not CPU bit-equality). Same
+    # rewrites as the 06 example: require the GPU monolith mirror,
+    # rename the cache class, TinyNN. -> TinyNN<Suffix>. via the tail.
+    [
+      [/^require_relative "..\/lib\/llama_seq_forward_ffi"$/,
+       'require_relative "../lib/llama_seq_forward_ffi_' + backend.to_s + '"'],
+      [/\bLlamaSeqForwardFFICache\b/, "LlamaSeqForwardFFICache" + suffix],
+    ] + common_module_tail
+
   else
     nil
   end
@@ -325,6 +338,7 @@ def derive_mirror_path(cpu_path, backend)
   # lib/toy/llm/primitives/<name>.rb → ..._<backend>.rb (P2.3 L1 primitives)
   unless cpu_path =~ /_ffi(_[a-z]+)?\.rb$/ ||
          cpu_path =~ %r{^examples/\d+_[a-z0-9_]+\.rb$} ||
+         cpu_path =~ %r{^examples/smoke_[a-z0-9_]+\.rb$} ||
          cpu_path =~ %r{^lib/toy/llm/primitives/[a-z0-9_]+\.rb$} ||
          cpu_path =~ %r{^lib/toy/llm/blocks/[a-z0-9_]+\.rb$} ||
          cpu_path =~ %r{^lib/toy/llm/archs/[a-z0-9_]+\.rb$}
