@@ -328,6 +328,193 @@ module Toy; module LLM; module Blocks
       end
     end
 
+    # P2.7 — load this block's PERSISTENT weight handles from the mmap'd
+    # GGUF for the realize_for_mmap path. Moved VERBATIM from the per-block
+    # ALLOC-from-offsets loop body in LlamaSeqForwardFFICache#realize_for_mmap
+    # (op order unchanged → bit-identical graph): the block now OWNS the
+    # alloc + assignment of its self.t_seq_* handles, exactly as it already
+    # owns them at forward time and in alloc_trainable_f32_weights!. NO ivar
+    # reads off the cache — every value (sess, the seq dims, the lora flags,
+    # qkv_bias, the gguf handle, and the layer index `li`) arrives as an ARG.
+    #
+    # CRITICAL constraints (all per the alloc_trainable_f32_weights! /
+    # load_globals_from_gguf_mmap! precedents):
+    #   - head_nbytes STAYS on the cache and is back-called through the
+    #     passed `cache` ref (same pattern alloc_trainable_f32_weights! uses
+    #     for cache.ft_add_* / cache.ft_name_last).
+    #   - The LoRA tnn_tensor_set_name(:str) naming is NOT issued here in
+    #     block class-load scope (step_bind / :str landmine #16). The block
+    #     assembles the runtime name string and hands it to the cache via
+    #     cache.lora_name_q! / cache.lora_name_q_adam! — the actual :str FFI
+    #     call lives on the cache realize runtime path, exactly as
+    #     ft_name_last stays on the cache.
+    #   - w_o is allocated hard-square ne=[d_model, d_model] — VERBATIM from
+    #     the former line 668. Do NOT unify with alloc_trainable_f32_weights!'s
+    #     divergent [d_model, n_heads*d_head]; the gguf round-trip PINS
+    #     n_heads*d_head == d_model so this branch is divergence-blind.
+    #   - The set_param marking loop, finalize, Adam zero-init and
+    #     build_and_realize! STAY on the cache realize method as head/tail.
+    def load_from_gguf_mmap!(sess, cache, gguf_handle, li,
+                             seq_n_heads, seq_n_kv, seq_d_head, seq_d_model,
+                             seq_d_ff, seq_lora_q_enabled, seq_lora_q_rank,
+                             seq_lora_q_adamw_enabled, qkv_bias)
+      prefix = "blk." + li.to_s
+
+      rn1_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_norm.weight")
+      rn2_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_norm.weight")
+      self.t_seq_rn1_gamma = TinyNN.tnn_input_1d_persistent_mmap(sess,
+                              seq_d_model, 0,
+                              TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, rn1_idx))
+      self.t_seq_rn2_gamma = TinyNN.tnn_input_1d_persistent_mmap(sess,
+                              seq_d_model, 0,
+                              TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, rn2_idx))
+
+      # Q heads — per-head [d_head, d_model] tensor, n_heads of them.
+      q_idx      = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_q.weight")
+      q_off_base = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, q_idx)
+      q_type     = TinyNN.tnn_gguf_tensor_type(gguf_handle, q_idx)
+      q_stride   = cache.head_nbytes(q_type, seq_d_head, seq_d_model)
+      self.t_seq_w_q = [TinyNN.tnn_input_2d_persistent_mmap(sess,
+                         seq_d_head, seq_d_model, q_type, q_off_base)]
+      hq = 1
+      while hq < seq_n_heads
+        self.t_seq_w_q.push(TinyNN.tnn_input_2d_persistent_mmap(sess,
+                             seq_d_head, seq_d_model, q_type,
+                             q_off_base + hq * q_stride))
+        hq = hq + 1
+      end
+
+      # M3 step 3 — LoRA-Q adapter pair per Q head. Trainable F32 in
+      # ctx_w (mirrors SmolLM2KVFFICache). Optional persistent Adam m/v.
+      # Names ride the llama.cpp convention extended for the per-head /
+      # adapter axes: blk.N.attn_q.head_H.lora_{a,b}.weight (+ .m / .v).
+      lora_prefix = "blk." + li.to_s + ".attn_q.head_"
+      if seq_lora_q_enabled
+        self.t_seq_w_lora_a_q = [TinyNN.tnn_input_2d_f32_persistent(sess,
+                                  seq_lora_q_rank, seq_d_model)]
+        self.t_seq_w_lora_b_q = [TinyNN.tnn_input_2d_f32_persistent(sess,
+                                  seq_d_head, seq_lora_q_rank)]
+        hql = 1
+        while hql < seq_n_heads
+          self.t_seq_w_lora_a_q.push(TinyNN.tnn_input_2d_f32_persistent(sess,
+                                      seq_lora_q_rank, seq_d_model))
+          self.t_seq_w_lora_b_q.push(TinyNN.tnn_input_2d_f32_persistent(sess,
+                                      seq_d_head, seq_lora_q_rank))
+          hql = hql + 1
+        end
+        hqn = 0
+        while hqn < seq_n_heads
+          cache.lora_name_q!(self.t_seq_w_lora_a_q[hqn],
+                             self.t_seq_w_lora_b_q[hqn],
+                             lora_prefix + hqn.to_s)
+          hqn = hqn + 1
+        end
+
+        if seq_lora_q_adamw_enabled
+          self.t_seq_w_lora_a_q_m = [TinyNN.tnn_input_2d_f32_persistent(sess,
+                                      seq_lora_q_rank, seq_d_model)]
+          self.t_seq_w_lora_a_q_v = [TinyNN.tnn_input_2d_f32_persistent(sess,
+                                      seq_lora_q_rank, seq_d_model)]
+          self.t_seq_w_lora_b_q_m = [TinyNN.tnn_input_2d_f32_persistent(sess,
+                                      seq_d_head, seq_lora_q_rank)]
+          self.t_seq_w_lora_b_q_v = [TinyNN.tnn_input_2d_f32_persistent(sess,
+                                      seq_d_head, seq_lora_q_rank)]
+          hqm = 1
+          while hqm < seq_n_heads
+            self.t_seq_w_lora_a_q_m.push(TinyNN.tnn_input_2d_f32_persistent(sess,
+                                          seq_lora_q_rank, seq_d_model))
+            self.t_seq_w_lora_a_q_v.push(TinyNN.tnn_input_2d_f32_persistent(sess,
+                                          seq_lora_q_rank, seq_d_model))
+            self.t_seq_w_lora_b_q_m.push(TinyNN.tnn_input_2d_f32_persistent(sess,
+                                          seq_d_head, seq_lora_q_rank))
+            self.t_seq_w_lora_b_q_v.push(TinyNN.tnn_input_2d_f32_persistent(sess,
+                                          seq_d_head, seq_lora_q_rank))
+            hqm = hqm + 1
+          end
+          hmn = 0
+          while hmn < seq_n_heads
+            cache.lora_name_q_adam!(self.t_seq_w_lora_a_q_m[hmn],
+                                    self.t_seq_w_lora_a_q_v[hmn],
+                                    self.t_seq_w_lora_b_q_m[hmn],
+                                    self.t_seq_w_lora_b_q_v[hmn],
+                                    lora_prefix + hmn.to_s)
+            hmn = hmn + 1
+          end
+        end
+      end
+
+      # K, V heads — per-KV-head [d_head, d_model].
+      k_idx      = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_k.weight")
+      v_idx      = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_v.weight")
+      k_off_base = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, k_idx)
+      v_off_base = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, v_idx)
+      k_type     = TinyNN.tnn_gguf_tensor_type(gguf_handle, k_idx)
+      v_type     = TinyNN.tnn_gguf_tensor_type(gguf_handle, v_idx)
+      k_stride   = cache.head_nbytes(k_type, seq_d_head, seq_d_model)
+      v_stride   = cache.head_nbytes(v_type, seq_d_head, seq_d_model)
+      self.t_seq_w_k = [TinyNN.tnn_input_2d_persistent_mmap(sess,
+                         seq_d_head, seq_d_model, k_type, k_off_base)]
+      self.t_seq_w_v = [TinyNN.tnn_input_2d_persistent_mmap(sess,
+                         seq_d_head, seq_d_model, v_type, v_off_base)]
+      hkv = 1
+      while hkv < seq_n_kv
+        self.t_seq_w_k.push(TinyNN.tnn_input_2d_persistent_mmap(sess,
+                             seq_d_head, seq_d_model, k_type,
+                             k_off_base + hkv * k_stride))
+        self.t_seq_w_v.push(TinyNN.tnn_input_2d_persistent_mmap(sess,
+                             seq_d_head, seq_d_model, v_type,
+                             v_off_base + hkv * v_stride))
+        hkv = hkv + 1
+      end
+
+      # Optional Q/K/V biases (Qwen2.x). 1D [d_head] per head, contiguous.
+      if qkv_bias
+        qb_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_q.bias")
+        kb_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_k.bias")
+        vb_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_v.bias")
+        qb_off = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, qb_idx)
+        kb_off = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, kb_idx)
+        vb_off = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, vb_idx)
+        bias_stride = seq_d_head * 4
+
+        self.t_seq_b_q = [TinyNN.tnn_input_1d_persistent_mmap(sess, seq_d_head, 0, qb_off)]
+        hq = 1
+        while hq < seq_n_heads
+          self.t_seq_b_q.push(TinyNN.tnn_input_1d_persistent_mmap(sess, seq_d_head, 0,
+                               qb_off + hq * bias_stride))
+          hq = hq + 1
+        end
+        self.t_seq_b_k = [TinyNN.tnn_input_1d_persistent_mmap(sess, seq_d_head, 0, kb_off)]
+        self.t_seq_b_v = [TinyNN.tnn_input_1d_persistent_mmap(sess, seq_d_head, 0, vb_off)]
+        hkv = 1
+        while hkv < seq_n_kv
+          self.t_seq_b_k.push(TinyNN.tnn_input_1d_persistent_mmap(sess, seq_d_head, 0,
+                               kb_off + hkv * bias_stride))
+          self.t_seq_b_v.push(TinyNN.tnn_input_1d_persistent_mmap(sess, seq_d_head, 0,
+                               vb_off + hkv * bias_stride))
+          hkv = hkv + 1
+        end
+      end
+
+      # O, FFN — full 2D weights, no per-head split.
+      o_idx    = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_output.weight")
+      gate_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_gate.weight")
+      up_idx   = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_up.weight")
+      down_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_down.weight")
+      self.t_seq_w_o    = TinyNN.tnn_input_2d_persistent_mmap(sess, seq_d_model, seq_d_model,
+                           TinyNN.tnn_gguf_tensor_type(gguf_handle, o_idx),
+                           TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, o_idx))
+      self.t_seq_w_gate = TinyNN.tnn_input_2d_persistent_mmap(sess, seq_d_ff, seq_d_model,
+                           TinyNN.tnn_gguf_tensor_type(gguf_handle, gate_idx),
+                           TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, gate_idx))
+      self.t_seq_w_up   = TinyNN.tnn_input_2d_persistent_mmap(sess, seq_d_ff, seq_d_model,
+                           TinyNN.tnn_gguf_tensor_type(gguf_handle, up_idx),
+                           TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, up_idx))
+      self.t_seq_w_down = TinyNN.tnn_input_2d_persistent_mmap(sess, seq_d_model, seq_d_ff,
+                           TinyNN.tnn_gguf_tensor_type(gguf_handle, down_idx),
+                           TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, down_idx))
+    end
+
     private
 
     def build_qhead(sess, ctx, t_h, hq, t_k_per_kv, t_vt_per_kv)

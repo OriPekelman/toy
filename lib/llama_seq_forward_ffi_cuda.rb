@@ -520,169 +520,21 @@ class LlamaSeqForwardFFICacheCuda
     # P2.6 Step 2 — seeding loop moved onto the arch (LlamaArch#seed_blocks!).
     @seq_arch.seed_blocks!(@seq_n_layers)
 
+    # P2.7 — the per-block alloc-from-mmap-offsets loop body moved onto
+    # TransformerBlock#load_from_gguf_mmap! (verbatim; called ONLY from
+    # here). Mirrors the alloc_trainable_f32_weights! / seed_blocks! /
+    # load_globals_from_gguf_mmap! extraction precedents. head_nbytes and
+    # the LoRA :str tnn_tensor_set_name naming stay on THIS cache and are
+    # back-called through the passed `self` ref (lora_name_q! /
+    # lora_name_q_adam! issue the :str FFI at this runtime scope, never in
+    # block class-load scope — landmine #16).
     li = 0
     while li < @seq_n_layers
       blk = self.seq_blocks_ffi[li]
-      prefix = "blk." + li.to_s
-
-      rn1_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_norm.weight")
-      rn2_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_norm.weight")
-      blk.t_seq_rn1_gamma = TinyNNCuda.tnn_input_1d_persistent_mmap(@sess,
-                              @seq_d_model, 0,
-                              TinyNNCuda.tnn_gguf_tensor_file_offset(gguf_handle, rn1_idx))
-      blk.t_seq_rn2_gamma = TinyNNCuda.tnn_input_1d_persistent_mmap(@sess,
-                              @seq_d_model, 0,
-                              TinyNNCuda.tnn_gguf_tensor_file_offset(gguf_handle, rn2_idx))
-
-      # Q heads — per-head [d_head, d_model] tensor, n_heads of them.
-      q_idx      = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_q.weight")
-      q_off_base = TinyNNCuda.tnn_gguf_tensor_file_offset(gguf_handle, q_idx)
-      q_type     = TinyNNCuda.tnn_gguf_tensor_type(gguf_handle, q_idx)
-      q_stride   = head_nbytes(q_type, @seq_d_head, @seq_d_model)
-      blk.t_seq_w_q = [TinyNNCuda.tnn_input_2d_persistent_mmap(@sess,
-                         @seq_d_head, @seq_d_model, q_type, q_off_base)]
-      hq = 1
-      while hq < @seq_n_heads
-        blk.t_seq_w_q.push(TinyNNCuda.tnn_input_2d_persistent_mmap(@sess,
-                             @seq_d_head, @seq_d_model, q_type,
-                             q_off_base + hq * q_stride))
-        hq = hq + 1
-      end
-
-      # M3 step 3 — LoRA-Q adapter pair per Q head. Trainable F32 in
-      # ctx_w (mirrors SmolLM2KVFFICache). Optional persistent Adam m/v.
-      # Names ride the llama.cpp convention extended for the per-head /
-      # adapter axes: blk.N.attn_q.head_H.lora_{a,b}.weight (+ .m / .v).
-      lora_prefix = "blk." + li.to_s + ".attn_q.head_"
-      if @seq_lora_q_enabled
-        blk.t_seq_w_lora_a_q = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
-                                  @seq_lora_q_rank, @seq_d_model)]
-        blk.t_seq_w_lora_b_q = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
-                                  @seq_d_head, @seq_lora_q_rank)]
-        hql = 1
-        while hql < @seq_n_heads
-          blk.t_seq_w_lora_a_q.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
-                                      @seq_lora_q_rank, @seq_d_model))
-          blk.t_seq_w_lora_b_q.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
-                                      @seq_d_head, @seq_lora_q_rank))
-          hql = hql + 1
-        end
-        hqn = 0
-        while hqn < @seq_n_heads
-          TinyNNCuda.tnn_tensor_set_name(blk.t_seq_w_lora_a_q[hqn],
-                                     lora_prefix + hqn.to_s + ".lora_a.weight")
-          TinyNNCuda.tnn_tensor_set_name(blk.t_seq_w_lora_b_q[hqn],
-                                     lora_prefix + hqn.to_s + ".lora_b.weight")
-          hqn = hqn + 1
-        end
-
-        if @seq_lora_q_adamw_enabled
-          blk.t_seq_w_lora_a_q_m = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
-                                      @seq_lora_q_rank, @seq_d_model)]
-          blk.t_seq_w_lora_a_q_v = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
-                                      @seq_lora_q_rank, @seq_d_model)]
-          blk.t_seq_w_lora_b_q_m = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
-                                      @seq_d_head, @seq_lora_q_rank)]
-          blk.t_seq_w_lora_b_q_v = [TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
-                                      @seq_d_head, @seq_lora_q_rank)]
-          hqm = 1
-          while hqm < @seq_n_heads
-            blk.t_seq_w_lora_a_q_m.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
-                                          @seq_lora_q_rank, @seq_d_model))
-            blk.t_seq_w_lora_a_q_v.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
-                                          @seq_lora_q_rank, @seq_d_model))
-            blk.t_seq_w_lora_b_q_m.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
-                                          @seq_d_head, @seq_lora_q_rank))
-            blk.t_seq_w_lora_b_q_v.push(TinyNNCuda.tnn_input_2d_f32_persistent(@sess,
-                                          @seq_d_head, @seq_lora_q_rank))
-            hqm = hqm + 1
-          end
-          hmn = 0
-          while hmn < @seq_n_heads
-            TinyNNCuda.tnn_tensor_set_name(blk.t_seq_w_lora_a_q_m[hmn],
-                                       lora_prefix + hmn.to_s + ".lora_a.m")
-            TinyNNCuda.tnn_tensor_set_name(blk.t_seq_w_lora_a_q_v[hmn],
-                                       lora_prefix + hmn.to_s + ".lora_a.v")
-            TinyNNCuda.tnn_tensor_set_name(blk.t_seq_w_lora_b_q_m[hmn],
-                                       lora_prefix + hmn.to_s + ".lora_b.m")
-            TinyNNCuda.tnn_tensor_set_name(blk.t_seq_w_lora_b_q_v[hmn],
-                                       lora_prefix + hmn.to_s + ".lora_b.v")
-            hmn = hmn + 1
-          end
-        end
-      end
-
-      # K, V heads — per-KV-head [d_head, d_model].
-      k_idx      = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_k.weight")
-      v_idx      = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_v.weight")
-      k_off_base = TinyNNCuda.tnn_gguf_tensor_file_offset(gguf_handle, k_idx)
-      v_off_base = TinyNNCuda.tnn_gguf_tensor_file_offset(gguf_handle, v_idx)
-      k_type     = TinyNNCuda.tnn_gguf_tensor_type(gguf_handle, k_idx)
-      v_type     = TinyNNCuda.tnn_gguf_tensor_type(gguf_handle, v_idx)
-      k_stride   = head_nbytes(k_type, @seq_d_head, @seq_d_model)
-      v_stride   = head_nbytes(v_type, @seq_d_head, @seq_d_model)
-      blk.t_seq_w_k = [TinyNNCuda.tnn_input_2d_persistent_mmap(@sess,
-                         @seq_d_head, @seq_d_model, k_type, k_off_base)]
-      blk.t_seq_w_v = [TinyNNCuda.tnn_input_2d_persistent_mmap(@sess,
-                         @seq_d_head, @seq_d_model, v_type, v_off_base)]
-      hkv = 1
-      while hkv < @seq_n_kv
-        blk.t_seq_w_k.push(TinyNNCuda.tnn_input_2d_persistent_mmap(@sess,
-                             @seq_d_head, @seq_d_model, k_type,
-                             k_off_base + hkv * k_stride))
-        blk.t_seq_w_v.push(TinyNNCuda.tnn_input_2d_persistent_mmap(@sess,
-                             @seq_d_head, @seq_d_model, v_type,
-                             v_off_base + hkv * v_stride))
-        hkv = hkv + 1
-      end
-
-      # Optional Q/K/V biases (Qwen2.x). 1D [d_head] per head, contiguous.
-      if qkv_bias
-        qb_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_q.bias")
-        kb_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_k.bias")
-        vb_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_v.bias")
-        qb_off = TinyNNCuda.tnn_gguf_tensor_file_offset(gguf_handle, qb_idx)
-        kb_off = TinyNNCuda.tnn_gguf_tensor_file_offset(gguf_handle, kb_idx)
-        vb_off = TinyNNCuda.tnn_gguf_tensor_file_offset(gguf_handle, vb_idx)
-        bias_stride = @seq_d_head * 4
-
-        blk.t_seq_b_q = [TinyNNCuda.tnn_input_1d_persistent_mmap(@sess, @seq_d_head, 0, qb_off)]
-        hq = 1
-        while hq < @seq_n_heads
-          blk.t_seq_b_q.push(TinyNNCuda.tnn_input_1d_persistent_mmap(@sess, @seq_d_head, 0,
-                               qb_off + hq * bias_stride))
-          hq = hq + 1
-        end
-        blk.t_seq_b_k = [TinyNNCuda.tnn_input_1d_persistent_mmap(@sess, @seq_d_head, 0, kb_off)]
-        blk.t_seq_b_v = [TinyNNCuda.tnn_input_1d_persistent_mmap(@sess, @seq_d_head, 0, vb_off)]
-        hkv = 1
-        while hkv < @seq_n_kv
-          blk.t_seq_b_k.push(TinyNNCuda.tnn_input_1d_persistent_mmap(@sess, @seq_d_head, 0,
-                               kb_off + hkv * bias_stride))
-          blk.t_seq_b_v.push(TinyNNCuda.tnn_input_1d_persistent_mmap(@sess, @seq_d_head, 0,
-                               vb_off + hkv * bias_stride))
-          hkv = hkv + 1
-        end
-      end
-
-      # O, FFN — full 2D weights, no per-head split.
-      o_idx    = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".attn_output.weight")
-      gate_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_gate.weight")
-      up_idx   = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_up.weight")
-      down_idx = TinyNNCuda.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_down.weight")
-      blk.t_seq_w_o    = TinyNNCuda.tnn_input_2d_persistent_mmap(@sess, @seq_d_model, @seq_d_model,
-                           TinyNNCuda.tnn_gguf_tensor_type(gguf_handle, o_idx),
-                           TinyNNCuda.tnn_gguf_tensor_file_offset(gguf_handle, o_idx))
-      blk.t_seq_w_gate = TinyNNCuda.tnn_input_2d_persistent_mmap(@sess, @seq_d_ff, @seq_d_model,
-                           TinyNNCuda.tnn_gguf_tensor_type(gguf_handle, gate_idx),
-                           TinyNNCuda.tnn_gguf_tensor_file_offset(gguf_handle, gate_idx))
-      blk.t_seq_w_up   = TinyNNCuda.tnn_input_2d_persistent_mmap(@sess, @seq_d_ff, @seq_d_model,
-                           TinyNNCuda.tnn_gguf_tensor_type(gguf_handle, up_idx),
-                           TinyNNCuda.tnn_gguf_tensor_file_offset(gguf_handle, up_idx))
-      blk.t_seq_w_down = TinyNNCuda.tnn_input_2d_persistent_mmap(@sess, @seq_d_model, @seq_d_ff,
-                           TinyNNCuda.tnn_gguf_tensor_type(gguf_handle, down_idx),
-                           TinyNNCuda.tnn_gguf_tensor_file_offset(gguf_handle, down_idx))
-
+      blk.load_from_gguf_mmap!(@sess, self, gguf_handle, li,
+                               @seq_n_heads, @seq_n_kv, @seq_d_head, @seq_d_model,
+                               @seq_d_ff, @seq_lora_q_enabled, @seq_lora_q_rank,
+                               @seq_lora_q_adamw_enabled, qkv_bias)
       li = li + 1
     end
 
@@ -1222,6 +1074,25 @@ class LlamaSeqForwardFFICacheCuda
     TinyNNCuda.tnn_tensor_set_name(@ft_globals_weights[last], name)
     TinyNNCuda.tnn_tensor_set_name(@ft_globals_m[last],       name + ".m")
     TinyNNCuda.tnn_tensor_set_name(@ft_globals_v[last],       name + ".v")
+  end
+
+  # P2.7 — LoRA-Q tensor naming callbacks for the extracted block-side
+  # mmap loader (TransformerBlock#load_from_gguf_mmap!). The :str
+  # tnn_tensor_set_name FFI calls MUST stay on the cache realize RUNTIME
+  # path — never migrate into block class-load scope (step_bind / :str
+  # landmine #16). The block assembles the runtime name string and hands
+  # it here, exactly as it hands ft_name_last its assembled name. Verbatim
+  # lift of the former realize_for_mmap loop lines 567-570 / 597-604.
+  def lora_name_q!(t_a, t_b, head_prefix)
+    TinyNNCuda.tnn_tensor_set_name(t_a, head_prefix + ".lora_a.weight")
+    TinyNNCuda.tnn_tensor_set_name(t_b, head_prefix + ".lora_b.weight")
+  end
+
+  def lora_name_q_adam!(t_a_m, t_a_v, t_b_m, t_b_v, head_prefix)
+    TinyNNCuda.tnn_tensor_set_name(t_a_m, head_prefix + ".lora_a.m")
+    TinyNNCuda.tnn_tensor_set_name(t_a_v, head_prefix + ".lora_a.v")
+    TinyNNCuda.tnn_tensor_set_name(t_b_m, head_prefix + ".lora_b.m")
+    TinyNNCuda.tnn_tensor_set_name(t_b_v, head_prefix + ".lora_b.v")
   end
 
   # Same shape as ft_add_2d / ft_add_1d but writes to the cache-level
