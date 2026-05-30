@@ -54,7 +54,29 @@ smoke_recipe_{from_scratch, lora, warm_start}.
 - **Spinel matz/spinel#1043** (Struct.new accessor type-merge) filed;
   **ggml#1506** (mul_mat_id K-quant) noted for MoE. See memory.
 
-## P3 — Core + CLI MVP (NEXT)
+## P3 — Core + CLI MVP (IN PROGRESS)
+
+**Slice 1 DONE** (6ca853f + fix bfa040b): `bin/toy` (CRuby, 11 files, zero
+Spinel) — `new <path> [--force] [--json]`, `list [--json]`, `describe
+<model.gguf> [--json]`, global `--manifest`/`--help`/`--version`. Exit
+codes 0/2/1. `toy.yml` loader (run_id_template + algos_path; empty=defaults,
+unknown keys warn). JSON tags `toy/{manifest,list,describe,new}-v1`.
+gemspec → `bin/["toy"]`. Pure-CRuby GGUF metadata reader
+(`lib/toy/core/gguf_meta.rb`) + scan (`model_scan.rb`) + Card via
+`toy_card.rb`. All commands verified running on gx10; clean errors
+outside a project. **Correctness fix:** describe now reads
+`general.architecture` and DECLINES non-llama arches (gpt2/gemma2/olmoe)
+instead of rendering a wrong llama Card; list shows true families.
+
+**Slice 2 NEXT:** `install` (cross-platform backend build) + `fetch`
+(HF download + `data/<basename>.gguf` symlink) + the cleanup-arc
+deletions (05_list_models, 04_serve_http, fold fetch_model.sh, `make
+hello`, FIRST-TIME banner). NOTE the P3 gate needs fresh-checkout
+verification on macOS-AS + Linux-x86_64 + Linux-aarch64 — only aarch64 is
+testable here on gx10.
+
+### Original P3 spec (reference)
+
 
 **Deliverable (roadmap §P3):** `bin/toy` as CRuby (NOT Spinel-compiled).
 Five commands: `new`, `install`, `list`, `fetch`, `describe`. `toy new`
