@@ -178,7 +178,36 @@ everywhere else — align in a doc pass.
 ROADMAP NOTE: slice 1 is CE/logprobs; the roadmap's named eval gate is
 `toy eval lmc` (two-ckpt) → eval slice 2.
 
-**P4 commands: infer ✓ train ✓ eval ✓ — serve UNBLOCKED (clean tep-as-gem landed).**
+**P4 COMMANDS COMPLETE: infer ✓ train ✓ eval ✓ serve ✓ (all gated, on main).**
+
+serve landed (ba5bc54, FF'd to main): endpoint logic MOVED from
+tep_demo/openai_api_llama.rb into `lib/toy/serve/openai/{server,handlers,
+api_json,embeddings_handler}.rb` + runner `lib/toy/run/serve.rb` →
+`libexec/toy-serve`; `toy serve <model> [--port N] [--name NAME]`
+foreground-exec (persistent). HTTP gate (prep/serve_gate.rb): POST
+/v1/completions fixed IDs → byte-identical to baseline recorded from the
+OLD openai_api_llama; guaranteed teardown (ensure+at_exit+traps, kills
+pgroup), verified no leak. tep build-dep ONLY (Tep untouched). CLI = 9
+commands. All 4 gates (infer/train/eval/serve) green at HEAD.
+
+**DEFERRED (post-P4): cleanup arc (NEXT), then:** eval lmc (slice 2,
+two-ckpt), train warm-start/lora/curriculum variants, train→infer
+checkpoint round-trip (naming), GPU runners (--device), Tep/Tao
+re-adaptation (until Toy stable).
+
+**NEXT — the CLEANUP ARC (user mandate):**
+- Retire superseded `examples/` (01-09 etc. now reproduced by CLI cmds)
+  + `tep_demo/openai_api_llama.rb` (folded into lib/toy/serve/openai/).
+  **PRESERVE the gate/mirror fixtures:** `smoke_projection_lens` (in
+  MIRRORABLE), and the smoke_recipe_*/smoke_gate_*/smoke_gguf_roundtrip
+  fixtures + `prep/fixtures/*` (gate re-recording). Deleting wholesale
+  breaks verify-mirrors + the gates.
+- Shrink the Makefile (drop what the CLI replaced).
+- **DOCS: FRESH START** — new clean-slate docs tree, PORT worthwhile
+  content (don't refactor the sprawl).
+- **AUDIT all markdowns/design-docs** — keep only still-relevant,
+  INCLUDING live future-directions; prune the rest.
+- Goal: clean-state repo.
 
 **TEP CONSUMPTION CLEANED UP (2dea006):** toy now consumes tep as a gem
 from `main` via `git:` (Gemfile) through the spinelgems convention — NO
