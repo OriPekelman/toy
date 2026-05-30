@@ -25,6 +25,7 @@ require_relative "cli/install"
 require_relative "cli/infer"
 require_relative "cli/train"
 require_relative "cli/eval"
+require_relative "cli/serve"
 require_relative "cli/manifest"
 
 module Toy
@@ -89,6 +90,13 @@ module Toy
           args:  [{ name: "model", required: true, desc: "path to a .gguf file" }],
           flags: [{ name: "--top-k", desc: "top-K logprobs to report (default 5)" },
                   { name: "--json", desc: "machine output" }]
+        },
+        "serve" => {
+          class: Serve,
+          summary: "Serve a GGUF model over an OpenAI-compatible HTTP API (CPU)",
+          args:  [{ name: "model", required: true, desc: "path to a .gguf file" }],
+          flags: [{ name: "--port", desc: "TCP port to bind (default 4567)" },
+                  { name: "--name", desc: "model label in /v1/models (default GGUF basename)" }]
         }
       }.freeze
 

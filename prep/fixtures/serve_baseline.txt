@@ -1,0 +1,21 @@
+# prep/fixtures/serve_baseline.txt — recorded greedy/argmax baseline for the
+# `toy serve` HTTP runner (libexec/toy-serve, source lib/toy/run/serve.rb).
+#
+# Recorded on gx10 (aarch64/GB10, CPU ggml f32) from the deterministic greedy
+# decode (pure argmax, first-max-wins, NO rand/seed/temperature) of the
+# OpenAI-compatible /v1/completions endpoint. This is the byte-for-byte
+# reference the moved lib/toy/serve/openai/* Server must reproduce.
+#
+# Gate config (locked — prep/serve_gate.rb MUST reuse exactly these):
+#   model    = data/smollm2-135m-native.gguf
+#   MODEL_NAME = "test", MAX_T = 256 (default)
+#   endpoint = POST /v1/completions
+#   body     = {"model":"test","prompt":[1,100,200],"max_tokens":8}
+#   captured = choices[0].ids
+#
+# The first capture was recorded from the EXISTING tep_demo/openai_api_llama
+# binary (the baseline source the cleanup arc retires later); the moved
+# Server reproduces it identically.
+#
+# Format: <gguf-basename><TAB><JSON-id-array>
+smollm2-135m-native.gguf	[198,198,504,808,2775,288,536,314]

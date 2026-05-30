@@ -269,6 +269,26 @@ libexec/toy-train: lib/toy/run/train.rb lib/toy.rb lib/toy_smollm2.rb \
 	$(SPINEL) $< -o $@
 toy-train: libexec/toy-train
 
+# P4 — `toy serve` PERSISTENT compute runner (OpenAI-compatible HTTP).
+# Unlike infer/train/eval (compute-once), this runner blocks in Tep.run!.
+# Spinel source lib/toy/run/serve.rb; the binary path EQUALS the make
+# target so ToyRoot.ensure_built("libexec/toy-serve") both builds and
+# locates it. The endpoint logic moved out of tep_demo/openai_api_llama.rb
+# into lib/toy/serve/openai/* (Server/State + handlers + ApiJson + the
+# embeddings handler). vendor/spinel/tep/lib/tep.rb is the TEP BUILD-DEP
+# edge — Tep is consumed purely as transport (built by `make vendor-tep`
+# on a fresh tree; needs ../tep + ../spinelgems siblings). Deps mirror the
+# tep_demo recipe (Makefile:486) + the KV stack. CPU-only; NOT in
+# MIRRORABLE (see prep/gen_cuda_mirror.rb).
+libexec/toy-serve: lib/toy/run/serve.rb \
+		lib/toy/serve/openai/server.rb lib/toy/serve/openai/api_json.rb \
+		lib/toy/serve/openai/handlers.rb lib/toy/serve/openai/embeddings_handler.rb \
+		vendor/spinel/tep/lib/tep.rb \
+		lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb \
+		tinynn/libtinynn_ggml.a | libexec
+	$(SPINEL) $< -o $@
+toy-serve: libexec/toy-serve
+
 # toy#gguf-checkpoint-reload (#153) — smoke binary that loads a
 # from-scratch toy GGUF and runs a tiny generation. No tokenizer.
 examples/smoke_toy_ckpt_reload: examples/smoke_toy_ckpt_reload.rb lib/arch.rb lib/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/tokenizer.rb tinynn/libtinynn_ggml.a
@@ -1299,7 +1319,7 @@ clean:
 	      examples/example_train_from_scratch_cpu \
 	      examples/example_train_from_scratch_cuda \
 	      examples/example_finetune examples/example_finetune_cuda \
-	      libexec/toy-infer libexec/toy-train libexec/toy-eval examples/example_train
+	      libexec/toy-infer libexec/toy-train libexec/toy-eval libexec/toy-serve examples/example_train
 
 distclean: clean
 	rm -rf $(GGML_DIR)/build $(GGML_DIR)/build-cuda $(GGML_DIR)/build-metal
