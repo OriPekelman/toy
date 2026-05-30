@@ -153,12 +153,29 @@ KEPT as the GPU path until a `--device` slice. Bonus: the new runner
 handles the tok/text fixture the old example SEGFAULTED on (Spinel
 tokenizer-GC regression).
 
-**P4 remaining slices** (reuse the runner pattern): `train` (NEXT — wraps
-L4 recipes → step loop → checkpoint to runs/<id>/ + events; gate vs
-smoke_recipe_from_scratch loss curve), `eval` (08_lmc / CE), `serve`
-(tep_demo/openai_api_llama → lib/toy/serve/openai/ — LAST). Then the
-AGGRESSIVE cleanup arc. **Tep then Tao re-adaptation DEFERRED until Toy
-is fully stabilized** (user directive); clean-state repo is a goal.
+**Slice 2 DONE — `toy train from-scratch`** (a5d3ec4): clean runner
+`lib/toy/run/train.rb` → `libexec/toy-train` composing the FromScratch
+recipe; `toy train from-scratch [--steps N] [--seed S] [--out D] [--json]`
+resolves run-id from toy.yml → `runs/<id>/` (mkdir), runner emits valid
+`events.jsonl` (run_start/step×N/run_end) + `weights/step_N.gguf` + `latest`
+symlink. GATE byte-for-byte vs smoke_recipe_from_scratch loss curve
+(prep/train_gate.rb). CPU-only (out of MIRRORABLE like infer);
+verify-mirrors green; manifest lists 7 cmds.
+
+**KNOWN GAP (tracked follow-up): train→infer round-trip does NOT close.**
+The checkpoint GGUF uses training-graph tensor naming → NOT loadable by
+`toy infer` yet (same per-head-vs-fused-name theme as the GGUF round-trip
+gate). The train gate asserts checkpoint EXISTENCE only, no reload. A
+"train→infer round-trip" gate (write loadable names / a fuse-on-save) is
+the fix — important for "train then run your model" + a clean stable Toy.
+Minor doc nit: docs/events-schema.md uses ".runs/" vs the "runs/" used
+everywhere else — align in a doc pass.
+
+**P4 remaining slices** (reuse the runner pattern): `eval` (NEXT — 08_lmc
+/ CE), `serve` (tep_demo/openai_api_llama → lib/toy/serve/openai/ — LAST,
+no Tep/Tao yet). Later train variants: warm-start/lora/curriculum. Then
+the AGGRESSIVE cleanup arc. **Tep then Tao re-adaptation DEFERRED until
+Toy fully stabilized** (user directive); clean-state repo is a goal.
 
 ### Original P3 spec (reference)
 
