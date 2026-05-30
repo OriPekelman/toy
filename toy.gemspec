@@ -30,26 +30,38 @@ Gem::Specification.new do |s|
   # spinelgems convention have no Ruby-version constraint coming from us.
   s.required_ruby_version = ">= 3.2.0"
 
+  # Packaging model: option (c) from toy#28 — ship the backend BUILD
+  # INPUTS so `gem install toy && toy install` works (install orchestrates
+  # the ggml + tinynn-shim build inside the gem dir). The backend-free
+  # CRuby commands (new/list/describe/fetch/--manifest) work with just the
+  # .rb + tinynn sources; `toy install` adds the build. (Fat gem with
+  # prebuilt per-platform .a — option (a) — is a tracked follow-up in #28.)
+  #
   # The gem ships:
-  #   - Every .rb under lib/ (the primitives consumers compose)
-  #   - tinynn/*.{h,c} (the FFI C shim — consumers link against the
-  #     prebuilt .a files in toy's tree, but the headers are needed at
-  #     compile time for some tooling)
-  #   - The .gitignore-exempted README + LICENSE
+  #   - Every .rb under lib/ (the primitives + the CRuby CLI shell)
+  #   - The Makefile (toy install's build orchestrator) + its output
+  #     filters (prep/quietly, prep/progress)
+  #   - vendor-patches/*.patch (the 6 ggml patches `make setup-ggml` applies)
+  #   - The tinynn C/Metal shim BUILD SOURCES (CPU: ggml/gguf/trace/events;
+  #     Metal: tinynn_backend_metal.m; CUDA: tinynn_backend_cuda.c). NOT the
+  #     dev probes (cuda_byo_smoke, rms_norm_back_probe*) — not build inputs.
+  #   - README + LICENSE + CHANGELOG
   # We do NOT ship:
-  #   - vendor/ggml/build/* (~6 MB of build artifacts; consumers point
-  #     their link paths at toy's in-place tree via the FFI manifest)
+  #   - vendor/ggml/* (cloned fresh by `make setup` at install time)
   #   - data/* (model weights / pretokenized corpora — caller-managed)
-  #   - tep_demo/_tep_lib/ + similar build scratch
+  #   - the prebuilt .a (built on the user box by `toy install`)
   s.files = Dir[
     "README.md", "LICENSE", "CHANGELOG.md",
+    "Makefile",
+    "prep/quietly", "prep/progress",
     "lib/**/*.rb",
-    "tinynn/tinynn_ggml.h",
-    "tinynn/tinynn_ggml.c",
-    "tinynn/tinynn_gguf.h",
-    "tinynn/tinynn_gguf.c",
-    "tinynn/tinynn_events.h",
-    "tinynn/tinynn_events.c",
+    "vendor-patches/*.patch",
+    "tinynn/tinynn_ggml.h",   "tinynn/tinynn_ggml.c",
+    "tinynn/tinynn_gguf.h",   "tinynn/tinynn_gguf.c",
+    "tinynn/tinynn_trace.h",  "tinynn/tinynn_trace.c",
+    "tinynn/tinynn_events.h", "tinynn/tinynn_events.c",
+    "tinynn/tinynn_backend_metal.m",
+    "tinynn/tinynn_backend_cuda.c",
   ].reject { |f| File.directory?(f) }
 
   # bin/toy is a plain-MRI binstub (the CRuby CLI shell under
