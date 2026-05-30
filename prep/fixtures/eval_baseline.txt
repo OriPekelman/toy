@@ -1,0 +1,14 @@
+# prep/fixtures/eval_baseline.txt — recorded per-token logprob baseline
+# for the `toy eval` compute runner (libexec/toy-eval, source
+# lib/toy/run/eval.rb).
+#
+# Recorded on gx10 (aarch64/GB10, CPU ggml f32) from the BUILT runner.
+# Frozen eval point: prefill ids=[1,100,200], logprobs at pos=3, TOP_K=5,
+# greedy (no sampler/seed). decode_step_with_logprobs is a pure CPU f32
+# forward + log_softmax + manual top-K — byte-for-byte reproducible.
+#
+# Format: one record per fixture, "<fixture-basename>\t<TOP_K-line block>".
+# The block is the ordered "logprob: <id> <logprob>" lines as the runner
+# prints them, joined with a literal \n escape (decoded by prep/eval_gate.rb).
+# Lines starting with '#' and blank lines are ignored by the gate.
+smollm2-135m-f32.gguf	logprob: 198 -2.5708273628290854\nlogprob: 19 -2.7158488014277182\nlogprob: 504 -2.8463896492060385\nlogprob: 29 -3.35242640762889\nlogprob: 788 -3.704051850133773

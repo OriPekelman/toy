@@ -24,6 +24,7 @@ require_relative "cli/fetch"
 require_relative "cli/install"
 require_relative "cli/infer"
 require_relative "cli/train"
+require_relative "cli/eval"
 require_relative "cli/manifest"
 
 module Toy
@@ -80,6 +81,13 @@ module Toy
           flags: [{ name: "--steps", desc: "training steps (default 5)" },
                   { name: "--seed", desc: "random-init seed (default 0)" },
                   { name: "--out", desc: "run dir override (default runs/<id>)" },
+                  { name: "--json", desc: "machine output" }]
+        },
+        "eval" => {
+          class: Eval,
+          summary: "Score a GGUF model (per-token logprobs)",
+          args:  [{ name: "model", required: true, desc: "path to a .gguf file" }],
+          flags: [{ name: "--top-k", desc: "top-K logprobs to report (default 5)" },
                   { name: "--json", desc: "machine output" }]
         }
       }.freeze

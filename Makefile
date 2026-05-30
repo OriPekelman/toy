@@ -234,6 +234,16 @@ libexec/toy-infer: lib/toy/run/infer.rb lib/arch.rb lib/transformer_lm.rb lib/to
 	$(SPINEL) $< -o $@
 toy-infer: libexec/toy-infer
 
+# P4 — `toy eval` COMPUTE runner (CRuby→runner COMPUTE BRIDGE, same shape as
+# toy-infer). Spinel source lib/toy/run/eval.rb; the binary path EQUALS the
+# make target so ToyRoot.ensure_built("libexec/toy-eval") both builds and
+# locates it. Deps = infer's deps + lib/toy_logprobs.rb (a transitive require
+# of transformer_lm; listed explicitly so a touch of it rebuilds the runner).
+# CPU-only; NOT in MIRRORABLE (see prep/gen_cuda_mirror.rb).
+libexec/toy-eval: lib/toy/run/eval.rb lib/arch.rb lib/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/tokenizer.rb lib/toy_logprobs.rb tinynn/libtinynn_ggml.a | libexec
+	$(SPINEL) $< -o $@
+toy-eval: libexec/toy-eval
+
 # P4 — from-scratch TRAINING compute runner (CRuby→runner COMPUTE BRIDGE,
 # same shape as toy-infer). Spinel source lib/toy/run/train.rb; the binary
 # path EQUALS the make target so ToyRoot.ensure_built("libexec/toy-train")
@@ -1281,7 +1291,7 @@ clean:
 	      examples/example_train_from_scratch_cpu \
 	      examples/example_train_from_scratch_cuda \
 	      examples/example_finetune examples/example_finetune_cuda \
-	      libexec/toy-infer libexec/toy-train examples/example_train
+	      libexec/toy-infer libexec/toy-train libexec/toy-eval examples/example_train
 
 distclean: clean
 	rm -rf $(GGML_DIR)/build $(GGML_DIR)/build-cuda $(GGML_DIR)/build-metal
