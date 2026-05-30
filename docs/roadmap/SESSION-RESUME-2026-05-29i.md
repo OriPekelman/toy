@@ -111,6 +111,35 @@ Linux box if the full gate matters, else accept 2/3. Then → P4.
 
 After P3 gate → **P4 (train / serve / infer / eval CLI commands).**
 
+## P4 — CLI complete (IN PROGRESS)
+
+**Slice 1 DONE — `toy infer` + the CRuby→runner COMPUTE BRIDGE** (4692c17):
+- THE BRIDGE (reused by train/serve/eval): CRuby CLI can't compute, so
+  `toy infer` ensures the Spinel runner is built (`make
+  examples/example_inference` via the shared `lib/toy/core/toy_root.rb`
+  root-locator — extracted + DRY'd with install), then `Open3`-shells it
+  with a CONTROLLED env hash (GGUF/PROMPT/N_NEW — no stale-env leak).
+  Matches the install/fetch shell-out precedent; "Core-no-ggml" intact.
+- `toy infer <model.gguf> --prompt X [--n N] [--json]`, greedy/argmax
+  (deterministic). Registered in COMMANDS (manifest/help auto-include).
+  Clean errors (no file → 1, no args → 2, no backend → fail-loud hint).
+- RUNNER is TRANSITIONAL (B): shells the existing example_inference;
+  01_inference.rb KEPT (it IS the runner) — deletion deferred to the
+  P4 cleanup arc. The long-term shape is a lib-side Spinel entrypoint.
+- GATE: `prep/infer_gate.rb` — `toy infer` reproduces example_inference
+  BYTE-FOR-BYTE (verified: ids 6403 1980 253 … on smollm2-135m, greedy).
+
+**Slice 1 NOTE:** the build agent committed cleanly then hit the benign
+harness "no StructuredOutput" error (4th time); commit + gate verified
+by hand.
+
+**P4 remaining slices** (each reuses the bridge): `train` (wraps the L4
+recipes → checkpoint to runs/<id>/), `eval` (08_lmc / CE), `serve`
+(tep_demo/openai_api_llama → lib/toy/serve/openai/). Then the AGGRESSIVE
+P4 cleanup arc (retire examples/, fold tep_demo into lib/toy/serve/,
+shrink Makefile) + Tep+Tao re-adaptation. The BRIDGE is the foundational
+decision — review before train/serve/eval build on it.
+
 ### Original P3 spec (reference)
 
 
