@@ -19,7 +19,7 @@
 # Filesystem walking goes through tnn_list_ggufs (a small C shim
 # in tinynn/tinynn_gguf.c) because Spinel's stdlib doesn't have
 # Dir.entries / opendir. That keeps the library Spinel-compilable into
-# a single binary (used by the surviving example_inference link edge).
+# a single binary (the link edge survives via examples/01_inference_metal.rb).
 
 require_relative "transformer"   # Mat is referenced via tinynn FFI bindings
 require_relative "arch"

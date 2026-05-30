@@ -66,7 +66,7 @@ module Toy
           File.file?(File.join(dir, "tinynn", "tinynn_ggml.c"))
       end
 
-      # Build `target` (a Makefile target, e.g. "examples/example_inference")
+      # Build `target` (a Makefile target, e.g. "libexec/toy-infer")
       # in `root` via `make`. Idempotent — make no-ops when the target is
       # up-to-date, so callers may invoke this unconditionally rather than
       # reimplement mtime staleness. The first build on a fresh tree can

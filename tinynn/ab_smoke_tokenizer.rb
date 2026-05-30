@@ -10,7 +10,7 @@
 #
 # Bail-loud: any divergence prints first-byte diff. A perfect round-trip
 # across all three families is the v1 "tokenizer works" signal — the
-# next step is wiring it into example_inference + the OpenAI server.
+# next step is wiring it into the infer runner + the OpenAI server.
 
 require_relative "../lib/tokenizer"
 require_relative "../lib/gguf_kv"

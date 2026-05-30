@@ -8,7 +8,6 @@ runtime to install — `make`, run.
 
 | File | What it does | Runtime |
 |---|---|---|
-| `01_inference.rb`        | Load a GGUF, generate 16 tokens. Default points at `data/smollm2-135m-f32.gguf`. Swap `GGUF=` for any supported model. | seconds |
 | `02_train_custom_gpt.rb` | Train a tiny GPT from scratch on TinyStories. Bumping EPOCHS makes a model that writes English. | ~3 min default |
 | `03_finetune_lora.rb`    | LoRA / **QLoRA** fine-tune via the sequence-mode forward graph (CPU). Needs a native-layout GGUF — see prep step below. | ~30 s |
 | `03_finetune_lora_cuda.rb` | CUDA mirror of the above. F32 by default; pass `Q8=1` for QLoRA (Q8-stays-Q8 path via `realize_for_q8_copy`). | ~10 s on GB10 |
@@ -52,19 +51,23 @@ If you'd rather convert from HF format yourself:
 The native build is what `03_finetune_lora.rb` and the `tep_demo/`
 serving binaries load — the LoRA / serve paths mmap base weights in
 place, which needs the HF `[out, in]` layout (`toy.ggml_native=true`).
-The legacy build is what `01_inference.rb` and `02_train_custom_gpt.rb`
-consume.
+The legacy build is what `02_train_custom_gpt.rb` consumes.
 
 ## Inference
 
+Inference now lives in the lib-side runner (`lib/toy/run/infer.rb` →
+`libexec/toy-infer`), driven by the CLI. `toy infer` builds the runner on
+demand and shells to it:
+
 ```sh
-make example_inference
-./examples/example_inference                      # uses data/smollm2-135m-f32.gguf
-GGUF=data/smollm2-135m-q8_0.gguf ./examples/example_inference
+toy infer data/smollm2-135m-f32.gguf              # uses the given GGUF
+toy infer data/smollm2-135m-q8_0.gguf --prompt "Once upon a time" --n 16
 # → ids: 6403 1980 253 655 28 665 436 253 1838 ...
 ```
 
-One binary, model bytes loaded from disk, KV-cache decode.
+One binary, model bytes loaded from disk, KV-cache decode. On macOS the
+Metal-accelerated GPU path is still `examples/01_inference_metal.rb`
+(`make example_inference_metal`) until the runner grows a `--device` flag.
 
 ## Training your own
 

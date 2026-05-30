@@ -72,15 +72,13 @@ real-model repro:
 
 ```bash
 # Q4_K_M — broken output
-GGUF=data/OLMoE-1b-7b-0924-Instruct-Q4_K_M.gguf \
-  PROMPT='The capital of France is' \
-  N_NEW=8 ./examples/example_inference
+toy infer data/OLMoE-1b-7b-0924-Instruct-Q4_K_M.gguf \
+  --prompt 'The capital of France is' --n 8
 # → "The capital of France is Dub Dub Dub Dub Dub Dub Dub Dub"
 
 # Q8_0 — coherent output
-GGUF=data/OLMoE-1b-7b-0924-Instruct-q8_0.gguf \
-  PROMPT='The capital of France is' \
-  N_NEW=8 ./examples/example_inference
+toy infer data/OLMoE-1b-7b-0924-Instruct-q8_0.gguf \
+  --prompt 'The capital of France is' --n 8
 # → "The capital of France is called Paris."
 ```
 

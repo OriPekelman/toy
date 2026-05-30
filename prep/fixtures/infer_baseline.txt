@@ -1,0 +1,19 @@
+# prep/fixtures/infer_baseline.txt — recorded greedy/argmax baseline for the
+# `toy infer` compute runner (libexec/toy-infer, source lib/toy/run/infer.rb).
+#
+# Recorded on gx10 (aarch64/GB10, CPU ggml f32) from the deterministic greedy
+# decode at N_NEW=8 — the N that prep/infer_gate.rb runs. This is the
+# byte-for-byte reference that survives the retirement of
+# examples/01_inference.rb. It is what the runner reproduced before that
+# example was deleted (the ids line is also bit-identical to the task's
+# recorded N_NEW=16 baseline truncated to N=8).
+#
+# Format: one record per fixture, "<fixture-basename>\t<expected-line>".
+# The expected-line is the FULL generated line as the runner prints it:
+#   text fixture → "text: <decoded>"
+#   ids  fixture → "ids: <id> <id> …"
+# Lines starting with '#' and blank lines are ignored by the gate.
+#
+# PROMPT="Once upon a time", N_NEW=8, greedy (no sampler/seed).
+smollm2-135m-f32.gguf	ids: 6403 1980 253 655 28 665 436 253 1838 8180 3365 14176 30
+smollm2-135m-tok.gguf	text: Onceuponatime,

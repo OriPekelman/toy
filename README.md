@@ -79,7 +79,8 @@ Python converter.
 make setup                                   # build the backend (CPU + Metal/CUDA if detected)
 toy fetch ggml-org/models \
     tinyllamas/stories15M-q4_0.gguf          # grab a tiny model into ./data
-PROMPT="Once upon a time" ./examples/example_inference   # run inference
+toy infer data/stories15M-q4_0.gguf \
+    --prompt "Once upon a time"                  # run inference
 ```
 
 For the same flow broken into pieces:
@@ -103,29 +104,25 @@ fetcher also drops a `data/<file>.gguf` symlink so the default
 Then run:
 
 ```sh
-make example_inference
-GGUF=data/llama-3.2-1b-tok.gguf PROMPT="The capital of France is" \
-  ./examples/example_inference
-# → text: The capital of France is Paris. The capital of Germany is …
+toy infer data/llama-3.2-1b-tok.gguf --prompt "The capital of France is"
+# → The capital of France is Paris. The capital of Germany is …
 
-# Try the opt-in perf knobs:
+# Try the opt-in perf knobs (env-vars the runner reads):
 KV_Q8=1 FLASH_ATTN=1 \
-  GGUF=data/qwen3-1.7b-tok.gguf PROMPT="Hi" N_NEW=32 \
-  ./examples/example_inference
+  toy infer data/qwen3-1.7b-tok.gguf --prompt "Hi" --n 32
 
 # Modern MoE works (Q8 expert weights required — see footnote):
-GGUF=data/OLMoE-1b-7b-0924-Instruct-q8_0.gguf PROMPT="The capital of France is" \
-  ./examples/example_inference
+toy infer data/OLMoE-1b-7b-0924-Instruct-q8_0.gguf \
+  --prompt "The capital of France is"
 
 # Gemma 2 (all four arch quirks auto-detected):
-GGUF=data/gemma-2-2b-it-Q8_0.gguf PROMPT="The capital of France is" \
-  ./examples/example_inference
+toy infer data/gemma-2-2b-it-Q8_0.gguf --prompt "The capital of France is"
 ```
 
-`example_inference` speaks text when the GGUF was converted with
+`toy infer` speaks text when the GGUF was converted with
 `--with-tokenizer` (the `*-tok.gguf` variants). Three tokenizer
 flavors auto-detected: byte-level BPE, SPM-BPE, SPM-Unigram. Without
-an embedded tokenizer the example falls back to a fixed token-ID
+an embedded tokenizer the runner falls back to a fixed token-ID
 prompt and prints raw IDs.
 
 **Serve as an HTTP API:**

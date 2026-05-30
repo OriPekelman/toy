@@ -4,25 +4,24 @@
 # (the CLI shell) — NO Spinel. This is the first user of the CRuby→runner
 # COMPUTE BRIDGE: the CLI cannot compute (every ffi_lib-bearing lib crashes
 # under MRI; see cli.rb:3-8), so it locates the toy root, ensures a
-# Spinel-compiled runner is built (`make examples/example_inference`), then
+# Spinel-compiled runner is built (`make libexec/toy-infer`), then
 # shells out to it via Open3 — exactly how `toy install` / `toy fetch`
 # already shell external tools. train/serve/eval will copy this shape.
 #
-# RUNNER (slice 1, transitional): the existing examples/example_inference
-# Spinel binary, whose compute source is examples/01_inference.rb. It reads
-# config from ENV only (GGUF/PROMPT/N_NEW). We pass those as a controlled
-# env hash (first positional to Open3) so the caller's stale GGUF/PROMPT/
-# N_NEW can NEVER leak into the child. The runner prints a multi-line
-# preamble (Arch.summary + "prompt: …"); we parse only its `text:` line
-# (embedded tokenizer) or `ids:` line (none), and fail loud if neither is
-# present — no positional assumptions about stdout.
+# RUNNER: the lib-side compute runner libexec/toy-infer, whose Spinel source
+# is lib/toy/run/infer.rb. It reads config from ENV only (GGUF/PROMPT/N_NEW).
+# We pass those as a controlled env hash (first positional to Open3) so the
+# caller's stale GGUF/PROMPT/N_NEW can NEVER leak into the child. The runner
+# prints a multi-line preamble (Arch.summary + "prompt: …"); we parse only
+# its `text:` line (embedded tokenizer) or `ids:` line (none), and fail loud
+# if neither is present — no positional assumptions about stdout.
 #
-# DETERMINISM: 01_inference calls generate(..) with no sampler_config →
+# DETERMINISM: the runner calls generate(..) with no sampler_config →
 # Sampler.argmax (first-max-wins, no rand/temperature). Greedy, no seed.
 #
-# DELIBERATELY NOT inherited from 01_inference.rb: its ModelIndex
-# auto-select fallback (a silent fallback the never-mask rule forbids).
-# `toy infer` requires an explicit .gguf path and errors on a bad one.
+# DELIBERATELY NOT carried by the runner: a ModelIndex auto-select fallback
+# (a silent fallback the never-mask rule forbids). `toy infer` requires an
+# explicit .gguf path and errors on a bad one.
 
 require "json"
 require "open3"
@@ -35,9 +34,12 @@ module Toy
       class Infer
         FORMAT = "toy/infer-v1"
 
-        DEFAULT_PROMPT = "Once upon a time" # parity with 01_inference.rb:24
-        DEFAULT_N      = 16                  # parity with N_NEW default :25
-        RUNNER_TARGET  = "examples/example_inference"
+        DEFAULT_PROMPT = "Once upon a time" # parity w/ lib/toy/run/infer.rb
+        DEFAULT_N      = 16                  # parity w/ runner N_NEW default
+        # NOTE: target name MUST equal the output path — ToyRoot.ensure_built
+        # runs `make <RUNNER_TARGET>` and File.join(root, RUNNER_TARGET) is
+        # the binary. `make libexec/toy-infer` outputs libexec/toy-infer.
+        RUNNER_TARGET  = "libexec/toy-infer"
 
         def initialize(argv)
           @argv = argv

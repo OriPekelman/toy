@@ -166,7 +166,9 @@ demos/smollm2_lora_train_ce_pinned
 demos/smollm2_lora_train_adamw_cuda
 demos/smollm2_lora_sft_multi_cuda
 demos/smollm2_lora_sft_multipos_cuda
-examples/example_inference
+# Spinel-compiled CLI runners (sources in lib/toy/run/; built on demand by
+# `toy infer` etc. via `make libexec/<name>`).
+libexec/
 examples/example_inference_metal
 examples/example_train
 examples/example_finetune_cuda
