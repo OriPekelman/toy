@@ -178,7 +178,18 @@ everywhere else — align in a doc pass.
 ROADMAP NOTE: slice 1 is CE/logprobs; the roadmap's named eval gate is
 `toy eval lmc` (two-ckpt) → eval slice 2.
 
-**P4 commands: infer ✓ train ✓ eval ✓ — serve BLOCKED (stale vendored tep).**
+**P4 commands: infer ✓ train ✓ eval ✓ — serve UNBLOCKED (clean tep-as-gem landed).**
+
+**TEP CONSUMPTION CLEANED UP (2dea006):** toy now consumes tep as a gem
+from `main` via `git:` (Gemfile) through the spinelgems convention — NO
+@TEP_*@ trick. `prep/post_vendor_tep.rb` DELETED (it consumed the dead
+ffi_manifest #97; tep main ships spinel-ext.json #98, and spinel-compat
+vendor wires C-exts natively). Makefile `vendor-tep` = `bundle lock` →
+`spinel-compat vendor`. Verified: `make vendor-tep` → openai_api_llama
+builds+links clean. Notes: `bundle` needs a user Ruby env (rbenv/rv;
+doc-only); tep's optional pg C-ext opted out (SPINEL_EXT_DISABLE=pg) —
+filed **spinelgems#8** (libpq cflags not wired to split @TEP_PG_*@
+entries). So `serve` is now buildable — re-running its workflow.
 
 **serve BLOCKER (confirmed 2026-05-30):** `make tep_demo/openai_api_llama`
 fails to link — `vendor/spinel/tep/lib/tep/net.rb` is STALE: it lacks the
