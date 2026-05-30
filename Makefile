@@ -151,63 +151,6 @@ setup:
 	echo ""; \
 	echo "Done. Next: run 'make help' for the entry points."
 
-# --- `make hello` — guided first-run experience ----------------------------
-# One command from a fresh clone to "I see tokens on the screen":
-#   1. setup the backend (CPU + Metal/CUDA if detected) — idempotent
-#   2. convert HuggingFaceTB/SmolLM2-135M (the base, not Instruct) to
-#      data/smollm2-135m-f32.gguf via the project's own converter, so
-#      raw completion prompts produce coherent text. Requires `uv`
-#      (autoinstalls deps inline).
-#   3. build example_inference (Metal on macOS, CPU elsewhere) and run
-#      it with a default prompt.
-# Each step is a no-op if its output already exists. Safe to re-run.
-.PHONY: hello _hello_model _hello_run
-
-hello:
-	@echo "▶ toy hello — guided first-run"
-	@$(MAKE) -s setup
-	@$(MAKE) -s _hello_model
-	@$(MAKE) -s _hello_run
-	@echo ""
-	@echo "▶ done. Next:  make help     (see all entry points)"
-
-_hello_model:
-	@if [ ! -e data/smollm2-135m-f32.gguf ]; then \
-	    if ! command -v uv >/dev/null 2>&1; then \
-	        echo "[hello] uv not found. Install from https://docs.astral.sh/uv/"; \
-	        echo "[hello] (or fetch any GGUF via prep/fetch_model.sh and re-run)."; \
-	        exit 1; \
-	    fi; \
-	    echo "[hello] converting HuggingFaceTB/SmolLM2-135M → data/smollm2-135m-f32.gguf"; \
-	    echo "[hello]   (first time pulls ~270 MB safetensors via huggingface_hub; ~30 s)"; \
-	    ./prep/convert_smollm2_to_gguf.py --with-tokenizer >prep/_convert.log 2>&1 || { \
-	        echo "[hello] converter failed — tail of prep/_convert.log:"; \
-	        tail -30 prep/_convert.log; \
-	        exit 1; \
-	    }; \
-	    echo "[hello] data/smollm2-135m-f32.gguf ready"; \
-	else \
-	    echo "[hello] data/smollm2-135m-f32.gguf already present"; \
-	fi
-
-_hello_run:
-ifeq ($(UNAME_S),Darwin)
-	@$(MAKE) -s example_inference_metal
-	@echo ""
-	@echo "[hello] running example_inference_metal — Metal-accelerated"
-	@echo "[hello]   (first Metal run JIT-compiles kernels, ~15 s, then cached)"
-	@echo ""
-	@GGML_LOG_LEVEL=2 PROMPT="Once upon a time" $(QUIETLY) \
-	    '^ggml_metal_' \
-	    -- ./examples/example_inference_metal
-else
-	@$(MAKE) -s example_inference
-	@echo ""
-	@echo "[hello] running example_inference — CPU"
-	@echo ""
-	@PROMPT="Once upon a time" ./examples/example_inference
-endif
-
 # --- help / time-to-joy entry points --------------------------------------
 # `make help` is the discoverable index for someone who just cloned.
 # Keep it short — pointers to the heavier docs (examples/README.md,
@@ -220,14 +163,12 @@ help:
 	@echo "  toy — a transformer LM in Ruby, Spinel-compiled."
 	@echo "  Full docs: README.md, examples/README.md, docs/INDEX.md."
 	@echo ""
-	@if [ ! -f vendor/ggml/build/src/libggml.a ] && \
-	    [ ! -f vendor/ggml/build-metal/src/libggml.a ] && \
-	    [ ! -f vendor/ggml/build-cuda/src/libggml.a ]; then \
-	    echo "  ▶ FIRST TIME HERE?"; \
-	    echo "      make hello              one-shot: setup + fetch a model + run inference"; \
-	    echo "      make setup              just build the backend (CPU + Metal/CUDA if detected)"; \
-	    echo ""; \
-	fi
+	@echo "  NEW HERE? Scaffold a project + discover models with the toy CLI:"
+	@echo "    toy new <dir>            scaffold a conventional toy project tree"
+	@echo "    toy install              build/verify the CPU backend"
+	@echo "    toy list                 find GGUFs in caches + project data/"
+	@echo "    toy fetch <repo> <file>  download a GGUF from HuggingFace"
+	@echo ""
 	@echo "  ONE-TIME SETUP"
 	@echo "    make setup               auto-detect platform; pick CUDA/Metal/CPU"
 	@echo "    make setup-ggml          force CPU build (~2 min)"
@@ -241,7 +182,7 @@ help:
 	    echo ""; \
 	fi
 	@echo "  GETTING STARTED — examples/"
-	@echo "    make example_list_models           list GGUFs cached locally / in HF / Ollama / LM Studio"
+	@echo "    toy list                           list GGUFs cached locally / in HF / Ollama / LM Studio"
 	@echo "    make example_inference             load a GGUF, generate 16 tokens (CPU)"
 	@if [ "$$(uname -s)" = "Darwin" ]; then \
 	    echo "    make example_inference_metal       same, Metal-accelerated (macOS) — use this on Mac"; \
@@ -445,14 +386,6 @@ endif
 	$(SPINEL) --cc='cc -Wl,-u,_tnn_metal_force_link -framework Foundation -framework Metal -framework MetalKit' $< -o $@
 example_inference_metal: examples/example_inference_metal
 
-examples/example_serve: examples/04_serve_http.rb vendor/spinel/tep/lib/tep.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
-	$(SPINEL) $< -o $@
-example_serve: examples/example_serve
-
-examples/example_list_models: examples/05_list_models.rb lib/model_index.rb lib/arch.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
-	$(SPINEL) $< -o $@
-example_list_models: examples/example_list_models
-
 # DEVICE-aware entry point. Toy's per-backend Spinel binaries can't
 # share a Ruby file (poly-dispatch landmines on LlamaSeqForwardFFICache
 # vs *Cuda), so the entry point is a shell-script dispatcher.
@@ -474,7 +407,7 @@ examples/example_train_from_scratch: examples/example_train_from_scratch_cpu
 example_train_from_scratch: examples/example_train_from_scratch
 example_train_from_scratch_cuda: examples/example_train_from_scratch_cuda
 
-examples: example_inference example_train example_finetune example_finetune_cuda example_serve example_list_models
+examples: example_inference example_train example_finetune example_finetune_cuda
 
 # Phase 0.6 — CUDA-mirror generator. The CPU file is the source of
 # truth; the CUDA file is auto-generated by prep/gen_cuda_mirror.rb.
@@ -587,8 +520,9 @@ endef
 
 # setup-ggml-* targets are user-facing phonies; the real work happens
 # in the libggml.a sentinel rules below so re-running setup is a no-op
-# once the static archive is built. Lets `make hello` chain through
-# without redoing the ~5 s incremental cmake check on every invocation.
+# once the static archive is built. Lets `make setup` / `toy install`
+# chain through without redoing the ~5 s incremental cmake check on
+# every invocation.
 .PHONY: setup-ggml setup-ggml-cuda setup-ggml-metal
 
 setup-ggml: $(GGML_DIR)/build/src/libggml.a
@@ -1323,8 +1257,7 @@ clean:
 	      examples/example_train_from_scratch_cpu \
 	      examples/example_train_from_scratch_cuda \
 	      examples/example_finetune examples/example_finetune_cuda \
-	      examples/example_inference examples/example_list_models \
-	      examples/example_serve examples/example_train
+	      examples/example_inference examples/example_train
 
 distclean: clean
 	rm -rf $(GGML_DIR)/build $(GGML_DIR)/build-cuda $(GGML_DIR)/build-metal

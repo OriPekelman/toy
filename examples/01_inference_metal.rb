@@ -94,8 +94,8 @@ end
 arch = Arch.from_gguf(gguf)
 if arch == nil
   puts "example_inference_metal: could not load " + gguf +
-       " — set GGUF= to a valid file (see examples/example_list_models),"
-  puts "  or run `make hello` for a guided first-run."
+       " — set GGUF= to a valid file (see `toy list`),"
+  puts "  or fetch one with `toy fetch <hf-repo> <file.gguf>`."
   TinyNNMetal.tnn_force_exit(1)
 end
 puts arch.summary

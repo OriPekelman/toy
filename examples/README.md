@@ -12,8 +12,6 @@ runtime to install — `make`, run.
 | `02_train_custom_gpt.rb` | Train a tiny GPT from scratch on TinyStories. Bumping EPOCHS makes a model that writes English. | ~3 min default |
 | `03_finetune_lora.rb`    | LoRA / **QLoRA** fine-tune via the sequence-mode forward graph (CPU). Needs a native-layout GGUF — see prep step below. | ~30 s |
 | `03_finetune_lora_cuda.rb` | CUDA mirror of the above. F32 by default; pass `Q8=1` for QLoRA (Q8-stays-Q8 path via `realize_for_q8_copy`). | ~10 s on GB10 |
-| `04_serve_http.rb`       | HTTP API reference shape. Boots cleanly but `Tep.run!` exits immediately (uses old vendored Tep); for a working serving binary see [`tep_demo/openai_api_llama`](../tep_demo/README.md). | — |
-| `05_list_models.rb`      | Walk HF / Ollama / LM Studio / `./data` / `$TOY_MODEL_DIR` caches; print every GGUF with family + params + size. | < 1 s |
 | `06_train_from_scratch.rb` | **Modern from-scratch trainer.** Llama-shape (RMSNorm + GQA + RoPE + SwiGLU); CPU + CUDA (DEVICE=cuda). Emits toy/v1 events. BATCH + GRAD_ACCUM + WEIGHT_DTYPE knobs. Tao's experiment harness rides this. | seconds–minutes |
 | `07_train_vit_tiny.rb`   | ViT-Tiny image classifier with timm IN-21k AugReg donor warm-start. Patch embed + class token + 12 blocks + MLP head; CIFAR-shape smoke. | ~30 s for 200 steps |
 | `08_lmc.rb`              | Linear Mode Connectivity blend of two from-scratch checkpoints over an α grid; emits one `eval` per α. Tao's `Analyze.lmc` consumes these. | seconds |
@@ -24,24 +22,23 @@ runtime to install — `make`, run.
 
 ```sh
 make setup-ggml                # one-time: clones ggml + applies local patches
-make example_list_models       # build the discovery binary
-./examples/example_list_models # see what's already cached locally
+toy list                       # see what's already cached locally
 ```
 
 If nothing's cached yet, three easy ways to populate one:
 
 ```sh
-# 1. Use the wrapper (defers to huggingface-cli if installed, else curl).
-prep/fetch_model.sh bartowski/SmolLM2-135M-Instruct-GGUF SmolLM2-135M-Instruct-Q8_0.gguf
+# 1. Use the toy CLI (defers to `hf` / huggingface-cli if installed, else curl).
+toy fetch bartowski/SmolLM2-135M-Instruct-GGUF SmolLM2-135M-Instruct-Q8_0.gguf
 
-# 2. huggingface-cli directly (any GGUF repo).
-huggingface-cli download bartowski/SmolLM2-135M-Instruct-GGUF SmolLM2-135M-Instruct-Q8_0.gguf
+# 2. huggingface-cli / hf directly (any GGUF repo).
+hf download bartowski/SmolLM2-135M-Instruct-GGUF SmolLM2-135M-Instruct-Q8_0.gguf
 
 # 3. Ollama / LM Studio also work — toy reads their caches too.
 ollama pull llama3.2:1b
 ```
 
-Re-run `example_list_models` and the new model appears. Set
+Re-run `toy list` and the new model appears. Set
 `TOY_MODEL_DIR=/srv/models` to add another search path.
 
 If you'd rather convert from HF format yourself:
@@ -52,10 +49,11 @@ If you'd rather convert from HF format yourself:
     --out data/smollm2-135m-native.gguf  # mmap-ready layout for LoRA/serve
 ```
 
-The native build is what `03_finetune_lora.rb` and `04_serve_http.rb`
-load — the LoRA / serve paths mmap base weights in place, which
-needs the HF `[out, in]` layout (`toy.ggml_native=true`). The legacy
-build is what `01_inference.rb` and `02_train_custom_gpt.rb` consume.
+The native build is what `03_finetune_lora.rb` and the `tep_demo/`
+serving binaries load — the LoRA / serve paths mmap base weights in
+place, which needs the HF `[out, in]` layout (`toy.ggml_native=true`).
+The legacy build is what `01_inference.rb` and `02_train_custom_gpt.rb`
+consume.
 
 ## Inference
 
@@ -168,11 +166,10 @@ curl -X POST http://127.0.0.1:4567/v1/embeddings \
 Token-IDs in, token-IDs out — tokenizer work belongs client-side
 (`prep/qwen25_tokens.py encode "..."`). One binary, no runtime.
 
-`04_serve_http.rb` is the older minimal-shape demo; it builds
-clean but `Tep.run!` returns immediately because it uses the
-pre-spinelgems vendored Tep. Wiring it to the modern vendor
-path is a small follow-up; `openai_api_llama` is the canonical
-serving binary today.
+`openai_api_llama` is the canonical serving binary today. (The
+older minimal `04_serve_http.rb` demo was removed — it built clean
+but `Tep.run!` returned immediately under the pre-spinelgems
+vendored Tep; use the `tep_demo/` server instead.)
 
 ## Inspecting + analysing trained models
 
@@ -211,8 +208,8 @@ GGUF=data/smollm2-135m-native.gguf TOP_K=5 ./examples/smoke_decode_logprobs
 - `docs/architecture.md` — generic `TransformerLM` + `Arch` struct.
 - `demos/` — exhaustive per-model and per-feature drivers.
 - `tinynn/` — C+CUDA shim over ggml (FFI bridge, KV cache, mmap loader).
-- `tep_demo/` — full OpenAI-compatible HTTP API (the `04_serve`
-  example is its lite cousin).
+- `tep_demo/` — full OpenAI-compatible HTTP API (the canonical
+  serving path; the old lite `04_serve` example was removed).
 
 Roadmap + deferred design notes live in `docs/roadmap/`; issues we've
 filed upstream (ggml / Spinel / Tep) live in `docs/archive/upstream/`.

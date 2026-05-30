@@ -9,16 +9,17 @@
 # ModelIndex.scan and list what it found. A user app picks a model by
 # `name` or `path`. Everything else (loading, decoding) is unchanged.
 #
-# Library-first design — not a CLI. The companion example
-# `examples/05_list_models.rb` shows the smallest useful integration.
+# Library-first design — not a CLI. For the user-facing model listing,
+# use the `toy list` command (lib/toy/core/cli/list.rb, a pure-MRI port);
+# this Spinel library is the smallest useful in-binary integration.
 #
 # What we recognise today:
 #   *.gguf files (any directory).
 #
 # Filesystem walking goes through tnn_list_ggufs (a small C shim
 # in tinynn/tinynn_gguf.c) because Spinel's stdlib doesn't have
-# Dir.entries / opendir. That keeps the library Spinel-compilable —
-# `make example_list_models` builds a single binary.
+# Dir.entries / opendir. That keeps the library Spinel-compilable into
+# a single binary (used by the surviving example_inference link edge).
 
 require_relative "transformer"   # Mat is referenced via tinynn FFI bindings
 require_relative "arch"
