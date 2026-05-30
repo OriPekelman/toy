@@ -178,7 +178,22 @@ everywhere else — align in a doc pass.
 ROADMAP NOTE: slice 1 is CE/logprobs; the roadmap's named eval gate is
 `toy eval lmc` (two-ckpt) → eval slice 2.
 
-**P4 commands: infer ✓ train ✓ eval ✓ — serve is LAST.**
+**P4 commands: infer ✓ train ✓ eval ✓ — serve BLOCKED (stale vendored tep).**
+
+**serve BLOCKER (confirmed 2026-05-30):** `make tep_demo/openai_api_llama`
+fails to link — `vendor/spinel/tep/lib/tep/net.rb` is STALE: it lacks the
+`ffi_lib "ssl"` + `ffi_lib "crypto"` markers that upstream `~/sites/tep/
+lib/tep/net.rb:15-16` added for inbound TLS. Upstream's sphttp.o was
+rebuilt with `TLS_server_method`/`SSL_accept` (OpenSSL 3.0), but the
+vendored net.rb wasn't re-synced → Spinel links the TLS object without
+`-lssl -lcrypto` → `undefined reference to TLS_server_method@@OPENSSL_3.0.0`.
+Fix = RE-VENDOR tep (re-run the vendoring so net.rb regains ssl/crypto +
+re-points sphttp.o). That's a Tep-sync chore + upstream tep is mid-flux
+(TLS just landed). infer/train/eval are tep-free and unaffected.
+DECISION (pending user): serve is the Tep-coupled command → defer it (and
+the tep_demo→lib/toy/serve fold) to the Tep phase, and proceed now with
+the tep-free STABILIZATION work (train→infer round-trip + cleanup +
+fresh docs + markdown audit). OR re-vendor tep now to finish serve.
 
 `serve` recon: tep_demo/openai_api_llama.rb is a Spinel HTTP server using
 `Tep::Handler` (requires vendor/spinel/tep + ../vendor/spinel/deps),
