@@ -45,7 +45,18 @@ module Toy
 
           arch = ModelScan.read_arch(meta)
           if arch.nil?
-            return fail_out("#{path}: no llama-family arch metadata (non-llama GGUF?)")
+            return fail_out("#{path}: no recognizable transformer arch metadata in GGUF")
+          end
+          # `describe` renders the toy's llama-family Card (GQA + SwiGLU +
+          # RoPE). Other arches (gpt2, gemma2, olmoe, ...) are genuinely
+          # different — decline rather than render a confident wrong card.
+          unless [:llama, :qwen2].include?(arch[:family])
+            return fail_out(
+              "#{path}: #{arch[:family]} model — `toy describe` renders the " \
+              "llama-family Card (llama/qwen2) only; #{arch[:family]} has a " \
+              "different architecture. Read dims: V=#{arch[:vocab]} " \
+              "D=#{arch[:d_model]} L=#{arch[:n_layers]} n_q=#{arch[:n_q]} " \
+              "n_kv=#{arch[:n_kv]} d_ff=#{arch[:d_ff]}.")
           end
           arch[:n_params] = ModelScan.estimate_params(arch)
 

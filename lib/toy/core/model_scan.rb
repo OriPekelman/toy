@@ -111,12 +111,22 @@ module Toy
         return nil if vocab.nil? || d_model.nil? || n_layers.nil? || n_q.nil?
         return nil if vocab <= 0 || d_model <= 0 || n_layers <= 0 || n_q <= 0
 
-        # Family detection (arch.rb:214-218): general.architecture is
-        # unreliable (converter writes "llama" for all), so use tensor
-        # presence. QKV bias → qwen2, else llama. Coarse by design.
-        has_qkv_bias = meta.tensor?("blk.0.attn_q.bias") ||
-                       meta.tensor?("blk.0.attn_q.head_0.bias")
-        family = has_qkv_bias ? :qwen2 : :llama
+        # Family detection. general.architecture reliably names genuinely
+        # different arches (gpt2, gemma2, olmoe, ...). Our own converter
+        # writes "llama" for BOTH real-llama AND real-qwen (qwen is
+        # structurally llama-family in this toy), so within "llama" we
+        # refine llama-vs-qwen2 by QKV-bias tensor presence (cosmetic —
+        # both render the same llama-family Card). Non-llama general.arch
+        # values are surfaced verbatim so `describe` can decline to render
+        # a llama Card for an arch it doesn't model (fail loud, not mask).
+        ga = kv["general.architecture"]
+        if ga.is_a?(String) && ga != "llama"
+          family = ga.to_sym
+        else
+          has_qkv_bias = meta.tensor?("blk.0.attn_q.bias") ||
+                         meta.tensor?("blk.0.attn_q.head_0.bias")
+          family = has_qkv_bias ? :qwen2 : :llama
+        end
 
         {
           family:   family,
