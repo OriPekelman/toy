@@ -78,8 +78,24 @@ fetch_model.sh; removed `make hello` + FIRST-TIME banner; retargeted docs
 to `toy` CLI). `make verify-mirrors` still passes; surviving targets
 resolve. `--manifest` lists all 5 commands.
 
-**P3 = functionally COMPLETE on gx10 (aarch64).** All 5 commands +
---manifest/--help/--version + toy.yml work. Remaining for the P3 GATE:
+**P3 = COMPLETE on gx10 (aarch64) + Mac (M2/Metal).** All 5 commands +
+--manifest/--help/--version + toy.yml work on both. Mac validation pass
+(2026-05-30): all 5 commands pass on M2, Metal install+inference verified
+end-to-end, 2 bugs fixed (0949885 install Metal+source-sentinel, 2153294
+binstub fail-loud), issue #29 closed.
+
+**Packaging (#28) RESOLVED → option (c)** (dcb052e): gemspec ships the
+backend build inputs (Makefile, vendor-patches, prep filters, tinynn
+CPU/Metal/CUDA shim sources). Verified aarch64: gem-install → `toy
+install` from /tmp locates the gem dir, clones+patches+builds ggml. #28
+closed; fat-gem (a) deferred. **Dedup polish** (f302fe1): `toy list`
+dedups by realpath so a fetched model shows once.
+
+**Remaining for the full 3-platform P3 gate:** only **Linux x86_64** is
+unverified (gx10=aarch64, Mac=arm64-darwin both pass). Verify on an x86_64
+Linux box if the full gate matters, else accept 2/3. Then → P4.
+
+### (earlier) Remaining for the P3 GATE:
 
 1. **OPEN DESIGN QUESTION — `toy install` gem-packaging** (user decision):
    `gem install toy` yields NO backend today. install currently works via
