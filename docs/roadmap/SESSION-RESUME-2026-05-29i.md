@@ -133,12 +133,32 @@ After P3 gate → **P4 (train / serve / infer / eval CLI commands).**
 harness "no StructuredOutput" error (4th time); commit + gate verified
 by hand.
 
-**P4 remaining slices** (each reuses the bridge): `train` (wraps the L4
-recipes → checkpoint to runs/<id>/), `eval` (08_lmc / CE), `serve`
-(tep_demo/openai_api_llama → lib/toy/serve/openai/). Then the AGGRESSIVE
-P4 cleanup arc (retire examples/, fold tep_demo into lib/toy/serve/,
-shrink Makefile) + Tep+Tao re-adaptation. The BRIDGE is the foundational
-decision — review before train/serve/eval build on it.
+**Slice 1b DONE — CLEAN lib-side runner** (af3c86f, user asked for clean
+now not transitional): the RUNNER PATTERN all P4 commands follow —
+- SOURCE: `lib/toy/run/<cmd>.rb` (Spinel entrypoint; reads config from a
+  controlled ENV the CLI sets; lib-vs-example scope, no baked config).
+- BINARY: `libexec/toy-<cmd>` (gitignored build artifact).
+- BUILD: Makefile rule `libexec/toy-<cmd>: lib/toy/run/<cmd>.rb <deps>
+  tinynn/libtinynn_ggml.a | libexec` via `$(SPINEL)`.
+- CLI: `lib/toy/core/cli/<cmd>.rb` builds it (toy_root + make) then
+  Open3-shells it with the controlled env. Greedy/deterministic.
+- GATE: recorded-baseline (`prep/fixtures/*` + `prep/<cmd>_gate.rb`),
+  byte-for-byte.
+infer: `lib/toy/run/infer.rb` → `libexec/toy-infer`; `01_inference.rb`
+RETIRED; gate passes byte-for-byte (2 fixtures); verify-mirrors green.
+NOTE: runner is CPU-ONLY — GPU deferred (CUDA/Metal inference use
+hand-written ToyLMCuda/ToyLMMetal with different ctor arity → can't
+mechanically mirror; no `--device` flag yet). `01_inference_metal.rb`
+KEPT as the GPU path until a `--device` slice. Bonus: the new runner
+handles the tok/text fixture the old example SEGFAULTED on (Spinel
+tokenizer-GC regression).
+
+**P4 remaining slices** (reuse the runner pattern): `train` (NEXT — wraps
+L4 recipes → step loop → checkpoint to runs/<id>/ + events; gate vs
+smoke_recipe_from_scratch loss curve), `eval` (08_lmc / CE), `serve`
+(tep_demo/openai_api_llama → lib/toy/serve/openai/ — LAST). Then the
+AGGRESSIVE cleanup arc. **Tep then Tao re-adaptation DEFERRED until Toy
+is fully stabilized** (user directive); clean-state repo is a goal.
 
 ### Original P3 spec (reference)
 
