@@ -176,16 +176,21 @@ module Toy
         embed + l * (attn_per_layer + ffn_per_layer) + untied
       end
 
-      # Scan source dirs → [ModelEntry]. De-dup by absolute path,
-      # first-found wins. Unparseable/non-llama files degrade to
-      # family=:unknown, params=0 (NOT dropped — the UX delta).
+      # Scan source dirs → [ModelEntry]. De-dup by CANONICAL (symlink-
+      # resolved) path, first-found wins — so a `toy fetch` model shows
+      # once under its data/ symlink (scanned first) rather than twice
+      # (the symlink AND the HF-cache blob it points at). Falls back to
+      # the literal path if realpath fails (e.g. a broken symlink).
+      # Unparseable/non-llama files degrade to family=:unknown, params=0
+      # (NOT dropped — the UX delta).
       def scan(sources = default_sources)
         seen = {}
         out = []
         sources.each do |src|
           find_ggufs(src).each do |path|
-            next if seen[path]
-            seen[path] = true
+            canon = (File.realpath(path) rescue path)
+            next if seen[canon]
+            seen[canon] = true
             src_kind, name = classify_path(path)
             size = File.size(path)
             entry = build_entry(path, name, src_kind, size)
