@@ -68,12 +68,32 @@ outside a project. **Correctness fix:** describe now reads
 `general.architecture` and DECLINES non-llama arches (gpt2/gemma2/olmoe)
 instead of rendering a wrong llama Card; list shows true families.
 
-**Slice 2 NEXT:** `install` (cross-platform backend build) + `fetch`
-(HF download + `data/<basename>.gguf` symlink) + the cleanup-arc
-deletions (05_list_models, 04_serve_http, fold fetch_model.sh, `make
-hello`, FIRST-TIME banner). NOTE the P3 gate needs fresh-checkout
-verification on macOS-AS + Linux-x86_64 + Linux-aarch64 — only aarch64 is
-testable here on gx10.
+**Slice 2 DONE** (98e50c8): `toy fetch <repo> [<file>] [--json]` (HF
+download via hf/huggingface-cli/curl → cache → relative `data/` symlink;
+verified with a real 19MB download, `toy list` sees it) + `toy install
+[--json]` (locates toy root via TOY_HOME / dev-checkout walk-up / gem
+dir, verifies-or-builds the CPU backend, fail-loud if none; verified on
+aarch64) + cleanup arc (deleted 05_list_models, 04_serve_http,
+fetch_model.sh; removed `make hello` + FIRST-TIME banner; retargeted docs
+to `toy` CLI). `make verify-mirrors` still passes; surviving targets
+resolve. `--manifest` lists all 5 commands.
+
+**P3 = functionally COMPLETE on gx10 (aarch64).** All 5 commands +
+--manifest/--help/--version + toy.yml work. Remaining for the P3 GATE:
+
+1. **OPEN DESIGN QUESTION — `toy install` gem-packaging** (user decision):
+   `gem install toy` yields NO backend today. install currently works via
+   TOY_HOME / dev-checkout / gem-dir locate-and-build. The packaging story
+   is unresolved: (a) fat gem ships prebuilt per-platform `.a`; (b) gem
+   builds backend on install (native-ext/post-install); (c) gem ships
+   sources + `toy install` builds (closest to current). This MUST be
+   settled for the Mac/cross-platform gate to pass.
+2. **Cross-platform fresh-checkout verification** (macOS-AS + Linux-x86_64)
+   — the USER's separate task (only aarch64 verified here).
+3. **Minor polish:** `toy list` shows a fetched model TWICE (data/ symlink
+   + HF cache original); dedup should canonicalize symlinks (File.realpath).
+
+After P3 gate → **P4 (train / serve / infer / eval CLI commands).**
 
 ### Original P3 spec (reference)
 
