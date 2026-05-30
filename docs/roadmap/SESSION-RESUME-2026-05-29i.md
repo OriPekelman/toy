@@ -171,11 +171,34 @@ the fix — important for "train then run your model" + a clean stable Toy.
 Minor doc nit: docs/events-schema.md uses ".runs/" vs the "runs/" used
 everywhere else — align in a doc pass.
 
-**P4 remaining slices** (reuse the runner pattern): `eval` (NEXT — 08_lmc
-/ CE), `serve` (tep_demo/openai_api_llama → lib/toy/serve/openai/ — LAST,
-no Tep/Tao yet). Later train variants: warm-start/lora/curriculum. Then
-the AGGRESSIVE cleanup arc. **Tep then Tao re-adaptation DEFERRED until
-Toy fully stabilized** (user directive); clean-state repo is a goal.
+**Slice 3 DONE — `toy eval`** (eaa75de): clean runner `lib/toy/run/eval.rb`
+→ `libexec/toy-eval` (CE/logprobs via toy_logprobs), `toy eval <model.gguf>
+[--top-k N] [--json]`, gate byte-for-byte vs smoke_decode_logprobs
+(prep/eval_gate.rb). CPU-only; verify-mirrors green; manifest = 8 cmds.
+ROADMAP NOTE: slice 1 is CE/logprobs; the roadmap's named eval gate is
+`toy eval lmc` (two-ckpt) → eval slice 2.
+
+**P4 commands: infer ✓ train ✓ eval ✓ — serve is LAST.**
+
+`serve` recon: tep_demo/openai_api_llama.rb is a Spinel HTTP server using
+`Tep::Handler` (requires vendor/spinel/tep + ../vendor/spinel/deps),
+token-IDs-in/IDs-out, backed by Toy::SmolLM2KVFFICache. Building toy serve
+USES tep as a build-dep (NOT the deferred "Tep re-adaptation" = Tep
+consuming toy). serve is a PERSISTENT process → different gate shape
+(start server → POST /v1/completions fixed IDs → deterministic IDs back →
+stop), not the one-shot run-twice-diff.
+
+**CLEANUP-ARC TENSION (must preserve):** the gate harnesses now use
+RECORDED prep/fixtures/*.txt, but `make verify-mirrors` still MIRRORS
+`examples/smoke_projection_lens` (it's in MIRRORABLE), and re-recording any
+gate baseline needs the smoke_recipe_*/smoke_gate_*/smoke_gguf_roundtrip
+fixtures. So the aggressive "delete all examples/" cleanup MUST preserve
+(or migrate to test/) the gate-relevant fixtures + their MIRRORABLE entries
+— deleting wholesale breaks verify-mirrors + gate re-recording.
+
+Deferred: `toy eval lmc` (slice 2), train warm-start/lora/curriculum
+variants, train→infer checkpoint round-trip, GPU runners (--device).
+**Tep then Tao re-adaptation DEFERRED until Toy fully stabilized.**
 
 ### Original P3 spec (reference)
 
