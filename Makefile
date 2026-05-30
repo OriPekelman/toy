@@ -71,42 +71,50 @@ GGML_REPO   := https://github.com/ggml-org/ggml.git
 GGML_CUDA_ARCH ?= 121
 CUDA_DIR    ?= /usr/local/cuda
 
-# --- Tep sibling sync (spinelgems convention) -------------------------------
-# Tep is co-developed with this repo (sibling at ~/sites/tep). As of
-# 2026-05-27 we vendor it via the bundler-spinel / spinelgems
-# convention (see docs/roadmap/spinelgems-tep-adoption-2026-05-27.md):
+# --- Tep dependency (spinelgems convention) ---------------------------------
+# Tep is consumed as a gem from its `main` branch (Gemfile: `gem "tep",
+# git: ...`) via the bundler-spinel / spinelgems convention. Two steps:
 #
-#   1. `bundle lock`                                  (Gemfile → Gemfile.lock)
-#   2. `../spinelgems/exe/spinel-compat vendor`       (lock → vendor/spinel/)
-#   3. `./prep/post_vendor_tep.rb`                    (@TEP_*@ rewrite)
+#   1. `bundle lock`                              (Gemfile → Gemfile.lock)
+#   2. `../spinelgems/exe/spinel-compat vendor`   (lock → vendor/spinel/:
+#                                                  copies tep lib/ AND
+#                                                  natively compiles+wires
+#                                                  its C-exts from tep's
+#                                                  spinel-ext.json, AND
+#                                                  writes vendor/spinel/deps.rb)
 #
-# All three roll up into the `vendor-tep` target. Bails loud on
-# missing libpq / libsqlite3 — same diagnostic as the retired
-# prep/sync_tep.rb did.
+# No step 3: the old `prep/post_vendor_tep.rb` @TEP_*@ substitution is
+# RETIRED — spinel-compat vendor owns C-ext wiring now (tep#98). Spinel
+# entrypoints do `require_relative "vendor/spinel/deps"`.
 #
-# Sibling-checkout precheck: bundle lock will gladly write garbage
-# into Gemfile.lock if ../tep doesn't exist (Gemfile uses
-# `path: "../tep"`). Short-circuit with a clear message instead.
+# Precheck: ../spinelgems (the vendor tool) must be present. tep itself
+# comes via git: from GitHub (bundler clones it), so ../tep is NOT
+# required for the vendor flow.
+#
+# `bundle` env note: use a user-managed Ruby (rbenv / rv / ruby-install
+# with --user-install gems). With system-owned gems (e.g. Debian's
+# /var/lib/gems), `bundle lock` can't write the git cache without sudo —
+# that's an env-setup concern, not a toy bug.
+#
+# SPINEL_EXT_DISABLE=pg: tep's optional pg C-ext currently fails to
+# compile under spinel-compat (its libpq pkg-config cflags aren't wired
+# to the source .o compile — spinelgems#8). toy only uses tep for HTTP
+# serving, not its pg adapter, so we opt out. Drop this once #8 lands.
 vendor-tep:
-	@if [ ! -d ../tep ] || [ ! -d ../spinelgems ]; then \
+	@if [ ! -d ../spinelgems ]; then \
 	    echo ""; \
-	    echo "  ✗ vendor-tep needs sibling checkouts (see docs/roadmap/spinelgems-tep-adoption-2026-05-27.md):"; \
-	    [ -d ../tep ]        || echo "      missing: ../tep"; \
-	    [ -d ../spinelgems ] || echo "      missing: ../spinelgems"; \
+	    echo "  ✗ vendor-tep needs the spinelgems sibling checkout (the vendor tool):"; \
+	    echo "      missing: ../spinelgems"; \
 	    echo ""; \
 	    echo "    From this directory's parent ($$(cd .. && pwd)):"; \
-	    echo "      git clone https://github.com/OriPekelman/tep"; \
 	    echo "      git clone https://github.com/OriPekelman/spinelgems"; \
-	    echo ""; \
-	    echo "    Or symlink existing checkouts (common dev layout in ~/sites):"; \
-	    echo "      ln -s ~/sites/tep        ../tep"; \
+	    echo "    Or symlink an existing checkout:"; \
 	    echo "      ln -s ~/sites/spinelgems ../spinelgems"; \
 	    echo ""; \
 	    exit 1; \
 	fi
 	bundle lock
-	SPINEL_DIR=$(HOME)/sites/spinel ../spinelgems/exe/spinel-compat vendor
-	./prep/post_vendor_tep.rb
+	SPINEL_EXT_DISABLE=pg SPINEL_DIR=$(HOME)/sites/spinel ../spinelgems/exe/spinel-compat vendor
 
 # Build vendor/spinel/tep/lib/tep.rb on demand for tep_demo/* targets.
 # Triggers vendor-tep, which gates on sibling checkouts.

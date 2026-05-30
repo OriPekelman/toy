@@ -1,7 +1,9 @@
-PATH
-  remote: ../tep
+GIT
+  remote: https://github.com/OriPekelman/tep.git
+  revision: 00f71ef0ee056c2f36bce130b3fab10a8402cd8b
+  branch: main
   specs:
-    tep (0.9.0)
+    tep (0.10.0)
 
 GEM
   remote: https://rubygems.org/
@@ -16,7 +18,7 @@ DEPENDENCIES
 
 CHECKSUMS
   bundler (4.0.12) sha256=7f8b757d28dfb636e7b24fba2344ac6dd13b5b24f4b46d62573d483f211825ac
-  tep (0.9.0)
+  tep (0.10.0)
 
 RUBY VERSION
   ruby 3.2.3

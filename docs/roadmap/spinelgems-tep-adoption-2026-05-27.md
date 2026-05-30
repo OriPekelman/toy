@@ -1,5 +1,22 @@
 # spinelgems adoption: replacing prep/sync_tep.rb with the Gemfile convention
 
+> **STATUS UPDATE 2026-05-30 (supersedes the @TEP_*@ post-vendor parts below;
+> full doc refresh deferred to the P4 cleanup arc).** The clean path is now
+> live end-to-end:
+> - toy consumes tep **as a gem from `main` via `git:`** (`Gemfile`:
+>   `gem "tep", git: "https://github.com/OriPekelman/tep.git", branch: "main"`).
+> - **`prep/post_vendor_tep.rb` is DELETED.** The `@TEP_*@` ffi_manifest (#97)
+>   design it consumed was superseded by tep's shipped **`spinel-ext.json`**
+>   (tep#98); `spinel-compat vendor` now compiles+wires tep's C-exts natively.
+>   The flow is just `bundle lock` → `spinel-compat vendor` (Makefile `vendor-tep`).
+> - tep#95 (prism→dev-dep, ruby>=3.2.0) is landed on tep main.
+> - Two env notes: (1) `bundle` needs a user-managed Ruby env (rbenv/rv/user-install
+>   gems) — system-owned gems need sudo to write the git cache; doc-only. (2) tep's
+>   optional **pg** C-ext fails to compile under spinel-compat (libpq cflags not
+>   wired to the split `@TEP_PG_O@`/`@TEP_PG_CFLAGS@` entries) — **spinelgems#8**;
+>   `vendor-tep` opts out via `SPINEL_EXT_DISABLE=pg` (toy doesn't use tep's pg).
+
+
 **Date:** 2026-05-27. **Status:** ✅ shipped end-to-end same day. All
 `tep_demo/*` apps now require Tep via the spinelgems-vendored
 `vendor/spinel/deps`; the rsync hack (`prep/sync_tep.rb` +

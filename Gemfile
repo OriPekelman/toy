@@ -1,11 +1,15 @@
-# Draft Gemfile for the spinelgems adoption — blocked on tep#95.
-# Rename to "Gemfile" once tep.gemspec moves prism to a dev-dep and
-# drops required_ruby_version to ">= 3.2.0". See
-# docs/roadmap/spinelgems-tep-adoption-2026-05-27.md for the plan.
-
 source "https://rubygems.org"
 ruby "3.2.3", engine: "spinel", engine_version: "0.0.0"
 
-# Sibling. path: for the gx10 dev loop; switch to git: once we want
-# reproducible locks across machines (post-tep#95).
-gem "tep", path: "../tep"
+# Tep is consumed as a gem from its `main` branch via the spinelgems
+# convention (bundler-spinel). No hand-rolled vendoring or @TEP_*@
+# substitution: `bundle lock` resolves tep, `spinel-compat vendor`
+# copies tep's lib/ into vendor/spinel/tep/ AND natively compiles+wires
+# its C extensions (driven by tep's shipped spinel-ext.json), then a
+# Spinel entrypoint does `require_relative "vendor/spinel/deps"`.
+#
+# `git:` (not path:) for reproducible cross-machine locks. tep#95
+# (prism→dev-dep, ruby>=3.2.0) and tep#98 (spinel-ext.json supersedes
+# the ffi_manifest #97 design) are landed on tep main, so this resolves
+# + vendors cleanly with zero toy-side tricks.
+gem "tep", git: "https://github.com/OriPekelman/tep.git", branch: "main"
