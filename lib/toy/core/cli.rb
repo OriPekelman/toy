@@ -22,6 +22,7 @@ require_relative "cli/list"
 require_relative "cli/describe"
 require_relative "cli/fetch"
 require_relative "cli/install"
+require_relative "cli/infer"
 require_relative "cli/manifest"
 
 module Toy
@@ -62,6 +63,14 @@ module Toy
           summary: "Build/verify the CPU backend for this project",
           args:  [],
           flags: [{ name: "--json", desc: "machine output" }]
+        },
+        "infer" => {
+          class: Infer,
+          summary: "Generate text from a GGUF model (greedy decode)",
+          args:  [{ name: "model", required: true, desc: "path to a .gguf file" }],
+          flags: [{ name: "--prompt", desc: "prompt text (default \"Once upon a time\")" },
+                  { name: "--n", desc: "tokens to generate (default 16)" },
+                  { name: "--json", desc: "machine output" }]
         }
       }.freeze
 

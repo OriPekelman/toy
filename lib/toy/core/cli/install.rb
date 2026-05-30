@@ -35,6 +35,7 @@ require "json"
 require "open3"
 require "rbconfig"
 require_relative "exit_codes"
+require_relative "../toy_root"
 
 module Toy
   module Core
@@ -132,48 +133,20 @@ module Toy
           true
         end
 
-        # Priority: TOY_HOME → dev-checkout walk-up → gem dir. All three
-        # paths are validated with the same #toy_source_tree? sentinel
-        # (Makefile + tinynn/tinynn_ggml.c) so they stay in sync — a stale
-        # TOY_HOME or an empty gem dir fails the same way as a non-toy
-        # walk-up hit instead of silently returning garbage.
+        # Locate the toy install root. Delegates to the shared, MRI-clean
+        # Toy::Core::ToyRoot resolver (TOY_HOME → dev-checkout walk-up → gem
+        # dir, all validated by the Makefile + tinynn/tinynn_ggml.c
+        # sentinel) so install and infer share ONE resolver with no drift.
         def locate_root
-          env = ENV["TOY_HOME"]
-          if env && !env.empty?
-            expanded = File.expand_path(env)
-            return expanded if toy_source_tree?(expanded)
-          end
-
-          dir = __dir__
-          20.times do
-            return dir if toy_source_tree?(dir)
-            parent = File.dirname(dir)
-            break if parent == dir
-            dir = parent
-          end
-
-          if defined?(Gem) && Gem.loaded_specs["toy"]
-            gd = Gem.loaded_specs["toy"].gem_dir
-            return gd if gd && toy_source_tree?(gd)
-          end
-          nil
-        end
-
-        # Sentinel test: does `dir` look like a toy source tree from which
-        # we can run `make setup`? Requires the Makefile plus a source-only
-        # marker (tinynn_ggml.c) that is always shipped in the source tree
-        # and is never a build artifact. vendor/ggml/ is NOT a valid
-        # sentinel — it's CREATED by setup, so a bone-fresh clone fails it.
-        def toy_source_tree?(dir)
-          File.file?(File.join(dir, "Makefile")) &&
-            File.file?(File.join(dir, "tinynn", "tinynn_ggml.c"))
+          ToyRoot.locate_root
         end
 
         # True if `root` has the source files needed to drive a build. Same
-        # predicate as toy_source_tree?; kept named for the call-site that
-        # decides between "build or fail" after a missing-artifacts check.
+        # sentinel as ToyRoot.source_tree?; kept named for the call-site
+        # that decides between "build or fail" after a missing-artifacts
+        # check.
         def buildable?(root)
-          toy_source_tree?(root)
+          ToyRoot.source_tree?(root)
         end
 
         # A static archive is usable if it exists, is readable, and `ar t`
