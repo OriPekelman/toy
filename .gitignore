@@ -169,6 +169,10 @@ demos/smollm2_lora_sft_multipos_cuda
 # Spinel-compiled CLI runners (sources in lib/toy/run/; built on demand by
 # `toy infer` etc. via `make libexec/<name>`).
 libexec/
+# Per-run training bundles created by `toy train` (events.jsonl + weights/
+# *.gguf checkpoints). Artifacts, never committed. run_id_template lives in
+# toy.yml; the runs/ tree itself is local output.
+/runs/
 examples/example_inference_metal
 examples/example_train
 examples/example_finetune_cuda

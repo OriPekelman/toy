@@ -1,0 +1,23 @@
+# prep/fixtures/train_baseline.txt — recorded byte-for-byte loss curve for the
+# `toy train from-scratch` compute runner (libexec/toy-train, source
+# lib/toy/run/train.rb).
+#
+# Recorded on gx10 (aarch64/GB10, CPU ggml f32). This is the FromScratch
+# reference loss curve captured from examples/smoke_recipe_from_scratch.rb
+# (~4eaf019b) — the frozen reference the runner re-uses VERBATIM (same config /
+# seed / per-step inputs / CONSTANT hp). `toy train from-scratch --steps 5
+# --seed 0` MUST reproduce these lines byte-for-byte (deterministic).
+#
+# config: vocab=627 d_model=64 n_heads=4 d_ff=128 n_layers=2 context=32
+#         seed=0 steps=5  (also: donor_d_in=128, n_kv_heads=4,
+#         rope_theta=10000.0, rms_eps=1e-5; constant hp lr=0.001 b1=0.9
+#         b2=0.95 eps=1e-8).
+#
+# Format: one bare "step N: loss=…" line per step (single fixture, so the
+# simpler bare-lines block — not infer_baseline's per-fixture tab keying).
+# Lines starting with '#' and blank lines are ignored by the gate.
+step 1: loss=6.440947532653809
+step 2: loss=6.390329360961914
+step 3: loss=6.321597576141357
+step 4: loss=6.240766525268555
+step 5: loss=6.151132583618164

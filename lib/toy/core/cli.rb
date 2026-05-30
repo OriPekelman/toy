@@ -23,6 +23,7 @@ require_relative "cli/describe"
 require_relative "cli/fetch"
 require_relative "cli/install"
 require_relative "cli/infer"
+require_relative "cli/train"
 require_relative "cli/manifest"
 
 module Toy
@@ -70,6 +71,15 @@ module Toy
           args:  [{ name: "model", required: true, desc: "path to a .gguf file" }],
           flags: [{ name: "--prompt", desc: "prompt text (default \"Once upon a time\")" },
                   { name: "--n", desc: "tokens to generate (default 16)" },
+                  { name: "--json", desc: "machine output" }]
+        },
+        "train" => {
+          class: Train,
+          summary: "Train a model from scratch (records runs/<id>/ + loss curve)",
+          args:  [{ name: "recipe", required: true, desc: "'from-scratch'" }],
+          flags: [{ name: "--steps", desc: "training steps (default 5)" },
+                  { name: "--seed", desc: "random-init seed (default 0)" },
+                  { name: "--out", desc: "run dir override (default runs/<id>)" },
                   { name: "--json", desc: "machine output" }]
         }
       }.freeze

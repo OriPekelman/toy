@@ -234,6 +234,23 @@ libexec/toy-infer: lib/toy/run/infer.rb lib/arch.rb lib/transformer_lm.rb lib/to
 	$(SPINEL) $< -o $@
 toy-infer: libexec/toy-infer
 
+# P4 — from-scratch TRAINING compute runner (CRuby→runner COMPUTE BRIDGE,
+# same shape as toy-infer). Spinel source lib/toy/run/train.rb; the binary
+# path EQUALS the make target so ToyRoot.ensure_built("libexec/toy-train")
+# both builds and locates it. Deps list every transitive require the runner
+# pulls (the recipe → llama_seq_forward_ffi → transformer + toy + smollm2 +
+# tinynn + the L1-L3 primitives/blocks/archs; plus gguf_writer + drift_grad
+# for the checkpoint). CPU-only; NOT in MIRRORABLE (see prep/gen_cuda_mirror.rb).
+libexec/toy-train: lib/toy/run/train.rb lib/toy.rb lib/toy_smollm2.rb \
+		lib/llama_seq_forward_ffi.rb lib/toy/llm/recipes/from_scratch.rb \
+		lib/toy_gguf_writer.rb lib/toy_drift_grad.rb lib/transformer.rb \
+		lib/toy/llm/primitives/rms_norm.rb lib/toy/llm/primitives/rope.rb \
+		lib/toy/llm/primitives/swiglu.rb lib/toy/llm/primitives/gqa.rb \
+		lib/toy/llm/blocks/transformer_block.rb lib/toy/llm/archs/llama_arch.rb \
+		lib/tinynn.rb tinynn/libtinynn_ggml.a | libexec
+	$(SPINEL) $< -o $@
+toy-train: libexec/toy-train
+
 # toy#gguf-checkpoint-reload (#153) — smoke binary that loads a
 # from-scratch toy GGUF and runs a tiny generation. No tokenizer.
 examples/smoke_toy_ckpt_reload: examples/smoke_toy_ckpt_reload.rb lib/arch.rb lib/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/tokenizer.rb tinynn/libtinynn_ggml.a
@@ -1264,7 +1281,7 @@ clean:
 	      examples/example_train_from_scratch_cpu \
 	      examples/example_train_from_scratch_cuda \
 	      examples/example_finetune examples/example_finetune_cuda \
-	      libexec/toy-infer examples/example_train
+	      libexec/toy-infer libexec/toy-train examples/example_train
 
 distclean: clean
 	rm -rf $(GGML_DIR)/build $(GGML_DIR)/build-cuda $(GGML_DIR)/build-metal
