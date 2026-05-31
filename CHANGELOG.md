@@ -205,7 +205,7 @@ layers anymore.
   `resid_post_block`. Gated by `TOY_CKA=N` (every N steps). Tao's
   `Analyze.linear_cka` already unit-tested on synthetic grams.
   Schema: `gram` field added to `tap` event in
-  [`docs/events-schema.md`](docs/events-schema.md).
+  [`docs/events-schema.md`](docs/events.md).
 - **LMC interpolate-and-eval runner** (#18). `examples/08_lmc.rb`
   takes two toy checkpoints + α-grid; for each α it blends
   `θ_α = (1-α)·θ_A + α·θ_B` per-PARAM (by name, semantic-names

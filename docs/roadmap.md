@@ -10,7 +10,7 @@ training, multi-GPU, DiLoCo, non-ggml backend options) see
 [`roadmap/backends-and-scale-2026-05-27.md`](roadmap/backends-and-scale-2026-05-27.md)
 and [`roadmap/decoupled-diloco-research-2026-05-27.md`](roadmap/decoupled-diloco-research-2026-05-27.md).
 For the op/backend coverage matrix see
-[`reference/coverage.md`](reference/coverage.md).
+[`reference/coverage.md`](coverage.md).
 
 ---
 
@@ -129,7 +129,7 @@ block phases — they land inside the layered structure when picked up.
   ceiling above), llama3 `rope_freq_factors` wiring (un-gateable), and
   GQA-divergent on mmap/q8.
 - **MoE.** `ggml_mul_mat_id` produces garbage on K-quant expert weights
-  (Q4_K / Q5_K / Q6_K) — see [`reference/coverage.md`](reference/coverage.md)
+  (Q4_K / Q5_K / Q6_K) — see [`reference/coverage.md`](coverage.md)
   and ggml-org/ggml#1506. Workaround: **Q8_0 experts** (non-expert
   tensors can stay K-quant). `realize_for_mmap` warns loud when it sees
   K-quant experts.

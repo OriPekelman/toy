@@ -82,7 +82,7 @@ basename). The serve stack lives at `lib/toy/serve/openai/` and is driven by
 
 > Known issue: serving currently hits a TLS-symbol blocker from a stale
 > vendored `tep/net.rb`; the fix is a tep re-vendor. `infer`/`train`/`eval` are
-> tep-free and unaffected. See [reference/coverage.md](reference/coverage.md).
+> tep-free and unaffected. See [reference/coverage.md](coverage.md).
 
 ## Project config — `toy.yml`
 

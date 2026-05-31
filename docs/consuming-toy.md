@@ -192,7 +192,7 @@ spinel experiment.rb -o experiment
   — the broader convention, originally written for tep.
 - `lib/toy/ffi_manifest.rb` — the toy-side analog of
   `Tep::FFIManifest` (the FFI-manifest design).
-- [`events-schema.md`](events-schema.md) — the `toy/v1` event
+- [`events-schema.md`](events.md) — the `toy/v1` event
   contract your consumer can emit (`run_start`, `step`, `eval`,
   `tap`, `run_end`) for Tao-side consumption.
 - toy#19, tep#97, spinelgems#3 — the issue trail.

@@ -7,9 +7,9 @@ is the "how".
 **Date:** 2026-05-28.
 **Companion docs:**
 [`toy-framework-roadmap-2026-05-28.md`](toy-framework-roadmap-2026-05-28.md),
-[`lowerer-design.md`](../archive/lowerer-design.md),
-[`spinelgems-tep-adoption-2026-05-27.md`](../archive/spinelgems-tep-adoption-2026-05-27.md),
-[`backends-and-scale-2026-05-27.md`](backends-and-scale-2026-05-27.md).
+[`lowerer-design.md`](lowerer-design.md),
+[`spinelgems-tep-adoption-2026-05-27.md`](spinelgems-tep-adoption-2026-05-27.md),
+[`backends-and-scale-2026-05-27.md`](../roadmap/backends-and-scale-2026-05-27.md).
 
 ## TL;DR
 
@@ -339,7 +339,7 @@ Two derivation paths, both producing the same Card type:
 | Path | When | Mechanism |
 | --- | --- | --- |
 | **Runtime probe** (today) | Always available | Probe session with tiny dims → `realize` → walk the resulting compute graph (extend `lib/toy_describe_flow.rb`) → emit structural Card |
-| **Static (Prism lowerer)** (future) | Build time | Walk AST of `realize` → emit Card with conditional/loop branches a runtime probe couldn't see → optionally also emit Spinel-friendly lowered Ruby ([`lowerer-design.md`](../archive/lowerer-design.md)) |
+| **Static (Prism lowerer)** (future) | Build time | Walk AST of `realize` → emit Card with conditional/loop branches a runtime probe couldn't see → optionally also emit Spinel-friendly lowered Ruby ([`lowerer-design.md`](lowerer-design.md)) |
 
 A `def card` method becomes **optional** — only used to override
 the derived version with hand-tuned prose (Phuong-Hutter

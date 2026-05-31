@@ -7,7 +7,7 @@
 **v0.6.0-pre-alpha** · early signal · not API-stable
 &nbsp;·&nbsp; [CHANGELOG](CHANGELOG.md)
 &nbsp;·&nbsp; [docs](docs/architecture.md)
-&nbsp;·&nbsp; [op coverage](docs/reference/coverage.md)
+&nbsp;·&nbsp; [op coverage](docs/coverage.md)
 
 A transformer LM framework in Ruby, [Spinel](https://github.com/matz/spinel)-compiled
 to native binaries. A plain CRuby CLI (`bin/toy`) drives Spinel-compiled
@@ -186,7 +186,7 @@ are untested. The Metal path uses copy-load rather than mmap, so
 multi-GB models pay the copy cost.
 
 The canonical "what's actually wired" reference is
-[`docs/reference/coverage.md`](docs/reference/coverage.md).
+[`docs/reference/coverage.md`](docs/coverage.md).
 
 ### Tokenizer / RoPE coverage
 
@@ -239,7 +239,7 @@ See [`docs/reference/backends.md`](docs/reference/backends.md).
   (`runs/<id>/events.jsonl`).
 - [`docs/roadmap.md`](docs/roadmap.md) — deferred work and live
   research directions.
-- [`docs/reference/`](docs/reference/coverage.md) — op coverage,
+- [`docs/reference/`](docs/coverage.md) — op coverage,
   backends, the loader API, and memory design.
 - [`examples/`](examples/README.md) — focused, single-file entry points
   compiled to native binaries.
