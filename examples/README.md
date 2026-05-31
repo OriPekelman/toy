@@ -145,17 +145,13 @@ training afterwards. Pass `Q8=1` to the CUDA example to switch paths.
 
 ## Serving
 
-The working HTTP serving path is **`tep_demo/openai_api_llama`** —
-one consolidated env-driven binary that serves any llama-family
-GGUF (SmolLM2, Qwen2.5, TinyLlama, Llama-3.x …) with an
-OpenAI-compatible surface (`/v1/models`, `/v1/completions`,
-`/v1/embeddings`). See [`tep_demo/`](../tep_demo/README.md).
+The working HTTP serving path is the toy CLI's **`toy serve`**,
+backed by `lib/toy/serve/openai/`. It serves any llama-family GGUF
+(SmolLM2, Qwen2.5, TinyLlama, Llama-3.x …) with an OpenAI-compatible
+surface (`/v1/models`, `/v1/completions`, `/v1/embeddings`).
 
 ```sh
-make tep_demo/openai_api_llama
-./tep_demo/openai_api_llama -p 4567                    # SmolLM2-135M default
-MODEL_PATH=data/qwen25-1.5b-native-q8.gguf \
-  ./tep_demo/openai_api_llama -p 4567 -w 1             # any llama-family GGUF
+toy serve data/SmolLM2-135M-Instruct-Q8_0.gguf --port 4567 --name smol
 
 curl -X POST http://127.0.0.1:4567/v1/completions \
   -H 'Content-Type: application/json' \
@@ -167,12 +163,11 @@ curl -X POST http://127.0.0.1:4567/v1/embeddings \
 ```
 
 Token-IDs in, token-IDs out — tokenizer work belongs client-side
-(`prep/qwen25_tokens.py encode "..."`). One binary, no runtime.
+(`prep/qwen25_tokens.py encode "..."`).
 
-`openai_api_llama` is the canonical serving binary today. (The
-older minimal `04_serve_http.rb` demo was removed — it built clean
-but `Tep.run!` returned immediately under the pre-spinelgems
-vendored Tep; use the `tep_demo/` server instead.)
+`toy serve` replaced the standalone `tep_demo/openai_api_llama`
+binary; the remaining Tep+Spinel demo servers live in
+[`tep_demo/`](../tep_demo/README.md).
 
 ## Inspecting + analysing trained models
 
@@ -207,8 +202,8 @@ GGUF=data/smollm2-135m-native.gguf TOP_K=5 ./examples/smoke_decode_logprobs
 
 ## Where to go after the examples
 
-- `docs/INDEX.md` — full tour of the documentation.
-- `docs/architecture.md` — generic `TransformerLM` + `Arch` struct.
+- [`../README.md`](../README.md) — project overview + CLI quickstart.
+- [`../docs/architecture.md`](../docs/architecture.md) — generic `TransformerLM` + `Arch` struct.
 - `demos/` — exhaustive per-model and per-feature drivers.
 - `tinynn/` — C+CUDA shim over ggml (FFI bridge, KV cache, mmap loader).
 - `tep_demo/` — full OpenAI-compatible HTTP API (the canonical

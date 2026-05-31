@@ -51,9 +51,8 @@ they can find `data/*.gguf`, prompts, BPE tables.
 
 CPU LoRA training is wired up but currently slow due to the
 ggml-cpu sched-aliasing workaround (`tnn_pin_all_graph_b_nodes`);
-CUDA is the practical training path. See
-[`../docs/archive/f3-full-finetune-2026-05-21.md`](../docs/archive/f3-full-finetune-2026-05-21.md)
-for the full-finetune design notes.
+CUDA is the practical training path. (Full-finetune design notes
+were captured in the now-pruned `f3-full-finetune-2026-05-21.md`.)
 
 ## Quickstart
 
@@ -75,5 +74,5 @@ GGUF=data/qwen25-1.5b-native.gguf ./demos/qwen25_native_mmap_cuda
 
 The TinyLlama FFI paths produce NaN logits at full depth due to f32
 overflow on that specific checkpoint. Use `demos/tinyllama` (native
-Mat) for correct output; see
-[`../docs/archive/tinyllama-known-issue.md`](../docs/archive/tinyllama-known-issue.md).
+Mat) for correct output. (Details were in the now-pruned
+`tinyllama-known-issue.md`.)

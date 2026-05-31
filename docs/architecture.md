@@ -1,316 +1,274 @@
-# Generic `TransformerLM` + `Arch` struct — design
+# Architecture
 
-**Status:** draft, pre-Phase-0
-**Authors:** Ori Pekelman + Claude
-**Date:** 2026-05-19
-**Predecessor:** `lib/toy_smollm2_*.rb` (Qwen2.5-shaped, currently the only path)
+Toy is a Spinel-compiled toy LLM framework: a CRuby CLI that owns the
+per-project plumbing, shelling Spinel-compiled compute runners. This
+doc is the design contract — the *what* and *why* of the layering. For
+the command surface see [`cli.md`](cli.md); for writing your own algos
+see [`authoring.md`](authoring.md); for the live execution plan and
+deferred work see [`roadmap.md`](roadmap.md).
 
-## Goal
+## Operating philosophy
 
-Replace the Qwen2.5-shaped `SmolLM2KV` / `SmolLM2KVFFICache(Cuda)`
-implementation with a generic `TransformerLM` driven by an `Arch`
-struct read from each GGUF's metadata. After Phase 0:
+Conventions (Rails-style) remove decisions the user shouldn't be making,
+but they compose explicit primitives, not magic. We are in explicit
+territory: no metaprogramming, no "advanced magic". Code generation is
+cheap; clarity is not. Every convention has an escape hatch, and every
+abstraction is one file you can read top to bottom.
 
-- One graph builder. Per-architecture differences live in data
-  (the `Arch` instance), not in branched code paths.
-- New models are added by writing a one-page `Arch` constructor —
-  no graph code is touched.
-- Refactor is the prerequisite for Llama-3.2, Qwen3 dense, Qwen3
-  MoE, GLM-4.7, and GPT-OSS support. Done badly, MoE forces a
-  second refactor pass; done well, MoE is a `:moe` branch in two
-  places.
+ML practitioners deal with a lot of Python ceremony that makes the
+actual flow hard to see. Toy exists to expose the structure and the
+algorithms — to avoid gate-keeping and ceremony.
 
-This document fixes the abstraction *before* any code moves.
+**Non-goals / hard rules.**
 
-## Why a refactor is the right call here
+- **No Spinel pin.** Toy is a test-case for Spinel; breakage is good
+  signal. Always run against whatever Spinel the user has.
+- **Zero backward-compat.** The only integrations are Tep and Tao, and
+  we own both. Breaking changes land freely; Tep and Tao re-adapt in
+  the same arc that breaks them. Aggressive cleanup over soft
+  deprecation.
+- **CLI is pure MRI.** The CLI files under `lib/toy/core/` are plain
+  CRuby and must *never* require the Spinel-compiled libs. They shell
+  the runners instead.
 
-The current code is honest about its scope ("smollm2" in the
-filename) — it's not pretending to be general. But:
+## Two orthogonal axes
 
-- Five new architectures are on deck. Cloning `SmolLM2KVFFICache`
-  five times will produce five subtly-diverging copies that all
-  need the same bug fix (e.g. the Phase 3 V-matmul flip — there
-  are currently *two* copies of it because the CUDA variant
-  diverged).
-- The CPU and CUDA classes already drift (per memory: the CUDA
-  variant still has the pre-Phase-3 V-matmul order). One graph
-  builder eliminates the class.
-- MoE introduces a routing layer + expert dispatch *inside* the
-  FFN block. Adding MoE as a branch of a Qwen-shaped decoder is
-  manageable; adding it as a branch of six near-clones is not.
+Two distinctions that should not be conflated:
 
-## Architecture detection
+| Axis | What it specifies |
+| --- | --- |
+| **Card layer** | Granularity of the IR — how big a unit is. Primitive / Block / Arch / Recipe. |
+| **Kind slot** | Role of the unit in a workflow — what it does. Arch / Trainer / Decoder / Eval / Server / DataSpec. |
 
-Read `general.architecture` from GGUF (already exposed via
-`tnn_gguf_kv_get_*`). The string maps to an `Arch` factory:
+A Recipe (Layer 4) might be "from-scratch trainer + Llama arch +
+TinyStories dataset" — composing one of each Kind. An `RMSNorm`
+(Layer 1) is also of a Kind (an Arch-side primitive). Layers describe
+*size*; Kinds describe *role*.
 
-| GGUF `general.architecture` | `Arch` factory      | Models                           |
-| --------------------------- | ------------------- | -------------------------------- |
-| `qwen2`                     | `Arch.qwen2(gguf)`  | Qwen2.5-0.5B/1.5B/3B/7B (current) |
-| `qwen3`                     | `Arch.qwen3(gguf)`  | Qwen3.6-27B dense, WebWorld-8B    |
-| `qwen3moe`                  | `Arch.qwen3moe(gguf)` | Qwen3.6-35B-A3B                  |
-| `llama`                     | `Arch.llama(gguf)`  | Llama-3.2 1B/3B, Mistral-7B-v0.2 (Llama-style after SWA was dropped) |
-| `gpt_oss` / TBD             | `Arch.gpt_oss(gguf)` | GPT-OSS-20b (MoE + MXFP4 — deferred) |
-| `chatglm` / `glm4`          | `Arch.glm4(gguf)`   | GLM-4.7-Flash                     |
-| `smollm` (alias)            | `Arch.qwen2(gguf)`  | SmolLM2 (it's Qwen2 in disguise)  |
+The unifying contract is `Toy::Card`, the IR. Crucially, **Cards are
+derived, not authored**: users write `realize`, and the framework
+derives the Card by walking the runtime compute graph
+(`lib/toy_describe_flow.rb`, leveraged by `lib/toy_card.rb`). No
+hand-written step descriptions to drift from the code.
 
-The factory reads GGUF kv metadata and returns an `Arch` instance.
-Unknown architectures raise `Arch::UnsupportedError`.
+## The five Card layers (granularity)
 
-## The `Arch` struct
+A Card exists at every level; same IR type, layered composition. Each
+unit is one file under `lib/toy/llm/`. Layer N composes Layer N-1.
 
-Plain Ruby struct, no inheritance. Booleans for capabilities,
-symbols for enum-like choices, integers/floats for dimensions and
-hyperparameters. All fields are required (no nil-defaults) — a
-new arch has to declare every choice explicitly. That's a feature:
-it surfaces silent assumptions.
+| Layer | Unit | Stdlib files | What practitioners vary |
+| --- | --- | --- | --- |
+| **L1 Primitive** | A single named op | `primitives/{rope,swiglu,rms_norm,gqa}.rb` | Implementation of one op |
+| **L2 Block** | One state-threading unit | `blocks/transformer_block.rb` | Which primitives, with what cfg |
+| **L3 Arch** | Stack of blocks + embedding + head | `archs/llama_arch.rb` | Block count, per-layer overrides, embedding/head choice |
+| **L4 Recipe** | A training plan (one or more stages) | `recipes/{from_scratch,lora,warm_start}.rb` | Stage sequence, optimizer, schedule, dataset progression |
+
+The exact tree (verified):
+
+```
+lib/toy/llm/
+├── primitives/   rope.rb  swiglu.rb  rms_norm.rb  gqa.rb   (+ _cuda / _metal mirrors)
+├── blocks/       transformer_block.rb                      (+ _cuda / _metal mirrors)
+├── archs/        llama_arch.rb                             (+ _cuda / _metal mirrors)
+└── recipes/      from_scratch.rb  lora.rb  warm_start.rb   (CPU-only)
+```
+
+**Recipes include curriculum.** A Recipe is a training plan: one stage
+(single dataset, single optimizer, one loop) or several (curriculum
+learning — progressively harder data, phase transitions, schedule
+changes). Each stage composes Arch + Trainer + DataSpec; state threads
+between stages; the Recipe owns the sequence. One-stage Recipes are the
+common case; multi-stage curricula are a strict superset.
+
+> **Design intent, not yet shipped.** `recipes/curriculum.rb` is
+> **absent** — the multi-stage Recipe shape is deferred. The
+> from_scratch recipe currently introduces no separate `Trainer` /
+> `DataSpec` / `Eval` classes: the optimizer lives behind the FFI, so a
+> Ruby `Toy::Trainers::AdamW` wrapper would be empty. The full
+> Trainer/DataSpec/Eval taxonomy is deferred to the multi-stage
+> recipes. See [`roadmap.md`](roadmap.md).
+
+**L5 Experiment** (varying a Recipe along an axis — sweeps, ablations,
+LMC pairs) is **Tao's territory**, not Toy's. Tao reads the Recipe Card
+to learn what knobs exist, then drives the sweep. Toy's top layer is L4.
+
+## The Kind slots (role)
+
+Each Kind has its own contract — what it receives, owns, emits. None
+depend on the ggml backend directly; they use whatever session was
+built (backend is a separate axis, below).
+
+| Kind | Receives | Owns | Emits |
+| --- | --- | --- | --- |
+| **Arch** | cfg, sess, mode | forward graph, cache | (none) |
+| **Trainer** | arch_cache, batch | opt step | `step`, `drift`, `grad`, `sample` events |
+| **Decoder** | arch_cache, prompt | autoregressive loop, sampling | token IDs |
+| **Eval** | arch_cache, corpus | metric computation | `eval` events |
+| **Server** | state, transport | endpoint dispatch | events with `phase: "serve"` |
+| **DataSpec** | (source) | tokenizer + corpus loader + sequence shape + stage marker | batches |
+
+DataSpec is the unifying "this is the data" object, first-class to
+remove the "where does the data come from" footnote from every other
+kind.
+
+## The Block contract
+
+A Block is generalized enough to fit transformers, Mamba/SSM, and
+future kinds:
 
 ```ruby
-class Arch
-  # Identity
-  attr_reader :architecture        # Symbol: :qwen2, :qwen3, :qwen3moe, :llama, :glm4, :gpt_oss
-  attr_reader :name                # String: "Qwen2.5-1.5B", "Llama-3.2-3B-Instruct", etc.
+class Toy::Block
+  input     :x,     shape: "[T, D]"               # main input
+  state     :s_in,  shape: "[L_max, 2, T, D_h]"   # state from previous step
+  output    :h,     shape: "[T, D]"               # main output
+  state_out :s_out, shape: "[L_max, 2, T+1, D_h]"
 
-  # Dimensions
-  attr_reader :vocab_size
-  attr_reader :d_model
-  attr_reader :n_layers
-  attr_reader :n_heads_q           # Query heads
-  attr_reader :n_heads_kv          # KV heads (== n_heads_q for MHA, < for GQA, 1 for MQA)
-  attr_reader :d_head              # Usually d_model / n_heads_q; can differ (Llama-3.2)
-  attr_reader :d_ff                # Intermediate / per-expert in MoE
-  attr_reader :max_position        # Context length
-  attr_reader :untied_lm_head      # Bool: false = lm_head shares weights with embed
-
-  # Attention
-  attr_reader :attention_kind      # :mha | :gqa | :mqa
-  attr_reader :qkv_bias            # Bool — Qwen2/3 yes, Llama/Mistral no
-  attr_reader :qk_norm             # Bool — Qwen3 yes (RMS-norms Q and K before RoPE)
-  attr_reader :swa_window          # Integer or nil — window size for sliding-window attention
-
-  # RoPE
-  attr_reader :rope_freq_base      # 10000 (GPT-2), 500000 (Llama-3.2), 1e6 (Qwen2/Mistral)
-  attr_reader :rope_freq_scale     # 1.0 default; YaRN / linear scaling stored here
-  attr_reader :rope_partial_factor # 1.0 default; 0.5 for GLM / Phi (rotate only half of d_head)
-
-  # Norm
-  attr_reader :norm_kind           # :rms | :layer
-  attr_reader :norm_eps            # 1e-5 / 1e-6 — read from GGUF
-  attr_reader :final_norm          # Bool — usually true; placement is always pre-lm_head
-
-  # FFN
-  attr_reader :ffn_kind            # :swiglu | :geglu | :gelu_mlp | :relu_mlp
-  attr_reader :ffn_bias            # Bool — Llama/Qwen no, GPT-2 yes
-
-  # MoE (only meaningful when moe? is true)
-  attr_reader :moe                 # Bool
-  attr_reader :n_experts           # Integer (0 when not moe)
-  attr_reader :n_experts_used      # top-k (0 when not moe)
-  attr_reader :n_shared_experts    # always-on experts (DeepSeek-style; 0 if absent)
-  attr_reader :expert_gating       # :softmax | :sigmoid (DeepSeek)
-
-  # Tokenizer (Phase 0 = GGUF-embedded only; later phases extend this)
-  attr_reader :tokenizer_kind      # :gguf_embedded for now
-  attr_reader :bos_id              # Integer or nil
-  attr_reader :eos_id              # Integer or nil
-  attr_reader :pad_id              # Integer or nil
-  attr_reader :unk_id              # Integer or nil
-  attr_reader :add_bos_by_default  # Bool
-
-  # Embed scaling (some models multiply token_embd by sqrt(d_model))
-  attr_reader :embed_scale         # Float — 1.0 default
-
-  def moe?; @moe; end
-  def gqa?; @n_heads_kv < @n_heads_q; end
-  def swa?; !@swa_window.nil?; end
+  # Realize against a backend session; mode ∈ {:infer, :train}.
+  # Returns a cache exposing (h_tensor, s_out_tensor).
+  def realize(cfg, sess, mode); ...; end
 end
 ```
 
-### Per-model values (worked examples)
+**State is the abstraction** that lets a Block be a transformer block
+(state = KV cache), a Mamba block (state = SSM hidden), diffusion
+(state = timestep), and so on: `(input, state) → (output, state)`.
 
-| Field             | Qwen2.5-1.5B | Llama-3.2-3B | Mistral-7B-v0.2 | Qwen3.6-35B-A3B          | GLM-4.7-Flash       |
-| ----------------- | ------------ | ------------ | --------------- | ------------------------ | ------------------- |
-| architecture      | :qwen2       | :llama       | :llama          | :qwen3moe                | :glm4               |
-| d_model           | 1536         | 3072         | 4096            | TBD                      | TBD                 |
-| n_layers          | 28           | 28           | 32              | TBD                      | TBD                 |
-| n_heads_q         | 12           | 24           | 32              | TBD                      | TBD                 |
-| n_heads_kv        | 2            | 8            | 8               | TBD                      | TBD                 |
-| qkv_bias          | true         | false        | false           | false (Qwen3 dropped it) | false               |
-| qk_norm           | false        | false        | false           | true                     | false               |
-| rope_freq_base    | 1e6          | 5e5          | 1e6             | 1e6                      | model-dep           |
-| rope_partial      | 1.0          | 1.0          | 1.0             | 1.0                      | 0.5                 |
-| swa_window        | nil          | nil          | nil (v0.2)      | nil                      | nil                 |
-| ffn_kind          | :swiglu      | :swiglu      | :swiglu         | :swiglu                  | :swiglu             |
-| moe               | false        | false        | false           | true (128 / top-8)       | true                |
-| tokenizer_kind    | :gguf_embedded | :gguf_embedded | :gguf_embedded | :gguf_embedded         | :gguf_embedded      |
+Shapes are explicit, not optional. They drive: compatibility checks
+before realize (does this Arch fit this Block?), shape annotations in
+the derived Card without runtime probing, and error messages that name
+the expected vs. actual shape.
 
-(TBD rows are filled at Phase B/C kickoff after reading the actual GGUFs.)
+## Composition operators (the API surface)
 
-## Generic `TransformerLM`
+Cards at any layer expose a small, machine-readable operator set, so
+Tao (L5) can introspect what knobs a Recipe exposes and vary them
+systematically across sweep arms.
 
-One class. Single decode-graph builder. Replaces
-`SmolLM2KVFFICache` and `SmolLM2KVFFICacheCuda`.
+| Operator | Effect |
+| --- | --- |
+| `card.with_hyper(k, v)` | Override a scalar hyperparameter |
+| `card.per_layer(field, list)` | Vary a field across the layer axis (load-bearing — e.g. heads-per-layer `[16, 16, 8, 4, 2, 1]`) |
+| `card.replace_step(name, step)` | Swap a named step (e.g. attention → ALiBi-attn) |
+| `card.tap(name) { |t| ... }` | Runtime hook on a named intermediate |
+| `card.make_trainable(param)` | Convert a constant to a trainable param (e.g. learnable `rope_base`) |
+| `card.replace_primitive(name, impl)` | Swap a registered primitive without subclassing |
 
-```ruby
-class TransformerLM
-  def initialize(arch, backend) # backend: :cpu or :cuda
-    @arch    = arch
-    @backend = backend
-    @sess    = (backend == :cuda) ? TinyNNCuda.tnn_session_new(1)
-                                  : TinyNN.tnn_session_new(0)
-    @weights = nil  # populated by load_gguf
-    @kv      = nil  # KV cache, allocated at realize time
-  end
+`per_layer` is the one that earns its keep: without it, "vary anything
+across L" forces fork-and-edit.
 
-  def load_gguf(path);        end # mmap + attach via BYO-pointer
-  def realize(max_seq);       end # build decode graph for max_seq context
-  def prefill(input_ids);     end # bulk encode prompt → KV cache
-  def decode_step(token, pos); end # one-token-at-a-time decode (autoregressive)
-  def sample(logits, opts);   end # delegates to Sampler
+## The Arch data model
 
-  private
+An Arch (L3) is **data the graph builder reads**, not a monolithic
+model class. The per-model architecture struct lives at `lib/arch.rb`:
+plain `attr_reader` fields, no inheritance, no metaprogramming. All
+fields are required (no nil-defaults) so a new arch declares every
+choice explicitly — that surfaces silent assumptions.
 
-  def build_decode_graph
-    # Reads @arch fields and emits ops.
-    # - attention block: Q/K/V projection (with/without bias depending on arch.qkv_bias)
-    # - QK norm (if arch.qk_norm)
-    # - RoPE with arch.rope_freq_base / arch.rope_partial_factor
-    # - KV-cache slot write (the cpy-into-strided pattern, now fixed by ggml patch)
-    # - GQA-aware attention (broadcast KV across query head groups)
-    # - SWA mask if arch.swa?
-    # - residual + norm (placement depends on arch.norm_kind)
-    # - FFN: routed to expert dispatch if arch.moe?, else single SwiGLU/GeGLU
-    # - final norm + lm_head (tied or untied per arch.untied_lm_head)
-  end
-end
+| Group | Fields |
+| --- | --- |
+| Identity | `family`, `name` |
+| Dimensions | `vocab_size`, `d_model`, `n_layers`, `n_heads_q`, `n_heads_kv`, `d_head`, `d_ff`, `max_position`, `untied_lm_head` |
+| Attention | `attention_kind` (`:mha`/`:gqa`/`:mqa`, via `gqa?`), `qkv_bias`, `qk_norm`, `swa_window` (nil = none, via `swa?`) |
+| RoPE | `rope_freq_base`, `rope_freq_scale`, `rope_partial_factor` (1.0 default; 0.5 for GLM/Phi) |
+| Norm | `norm_kind` (`:rms`/`:layer`), `norm_eps` |
+| FFN | `ffn_kind` (`:swiglu`/`:geglu`/`:gelu_mlp`), `ffn_bias` |
+| MoE | `moe`, `n_experts`, `n_experts_used`, `n_shared_experts`, `expert_gating` (`:softmax`/`:sigmoid`) |
+| Tokenizer | `tokenizer_kind` (`:gguf_embedded`/`:external`), `bos_id`, `eos_id`, `pad_id`, `unk_id`, `add_bos_by_default` |
+| Embed | `embed_scale` (1.0 default) |
+
+**Detection.** `Arch.from_gguf(path)` reads GGUF kv metadata and
+detects the family by **presence of tensors/keys** rather than trusting
+`general.architecture` (the converter's value is unreliable). For
+example, `qkv_bias` is detected from the presence of `blk.0.attn_q.bias`,
+and `untied_lm_head` from the presence of `output.weight`. The detected
+family selects how the rest of the fields are read. Unsupported
+architectures fail loud.
+
+`llama_arch.rb` is the L3 graph builder that consumes this struct: one
+linear `build_forward` reading the Arch fields and emitting ops
+(QKV projection with/without bias, optional QK-norm, RoPE with the
+configured base/factor, KV-cache slot write, GQA-aware attention, SWA
+mask when present, residual + norm, SwiGLU FFN or MoE dispatch, final
+norm, tied/untied lm_head). No subclassing, no strategy pattern — a
+reader who knows what a transformer is can follow it.
+
+### Per-model worked examples
+
+| Field | Qwen2.5-1.5B | Llama-3.2-3B | Mistral-7B-v0.2 |
+| --- | --- | --- | --- |
+| family | qwen2 | llama | llama |
+| d_model | 1536 | 3072 | 4096 |
+| n_layers | 28 | 28 | 32 |
+| n_heads_q | 12 | 24 | 32 |
+| n_heads_kv | 2 | 8 | 8 |
+| qkv_bias | true | false | false |
+| qk_norm | false | false | false |
+| rope_freq_base | 1e6 | 5e5 | 1e6 |
+| rope_partial_factor | 1.0 | 1.0 | 1.0 |
+| swa_window | nil | nil | nil (v0.2 dropped SWA) |
+| ffn_kind | :swiglu | :swiglu | :swiglu |
+| moe | false | false | false |
+
+## CLI + runner design
+
+The CLI is CRuby (under `lib/toy/core/cli/`, one file per command).
+The `COMMANDS` registry in `lib/toy/core/cli.rb` is the **single source
+of truth** for `--help`, `--manifest`, and dispatch — change the
+surface there and all three follow.
+
+The CLI shells four Spinel-compiled compute runners; it never requires
+the compiled libs itself:
+
+```
+lib/toy/run/infer.rb  → libexec/toy-infer
+lib/toy/run/train.rb  → libexec/toy-train
+lib/toy/run/eval.rb   → libexec/toy-eval
+lib/toy/run/serve.rb  → libexec/toy-serve
 ```
 
-The graph builder is large but linear: one method per block, with
-two-three conditionals per block on `@arch` fields. No subclassing,
-no strategy pattern, no metaprogramming. A reader who knows what a
-transformer is can follow it.
+The runners are built by `toy install` / `make`. They are **CPU-only**;
+GPU runners (a `--device` flag) are deferred (see
+[`roadmap.md`](roadmap.md)).
 
-## Tokenizer (Phase 0 scope)
+**CC-tools-friendly defaults.**
 
-Two parts:
+- `--json` everywhere — structured for tools, pretty for humans by
+  default.
+- `--manifest` emits a JSON manifest (`format: "toy/manifest-v1"`) of
+  commands + args, so tools discover the surface without parsing
+  `--help`.
+- Exit codes distinguish bad input (**2**) from execution failure
+  (**1**); 0 is success.
 
-1. **At GGUF load**, extract these from kv metadata:
-   - `tokenizer.ggml.tokens` (vocab table, IDs → strings)
-   - `tokenizer.ggml.merges` (BPE merge pairs, ordered)
-   - `tokenizer.ggml.bos_token_id`, `eos_token_id`, etc.
-   - `tokenizer.ggml.add_bos_token`
-   - Store on the `Arch` (the tokenizer fields), and keep the full
-     vocab/merges in a `Tokenizer` object owned by `TransformerLM`.
+The full command roster and flags are in [`cli.md`](cli.md). Serving is
+OpenAI-compatible and IDs-in/IDs-out (`lib/toy/serve/openai/`); chat
+templating is deferred.
 
-2. **Decode side (IDs → text)** — Ruby `Tokenizer#decode(ids)`.
-   Sufficient for all phases: server still receives token IDs and
-   emits tokens. Output side resolves IDs back to text using the
-   embedded vocab.
+## Backends axis
 
-3. **Encode side (text → IDs)** — *deferred to Phase D*. Clients
-   tokenize externally for now (HF tokenizer, llama.cpp tokenize,
-   etc.). When we ship Stage 2 tokenizers, the same `Tokenizer`
-   object grows an `encode(text)` method.
+Backend is orthogonal to both the layer and the kind axes. Three
+backends:
 
-This matches the current `tep_demo/openai_api_*` design (per
-memory: server speaks token IDs). The refactor doesn't change
-the API surface — just adds the decode side cleanly.
+- **CPU** — default, the only backend the CLI runners build today.
+- **CUDA** — GB10, sm_121.
+- **Metal** — Mac.
 
-## Sampler
+L1/L2/L3 units ship CPU `.rb` plus `_cuda` / `_metal` mirrors. The
+mirrors are **generated**, not hand-maintained: `prep/gen_cuda_mirror.rb`
+rewrites the CPU source (driven by `MIRRORABLE` markers in that script).
+The gate `make verify-mirrors` runs the generator with `--verify` and
+exits non-zero if any committed mirror has drifted. This per-class
+mirroring is a Spinel-polymorphism workaround, not a fundamental
+constraint — if Spinel ships polymorphism the mirrors retire and the
+Card stays valid regardless.
 
-New module `lib/sampler.rb`. Composable transforms applied to
-the logits vector before argmax:
+For the vendored ggml patches and the CUDA BYO-pointer path, see
+[`reference/backends.md`](reference/backends.md).
 
-```ruby
-module Sampler
-  # All transforms take (logits, ctx) and return new logits.
-  # ctx is { generated_ids:, prompt_ids:, arch: }.
+## Where it's going
 
-  def self.temperature(logits, t);             end # logits / t
-  def self.repetition_penalty(logits, ctx, p); end # penalize tokens in ctx[:generated_ids]
-  def self.top_k(logits, k);                   end # keep top-k, -inf the rest
-  def self.top_p(logits, p);                   end # nucleus
-  def self.argmax_or_multinomial(logits, opts); end # final pick
-
-  class Config
-    attr_accessor :temperature, :top_k, :top_p, :rep_penalty, :stop_tokens, :max_tokens
-  end
-end
-```
-
-Default config per arch lives on the `Arch` instance (sensible
-defaults — temperature 0.7, top_p 0.9, etc. — but callers can
-override).
-
-Stop tokens are checked after each decode step against
-`arch.eos_id` plus any per-call additions.
-
-## Migration plan (how to refactor without breaking Qwen2.5)
-
-The current path that *must* keep working through the refactor:
-
-- `demos/qwen25_direct_native_mmap.rb` (CPU mmap inference)
-- `demos/qwen25_direct_native_mmap_cuda.rb` (CUDA mmap inference)
-- `demos/smollm2_kv_cuda.rb` (legacy path)
-- `tep_demo/openai_api_*` binaries
-
-Sequence:
-
-1. **Add `lib/arch.rb` and `lib/arch/qwen2.rb`** with no callers.
-   Verify `Arch.qwen2(gguf_path)` reads correctly for Qwen2.5-1.5B
-   and matches the hardcoded values in `SmolLM2KVFFICache`.
-2. **Add `lib/tokenizer.rb`** with GGUF-embedded decode. Test
-   round-trip on a few prompts: tokens → decode → original-ish text.
-3. **Add `lib/sampler.rb`** with the four transforms + Config.
-   Unit-test each transform.
-4. **Add `lib/transformer_lm.rb`** initially as a wrapper that
-   delegates to `SmolLM2KVFFICache` based on `arch.architecture`.
-   Switch one demo to it; verify bit-identical output.
-5. **Inline the decode graph** into `TransformerLM`. Delete the
-   delegation. At this point Qwen2.5 runs through the new code path.
-6. **Verify all Qwen2.5 demos** produce identical output to the
-   pre-refactor baseline. CPU + CUDA, F32 + Q8.
-7. Only after step 6 is green: write `Arch.llama` and the Phase A
-   tests.
-
-The old `lib/toy_smollm2_*.rb` files stay in place during steps
-1-5 (delegated to) and get deleted at step 6.
-
-## Test plan
-
-**Per-phase acceptance gate.** No phase is "done" until:
-
-1. **Layer-by-layer parity** vs reference (HF transformers run on
-   the same prompt): max-abs-diff < 1e-3 on the final logits at N=1
-   layer and at full depth.
-2. **Bit-identical CPU vs CUDA** on all 28+ layers (the per-layer
-   harness from [[project_phase2_cuda_byo_2026_05_18]]).
-3. **End-to-end sample**: 50-token generation with the sampler at
-   `temperature=0`, deterministic, matches HF reference greedy
-   output bit-by-bit.
-4. **Sampler smoke**: same prompt at `temperature=0.7, top_p=0.9,
-   rep_penalty=1.1`, seed fixed, output deterministic across runs.
-
-Phase 0 acceptance: all four gates above pass for Qwen2.5-1.5B
-*through the new code path*. If any gate fails, the refactor is
-not done.
-
-## Open questions / future work
-
-- **YaRN / linear RoPE scaling.** Not in the Phase-0 `Arch`. Add
-  when the first model that needs it shows up (probably Qwen3 32k+).
-- **Encoder–decoder.** Out of scope. `Arch` is decoder-only.
-- **Quantization-aware dispatch.** Q4/Q5 GGUFs work today; we add
-  a `weight_quant_kind` field on `Arch` only when Phase C3 (GPT-OSS
-  MXFP4) lands.
-- **Attention sinks / register tokens.** Out of scope for now; some
-  recent models (HunYuan) use these.
-- **Phi-style parallel attention+FFN block.** Out of scope (Phi-2
-  was dropped from targets), but worth noting as an `Arch.block_kind`
-  knob if it ever comes back.
-
-## Acceptance for this design doc itself
-
-When this doc compiles in someone's head — i.e. they can predict
-what `Arch.qwen3moe(gguf)` returns and how `TransformerLM` consumes
-it for a Phase C model — we're ready to start Phase 0.
+L5 (experiments / sweeps) belongs to Tao. A `toy g` generator surface
+and a Prism-based static Card lowerer are future/optional — there is
+currently **no `toy g` and no `lib/toy/core/cli/curriculum.rb`**; those
+remain design intent. The deferred list and live research notes live in
+[`roadmap.md`](roadmap.md).

@@ -23,7 +23,7 @@ paths rewritten to absolute references into toy's own checkout.
 
 The convention is `bundler-spinel` / [spinelgems](https://github.com/OriPekelman/spinelgems);
 toy is the second flagship consumer after tep. See
-[`docs/roadmap/spinelgems-tep-adoption-2026-05-27.md`](roadmap/spinelgems-tep-adoption-2026-05-27.md)
+[`docs/archive/spinelgems-tep-adoption-2026-05-27.md`](archive/spinelgems-tep-adoption-2026-05-27.md)
 for the broader convention.
 
 ## Prereqs (one-time)
@@ -142,8 +142,7 @@ canary; honor it.
 ## Disabling Tep batteries (Pg / Sqlite)
 
 Toy includes tep_demo/* apps that link `Tep::PG` and `Tep::Sqlite`
-batteries via the tep vendored tree (see
-[`docs/roadmap/tep-ffi-manifest-2026-05-27.md`](roadmap/tep-ffi-manifest-2026-05-27.md)).
+batteries via the tep vendored tree.
 If your downstream box lacks libpq / libsqlite3, set
 `TEP_DISABLE=pg` (or `pg,sqlite`) **on the toy side's
 post-vendor**, not the toy#19 hook — toy's post_vendor_toy.rb
@@ -189,11 +188,10 @@ spinel experiment.rb -o experiment
 
 ## See also
 
-- [`roadmap/spinelgems-tep-adoption-2026-05-27.md`](roadmap/spinelgems-tep-adoption-2026-05-27.md)
+- [`archive/spinelgems-tep-adoption-2026-05-27.md`](archive/spinelgems-tep-adoption-2026-05-27.md)
   — the broader convention, originally written for tep.
-- [`roadmap/tep-ffi-manifest-2026-05-27.md`](roadmap/tep-ffi-manifest-2026-05-27.md)
-  — the FFI-manifest design (toy's `lib/toy/ffi_manifest.rb` is the
-  toy-side analog of `Tep::FFIManifest`).
+- `lib/toy/ffi_manifest.rb` — the toy-side analog of
+  `Tep::FFIManifest` (the FFI-manifest design).
 - [`events-schema.md`](events-schema.md) — the `toy/v1` event
   contract your consumer can emit (`run_start`, `step`, `eval`,
   `tap`, `run_end`) for Tao-side consumption.

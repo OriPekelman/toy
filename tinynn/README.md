@@ -319,7 +319,6 @@ tensor is now bounds-checked and emits a once-per-session warning
 (it used to be silent UB — `memcpy` past the scratch end into
 adjacent heap; the Qwen2.5-0.5B `ffn_gate` overflow at 17.4 MB > 16
 MiB was the canonical bug that motivated this hardening — see
-[`docs/archive/qwen25-known-issue.md`](../docs/archive/qwen25-known-issue.md) and
 [GitHub issue #1](https://github.com/OriPekelman/toy/issues/1)).
 
 The hardened primitives:
@@ -375,8 +374,8 @@ Q8_0 SmolLM2-135M works through `prep/convert_smollm2_to_gguf.py
 ~1% logit noise. Q4_0 / Q5_0 wired but lightly exercised. K-quants
 (Q4_K_M etc.) need ggml's C-side quantizer; not yet wrapped.
 
-See `docs/archive/bench-gx10-2026-05-20.md` for current numbers (SmolLM2-135M
-KV-cache decode: 89 tok/s on GB10 CUDA, 77 tok/s on M2 Air CPU).
+Indicative numbers (SmolLM2-135M KV-cache decode): 89 tok/s on GB10
+CUDA, 77 tok/s on M2 Air CPU.
 
 ### Direct loader + Mat-roundtrip
 
@@ -441,7 +440,7 @@ stat per tap, no per-element crossings.
 The `puts` lines are formatted to align labels at 24 chars and `n` at
 6 — useful when scanning down a long output for the first layer where
 `nan > 0` or `|mean|` jumps an order of magnitude. The Qwen2.5
-scratch-overflow story in `docs/archive/qwen25-known-issue.md` is the canonical
+scratch-overflow story (GitHub issue #1) is the canonical
 walkthrough; trace tap is how we caught it.
 
 **Performance:** with tracing off the entire mechanism is unmeasurable

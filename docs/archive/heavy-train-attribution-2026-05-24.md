@@ -200,7 +200,7 @@ Every per-op-cost candidate refuted. The single remaining hypothesis
 is **#3 — graph-level orchestration / single-stream serialization**
 (ggml-cuda dispatches sequentially; PT fits 234 ms of kernel time in
 120 ms wallclock via multiple cuBLAS streams). Upstream issue draft at
-[`archive/upstream/issues-vendor/05-ggml-cuda-stream-overlap.md`](archive/upstream/issues-vendor/05-ggml-cuda-stream-overlap.md).
+[`upstream/issues-vendor/05-ggml-cuda-stream-overlap.md`](upstream/issues-vendor/05-ggml-cuda-stream-overlap.md).
 
 ### What this means for toy
 

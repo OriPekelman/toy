@@ -6,31 +6,26 @@
 
 **v0.6.0-pre-alpha** · early signal · not API-stable
 &nbsp;·&nbsp; [CHANGELOG](CHANGELOG.md)
-&nbsp;·&nbsp; [docs](docs/INDEX.md)
-&nbsp;·&nbsp; [op coverage](docs/coverage.md)
+&nbsp;·&nbsp; [docs](docs/architecture.md)
+&nbsp;·&nbsp; [op coverage](docs/reference/coverage.md)
 
-A transformer LM in Ruby, [Spinel](https://github.com/matz/spinel)-compiled
-to native binaries. Runs real HuggingFace models — SmolLM2, Llama 3,
-Qwen 2.5, Qwen 3, Mistral, Gemma 2, OLMoE (MoE) — at output-identical
-fidelity to PyTorch. CPU, CUDA, Metal.
+A transformer LM framework in Ruby, [Spinel](https://github.com/matz/spinel)-compiled
+to native binaries. A plain CRuby CLI (`bin/toy`) drives Spinel-compiled
+compute runners; the model algorithms are organized in five layers
+(primitives → blocks → archs → recipes), and **every layer is gated
+bit-identical** against a reference. Runs real HuggingFace models —
+SmolLM2, Llama 3, Qwen 2.5, Qwen 3, Mistral, Gemma 2, OLMoE (MoE) — at
+output-identical fidelity to PyTorch. CPU, CUDA, Metal.
 
 End-to-end as single native binaries:
 
-- **Inference** — KV-cache decode on CPU/CUDA/Metal. F32 or Q8 with
-  zero-copy mmap. Opt-in: Q8 K+V cache, fused flash attention.
-- **Training** — from-scratch trainer over `TransformerLM`.
-- **Fine-tune** — LoRA + QLoRA, one sequence-mode forward + backward +
-  AdamW graph (CPU + CUDA).
-- **Serve** — Tep+Spinel OpenAI-compatible HTTP.
-- **Discover** — auto-finds GGUFs in HF, Ollama, LM Studio, and
-  project-local caches.
-
-Modern architecture coverage: MoE routing (OLMoE), SentencePiece
-Unigram tokenizers (Gemma 2), pre+post-norm sandwich + logit
-soft-cap + alternating sliding-window attention (Gemma 2), per-arch
-QK-norm (Qwen 3 shared / OLMoE packed), RoPE scaling (YaRN /
-llama3 / linear). See [supported models](#supported-models) for the
-verified matrix.
+- **Inference** — KV-cache greedy decode on CPU/CUDA/Metal. F32 or Q8
+  with zero-copy mmap. Opt-in: Q8 K+V cache, fused flash attention.
+- **Training** — from-scratch trainer over a Llama-shape `TransformerLM`.
+- **Eval** — per-token logprobs / top-K scoring.
+- **Serve** — OpenAI-compatible HTTP API (CPU), token IDs in / out.
+- **Discover** — auto-finds GGUFs in HuggingFace, Ollama, LM Studio,
+  and project-local `data/` caches.
 
 The goal is **readable**: the whole forward pass fits on one screen,
 every shape is annotated, building blocks are named after the math.
@@ -49,8 +44,9 @@ def transformer_block(x, block)
 end
 ```
 
-Every model has an `algorithm_card` emitting Phuong-Hutter style
-pseudocode (arXiv:2207.09238) with shape annotations:
+Every model has an `algorithm_card` (in `lib/toy_gpt2.rb`,
+`lib/toy_smollm2.rb`) emitting Phuong–Hutter style pseudocode
+(arXiv:2207.09238) with shape annotations:
 
 ```
 Algorithm: Toy::GPT2.forward(x, p_start)      [HF GPT-2 family]
@@ -66,133 +62,83 @@ Algorithm: Toy::GPT2.forward(x, p_start)      [HF GPT-2 family]
    7: P ← e · W_e^⊤                                          P ∈ R^{T×V}
 ```
 
-`prep/card_to_code.rb` parses an algorithm card back into the Ruby
-that constructs the model — the round-trip closes.
+`prep/card_to_code.rb` parses an algorithm card back into the Ruby that
+constructs the model — the round-trip closes. `toy describe <model>`
+renders the card straight from a GGUF's arch metadata.
 
 ## Quickstart
 
-Requires Ruby, [Spinel](https://github.com/matz/spinel) at
-`~/sites/spinel`, and a C compiler. `uv` self-installs for the
-Python converter.
+Requires Ruby, [Spinel](https://github.com/matz/spinel), and a C
+compiler. The CLI is plain MRI Ruby; the compute runners are built on
+demand by `toy install` (or `make`).
 
 ```sh
-make setup                                   # build the backend (CPU + Metal/CUDA if detected)
+toy install                                  # build/verify the CPU backend
 toy fetch ggml-org/models \
     tinyllamas/stories15M-q4_0.gguf          # grab a tiny model into ./data
 toy infer data/stories15M-q4_0.gguf \
-    --prompt "Once upon a time"                  # run inference
+    --prompt "Once upon a time"              # greedy decode
 ```
 
-For the same flow broken into pieces:
+The 9 commands (the `COMMANDS` registry in `lib/toy/core/cli.rb` is the
+single source of truth — `toy --manifest` emits the same surface as
+machine-readable JSON, format tag `toy/manifest-v1`):
 
 ```sh
-make setup                                   # auto-detect CPU/Metal/CUDA, ~15 s
-toy list                                     # what's cached: HF / Ollama / LM Studio / ./data
+toy new <path> [--force] [--json]            # scaffold a conventional project tree
+toy install [--json]                         # build/verify the CPU backend
+toy list [--json]                            # GGUFs in HF / Ollama / LM Studio / ./data
+toy describe <model> [--json]                # GGUF metadata → arch-derived Card
+toy fetch <hf-repo> [file.gguf] [--json]     # download a GGUF + data/ symlink
+toy infer <model> [--prompt] [--n] [--json]  # greedy decode (defaults: "Once upon a time", n 16)
+toy train from-scratch [--steps] [--seed] [--out] [--json]   # records runs/<id>/ + loss curve
+toy eval <model> [--top-k] [--json]          # per-token logprobs (default top-K 5)
+toy serve <model> [--port] [--name]          # OpenAI-compatible HTTP API (CPU)
 ```
 
-If nothing shows up:
+Global flags: `--manifest`, `--help` / `-h`, `--version`. Exit codes:
+`0` ok · `2` bad input (unknown command, missing required arg) · `1`
+execution failure (GGUF unreadable, scaffold target exists, …).
+
+If `toy list` shows nothing, populate a cache any of these ways:
 
 ```sh
 toy fetch bartowski/SmolLM2-135M-Instruct-GGUF SmolLM2-135M-Instruct-Q8_0.gguf
+# …or huggingface-cli download / hf download, ollama pull, LM Studio —
+# they all land in caches the next `toy list` will see.
 ```
 
-…or use `huggingface-cli download`, `ollama pull`, or LM Studio
-— they all land in caches the next list-models will see. The
-fetcher also drops a `data/<file>.gguf` symlink so the default
-`GGUF=` path in the examples resolves without extra typing.
+`toy fetch` also drops a `data/<file>.gguf` symlink so default paths
+resolve without extra typing. Set `TOY_MODEL_DIR` to add a search path.
 
-Then run:
+Then run, train, eval, and serve:
 
 ```sh
 toy infer data/llama-3.2-1b-tok.gguf --prompt "The capital of France is"
 # → The capital of France is Paris. The capital of Germany is …
 
-# Try the opt-in perf knobs (env-vars the runner reads):
 KV_Q8=1 FLASH_ATTN=1 \
-  toy infer data/qwen3-1.7b-tok.gguf --prompt "Hi" --n 32
+  toy infer data/qwen3-1.7b-tok.gguf --prompt "Hi" --n 32   # opt-in perf knobs
 
-# Modern MoE works (Q8 expert weights required — see footnote):
-toy infer data/OLMoE-1b-7b-0924-Instruct-q8_0.gguf \
-  --prompt "The capital of France is"
-
-# Gemma 2 (all four arch quirks auto-detected):
-toy infer data/gemma-2-2b-it-Q8_0.gguf --prompt "The capital of France is"
+toy train from-scratch --steps 20 --seed 0   # writes runs/<id>/ (weights + events + loss curve)
+toy eval data/SmolLM2-135M-Instruct-Q8_0.gguf --top-k 5
+toy serve data/SmolLM2-135M-Instruct-Q8_0.gguf --port 4567 --name smol
 ```
 
-`toy infer` speaks text when the GGUF was converted with
-`--with-tokenizer` (the `*-tok.gguf` variants). Three tokenizer
-flavors auto-detected: byte-level BPE, SPM-BPE, SPM-Unigram. Without
-an embedded tokenizer the runner falls back to a fixed token-ID
-prompt and prints raw IDs.
+`toy infer` speaks text when the GGUF was converted with a tokenizer
+(the `*-tok.gguf` variants). Without an embedded tokenizer the runner
+falls back to a fixed token-ID prompt and prints raw IDs.
 
-**Serve as an HTTP API:**
+`toy serve` exposes OpenAI-shape `/v1/{models,completions,embeddings}`
+over the same KV-cache inference path. It speaks **token IDs in / token
+IDs out** (server-side chat-templating is deferred):
 
 ```sh
-make tep_demo/openai_api_llama
-./tep_demo/openai_api_llama -p 4567               # serves SmolLM2-135M (default)
-MODEL_PATH=data/qwen25-1.5b-native-q8.gguf \
-  ./tep_demo/openai_api_llama -p 4567             # any llama-family GGUF
-
 curl -X POST http://127.0.0.1:4567/v1/embeddings \
   -H 'Content-Type: application/json' -d '{"input":[1,2,3]}'
 ```
 
-OpenAI-shape `/v1/{models,completions,embeddings}` over the same
-KV-cache inference path. See [`tep_demo/`](tep_demo/README.md).
-
-[`examples/`](examples/README.md) has the focused entry points
-(inference, train-from-scratch, LoRA fine-tune, model discovery,
-ViT-Tiny, warm-start, LMC, …). Each one is a single Ruby file
-compiled to a native binary; `make help` lists the top targets
-with a one-line description each.
-
-**CUDA:** `make setup-ggml-cuda` then `*_cuda` example variants.
-
-**Metal:** `make setup-ggml-metal` then `make example_inference_metal`.
-Works with Command Line Tools alone (shaders embed into the static
-archive, JIT-compile on first device load ~15 s, then cached).
-Validated end-to-end on SmolLM2-135M F32; [`coverage.md`](docs/coverage.md)
-Metal column shows the rest.
-
-**Use toy as a library from your own project:** as of 2026-05-27 toy
-ships [`toy.gemspec`](toy.gemspec) and is consumable via the
-[spinelgems](https://github.com/OriPekelman/spinelgems) Gemfile
-convention. A research project (e.g. `tao_transfer`) declares
-`gem "toy", path: "../toy_ruby_neural_network"`, vendors toy into
-its tree, and compiles its own experiments against toy's primitives
-— no forks, no hand-pathed `require_relative`s. See
-[`docs/consuming-toy.md`](docs/consuming-toy.md) for the end-to-end
-recipe.
-
-## Reading the rest
-
-- [`examples/`](examples/README.md) — start here.
-- [`docs/INDEX.md`](docs/INDEX.md) — tour of the docs (current
-  reference, future work, archive).
-- [`tep_demo/`](tep_demo/README.md) — OpenAI-compatible HTTP API.
-- [`demos/`](demos/README.md) — per-model and per-feature drivers
-  (one per concrete validation run).
-- [`tinynn/`](tinynn/README.md) — the C / CUDA / Metal shim over ggml.
-
-## Reproducibility gates
-
-Three local-runnable gates catch regressions before they ship.
-Run before pushing perf-sensitive or model-shape changes.
-
-- `make bench` — three Spinel-compiled benches (LoRA training step,
-  inference toks/sec, tokenizer encode µs/tok). Each emits
-  `BENCH metric value` lines; the orchestrator compares to
-  `bench/baselines.csv` and exits non-zero past a per-metric
-  tolerance (±15 % default). `make bench-update` re-baselines.
-- `make check-cards` — Ripper-based drift detector. Verifies every
-  `Toy::` class with both `def forward` and `def algorithm` keeps
-  the two in lock-step (activation-token mismatches + matmul-
-  presence collapse). Catches the case where someone changes
-  forward without updating the algorithm card or vice versa.
-- `TRACE=path.json ./examples/example_finetune` — Chrome Trace
-  Format observability primitive on the FFI hot path. ~5 ns per
-  begin/end pair when off (zero-overhead measured), 12 % when on.
-  Open the output in https://perfetto.dev .
+The serve runner lives at `lib/toy/serve/openai/` → `libexec/toy-serve`.
 
 ## Supported models
 
@@ -213,39 +159,39 @@ Run before pushing perf-sensitive or model-shape changes.
 | Qwen3-0.6B         | Qwen3 + QK-norm      | 0.6B        | ✓   |      | ✓   | ✓        |         | ‡         |
 | Qwen3-1.7B         | Qwen3 + QK-norm      | 1.7B        | ✓   | ✓    | ✓   | ✓        |         | ‡         |
 | Qwen3-4B           | Qwen3 + QK-norm      | 4B          | ✓   |      | ✓   |          |         | ‡         |
-| OLMoE-1B-7B-Instr  | Llama + MoE + QK-norm⁂ | 7B (1B act) |     | ✓    | ✓   |          |         | ‡         |
-| Gemma 2-2b-it      | Llama + Gemma extras⁂⁂ | 2B          |     | ✓    | ✓   |          |         | ‡         |
+| OLMoE-1B-7B-Instr  | Llama + MoE + QK-norm⁂  | 7B (1B act) |     | ✓    | ✓   |          |         | ‡         |
+| Gemma 2-2b-it      | Llama + Gemma extras⁂⁂  | 2B          |     | ✓    | ✓   |          |         | ‡         |
 
-⁂ OLMoE uses the OLMoE-style QK-norm (gamma at `[d_model]`,
-per-head sliced) and 64 experts × top-8 routing. MoE expert weights
-**must be Q8_0** — Q4_K / Q5_K / Q6_K trigger a known ggml
-`mul_mat_id` bug ([ggml#1506](https://github.com/ggml-org/ggml/issues/1506)).
-Our loader emits a runtime warning if the expert weights are
-K-quantized.
+⁂ OLMoE uses OLMoE-style QK-norm (gamma at `[d_model]`, per-head
+sliced) and 64 experts × top-8 routing. MoE expert weights **must be
+Q8_0** — Q4_K / Q5_K / Q6_K trigger a known ggml `mul_mat_id` bug
+([ggml#1506](https://github.com/ggml-org/ggml/issues/1506)). The loader
+emits a runtime warning if expert weights are K-quantized.
 
 ⁂⁂ Gemma 2 needs four extras: embedding scaling by sqrt(d_model),
-logit soft-cap (tanh) on attention + final logits, pre+post-norms
-on each sublayer, and per-layer alternating SWA/full attention.
-All auto-detected from the GGUF (`gemma2.*` metadata). The
-tokenizer is SPM-Unigram (no merges); enabled automatically.
+logit soft-cap (tanh) on attention + final logits, pre+post-norms on
+each sublayer, and per-layer alternating SWA/full attention. All
+auto-detected from the GGUF (`gemma2.*` metadata). Its tokenizer is
+SPM-Unigram (no merges), enabled automatically.
 
 † Qwen2.5-1.5B/3B Q8 abort on CUDA at weight-load time: ggml-cuda's
 quantized matmul requires `d_ff` aligned to 512, and those models'
-`d_ff` (8960, 11008) aren't. F32 path works for all sizes.
+`d_ff` (8960, 11008) aren't. The F32 path works for all sizes.
 
 ‡ Metal: validated end-to-end only on SmolLM2-135M F32 (bit-identical
-to the CPU path). Other Llama-family models should work — same FFI
-surface, same graph builder, same ggml-metal kernel coverage — but
-haven't been smoked yet. GPT-2-family hasn't been wired (no
-`lib/gpt2_ffi_*_metal.rb` mirror has been built into a binary yet
-even though the mirror files exist). Quantized weights on Metal are
-untested. The current Metal path uses copy-load rather than mmap
-(ggml-metal doesn't expose a public buffer-from-pointer API), so
+to CPU). Other Llama-family models should work — same FFI surface,
+same graph builder, same ggml-metal kernel coverage — but haven't been
+smoked. GPT-2-family isn't wired on Metal. Quantized weights on Metal
+are untested. The Metal path uses copy-load rather than mmap, so
 multi-GB models pay the copy cost.
+
+The canonical "what's actually wired" reference is
+[`docs/reference/coverage.md`](docs/reference/coverage.md).
 
 ### Tokenizer / RoPE coverage
 
 Three tokenizer flavors are auto-detected from the GGUF:
+
 - **Byte-level BPE** (GPT-2 byte-map): GPT-2 family, SmolLM2,
   Llama-3.2, Qwen2.5, Qwen3.
 - **SPM-BPE** (SentencePiece with merges): TinyLlama-1.1B, Mistral.
@@ -259,20 +205,55 @@ configurations work without extra wiring.
 
 ### Opt-in performance features
 
-- **`KV_Q8=1`**: K and V caches stored as Q8_0 (3.75× smaller).
-  Auto-enables flash attention. Validated on Qwen3-1.7B: 13%
-  faster wallclock at N_NEW=32, bit-identical token output.
-- **`FLASH_ATTN=1`**: fused `ggml_flash_attn_ext` per Q-head.
-  12% faster on Qwen3-1.7B at N_NEW=32 vs the scale→softmax→matmul
-  triplet (was a wash before V layout flip; now realized).
-- **`TOY_EVENTS=path.jsonl`**: emit the structured v1 event stream
-  (`docs/events-schema.md`) for live TUIs and post-run analysis.
+Environment variables the runners read:
 
-### Next targets
+- **`KV_Q8=1`** — K and V caches stored as Q8_0 (3.75× smaller),
+  auto-enables flash attention. Validated on Qwen3-1.7B: 13% faster
+  wallclock at N_NEW=32, bit-identical token output.
+- **`FLASH_ATTN=1`** — fused `ggml_flash_attn_ext` per Q-head. 12%
+  faster on Qwen3-1.7B at N_NEW=32 vs the scale→softmax→matmul triplet.
+- **`TOY_EVENTS=path.jsonl`** — emit the structured `toy/v1` event
+  stream for live TUIs and post-run analysis (see
+  [`docs/events.md`](docs/events.md)).
 
-Mixtral-8x7B (modern-stacked-tensor variants); Mamba/Jamba (SSM ops
-bound, Cache class needed); Gemma 3; DeepSeek V3 (MLA); Llama 4 MoE.
-Coverage matrix at [`docs/coverage.md`](docs/coverage.md) is the
-canonical "what's actually wired" reference.
+## Backends
+
+CPU is the default and the gated reference. CUDA (GB10 / sm_121) and
+Metal (Mac) mirror the L1–L3 algorithms; mirrors are generated from
+`MIRRORABLE` markers and held bit-identical by `make verify-mirrors`.
+See [`docs/reference/backends.md`](docs/reference/backends.md).
+
+## Documentation
+
+- [`docs/architecture.md`](docs/architecture.md) — the five-layer
+  algorithm stack and how the CLI shells to compute runners.
+- [`docs/cli.md`](docs/cli.md) — the 9 commands, flags, exit codes,
+  and the manifest contract.
+- [`docs/authoring.md`](docs/authoring.md) — adding a primitive, block,
+  arch, or recipe; the algorithm-card / `card_to_code` round-trip.
+- [`docs/gating.md`](docs/gating.md) — the bit-identical gates and
+  fixtures (`examples/smoke_*`, `prep/*_gate.rb`).
+- [`docs/dependencies.md`](docs/dependencies.md) — Spinel, the vendored
+  ggml patches, and consuming toy as a gem via spinelgems.
+- [`docs/events.md`](docs/events.md) — the `toy/v1` event schema
+  (`runs/<id>/events.jsonl`).
+- [`docs/roadmap.md`](docs/roadmap.md) — deferred work and live
+  research directions.
+- [`docs/reference/`](docs/reference/coverage.md) — op coverage,
+  backends, the loader API, and memory design.
+- [`examples/`](examples/README.md) — focused, single-file entry points
+  compiled to native binaries.
+
+## Reproducibility gates
+
+- `make verify-mirrors` — CUDA/Metal mirrors stay bit-identical to CPU.
+- `make check-cards` — Ripper-based drift detector: every `Toy::` class
+  with both `def forward` and `def algorithm` keeps the two in
+  lock-step.
+- `make bench` — Spinel-compiled benches; emits `BENCH metric value`
+  lines compared against `bench/baselines.csv`.
+- `make bench-vs-pytorch` / `make bench-heavy` — ratio-not-ms comparison
+  against a reference PyTorch run (see
+  [`docs/reference/backends.md`](docs/reference/backends.md)).
 
 A toy you can read top-to-bottom that happens to run real models.

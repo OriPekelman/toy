@@ -349,7 +349,7 @@ layers anymore.
 
 ### Roadmap docs
 
-- [`docs/roadmap/e1-e2-scope-2026-05-27.md`](docs/roadmap/e1-e2-scope-2026-05-27.md)
+- [`docs/archive/e1-e2-scope-2026-05-27.md`](docs/archive/e1-e2-scope-2026-05-27.md)
   — full decomposition of E1 (ViT-Tiny, 6 sub-issues, 5-8 days) and
   E2 (Qwen-410M embedding transfer, 7 sub-issues, 3-5 days). E2.1
   cheapest-first-step was executed (24L × 16H Qwen-shape) — uncovered

@@ -14,7 +14,7 @@ eventually — see each patch's commit message for the discussion notes.
 
 | Patch | Touches | Why |
 |---|---|---|
-| `0001-cuda-buffer_from_ptr.patch`               | `include/ggml-cuda.h`, `src/ggml-cuda/ggml-cuda.cu` | BYO-pointer mmap path for the CUDA backend. Mirrors `ggml_backend_cpu_buffer_from_ptr`. Required for Phase 2 mmap inference on CUDA (per `docs/cuda-byo-pointer-design.md`). |
+| `0001-cuda-buffer_from_ptr.patch`               | `include/ggml-cuda.h`, `src/ggml-cuda/ggml-cuda.cu` | BYO-pointer mmap path for the CUDA backend. Mirrors `ggml_backend_cpu_buffer_from_ptr`. Required for Phase 2 mmap inference on CUDA (per `docs/archive/cuda-byo-pointer-design.md`). |
 | `0002-cuda-buffer_from_ptr-reuse-iface.patch`   | `src/ggml-cuda/ggml-cuda.cu` | Refactor on top of 0001: reuse the standard CUDA buffer interface, drop the read-only flag pattern. |
 | `0003-cuda-buffer_from_ptr-copy-mode.patch`     | `src/ggml-cuda/ggml-cuda.cu` | Adds `GGML_CUDA_BYO_PTR_MODE=copy` for non-unified-memory SKUs that need a one-time host→device copy. UVA path (GB10 / DGX Spark / Jetson) stays zero-copy. |
 | `0004-cuda-cpy-strided.patch`                   | `src/ggml-cuda/cpy.cu`       | Guard `cpy_scalar_transpose` dispatch behind a contiguous-dst check. Without it, KV-cache writes that go into a strided `view_2d` (the canonical pattern) silently miswrite. F32 KV-cache CUDA path was broken before this. |
@@ -67,7 +67,7 @@ For the concat-backward case where the change was an uncommitted edit
 
 Each patch has a doc:
 - `docs/archive/concat-back-patch-2026-05-21.md` (0005)
-- `docs/cuda-byo-pointer-design.md` (0001-0003)
+- `docs/archive/cuda-byo-pointer-design.md` (0001-0003)
 - `docs/archive/ggml-cpy-patch-2026-05-18.md` (0004 — referenced from memory; not separately archived)
 - `vendor-patches/0006-getrows-back-large-vocab.patch` carries its own
   rationale in the commit message.
