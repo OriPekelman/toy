@@ -4,7 +4,7 @@
   <img src="toy_logo.png" alt="toy" width="240" />
 </p>
 
-**v0.6.0-pre-alpha** · early signal · not API-stable
+**v0.7.0-pre-alpha** · early signal · not API-stable
 &nbsp;·&nbsp; [CHANGELOG](CHANGELOG.md)
 &nbsp;·&nbsp; [docs](docs/architecture.md)
 &nbsp;·&nbsp; [op coverage](docs/coverage.md)

@@ -1,5 +1,76 @@
 # Changelog
 
+## v0.7.0-pre-alpha — 2026-05-31
+
+**Headline.** toy becomes a **CLI-driven framework**. The forward path is
+refactored into a five-layer algo stack (primitives → blocks → archs →
+recipes), every layer landed behind a **bit-identical-output gate**; a
+CRuby `bin/toy` CLI ships **9 commands**; tep is now consumed as a normal
+**gem from `main`** (no hand-rolled vendoring); and the docs tree was
+rebuilt clean. `toy --version` and the gemspec now agree on the version
+(was: gem `0.1.0` vs README `v0.6.0-pre-alpha`).
+
+### P2 — five-layer refactor (`lib/toy/llm/`), all bit-identical-gated
+- **L1 primitives** `{rope, swiglu, rms_norm, gqa}`, **L2** `transformer_block`,
+  **L3** `llama_arch`, **L4 recipes** `{from_scratch, lora, warm_start}`
+  (curriculum deferred) extracted from `lib/llama_seq_forward_ffi.rb`.
+  Monolith ~1918 → ~1300 lines.
+- **realize-path decomposition:** per-block weight loading for random_init /
+  mmap / q8 moved onto the block/arch, behind a **7-way** bit-identical gate
+  (CPU + CUDA + GGUF F32 round-trip + GQA-divergent + B>1 + qkv_bias + q8).
+- **New gates:** CUDA forward parity (`smoke_projection_lens_cuda`), GGUF F32
+  mmap round-trip (`lib/toy_gguf_fuse.rb` head-fusing writer), and the
+  config-variant cascade fixtures. Harnesses under `prep/*_gate.rb`.
+
+### P3 — CLI MVP + packaging
+- **`bin/toy`** (CRuby, no Spinel): `new`, `install`, `list`, `describe`,
+  `fetch` + global `--manifest` / `--help` / `--version`; `toy.yml`
+  (run-id template + algos path). Manifest/help auto-generated from one
+  COMMANDS registry.
+- **`describe`** reads `general.architecture` and **declines** non-llama
+  arches (gpt2/gemma2/olmoe) instead of mis-rendering a llama Card
+  (fail-loud); `list` dedups by canonical path; pure-Ruby GGUF metadata
+  reader (`lib/toy/core/gguf_meta.rb`).
+- **Packaging (toy#28 → option c):** the gem ships the backend build inputs;
+  `gem install toy && toy install` builds the backend. Verified on Linux
+  aarch64 (gx10) + macOS Apple Silicon / Metal; Linux x86_64 pending.
+
+### P4 — `infer` / `train` / `eval` / `serve`
+- **Compute bridge:** each command builds a lib-side Spinel runner
+  (`lib/toy/run/<cmd>.rb` → `libexec/toy-<cmd>`) via the install machinery
+  and shells it with a controlled env; recorded-baseline gates.
+- `infer` (greedy, byte-for-byte vs the old example), `train from-scratch`
+  (drives the FromScratch recipe → `runs/<id>/` + events.jsonl + checkpoint),
+  `eval` (CE/logprobs), `serve` (`lib/toy/serve/openai/`, OpenAI-compatible
+  IDs-in/IDs-out HTTP; tep as build-dep only). `examples/01_inference.rb` and
+  `tep_demo/openai_api_llama.rb` retired into the CLI/lib.
+
+### Dependencies — tep as a normal gem
+- tep consumed from its **`main` branch via the spinelgems convention**
+  (`Gemfile` `git:` → `bundle lock` → `spinel-compat vendor` →
+  `require_relative "vendor/spinel/deps"`). The `@TEP_*@` post-vendor
+  substitution trick is **retired** — `spinel-compat vendor` wires tep's
+  C-exts natively from its shipped `spinel-ext.json` (tep#98). `prep/post_vendor_tep.rb` deleted.
+
+### Cleanup + docs
+- Docs rebuilt to a clean tree (`architecture`, `cli`, `authoring`, `gating`,
+  `dependencies`, `events`, `roadmap`, `reference/`); ~33 dead docs pruned,
+  ~16 archived; zero dangling intra-repo links.
+
+### Upstream issues filed
+- **matz/spinel#1043** — `Struct.new` accessor names act as global type-merge
+  keys (mis-types unrelated code); use hand-written value classes.
+- **spinelgems#8** — `spinel-compat vendor` doesn't wire a split
+  `@MOD_CFLAGS@` pkg-config to the source `.o` compile (tep pg → libpq-fe.h
+  not found); `SPINEL_EXT_DISABLE=pg` workaround.
+- **ggml#1506** noted — `mul_mat_id` broken for K-quants (use Q8_0 experts).
+
+### Deferred
+GPU runners (`--device`), train `lora`/`warm-start`/`curriculum` variants,
+`eval lmc`, ViT, GPT-2 train, the train→infer checkpoint round-trip
+(tensor-naming), the realize fixture-cascade (full_finetune), Tep then Tao
+re-adaptation (until Toy is stable), Linux x86_64 verification.
+
 ## v0.6.0-pre-alpha — 2026-05-28
 
 **Headline.** Tao's two fresh asks shipped same-day (toy#20 per-token
