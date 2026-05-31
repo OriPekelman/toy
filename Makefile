@@ -203,17 +203,9 @@ help:
 	@echo "    make example_lmc                   linear-mode-connectivity blend of two checkpoints"
 	@echo ""
 	@echo "  HTTP SERVING — tep_demo/"
-	@echo "    make tep_demo/openai_api_llama     OpenAI-compatible server for any llama-family GGUF"
-	@echo "                                       MODEL_PATH=… MODEL_NAME=… ./tep_demo/openai_api_llama -p 4567"
 	@echo "    make tep_demo/hello                minimal Tep HTTP smoke"
 	@if [ ! -f vendor/spinel/tep/lib/tep.rb ]; then \
 	    printf "    (prereq: run %s first — needs ../tep + ../spinelgems checkouts)\n" "'make vendor-tep'"; \
-	fi
-	@if [ "$$(uname -s)" = "Darwin" ]; then \
-	    echo ""; \
-	    echo "    Note: tep_demo/openai_api_llama uses the CPU FFI bridge — Metal serving"; \
-	    echo "    is a separate codepath (lib/tinynn_metal.rb) not yet wired into the HTTP"; \
-	    echo "    server. CPU serving works fine on Mac, just won't hit the Metal kernels."; \
 	fi
 	@echo ""
 	@echo "  BENCH + CHECKS"
@@ -492,19 +484,6 @@ tep_demo/hello: tep_demo/hello_api.rb vendor/spinel/tep/lib/tep.rb
 # Inference API: /generate?n=N runs greedy generation via FullForwardFFICache.
 tep_demo/api: tep_demo/inference_api.rb vendor/spinel/tep/lib/tep.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) tep_demo/inference_api.rb -o tep_demo/api
-
-# OpenAI-compatible API backed by SmolLM2/Qwen-family models via the
-# direct GGUF→FFI loader. Accepts pre-tokenized integer IDs (no
-# server-side tokenizer — keeps the single-binary deployment story).
-# Model GGUF path comes from MODEL_PATH env at run time; one binary
-# serves any llama-family GGUF. GH#188 consolidated from 7 near-
-# duplicate per-model sources (openai_api_smollm2.rb + 6 Qwen2.5
-# variants). Run:
-#   make tep_demo/openai_api_llama
-#   MODEL_PATH=data/qwen25-1.5b-native-q8.gguf MODEL_NAME=qwen25-1.5b-q8 \
-#     ./tep_demo/openai_api_llama -p 4567 -w 1
-tep_demo/openai_api_llama: tep_demo/openai_api_llama.rb vendor/spinel/tep/lib/tep.rb lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb tinynn/libtinynn_ggml.a
-	$(SPINEL) tep_demo/openai_api_llama.rb -o tep_demo/openai_api_llama
 
 # --- ggml vendor ------------------------------------------------------------
 # Vendor patches that must land before any ggml build target. See
