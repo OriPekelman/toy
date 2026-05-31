@@ -244,6 +244,29 @@ libexec/toy-eval: lib/toy/run/eval.rb lib/arch.rb lib/transformer_lm.rb lib/toy_
 	$(SPINEL) $< -o $@
 toy-eval: libexec/toy-eval
 
+# CUDA siblings of toy-infer / toy-eval — selected by the CRuby CLI shell when
+# invoked with `--device cuda` (lib/toy/core/cli/{infer,eval}.rb derive the
+# target). PER-DEVICE binaries (not one polymorphic runner): a single source
+# requiring BOTH ToyLM and ToyLMCuda would force the CUDA archive onto the CPU
+# binary's link line, changing it. Keeping separate binaries leaves
+# libexec/toy-infer / toy-eval link lines BYTE-UNCHANGED. Source is the
+# hand-written lib/toy/run/{infer,eval}_cuda.rb (ToyLMCuda ctor arity 1 →
+# NOT mechanically mirrorable → ABSENT from MIRRORABLE, like the CPU runners).
+# Force-link recipe matches every other cuda target (-Wl,-u,tnn_cuda_force_link).
+libexec/toy-infer-cuda: lib/toy/run/infer_cuda.rb lib/arch.rb lib/transformer_lm_cuda.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn_cuda.rb lib/tokenizer.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
+toy-infer-cuda: libexec/toy-infer-cuda
+
+libexec/toy-eval-cuda: lib/toy/run/eval_cuda.rb lib/arch.rb lib/transformer_lm_cuda.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn_cuda.rb lib/toy_logprobs.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
+toy-eval-cuda: libexec/toy-eval-cuda
+
+# Convenience: run both functional gates with the CUDA parity arm enabled.
+.PHONY: gate-cuda
+gate-cuda:
+	TOY_GATE_CUDA=1 ruby prep/infer_gate.rb
+	TOY_GATE_CUDA=1 ruby prep/eval_gate.rb
+
 # P4 — from-scratch TRAINING compute runner (CRuby→runner COMPUTE BRIDGE,
 # same shape as toy-infer). Spinel source lib/toy/run/train.rb; the binary
 # path EQUALS the make target so ToyRoot.ensure_built("libexec/toy-train")

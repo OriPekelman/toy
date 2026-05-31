@@ -47,11 +47,19 @@ module Toy
           @model = nil
           @prompt = DEFAULT_PROMPT
           @n = DEFAULT_N
+          @device = "cpu"
         end
 
         def run
           parsed = parse_args
           return parsed unless parsed == true
+
+          # metal is accepted by the parser but only buildable in a macOS
+          # build — gate it HERE, before any build/Open3, so the gx10 build
+          # never tries to compile the (Apple-only) metal runner.
+          if @device == "metal"
+            return fail_out("metal is only available in a macOS build")
+          end
 
           path = File.expand_path(@model)
           unless File.file?(path)
@@ -68,10 +76,14 @@ module Toy
             )
           end
 
-          ok, err = ToyRoot.ensure_built(root, RUNNER_TARGET, quiet: @json)
+          # Per-device binary: the CPU target stays byte-unchanged (its link
+          # line never sees the CUDA archive); cuda builds the sibling runner.
+          target = (@device == "cuda") ? "libexec/toy-infer-cuda" : RUNNER_TARGET
+
+          ok, err = ToyRoot.ensure_built(root, target, quiet: @json)
           return fail_out(err) unless ok
 
-          runner = File.join(root, RUNNER_TARGET)
+          runner = File.join(root, target)
           unless File.file?(runner) && File.executable?(runner)
             return fail_out(
               "runner missing after build: #{runner}. Run `toy install` to " \
@@ -80,7 +92,8 @@ module Toy
           end
 
           out, status = Open3.capture2e(
-            { "GGUF" => path, "PROMPT" => @prompt, "N_NEW" => @n.to_s },
+            { "GGUF" => path, "PROMPT" => @prompt, "N_NEW" => @n.to_s,
+              "DEVICE" => @device },
             runner
           )
           unless status.success?
@@ -135,6 +148,20 @@ module Toy
                 return bad_arg("--n must be a positive integer, got #{val.inspect}")
               end
               @n = val.to_i
+            when "--device"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--device requires a value") if val.nil?
+              unless %w[cpu cuda metal].include?(val)
+                return bad_arg("--device must be one of cpu, cuda, metal, got #{val.inspect}")
+              end
+              @device = val
+            when /\A--device=(.*)\z/
+              val = $1
+              unless %w[cpu cuda metal].include?(val)
+                return bad_arg("--device must be one of cpu, cuda, metal, got #{val.inspect}")
+              end
+              @device = val
             when /\A-/
               return bad_arg("unknown flag #{tok.inspect}")
             else
