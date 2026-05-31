@@ -1,0 +1,8 @@
+# ckpt_roundtrip_baseline.txt — recorded baseline for prep/ckpt_roundtrip_gate.rb.
+# Recorded on gx10 (aarch64) CPU, F32 compute.
+# Train args : toy train from-scratch --steps 5 --seed 0  (seeded → deterministic)
+# Infer       : toy infer <ckpt> --prompt-ids "1 2 3" --n 5  (greedy argmax, no seed)
+# Prompt ids  : 1 2 3   (all < vocab=627; the from-scratch model has NO tokenizer)
+# N generated : 5  → the line below is prompt(3) + continuation(5) = 8 ids.
+# Body: the verbatim "ids: …" line `toy infer` prints. BYTE-IDENTICAL gate.
+ids: 1 2 3 7 7 7 7 7

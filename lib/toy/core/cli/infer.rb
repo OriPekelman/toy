@@ -46,6 +46,7 @@ module Toy
           @json = false
           @model = nil
           @prompt = DEFAULT_PROMPT
+          @prompt_ids = nil # numeric ids for tokenizer-less models
           @n = DEFAULT_N
           @device = "cpu"
         end
@@ -91,11 +92,10 @@ module Toy
             )
           end
 
-          out, status = Open3.capture2e(
-            { "GGUF" => path, "PROMPT" => @prompt, "N_NEW" => @n.to_s,
-              "DEVICE" => @device },
-            runner
-          )
+          env = { "GGUF" => path, "PROMPT" => @prompt, "N_NEW" => @n.to_s,
+                  "DEVICE" => @device }
+          env["PROMPT_IDS"] = @prompt_ids if @prompt_ids
+          out, status = Open3.capture2e(env, runner)
           unless status.success?
             tail = out.lines.last(20).join
             return fail_out("runner exited #{status.exitstatus}:\n#{tail}")
@@ -140,6 +140,20 @@ module Toy
                 return bad_arg("--n must be a positive integer, got #{val.inspect}")
               end
               @n = val.to_i
+            when "--prompt-ids"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--prompt-ids requires a value") if val.nil?
+              unless val =~ /\A\s*\d+(\s+\d+)*\s*\z/
+                return bad_arg("--prompt-ids must be space-separated integers, got #{val.inspect}")
+              end
+              @prompt_ids = val.strip
+            when /\A--prompt-ids=(.*)\z/m
+              val = $1
+              unless val =~ /\A\s*\d+(\s+\d+)*\s*\z/
+                return bad_arg("--prompt-ids must be space-separated integers, got #{val.inspect}")
+              end
+              @prompt_ids = val.strip
             when /\A--prompt=(.*)\z/m
               @prompt = $1
             when /\A--n=(.*)\z/

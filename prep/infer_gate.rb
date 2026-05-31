@@ -26,6 +26,12 @@ TOY      = File.join(ROOT, "bin", "toy")
 BASELINE = File.join(ROOT, "prep", "fixtures", "infer_baseline.txt")
 PROMPT   = "Once upon a time"
 N        = 8
+# Tokenizer-less models (the f32 fixture has no embedded tokenizer) can no
+# longer fall back to a hardcoded prompt inside the runner (that silent
+# fallback was removed — never-mask rule). The gate now drives them with
+# the SAME numeric ids explicitly via --prompt-ids, so the `ids:` baseline
+# stays byte-identical. These are the ids the old hardcoded fallback used.
+PROMPT_IDS = "6403 1980 253 655 28"
 
 unless File.executable?(TOY)
   warn "infer_gate: bin/toy not executable: #{TOY}"
@@ -57,7 +63,15 @@ F32 = File.join(ROOT, "data", "smollm2-135m-f32.gguf")
 # ids path prints "ids: …". The `toy infer` text path prints decoded text
 # only (no "text: " prefix), so we reconstruct the runner's full line shape.
 def run_infer(model, device: nil)
-  argv = [TOY, "infer", model, "--prompt", PROMPT, "--n", N.to_s]
+  argv = [TOY, "infer", model, "--n", N.to_s]
+  # The f32 fixture has no embedded tokenizer → drive it with explicit
+  # numeric ids (the runner no longer silently invents a prompt). The tok
+  # fixture has a tokenizer → drive it with the string prompt.
+  if File.basename(model) == "smollm2-135m-f32.gguf"
+    argv += ["--prompt-ids", PROMPT_IDS]
+  else
+    argv += ["--prompt", PROMPT]
+  end
   argv += ["--device", device] if device
   got, st = Open3.capture2e(*argv)
   return nil unless st.success?

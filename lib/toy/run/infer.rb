@@ -37,6 +37,11 @@ require_relative "../../tokenizer"
 GGUF  = ENV["GGUF"] || "data/smollm2-135m-f32.gguf"
 PROMPT = ENV["PROMPT"] || "Once upon a time"
 N_NEW  = (ENV["N_NEW"] || "16").to_i
+# PROMPT_IDS — whitespace-separated NUMERIC token ids. Used for
+# tokenizer-less models (e.g. from-scratch checkpoints, vocab=627, no
+# embedded tokenizer): a string prompt cannot be tokenized, so the
+# caller passes raw ids. Empty when unset.
+PROMPT_IDS = ENV["PROMPT_IDS"] || ""
 
 arch = Arch.from_gguf(GGUF)
 if arch == nil
@@ -54,20 +59,69 @@ lm.load(GGUF)
 # IDs and emit raw IDs instead of decoded text.
 tok = Tokenizer.from_gguf(GGUF)
 
-if tok.present
+# all_digits? — true iff `s` is non-empty and every char is 0..9. Explicit
+# char scan (NOT exception-based Integer(s)) per the Spinel landmines.
+def all_digits?(s)
+  return false if s.length == 0
+  i = 0
+  while i < s.length
+    c = s[i]
+    if c < "0" || c > "9"
+      return false
+    end
+    i = i + 1
+  end
+  true
+end
+
+if PROMPT_IDS.length > 0
+  # NUMERIC-ids path (tokenizer-less or explicitly id-driven). Parse +
+  # validate EVERY id is an integer in [0, vocab). Fail loud on any bad
+  # id (never silently mistokenize / clamp).
+  parts = PROMPT_IDS.split(" ")
+  parsed = [0]; parsed.pop
+  j = 0
+  while j < parts.length
+    tokstr = parts[j]
+    if tokstr.length > 0
+      if all_digits?(tokstr) == false
+        puts "toy-infer: PROMPT_IDS contains invalid token '" + tokstr +
+             "' (must be integer in [0," + arch.vocab_size.to_s + "))"
+        exit 1
+      end
+      idv = tokstr.to_i
+      if idv < 0 || idv >= arch.vocab_size
+        puts "toy-infer: PROMPT_IDS contains invalid token '" + tokstr +
+             "' (must be integer in [0," + arch.vocab_size.to_s + "))"
+        exit 1
+      end
+      parsed.push(idv)
+    end
+    j = j + 1
+  end
+  if parsed.length == 0
+    puts "toy-infer: PROMPT_IDS parsed to no token ids"
+    exit 1
+  end
+  out_ids = lm.generate(parsed, N_NEW)
+  print "ids:"
+  k = 0
+  while k < out_ids.length
+    print " " + out_ids[k].to_s
+    k = k + 1
+  end
+  puts ""
+elsif tok.present
   in_ids = tok.encode(PROMPT)
   puts "prompt: " + PROMPT.inspect + " → " + in_ids.length.to_s + " tokens"
   out_ids = lm.generate(in_ids, N_NEW)
   # The model returns prompt + continuation; decode the whole thing.
   puts "text: " + tok.decode(out_ids)
 else
-  puts "no tokenizer in GGUF; re-convert with --with-tokenizer for text I/O"
-  ids = lm.generate([6403, 1980, 253, 655, 28], N_NEW)
-  print "ids:"
-  k = 0
-  while k < ids.length
-    print " " + ids[k].to_s
-    k = k + 1
-  end
-  puts ""
+  # Tokenizer-less model AND no PROMPT_IDS: a string prompt cannot be
+  # tokenized. Fail loud (never the old silent hardcoded-id fallback).
+  puts "toy-infer: model has no embedded tokenizer; a string prompt cannot " +
+       "be tokenized. Pass numeric token IDs via --prompt-ids (PROMPT_IDS=...) " +
+       "or re-convert with --with-tokenizer."
+  exit 1
 end

@@ -91,6 +91,10 @@ class LlamaSeqForwardFFICacheCuda
   def t_seq_output=(v);         @seq_arch.t_seq_output = v;         end
   def t_seq_w_proj;             @seq_arch.t_seq_w_proj;             end
   def t_seq_w_proj=(v);         @seq_arch.t_seq_w_proj = v;         end
+  # E2.3 — projection-lens donor width (0 disables the lens). Plain
+  # ivar (NOT in the attr_accessor list); the GGUF-fold writer reads it
+  # to know the donor->d_model contraction dimension.
+  def seq_donor_d_in;           @seq_donor_d_in;                    end
   def seq_blocks_ffi;           @seq_arch.seq_blocks_ffi;           end
   def seq_blocks_ffi=(v);       @seq_arch.seq_blocks_ffi = v;       end
 

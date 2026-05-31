@@ -48,6 +48,7 @@ require_relative "../llm/recipes/from_scratch"
 require_relative "../llm/recipes/warm_start"
 require_relative "../../toy_gguf_writer"
 require_relative "../../toy_drift_grad"
+require_relative "../../toy_gguf_fuse"
 
 # NOTE: this runner hosts the two RANDOM-INIT recipes (from-scratch +
 # warm-start, both LlamaSeqForwardFFICache#realize_for_random_init). The
@@ -235,7 +236,15 @@ if RECIPE == "warm-start"
   # --- Final checkpoint + run_end (FILE only). ---
   if EVENTS.length > 0 && TinyNN.tnn_events_active == 1
     rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
-    plist = ToyDriftGrad.params(recipe_ws.ws_cache.sess)
+    # FOLD the projection lens into the embedding and FUSE per-head
+    # attention so the checkpoint is a STANDARD fused-llama GGUF that
+    # `toy infer`'s realize_for_mmap loads unchanged (warm-start uses
+    # donor_d_in > 0 + untied=true, train.rb:99/103 — identical to the
+    # from-scratch arm). write_sess + ws_cache.sess must stay alive
+    # until write_step returns (gguf_add_tensor reads host ptrs at
+    # finalize); both are local/ivar-held to end of this block.
+    write_sess_ws = TinyNN.tnn_session_new(0)
+    plist = ToyGGUFFuser.build_lens_folded_into_write_session(recipe_ws.ws_cache, write_sess_ws, true)
     rc = ToyGGUFWriter.write_step(cfg_ws, plist, TAO_RUN_DIR + "/weights", rid, STEPS)
     if rc != 0
       puts "checkpoint write failed: rc=" + rc.to_s
@@ -397,7 +406,17 @@ end
 # --- Final checkpoint + run_end (only when TAO_RUN_DIR set). ---
 if EVENTS.length > 0 && TinyNN.tnn_events_active == 1
   rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
-  plist = ToyDriftGrad.params(recipe.fs_cache.sess)
+  # FOLD the projection lens into the embedding and FUSE per-head
+  # attention so the checkpoint is a STANDARD fused-llama GGUF that
+  # `toy infer`'s realize_for_mmap loads unchanged. from-scratch realizes
+  # with untied=true (train.rb:269) and donor_d_in=DONOR_D>0, so the embed
+  # on-session is a [vocab, donor] donor table + trainable lens.proj; the
+  # fold collapses them to a standard [vocab, d_model] token_embd.weight.
+  # write_sess + fs_cache.sess must stay alive until write_step returns
+  # (gguf_add_tensor reads host ptrs at finalize); both are local/ivar-held
+  # to end of this block.
+  write_sess = TinyNN.tnn_session_new(0)
+  plist = ToyGGUFFuser.build_lens_folded_into_write_session(recipe.fs_cache, write_sess, true)
   rc = ToyGGUFWriter.write_step(cfg, plist, TAO_RUN_DIR + "/weights", rid, STEPS)
   if rc != 0
     puts "checkpoint write failed: rc=" + rc.to_s

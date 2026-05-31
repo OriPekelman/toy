@@ -20,8 +20,13 @@
 #       prep/fixtures/<baseline>. Do NOT loosen (no ratio/tolerance).
 #   (2) STRUCTURAL — runs/<id>/ exists; events.jsonl is valid JSONL with a
 #       run_start first + run_end last; weights/step_<N>.gguf exists.
-#       Existence + validity only (the GGUF uses training-graph tensor naming,
-#       not yet loadable by `toy infer` — no round-trip assertion).
+#       Existence + validity only. The checkpoint is now a STANDARD
+#       fused-llama GGUF (projection lens folded into token_embd.weight +
+#       per-head attention fused) that `toy infer` loads directly; the
+#       deterministic BYTE-IDENTICAL train→infer round-trip assertion lives
+#       in the SEPARATE gate prep/ckpt_roundtrip_gate.rb. This gate stays
+#       existence-only to keep its 3 recipes byte-identical and avoid the
+#       load/generate cost.
 #
 # The from-scratch case is IDENTICAL to the historical single-recipe gate
 # (args --steps 5 --seed 0, baseline train_baseline.txt) so its regression is

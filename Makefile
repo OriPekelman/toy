@@ -267,6 +267,15 @@ gate-cuda:
 	TOY_GATE_CUDA=1 ruby prep/infer_gate.rb
 	TOY_GATE_CUDA=1 ruby prep/eval_gate.rb
 
+# Deterministic train→infer ROUND-TRIP gate: train from-scratch --steps 5
+# --seed 0, then infer a fixed numeric prompt greedily from the written
+# checkpoint and assert the generated ids byte-equal the recorded fixture.
+# Proves the from-scratch checkpoint is a standard fused-llama GGUF that
+# `toy infer` loads. CPU-only (no CUDA arm); bin/toy auto-builds the runners.
+.PHONY: gate-ckpt-roundtrip
+gate-ckpt-roundtrip:
+	ruby prep/ckpt_roundtrip_gate.rb
+
 # P4 — from-scratch TRAINING compute runner (CRuby→runner COMPUTE BRIDGE,
 # same shape as toy-infer). Spinel source lib/toy/run/train.rb; the binary
 # path EQUALS the make target so ToyRoot.ensure_built("libexec/toy-train")
