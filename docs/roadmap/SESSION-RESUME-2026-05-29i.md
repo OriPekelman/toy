@@ -195,6 +195,35 @@ two-ckpt), train warm-start/lora/curriculum variants, train→infer
 checkpoint round-trip (naming), GPU runners (--device), Tep/Tao
 re-adaptation (until Toy stable).
 
+**CLEANUP ARC — split into CODE (done) + DOCS (next, user-reviewed structure).**
+
+**Code cleanup DONE (ed61cf8, conservative + gate-guarded):** retired ONLY
+`tep_demo/openai_api_llama.rb` + `tep_demo/embeddings_handler.rb` (folded
+into lib/toy/serve/openai/, serve gated) + Makefile shrink (−514/−21).
+Guard held: all 4 gates + verify-mirrors(24) + 11 fixtures green; nothing
+reverted. **NET examples/ deletion = ZERO** — every example is a gate
+fixture, a GPU/MIRRORABLE path, or an uncovered feature.
+
+**BLOCKED-ON-DEFERRED (what each examples/* needs before it can retire):**
+- GPU paths (`*_metal`, `*_cuda`, `01_inference_metal`, smoke_projection_lens_{cuda,metal}) → GPU runners / `toy <cmd> --device`.
+- `06_train_from_scratch[_cuda/_metal]` → GPU train + (MIRRORABLE pin removal).
+- `03_finetune_lora[_cuda]` → `toy train lora` (+ it's the smoke_recipe_lora reference).
+- `09_warm_start_train` → `toy train warm-start` (+ smoke_recipe_warm_start reference).
+- `08_lmc` → `toy eval lmc` (slice 2).
+- `07_train_vit_tiny` / `smoke_vit_tiny` / `smoke_image_loader` → ViT/vision in the CLI.
+- `02_train_custom_gpt` → GPT-2 arch in `toy train`.
+- `smoke_embed_api` → a `toy embed` command; `smoke_corpus_loader` → train warm-start/curriculum; `smoke_card_derive` → graph-walk Card; `smoke_toy_ckpt_reload` → the train→infer round-trip.
+- Gate fixtures (smoke_projection_lens, smoke_gguf_roundtrip, smoke_gate_*, smoke_recipe_*, smoke_decode_logprobs) → NEVER retire while they back the gates.
+- tep_demo/{openai_api[gpt2],chat} → gpt2 serving + chat-templating; {hello_api,inference_api,post_smoke} → KEEP (Tep-transport demos, not CLI-blocked).
+DOCS still referencing the deleted target (README, tep_demo/README,
+examples/README, roadmap) → fixed in the DOCS pass.
+
+**NEXT — DOCS pass (separate; propose clean-slate STRUCTURE for user review
+BEFORE porting content):** fresh docs tree, port worthwhile content (don't
+refactor sprawl), audit all markdowns/design-docs (keep still-relevant incl.
+live future-directions). Tep/Tao re-adaptation still deferred.
+
+### (original cleanup-arc note)
 **NEXT — the CLEANUP ARC (user mandate):**
 - Retire superseded `examples/` (01-09 etc. now reproduced by CLI cmds)
   + `tep_demo/openai_api_llama.rb` (folded into lib/toy/serve/openai/).
