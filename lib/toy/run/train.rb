@@ -41,17 +41,34 @@
 
 require_relative "../../toy"
 require_relative "../../toy_smollm2"
+require_relative "../../toy_corpus_loader"
+require_relative "../../toy_lr_schedule"
 require_relative "../../llama_seq_forward_ffi"
 require_relative "../llm/recipes/from_scratch"
+require_relative "../llm/recipes/warm_start"
 require_relative "../../toy_gguf_writer"
 require_relative "../../toy_drift_grad"
 
+# NOTE: this runner hosts the two RANDOM-INIT recipes (from-scratch +
+# warm-start, both LlamaSeqForwardFFICache#realize_for_random_init). The
+# LoRA recipe lives in a SEPARATE binary (lib/toy/run/train_lora.rb →
+# libexec/toy-train-lora): its #realize_for_mmap path, compiled alongside
+# the random-init path here, makes Spinel merge the `cfg` receiver type and
+# miscompile the (dead) Toy::RMSNorm#forward / Toy::SmolLM2 model methods
+# (landmine #16, polymorphic-merge family). Splitting lora out keeps this
+# binary's realize path monomorphic and the from-scratch arm byte-identical.
+
+RECIPE      = ENV["RECIPE"] || "from-scratch"
 STEPS       = (ENV["STEPS"] || "5").to_i
 SEED        = (ENV["SEED"]  || "0").to_i
 TAO_RUN_DIR = ENV["TAO_RUN_DIR"] || ""
 RUN_ID      = ENV["TOY_RUN_ID"] || ""
 
 # Gate-fixed model SHAPE — hardcoded (NOT env/flags), the smoke config.
+# Hoisted to TOP-LEVEL (NOT inside the RECIPE branches): Spinel does not
+# initialize top-level CONSTANTS assigned inside a conditional arm at
+# runtime ("uninitialized constant" abort), so the shared shape lives here.
+# from-scratch + warm-start use the SAME shape (both llama-scratch).
 # vocab=627 d=64 donor=128 heads=4 n_kv=4 ff=128 L=2 ctx=32 rope=1e4 eps=1e-5.
 VOCAB    = 627
 D_MODEL  = 64
@@ -61,6 +78,185 @@ D_FF     = 128
 N_LAYERS = 2
 CONTEXT  = 32
 
+# Events sink — TOP-LEVEL (same constant-in-conditional Spinel caveat as the
+# shape consts; an EVENTS constant assigned inside a branch reads back empty
+# at runtime, silently skipping all event/checkpoint writes). FILE only.
+EVENTS = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/events.jsonl") : ""
+
+if RECIPE == "warm-start"
+  # ==================================================================
+  # WARM-START BRANCH — fully self-contained (landmine #16). Mirrors
+  # examples/smoke_recipe_warm_start.rb at INIT=scratch (the gate ground
+  # truth). INIT=scratch skips realize_warm! (no donor GGUF).
+  # ==================================================================
+  lr_max = 0.001
+  lr_min = 0.00001
+  warmup = 5
+  corpus = ENV["CORPUS"] || "data/ts_seqs.bin"
+
+  cfg_ws = Toy::SmolLM2Config.new(VOCAB, D_MODEL, N_HEADS, N_HEADS,
+                                  D_FF, N_LAYERS, CONTEXT, 10000.0, 1.0e-5)
+  cfg_ws.donor_d_in = DONOR_D
+
+  recipe_ws = Toy::LLM::Recipes::WarmStart.new
+  # untied=true is mandatory when donor_d_in > 0.
+  recipe_ws.realize_scratch!(cfg_ws, CONTEXT, 1, 0, true, false, SEED, 1.0)
+  # INIT=scratch: skip realize_warm! (no donor GGUF, train from random init).
+  recipe_ws.build!
+
+  # AdamW hp[1..6] constants (hp[2]/hp[5]/hp[6]=0.95, NOT 0.999);
+  # hp[0] (lr) refreshes each step from the cosine schedule.
+  m_hp = Mat.new(1, 7)
+  m_hp.flat[0] = lr_max
+  m_hp.flat[1] = 0.9
+  m_hp.flat[2] = 0.95
+  m_hp.flat[3] = 1.0e-8
+  m_hp.flat[4] = 0.0
+  m_hp.flat[5] = 0.9
+  m_hp.flat[6] = 0.95
+
+  positions = [0]; positions.pop
+  p = 0; while p < CONTEXT; positions.push(p); p = p + 1; end
+
+  m_labels = Mat.new(CONTEXT, VOCAB)
+
+  # --- Events (EVENTS hoisted to top-level; FILE only). ---
+  git_sha    = "unknown"
+  git_branch = "unknown"
+  if File.exist?(".git/HEAD")
+    head = File.read(".git/HEAD")
+    if head.length > 0 && head[head.length - 1...head.length] == "\n"
+      head = head[0...head.length - 1]
+    end
+    if head.length > 5 && head[0...5] == "ref: "
+      ref_rel = head[5...head.length]
+      pp = ref_rel.split("/")
+      if pp.length >= 3
+        git_branch = pp[pp.length - 1]
+      end
+      ref_path = ".git/" + ref_rel
+      if File.exist?(ref_path)
+        sha = File.read(ref_path)
+        if sha.length >= 40
+          git_sha = sha[0...40]
+        end
+      end
+    else
+      if head.length >= 40
+        git_sha    = head[0...40]
+        git_branch = "HEAD"
+      end
+    end
+  end
+
+  if EVENTS.length > 0
+    rc = TinyNN.tnn_events_open(EVENTS)
+    if rc == 0
+      rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
+      rs  = "{\"kind\":\"run_start\",\"schema\":\"toy/v1\""
+      rs = rs + ",\"t\":" + TinyNN.tnn_events_now_seconds.to_s
+      rs = rs + ",\"started_at\":\"" + TinyNN.tnn_events_iso8601_now + "\""
+      rs = rs + ",\"run_id\":\"" + rid + "\""
+      rs = rs + ",\"phase\":\"train\""
+      rs = rs + ",\"host\":{\"name\":\""   + TinyNN.tnn_provenance_host_name + "\""
+      rs = rs + ",\"os\":\""               + TinyNN.tnn_provenance_host_os   + "\""
+      rs = rs + ",\"arch\":\""             + TinyNN.tnn_provenance_host_arch + "\"}"
+      rs = rs + ",\"backend\":{\"kind\":\"" + TinyNN.tnn_backend_name(recipe_ws.ws_cache.sess) + "\"}"
+      rs = rs + ",\"git\":{\"sha\":\""     + git_sha    + "\""
+      rs = rs + ",\"branch\":\""           + git_branch + "\"}"
+      rs = rs + ",\"model\":{\"arch\":\"llama\""
+      rs = rs + ",\"name\":\"warm-start-scratch-tinystories\""
+      rs = rs + ",\"vocab\":"    + cfg_ws.vocab.to_s
+      rs = rs + ",\"d_model\":"  + cfg_ws.d_model.to_s
+      rs = rs + ",\"n_layers\":" + cfg_ws.n_layers.to_s
+      rs = rs + ",\"n_heads\":"  + cfg_ws.n_heads.to_s
+      rs = rs + ",\"n_kv\":"     + cfg_ws.n_kv.to_s
+      rs = rs + ",\"d_head\":"   + cfg_ws.head_dim.to_s
+      rs = rs + ",\"d_ff\":"     + cfg_ws.d_ff.to_s
+      rs = rs + "}"
+      rs = rs + ",\"config\":{\"context\":" + CONTEXT.to_s
+      rs = rs + ",\"steps\":" + STEPS.to_s
+      rs = rs + ",\"lr\":0.001"
+      rs = rs + ",\"seed\":"  + SEED.to_s
+      rs = rs + "}"
+      rs = rs + "}"
+      TinyNN.tnn_events_emit(rs)
+    else
+      puts "events_open failed: rc=" + rc.to_s + " (path=" + EVENTS + ")"
+    end
+  end
+
+  # --- Training loop (0-indexed; cosine LR + streamed corpus). ---
+  final_loss  = 0.0
+  byte_offset = 0
+  step        = 0
+  while step < STEPS
+    step_wall_start = TinyNN.tnn_events_now_seconds
+    lr = ToyLR.cosine(step, STEPS, lr_max, lr_min, warmup)
+    m_hp.flat[0] = lr
+
+    seq_ids = ToyCorpusLoader.read_seq(corpus, byte_offset, CONTEXT)
+    byte_offset = byte_offset + CONTEXT * 4   # i32
+
+    j = 0
+    while j < CONTEXT * VOCAB
+      m_labels.flat[j] = 0.0
+      j = j + 1
+    end
+    k = 0
+    while k < CONTEXT
+      target = (k + 1 < CONTEXT) ? seq_ids[k + 1] : seq_ids[k]
+      if target >= 0 && target < VOCAB
+        m_labels.flat[k * VOCAB + target] = 1.0
+      end
+      k = k + 1
+    end
+
+    loss = recipe_ws.step!(seq_ids, positions, m_labels, m_hp, step == 0)
+    final_loss = loss
+    # The byte-gated line — to STDOUT.
+    puts "step " + (step + 1).to_s + ": loss=" + loss.to_s
+
+    if EVENTS.length > 0
+      step_wall_us = ((TinyNN.tnn_events_now_seconds - step_wall_start) * 1.0e6).to_i
+      es  = "{\"kind\":\"step\",\"phase\":\"train\""
+      es = es + ",\"t\":"        + TinyNN.tnn_events_now_seconds.to_s
+      es = es + ",\"step\":"     + (step + 1).to_s
+      es = es + ",\"loss\":"     + loss.to_s
+      es = es + ",\"lr\":"       + lr.to_s
+      es = es + ",\"tokens\":"   + CONTEXT.to_s
+      es = es + ",\"wall_us\":"  + step_wall_us.to_s
+      es = es + "}"
+      TinyNN.tnn_events_emit(es)
+    end
+    step = step + 1
+  end
+
+  # --- Final checkpoint + run_end (FILE only). ---
+  if EVENTS.length > 0 && TinyNN.tnn_events_active == 1
+    rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
+    plist = ToyDriftGrad.params(recipe_ws.ws_cache.sess)
+    rc = ToyGGUFWriter.write_step(cfg_ws, plist, TAO_RUN_DIR + "/weights", rid, STEPS)
+    if rc != 0
+      puts "checkpoint write failed: rc=" + rc.to_s
+    end
+
+    re  = "{\"kind\":\"run_end\""
+    re = re + ",\"t\":"           + TinyNN.tnn_events_now_seconds.to_s
+    re = re + ",\"ended_at\":\""  + TinyNN.tnn_events_iso8601_now + "\""
+    re = re + ",\"reason\":\"completed\""
+    re = re + ",\"final_step\":"  + STEPS.to_s
+    re = re + ",\"final_loss\":"  + final_loss.to_s
+    re = re + ",\"exit_code\":0"
+    re = re + "}"
+    TinyNN.tnn_events_emit(re)
+    TinyNN.tnn_events_close
+  end
+
+else
+# from-scratch — the existing body. Shape constants (VOCAB/D_MODEL/…)
+# are now hoisted to top-level (see note above); the compute below is
+# byte-identical to the historical from-scratch runner.
 cfg = Toy::SmolLM2Config.new(VOCAB, D_MODEL, N_HEADS, N_HEADS,
                              D_FF, N_LAYERS, CONTEXT, 10000.0, 1.0e-5)
 cfg.donor_d_in = DONOR_D
@@ -105,8 +301,7 @@ m_hp.flat[0] = 0.001; m_hp.flat[1] = 0.9; m_hp.flat[2] = 0.95
 m_hp.flat[3] = 1.0e-8; m_hp.flat[4] = 0.0
 m_hp.flat[5] = 0.9; m_hp.flat[6] = 0.95
 
-# --- Events (only when TAO_RUN_DIR set; cheap-when-off; FILE only). ---
-EVENTS = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/events.jsonl") : ""
+# --- Events (EVENTS hoisted to top-level; cheap-when-off; FILE only). ---
 
 # git provenance read pure-Ruby from .git/HEAD (06:264-292).
 git_sha    = "unknown"
@@ -218,4 +413,5 @@ if EVENTS.length > 0 && TinyNN.tnn_events_active == 1
   re = re + "}"
   TinyNN.tnn_events_emit(re)
   TinyNN.tnn_events_close
+end
 end

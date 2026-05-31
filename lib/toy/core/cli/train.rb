@@ -41,7 +41,15 @@ module Toy
         # NOTE: target name MUST equal the output path — ToyRoot.ensure_built
         # runs `make <RUNNER_TARGET>` and File.join(root, RUNNER_TARGET) is the
         # binary. `make libexec/toy-train` outputs libexec/toy-train.
-        RUNNER_TARGET = "libexec/toy-train"
+        #
+        # from-scratch + warm-start share libexec/toy-train (both random-init).
+        # lora dispatches to a SEPARATE binary, libexec/toy-train-lora: its
+        # realize_for_mmap path cannot share a Spinel compilation unit with the
+        # random-init path without a cfg type-merge miscompile (landmine #16;
+        # see lib/toy/run/train_lora.rb header). Same byte-gated stdout
+        # contract — only the binary differs.
+        RUNNER_TARGET      = "libexec/toy-train"
+        LORA_RUNNER_TARGET = "libexec/toy-train-lora"
 
         DEFAULT_STEPS = 5  # the gate config (smoke_recipe_from_scratch)
         DEFAULT_SEED  = 0
@@ -57,6 +65,10 @@ module Toy
           @steps = DEFAULT_STEPS
           @seed  = DEFAULT_SEED
           @out   = nil
+          @model = nil   # lora GGUF path
+          @rank  = nil   # lora rank (Integer)
+          @corpus = nil  # warm-start corpus path
+          @init  = nil   # warm-start init mode
         end
 
         def run
@@ -74,10 +86,11 @@ module Toy
             )
           end
 
-          ok, err = ToyRoot.ensure_built(root, RUNNER_TARGET, quiet: @json)
+          target = @recipe == "lora" ? LORA_RUNNER_TARGET : RUNNER_TARGET
+          ok, err = ToyRoot.ensure_built(root, target, quiet: @json)
           return fail_out(err) unless ok
 
-          runner = File.join(root, RUNNER_TARGET)
+          runner = File.join(root, target)
           unless File.file?(runner) && File.executable?(runner)
             return fail_out(
               "runner missing after build: #{runner}. Run `toy install` to " \
@@ -91,7 +104,7 @@ module Toy
           # mkdir).
           project  = Dir.pwd
           cfg      = Toy::Core::Config.load(project)
-          run_id   = resolve_run_id(cfg.run_id_template, project)
+          run_id   = resolve_run_id(cfg.run_id_template, project, arch_for(@recipe))
           run_dir  = @out ? File.expand_path(@out) : File.join(project, "runs", run_id)
           begin
             FileUtils.mkdir_p(run_dir)
@@ -99,14 +112,26 @@ module Toy
             return fail_out("could not create run dir #{run_dir}: #{e.message}")
           end
 
-          # CONTROLLED ENV (first positional) so a stale caller env can't leak.
-          out, status = Open3.capture2e(
-            { "STEPS"       => @steps.to_s,
-              "SEED"        => @seed.to_s,
-              "TAO_RUN_DIR" => run_dir,
-              "TOY_RUN_ID"  => run_id },
-            runner
-          )
+          # CONTROLLED ENV (first positional) so a stale caller env can't
+          # leak. Built per-recipe (parallel to the runner's landmine-#16
+          # branch discipline): each recipe's exact keys reproduce its gate.
+          base = { "TAO_RUN_DIR" => run_dir, "TOY_RUN_ID" => run_id,
+                   "RECIPE" => @recipe }
+          if @recipe == "lora"
+            # NO SEED key: lora seed=42 is hardcoded in the runner branch.
+            env = base.merge("STEPS" => @steps.to_s,
+                             "GGUF"  => (@model || "data/smollm2-135m-native.gguf"),
+                             "RANK"  => (@rank || 8).to_s)
+          elsif @recipe == "warm-start"
+            env = base.merge("STEPS"  => @steps.to_s,
+                             "SEED"   => @seed.to_s,
+                             "CORPUS" => (@corpus || "data/ts_seqs.bin"),
+                             "INIT"   => (@init || "scratch"))
+          else
+            # from-scratch — byte-identical to today plus the harmless RECIPE key.
+            env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s)
+          end
+          out, status = Open3.capture2e(env, runner)
           unless status.success?
             tail = out.lines.last(20).join
             return fail_out("runner exited #{status.exitstatus}:\n#{tail}")
@@ -156,6 +181,37 @@ module Toy
               @seed = val.to_i
             when /\A--out=(.*)\z/m
               @out = $1
+            when "--model"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--model requires a value") if val.nil?
+              @model = val
+            when "--rank"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--rank requires a value") if val.nil?
+              return bad_arg("--rank must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i > 0
+              @rank = val.to_i
+            when "--corpus"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--corpus requires a value") if val.nil?
+              @corpus = val
+            when "--init"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--init requires a value") if val.nil?
+              @init = val
+            when /\A--model=(.*)\z/m
+              @model = $1
+            when /\A--rank=(.*)\z/
+              val = $1
+              return bad_arg("--rank must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i > 0
+              @rank = val.to_i
+            when /\A--corpus=(.*)\z/m
+              @corpus = $1
+            when /\A--init=(.*)\z/m
+              @init = $1
             when /\A-/
               return bad_arg("unknown flag #{tok.inspect}")
             else
@@ -171,8 +227,17 @@ module Toy
             return bad_arg("unexpected extra arguments: #{rest[1..].join(' ')}")
           end
           @recipe = rest.first
-          unless @recipe == "from-scratch"
-            return bad_arg("unknown recipe #{@recipe.inspect}; only 'from-scratch' is supported in this slice")
+          unless @recipe == "from-scratch" || @recipe == "lora" || @recipe == "warm-start"
+            return bad_arg("unknown recipe #{@recipe.inspect}; supported: 'from-scratch', 'lora', 'warm-start'")
+          end
+          if @recipe != "lora" && (!@model.nil? || !@rank.nil?)
+            return bad_arg("--model/--rank are only valid with recipe 'lora'")
+          end
+          if @recipe != "warm-start" && (!@corpus.nil? || !@init.nil?)
+            return bad_arg("--corpus/--init are only valid with recipe 'warm-start'")
+          end
+          if !@init.nil? && @init != "scratch"
+            return bad_arg("--init #{@init.inspect} unsupported; only 'scratch' has a gate curve in this slice")
           end
           true
         end
@@ -182,13 +247,22 @@ module Toy
         #   {seq}  → 3-digit zero-padded daily counter (max existing run sharing
         #            today's {date} substring, +1)
         # NET-NEW resolver — config.rb only STORES the template.
-        def resolve_run_id(template, project)
+        # Arch label for the {arch} run-id token. The lora base is
+        # smollm2-shape; from-scratch + warm-start are both llama-shape.
+        # NOTE: this only affects the run_id string, NOT the byte-gated
+        # stdout loss curve.
+        def arch_for(recipe)
+          return "smollm2" if recipe == "lora"
+          "llama"
+        end
+
+        def resolve_run_id(template, project, arch)
           now  = Time.now
           date = now.strftime("%Y%m%d")
           time = now.strftime("%H%M%S")
           seq  = next_seq(project, date)
           template
-            .gsub("{arch}", ARCH)
+            .gsub("{arch}", arch)
             .gsub("{date}", date)
             .gsub("{time}", time)
             .gsub("{seq}", format("%03d", seq))

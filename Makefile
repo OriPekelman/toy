@@ -252,7 +252,9 @@ toy-eval: libexec/toy-eval
 # tinynn + the L1-L3 primitives/blocks/archs; plus gguf_writer + drift_grad
 # for the checkpoint). CPU-only; NOT in MIRRORABLE (see prep/gen_cuda_mirror.rb).
 libexec/toy-train: lib/toy/run/train.rb lib/toy.rb lib/toy_smollm2.rb \
+		lib/toy_corpus_loader.rb lib/toy_lr_schedule.rb \
 		lib/llama_seq_forward_ffi.rb lib/toy/llm/recipes/from_scratch.rb \
+		lib/toy/llm/recipes/warm_start.rb \
 		lib/toy_gguf_writer.rb lib/toy_drift_grad.rb lib/transformer.rb \
 		lib/toy/llm/primitives/rms_norm.rb lib/toy/llm/primitives/rope.rb \
 		lib/toy/llm/primitives/swiglu.rb lib/toy/llm/primitives/gqa.rb \
@@ -260,6 +262,20 @@ libexec/toy-train: lib/toy/run/train.rb lib/toy.rb lib/toy_smollm2.rb \
 		lib/tinynn.rb tinynn/libtinynn_ggml.a | libexec
 	$(SPINEL) $< -o $@
 toy-train: libexec/toy-train
+
+# `toy train lora` DEDICATED runner. Separate binary from toy-train: the
+# LoRA realize_for_mmap path cannot share a Spinel compilation unit with the
+# random-init path (cfg type-merge miscompile; see lib/toy/run/train_lora.rb
+# header). CPU-only; NOT in MIRRORABLE.
+libexec/toy-train-lora: lib/toy/run/train_lora.rb lib/toy.rb lib/toy_smollm2.rb \
+		lib/llama_seq_forward_ffi.rb lib/toy/llm/recipes/lora.rb \
+		lib/toy_gguf_writer.rb lib/toy_drift_grad.rb lib/transformer.rb \
+		lib/toy/llm/primitives/rms_norm.rb lib/toy/llm/primitives/rope.rb \
+		lib/toy/llm/primitives/swiglu.rb lib/toy/llm/primitives/gqa.rb \
+		lib/toy/llm/blocks/transformer_block.rb lib/toy/llm/archs/llama_arch.rb \
+		lib/tinynn.rb tinynn/libtinynn_ggml.a | libexec
+	$(SPINEL) $< -o $@
+toy-train-lora: libexec/toy-train-lora
 
 # P4 — `toy serve` PERSISTENT compute runner (OpenAI-compatible HTTP).
 # Unlike infer/train/eval (compute-once), this runner blocks in Tep.run!.
