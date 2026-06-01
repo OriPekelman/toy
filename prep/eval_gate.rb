@@ -61,6 +61,31 @@ def run_eval(model, device: nil)
   lines.join("\n")
 end
 
+# gx10 (aarch64-linux) is the CANONICAL gate platform: the recorded FLOAT
+# baseline is byte-exact-reproducible there (deterministic). On other platforms
+# (e.g. macOS) CPU libm differs at ~1e-6, so the float text won't byte-match.
+# There we gate the DISCRETE invariant — the top-k id ORDER — byte-exact, plus
+# the logprob floats within FLOAT_TOL, and note that the float baseline is
+# gx10-pinned. The canonical (Linux) path is UNCHANGED (strict byte-exact).
+# TOY_GATE_FORCE_PORTABLE=1 forces the non-canonical arm (for testing it here).
+CANONICAL = RUBY_PLATFORM.include?("linux") && ENV["TOY_GATE_FORCE_PORTABLE"] != "1"
+FLOAT_TOL = 1.0e-3  # ~400x the observed cross-libm drift, ~100x below any real-model-bug shift
+
+# Compare two "logprob:" blocks. Canonical: byte-exact. Non-canonical: top-k id
+# ORDER byte-exact + floats within FLOAT_TOL. Returns [ok, note_or_nil].
+def cmp_logprobs(got, want)
+  return [true, nil] if got == want
+  g = got.to_s.lines.map(&:split)
+  w = want.to_s.lines.map(&:split)
+  return [false, "line-count differs (#{g.length} vs #{w.length})"] unless !g.empty? && g.length == w.length
+  gids = g.map { |t| t[1] }; wids = w.map { |t| t[1] }
+  return [false, "top-k id ORDER differs: #{gids.inspect} vs #{wids.inspect}"] unless gids == wids
+  maxabs = 0.0
+  g.each_index { |i| d = (g[i][2].to_f - w[i][2].to_f).abs; maxabs = d if d > maxabs }
+  return [false, "logprob float drift #{maxabs} exceeds tol #{FLOAT_TOL}"] if maxabs > FLOAT_TOL
+  [true, "non-canonical #{RUBY_PLATFORM}: top-k id order identical; logprob floats within #{FLOAT_TOL} (max #{maxabs}); float baseline is gx10-canonical"]
+end
+
 ran = 0
 failures = []
 [F32].each do |m|
@@ -73,10 +98,11 @@ failures = []
   end
   got = run_eval(m)
   ran += 1
-  ok = got == want
+  ok, note = CANONICAL ? [got == want, nil] : cmp_logprobs(got, want)
   puts "fixture : #{base} (logprob path, top-#{TOP_K})"
   puts "expected: #{want.inspect}"
   puts "actual  : #{got.inspect}"
+  puts "note    : #{note}" if note
   failures << base unless ok
 end
 
