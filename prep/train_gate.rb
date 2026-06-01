@@ -44,37 +44,15 @@ CASES = [
   { recipe: "lora",         baseline: "train_lora_baseline.txt",
     args: ["--steps", "5"], steps: 5 },
   { recipe: "warm-start",   baseline: "train_warm_start_baseline.txt",
-    args: ["--steps", "5", "--seed", "0"], steps: 5 },
+    # PINNED corpus: warm-start streams sequences 2..N, so it must use a
+    # committed corpus (not the gitignored/locally-generated data/ts_seqs.bin,
+    # which differs cross-machine beyond line 1) to stay byte-exact everywhere.
+    args: ["--steps", "5", "--seed", "0", "--corpus", "prep/fixtures/ts_seqs_gate.bin"], steps: 5 },
 ]
 
 unless File.executable?(TOY)
   warn "train_gate: bin/toy not executable: #{TOY}"
   exit 2
-end
-
-# gx10 (aarch64-linux) is the CANONICAL gate platform: the recorded FLOAT loss
-# curve is byte-exact-reproducible there. On other platforms (macOS) CPU libm
-# differs, so we gate the step-curve STRUCTURE (the "step N:" prefixes) byte-
-# exact + the loss floats within LOSS_TOL, and note the float baseline is
-# gx10-pinned. The canonical (Linux) path is UNCHANGED (strict byte-exact).
-# TOY_GATE_FORCE_PORTABLE=1 forces the non-canonical arm (for testing it here).
-CANONICAL = RUBY_PLATFORM.include?("linux") && ENV["TOY_GATE_FORCE_PORTABLE"] != "1"
-LOSS_TOL  = 1.0e-2  # tolerates cross-libm training-fp drift; well below any real-bug loss shift
-
-# Compare two "step N: loss=X" curves. Canonical: byte-exact. Non-canonical:
-# step prefixes byte-exact + loss floats within LOSS_TOL. Returns [ok, note].
-def cmp_loss_curve(got, expected)
-  return [true, nil] if got == expected
-  return [false, "step count differs (#{got.length} vs #{expected.length})"] unless !got.empty? && got.length == expected.length
-  maxabs = 0.0
-  got.each_index do |i|
-    gp, gv = got[i].split("loss=", 2)
-    ep, ev = expected[i].split("loss=", 2)
-    return [false, "step prefix differs at #{i}: #{got[i].inspect} vs #{expected[i].inspect}"] unless gp == ep
-    d = (gv.to_f - ev.to_f).abs; maxabs = d if d > maxabs
-  end
-  return [false, "loss float drift #{maxabs} exceeds tol #{LOSS_TOL}"] if maxabs > LOSS_TOL
-  [true, "non-canonical #{RUBY_PLATFORM}: step curve structure identical; loss floats within #{LOSS_TOL} (max #{maxabs}); float baseline is gx10-canonical"]
 end
 
 # Run one case. Returns [ok(Boolean), messages(Array<String>)].
@@ -100,20 +78,20 @@ def run_case(c)
     return [false, ["`toy train #{c[:recipe]}` exited #{status.exitstatus}:\n#{out.lines.last(20).join}"]]
   end
 
-  # (1) PARITY: the step/loss curve. Canonical (Linux) = byte-for-byte; other
-  # platforms = step structure byte-exact + loss within LOSS_TOL (cmp_loss_curve).
+  # (1) HARD PARITY: the step/loss curve byte-for-byte — STRICT on every
+  # platform. Training loss is ggml-internal (no Ruby-side libm, unlike eval's
+  # Math.exp/log log_softmax), so it is byte-exact cross-platform; a divergence
+  # here is a real data/code red flag, NOT something to tolerate. The gate
+  # corpus is PINNED (prep/fixtures/ts_seqs_gate.bin) so warm-start reproduces.
   got = out.lines.map(&:chomp).select { |l| l.start_with?("step ") }
-  ok_curve, curve_note = CANONICAL ? [got == expected, nil] : cmp_loss_curve(got, expected)
-  unless ok_curve
+  if got != expected
     msgs << "GATE FAIL [#{c[:recipe]}]: loss curve diverged from recorded baseline"
-    msgs << "  reason: #{curve_note}" if curve_note
     msgs << "  expected:"
     expected.each { |l| msgs << "    #{l}" }
     msgs << "  actual:"
     got.each { |l| msgs << "    #{l}" }
     return [false, msgs]
   end
-  msgs << "  note [#{c[:recipe]}]: #{curve_note}" if curve_note
 
   # Parse the "run <id> → <run_dir>" human line for the structural checks.
   run_line = out.lines.find { |l| l.start_with?("run ") }
