@@ -219,6 +219,9 @@ tinynn/probe_*
 !tinynn/*.m
 !tinynn/*.py
 !tinynn/*.md
-# Regenerable smoke datasets (created by prep/ scripts)
+# Regenerable smoke datasets (created by prep/ scripts).
+# NOTE: data/vit_smoke/ is the PINNED vit-tiny gate corpus — it is COMMITTED
+# (a gate fixture, like prep/fixtures/ts_seqs_gate.bin), NOT scratch, so it is
+# deliberately NOT ignored here (the train_gate vit-tiny case must reproduce
+# cross-machine). Only top-level scratch .bin stay ignored.
 data/*.bin
-data/vit_smoke/

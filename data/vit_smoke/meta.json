@@ -1,0 +1,10 @@
+{
+  "n_images": 1,
+  "image_size": 224,
+  "patch_size": 16,
+  "num_channels": 3,
+  "num_classes": 10,
+  "n_patches": 196,
+  "patch_flat": 768,
+  "mode": "synthetic"
+}

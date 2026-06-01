@@ -48,6 +48,11 @@ CASES = [
     # committed corpus (not the gitignored/locally-generated data/ts_seqs.bin,
     # which differs cross-machine beyond line 1) to stay byte-exact everywhere.
     args: ["--steps", "5", "--seed", "0", "--corpus", "prep/fixtures/ts_seqs_gate.bin"], steps: 5 },
+  { recipe: "vit-tiny",     baseline: "train_vit_baseline.txt",
+    # ViT from-scratch random-init on the COMMITTED data/vit_smoke corpus.
+    # No --corpus (data committed). no_ckpt: the ViT cache has no GGUF writer
+    # (#169) so this case asserts events.jsonl only, NOT a checkpoint.
+    args: ["--steps", "5", "--seed", "0"], steps: 5, no_ckpt: true, arch: "vit" },
 ]
 
 unless File.executable?(TOY)
@@ -121,17 +126,29 @@ def run_case(c)
     else
       errors << "first event is #{parsed.first['kind'].inspect}, expected run_start" unless parsed.first["kind"] == "run_start"
       errors << "last event is #{parsed.last['kind'].inspect}, expected run_end" unless parsed.last["kind"] == "run_end"
+      # Optional explicit arch assertion (vit-tiny): the run_start model.arch
+      # carries the arch label, separate from the byte-gated stdout curve.
+      if c[:arch] && !parsed.empty?
+        rs_arch = parsed.first.dig("model", "arch")
+        errors << "run_start model.arch is #{rs_arch.inspect}, expected #{c[:arch].inspect}" unless rs_arch == c[:arch]
+      end
     end
   else
     errors << "events.jsonl missing: #{events}"
   end
 
-  ckpt = File.join(run_dir, "weights", "step_#{c[:steps]}.gguf")
-  errors << "checkpoint missing: #{ckpt}" unless File.file?(ckpt)
+  # Checkpoint assertion — UNLESS the recipe defers it (vit-tiny: the ViT
+  # cache has no GGUF writer; #169 follow-up). Llama recipes still require it.
+  unless c[:no_ckpt]
+    ckpt = File.join(run_dir, "weights", "step_#{c[:steps]}.gguf")
+    errors << "checkpoint missing: #{ckpt}" unless File.file?(ckpt)
+  end
 
   if errors.empty?
+    pass_detail = c[:no_ckpt] ? "valid events.jsonl only (checkpoint deferred #169)" \
+                              : "valid events.jsonl + checkpoint"
     [true, ["GATE PASS [#{c[:recipe]}]: reproduces baseline byte-for-byte; " \
-            "runs/#{run_id}/ has valid events.jsonl + checkpoint"]]
+            "runs/#{run_id}/ has #{pass_detail}"]]
   else
     [false, ["GATE FAIL (structural) [#{c[:recipe]}]:"] + errors.map { |e| "  - #{e}" }]
   end

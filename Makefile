@@ -393,6 +393,20 @@ libexec/toy-train-lora: lib/toy/run/train_lora.rb lib/toy.rb lib/toy_smollm2.rb 
 	$(SPINEL) $< -o $@
 toy-train-lora: libexec/toy-train-lora
 
+# P4/vit — ViT-Tiny from-scratch CPU TRAINING runner. SEPARATE binary
+# (landmine #16): ViTTinyConfig must NOT share a Spinel compilation unit
+# with SmolLM2Config. Source lib/toy/run/train_vit.rb; binary path EQUALS
+# the make target. Reads STEPS/SEED/IMG_DIR/TAO_RUN_DIR/TOY_RUN_ID from ENV;
+# trains random-init on the COMMITTED data/vit_smoke corpus. NO toy_gguf_writer
+# dep (cfg.vocab/d_ff poly-collide with ViTTinyConfig — #169 checkpoint
+# follow-up). CPU-only; absent from MIRRORABLE (no CUDA/Metal twin this slice).
+libexec/toy-train-vit: lib/toy/run/train_vit.rb lib/toy/llm/recipes/vit_tiny.rb \
+		lib/vit_tiny_forward_ffi.rb lib/toy_vit.rb lib/toy_smollm2.rb \
+		lib/toy_image_loader.rb lib/toy_lr_schedule.rb lib/toy_drift_grad.rb \
+		lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) $< -o $@
+toy-train-vit: libexec/toy-train-vit
+
 # P4/GPU — from-scratch CUDA TRAINING runner. CUDA twin of libexec/toy-train,
 # from-scratch ONLY (warm_start dropped). SINGLE-TYPE binary (landmine #16):
 # TinyNNCuda is the compute path; lib/tinynn.rb + lib/transformer.rb stay in

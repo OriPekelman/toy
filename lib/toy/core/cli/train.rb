@@ -62,6 +62,11 @@ module Toy
         # binary, landmine #16). Selected only for --device metal + from-scratch,
         # and only on macOS (the build target is macOS-guarded).
         METAL_RUNNER_TARGET = "libexec/toy-train-metal"
+        # ViT-Tiny from-scratch CPU runner — a SEPARATE binary (landmine #16):
+        # ViTTinyConfig must NOT share a Spinel compilation unit with
+        # SmolLM2Config. CPU-only this slice. Binary path EQUALS the make
+        # target so ToyRoot.ensure_built builds + locates it.
+        VIT_RUNNER_TARGET = "libexec/toy-train-vit"
 
         DEFAULT_STEPS = 5  # the gate config (smoke_recipe_from_scratch)
         DEFAULT_SEED  = 0
@@ -114,6 +119,8 @@ module Toy
           #   cpu fs/warm-start-> toy-train
           target = if @recipe == "lora"
                      @device == "cuda" ? LORA_CUDA_RUNNER_TARGET : LORA_RUNNER_TARGET
+                   elsif @recipe == "vit-tiny"
+                     VIT_RUNNER_TARGET
                    elsif @device == "cuda"
                      CUDA_RUNNER_TARGET
                    elsif @device == "metal"
@@ -161,6 +168,12 @@ module Toy
                              "SEED"   => @seed.to_s,
                              "CORPUS" => (@corpus || "data/ts_seqs.bin"),
                              "INIT"   => (@init || "scratch"))
+          elsif @recipe == "vit-tiny"
+            # CPU-only ViT from-scratch on the COMMITTED data/vit_smoke corpus.
+            # Runner hard-codes 224/16/196/10 + AdamW hp; only STEPS/SEED vary.
+            # data/vit_smoke is committed → no --corpus needed. vit IS seeded.
+            env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
+                             "IMG_DIR" => "data/vit_smoke")
           else
             # from-scratch — byte-identical to today plus the harmless RECIPE key.
             env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s)
@@ -280,8 +293,8 @@ module Toy
             return bad_arg("unexpected extra arguments: #{rest[1..].join(' ')}")
           end
           @recipe = rest.first
-          unless @recipe == "from-scratch" || @recipe == "lora" || @recipe == "warm-start"
-            return bad_arg("unknown recipe #{@recipe.inspect}; supported: 'from-scratch', 'lora', 'warm-start'")
+          unless %w[from-scratch lora warm-start vit-tiny].include?(@recipe)
+            return bad_arg("unknown recipe #{@recipe.inspect}; supported: 'from-scratch', 'lora', 'warm-start', 'vit-tiny'")
           end
           if @recipe != "lora" && (!@model.nil? || !@rank.nil?)
             return bad_arg("--model/--rank are only valid with recipe 'lora'")
@@ -298,6 +311,11 @@ module Toy
           if @device == "metal" && @recipe != "from-scratch"
             return bad_arg("--device metal is only supported with recipe 'from-scratch'")
           end
+          # vit-tiny is CPU-only in this slice: reject cuda AND metal as clean
+          # bad-input (the --device allow-list already caught unknown devices).
+          if @recipe == "vit-tiny" && @device != "cpu"
+            return bad_arg("--device #{@device.inspect} is not supported for recipe 'vit-tiny' (cpu-only in this slice)")
+          end
           true
         end
 
@@ -312,6 +330,7 @@ module Toy
         # stdout loss curve.
         def arch_for(recipe)
           return "smollm2" if recipe == "lora"
+          return "vit"     if recipe == "vit-tiny"
           "llama"
         end
 
