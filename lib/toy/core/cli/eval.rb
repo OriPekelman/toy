@@ -39,15 +39,27 @@ module Toy
         # the binary. `make libexec/toy-eval` outputs libexec/toy-eval.
         RUNNER_TARGET = "libexec/toy-eval"
 
+        # LMC subcommand (`toy eval lmc --ckpt A --other B [--alphas ...]`).
+        # CPU-only this slice; a cuda LMC twin is a later slice.
+        LMC_RUNNER_TARGET = "libexec/toy-eval-lmc"
+        DEFAULT_ALPHAS    = "0,0.25,0.5,0.75,1.0"
+
         def initialize(argv)
           @argv = argv
           @json = false
           @model = nil
           @top_k = DEFAULT_TOP_K
           @device = "cpu"
+          @lmc_a = nil
+          @lmc_b = nil
+          @alphas = DEFAULT_ALPHAS
         end
 
         def run
+          # LMC subcommand dispatch — `toy eval lmc ...`. The single-model path
+          # below is BYTE-UNCHANGED for the non-lmc case.
+          return run_lmc(@argv.drop(1)) if @argv.first == "lmc"
+
           parsed = parse_args
           return parsed unless parsed == true
 
@@ -114,6 +126,154 @@ module Toy
         end
 
         private
+
+        # `toy eval lmc --ckpt A --other B [--alphas a,b,c] [--json]` — Linear
+        # Mode Connectivity. Build+invoke libexec/toy-eval-lmc with a CONTROLLED
+        # ENV {LMC_A,LMC_B,LMC_ALPHAS}; print the byte-deterministic α→loss
+        # curve (one "lmc: <alpha>=<loss>" line per α). CPU-only this slice (no
+        # --device). Returns true→never (always an Integer exit code).
+        def run_lmc(argv)
+          # --- Parse flags ---
+          i = 0
+          while i < argv.length
+            tok = argv[i]
+            case tok
+            when "--json"
+              @json = true
+            when "--ckpt"
+              i += 1
+              val = argv[i]
+              return bad_arg_lmc("--ckpt requires a value") if val.nil?
+              @lmc_a = val
+            when /\A--ckpt=(.*)\z/m
+              @lmc_a = $1
+            when "--other"
+              i += 1
+              val = argv[i]
+              return bad_arg_lmc("--other requires a value") if val.nil?
+              @lmc_b = val
+            when /\A--other=(.*)\z/m
+              @lmc_b = $1
+            when "--alphas"
+              i += 1
+              val = argv[i]
+              return bad_arg_lmc("--alphas requires a value") if val.nil?
+              return bad_arg_lmc("--alphas must be comma-separated numbers, got #{val.inspect}") unless valid_alphas?(val)
+              @alphas = val
+            when /\A--alphas=(.*)\z/
+              val = $1
+              return bad_arg_lmc("--alphas must be comma-separated numbers, got #{val.inspect}") unless valid_alphas?(val)
+              @alphas = val
+            when "--device", /\A--device(=.*)?\z/
+              return bad_arg_lmc("--device is not supported for lmc (cpu-only in this slice)")
+            when /\A-/
+              return bad_arg_lmc("unknown flag #{tok.inspect}")
+            else
+              return bad_arg_lmc("unexpected argument #{tok.inspect} (lmc takes no positionals)")
+            end
+            i += 1
+          end
+
+          # --- Required-flag + file validation ---
+          return bad_arg_lmc("--ckpt is required") if @lmc_a.nil?
+          return bad_arg_lmc("--other is required") if @lmc_b.nil?
+
+          path_a = File.expand_path(@lmc_a)
+          path_b = File.expand_path(@lmc_b)
+          return bad_arg_lmc("no such file: #{path_a}") unless File.file?(path_a)
+          return bad_arg_lmc("no such file: #{path_b}") unless File.file?(path_b)
+
+          # --- Build + locate the runner ---
+          root = ToyRoot.locate_root
+          unless root
+            return fail_out_lmc(
+              "could not locate toy's install root. Set TOY_HOME to a toy " \
+              "checkout (one with a Makefile + tinynn/tinynn_ggml.c), or run " \
+              "from inside the toy source tree. Then `toy install` to build " \
+              "the backend."
+            )
+          end
+
+          target = LMC_RUNNER_TARGET
+          ok, err = ToyRoot.ensure_built(root, target, quiet: @json)
+          return fail_out_lmc(err) unless ok
+
+          runner = File.join(root, target)
+          unless File.file?(runner) && File.executable?(runner)
+            return fail_out_lmc(
+              "runner missing after build: #{runner}. Run `toy install` to " \
+              "build the backend, then retry."
+            )
+          end
+
+          # --- CONTROLLED ENV (first positional to Open3 — no stale leak). ---
+          env = { "LMC_A" => path_a, "LMC_B" => path_b, "LMC_ALPHAS" => @alphas }
+          out, status = Open3.capture2e(env, runner)
+          unless status.success?
+            tail = out.lines.last(20).join
+            return fail_out_lmc("runner exited #{status.exitstatus}:\n#{tail}")
+          end
+
+          lines = out.lines.map(&:chomp).select { |l| l.start_with?("lmc:") }
+          if lines.empty?
+            tail = out.lines.last(20).join
+            return fail_out_lmc("runner produced no `lmc:` line; output was:\n#{tail}")
+          end
+
+          emit_lmc(path_a, path_b, lines)
+        end
+
+        # Every comma-field of `s` must parse as a Float.
+        def valid_alphas?(s)
+          fields = s.split(",")
+          return false if fields.empty?
+          fields.all? do |f|
+            begin
+              Float(f.strip)
+              true
+            rescue ArgumentError, TypeError
+              false
+            end
+          end
+        end
+
+        # Emit the α→loss curve. non-json: the gated lines verbatim. json: a
+        # parsed curve payload.
+        def emit_lmc(path_a, path_b, lines)
+          if @json
+            curve = lines.map do |l|
+              body = l[("lmc:".length)..].strip
+              a_s, v_s = body.split("=", 2)
+              { "alpha" => a_s.to_f, "loss" => v_s.to_f }
+            end
+            payload = { "format" => FORMAT, "mode" => "lmc",
+                        "ckpt" => path_a, "other" => path_b, "curve" => curve }
+            puts JSON.pretty_generate(payload)
+          else
+            lines.each { |l| puts l }
+          end
+          EXIT_OK
+        end
+
+        # Bad CLI input for the lmc subcommand → exit 2, "toy eval lmc:" prefix.
+        def bad_arg_lmc(msg)
+          if @json
+            puts JSON.pretty_generate("format" => FORMAT, "error" => msg)
+          else
+            $stderr.puts "toy eval lmc: #{msg}"
+          end
+          EXIT_BAD_INPUT
+        end
+
+        # Execution failure for the lmc subcommand → exit 1.
+        def fail_out_lmc(msg)
+          if @json
+            puts JSON.pretty_generate("format" => FORMAT, "error" => msg)
+          else
+            $stderr.puts "toy eval lmc: #{msg}"
+          end
+          EXIT_FAILURE
+        end
 
         # Parse argv. Returns true, or an Integer exit code (message already
         # emitted). model is a REQUIRED positional .gguf path; --top-k /

@@ -244,6 +244,17 @@ libexec/toy-eval: lib/toy/run/eval.rb lib/arch.rb lib/transformer_lm.rb lib/toy_
 	$(SPINEL) $< -o $@
 toy-eval: libexec/toy-eval
 
+# LMC (Linear Mode Connectivity) eval runner — `toy eval lmc --ckpt A --other B`.
+# Interpolates two checkpoints θ_α = (1-α)·θ_A + α·θ_B and evals CE per α.
+# Spinel source lib/toy/run/eval_lmc.rb; the binary path EQUALS the make target
+# so ToyRoot.ensure_built("libexec/toy-eval-lmc") both builds and locates it.
+# Deps mirror example_lmc (Makefile:479) NOT toy-eval; order-only | libexec (no
+# $(SPINEL_DEPS)) like the CPU toy-eval runner. CPU-only; NOT in MIRRORABLE (see
+# prep/gen_cuda_mirror.rb); a cuda LMC twin is a later slice.
+libexec/toy-eval-lmc: lib/toy/run/eval_lmc.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/toy.rb lib/transformer.rb lib/toy_drift_grad.rb lib/tinynn.rb tinynn/libtinynn_ggml.a | libexec
+	$(SPINEL) $< -o $@
+toy-eval-lmc: libexec/toy-eval-lmc
+
 # CUDA siblings of toy-infer / toy-eval — selected by the CRuby CLI shell when
 # invoked with `--device cuda` (lib/toy/core/cli/{infer,eval}.rb derive the
 # target). PER-DEVICE binaries (not one polymorphic runner): a single source
@@ -298,6 +309,14 @@ gate-cuda:
 .PHONY: gate-ckpt-roundtrip
 gate-ckpt-roundtrip:
 	ruby prep/ckpt_roundtrip_gate.rb
+
+# Deterministic LMC gate: `toy eval lmc` interpolates two PINNED from-scratch
+# checkpoints and evals CE per α. The curve is ggml-internal CE (no Ruby libm)
+# → byte-exact everywhere. Run twice (determinism) and assert byte-identical to
+# prep/fixtures/lmc_baseline.txt. CPU-only (no CUDA arm this slice).
+.PHONY: gate-lmc
+gate-lmc:
+	ruby prep/lmc_gate.rb
 
 # CUDA from-scratch TRAINING gate (STRONG arm, no epsilon): train
 # from-scratch --device cuda --steps 5 --seed 0, assert the "step N: loss="
@@ -1476,7 +1495,7 @@ clean:
 	      examples/example_train_from_scratch_cpu \
 	      examples/example_train_from_scratch_cuda \
 	      examples/example_finetune examples/example_finetune_cuda \
-	      libexec/toy-infer libexec/toy-train libexec/toy-train-cuda libexec/toy-train-lora-cuda libexec/toy-eval libexec/toy-serve examples/example_train \
+	      libexec/toy-infer libexec/toy-train libexec/toy-train-cuda libexec/toy-train-lora-cuda libexec/toy-eval libexec/toy-eval-lmc libexec/toy-serve examples/example_train \
 	      libexec/toy-infer-metal libexec/toy-eval-metal libexec/toy-train-metal
 
 distclean: clean
