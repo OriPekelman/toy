@@ -156,6 +156,11 @@ module Toy
             # from-scratch — byte-identical to today plus the harmless RECIPE key.
             env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s)
           end
+          # Metal: disable ggml's residency-set optimization so the runner exits
+          # cleanly. See lib/toy/core/cli/infer.rb for the full rationale — the
+          # ggml-metal static-destructor teardown asserts the residency set is
+          # empty and aborts at exit; disabling it keeps compute byte-identical.
+          env["GGML_METAL_NO_RESIDENCY"] = "1" if @device == "metal"
           out, status = Open3.capture2e(env, runner)
           unless status.success?
             tail = out.lines.last(20).join

@@ -99,6 +99,15 @@ module Toy
           env = { "GGUF" => path, "PROMPT" => @prompt, "N_NEW" => @n.to_s,
                   "DEVICE" => @device }
           env["PROMPT_IDS"] = @prompt_ids if @prompt_ids
+          # Metal: disable ggml's residency-set optimization. The runner relies
+          # on process exit to reclaim GPU buffers (it never explicitly frees),
+          # but ggml-metal's static-destructor teardown asserts the residency
+          # set is empty (ggml-metal-device.m: GGML_ASSERT([rsets->data count]
+          # == 0)) — which fires AFTER correct output, aborting at exit and
+          # making the runner look like it produced nothing. Residency sets are
+          # a pure GPU-residency perf hint; disabling them leaves compute (and
+          # thus metal-vs-cpu token parity) byte-identical.
+          env["GGML_METAL_NO_RESIDENCY"] = "1" if @device == "metal"
           out, status = Open3.capture2e(env, runner)
           unless status.success?
             tail = out.lines.last(20).join

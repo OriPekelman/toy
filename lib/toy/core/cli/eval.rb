@@ -92,10 +92,13 @@ module Toy
             )
           end
 
-          out, status = Open3.capture2e(
-            { "GGUF" => path, "TOP_K" => @top_k.to_s, "DEVICE" => @device },
-            runner
-          )
+          env = { "GGUF" => path, "TOP_K" => @top_k.to_s, "DEVICE" => @device }
+          # Metal: disable ggml's residency-set optimization so the runner exits
+          # cleanly. See lib/toy/core/cli/infer.rb for the full rationale — the
+          # ggml-metal static-destructor teardown asserts the residency set is
+          # empty and aborts at exit; disabling it keeps compute byte-identical.
+          env["GGML_METAL_NO_RESIDENCY"] = "1" if @device == "metal"
+          out, status = Open3.capture2e(env, runner)
           unless status.success?
             tail = out.lines.last(20).join
             return fail_out("runner exited #{status.exitstatus}:\n#{tail}")

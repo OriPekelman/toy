@@ -125,6 +125,7 @@ module TinyNNMetal
   ffi_func :tnn_flash_attn_ext,   [:ptr, :ptr, :ptr, :ptr, :ptr,
                                    :double, :double, :double], :ptr
   ffi_func :tnn_silu,             [:ptr, :ptr],             :ptr
+  ffi_func :tnn_tanh,             [:ptr, :ptr],             :ptr
   ffi_func :tnn_mul,              [:ptr, :ptr, :ptr],       :ptr
   ffi_func :tnn_rope_ext,         [:ptr, :ptr, :ptr, :int,
                                    :double, :double, :double, :double,
@@ -257,6 +258,9 @@ module TinyNNMetal
   ffi_func :tnn_adam_step_scratch,[:ptr, :int, :double, :double, :double, :double, :double, :double], :void
   ffi_func :tnn_tensor_ne0,       [:ptr],                   :int
   ffi_func :tnn_tensor_ne1,       [:ptr],                   :int
+  # Used by realize_for_random_init (train) to name weight/m/v tensors so the
+  # checkpoint fuse/write path can find them; byte-matches tinynn_cuda.rb.
+  ffi_func :tnn_tensor_set_name,  [:ptr, :str],             :void
 
   # CPU-parity bindings (file-utility helpers + extra GGUF accessors).
   ffi_func :tnn_rms_norm_back,    [:ptr, :ptr, :ptr, :double], :ptr
