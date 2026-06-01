@@ -1,32 +1,40 @@
 #!/usr/bin/env ruby
-# prep/train_cuda_gate.rb — CUDA from-scratch TRAINING gate (STRONG arm).
-#
-# Proves that `toy train from-scratch --device cuda --steps 5 --seed 0`:
+# prep/train_cuda_gate.rb — CUDA TRAINING gate (STRONG arms), 3 recipes:
+# from-scratch + warm-start + lora. Each arm proves that
+# `toy train <recipe> --device cuda ...`:
 #   (a) reproduces a RECORDED CUDA baseline loss curve BYTE-FOR-BYTE
-#       (prep/fixtures/train_cuda_baseline.txt) — NO tolerance/epsilon,
+#       (prep/fixtures/train_<recipe>_cuda_baseline.txt) — NO tolerance,
 #   (b) the loss DECREASES (final < initial),
-#   (c) the CUDA-written checkpoint ROUND-TRIPS through CPU `toy infer`,
-#       producing token ids byte-equal to the SHARED fixture
-#       prep/fixtures/ckpt_roundtrip_baseline.txt (greedy argmax discretizes
-#       the F32/f64 low-bit diff, so the ids fixture is shared with the CPU
-#       gate).
+#   (c) checkpoint criterion (per arm):
+#       :roundtrip  — the CUDA-written checkpoint ROUND-TRIPS through CPU
+#                     `toy infer --prompt-ids "1 2 3" --n 5`, ids byte-equal
+#                     to a recorded ids fixture (from-scratch + warm-start;
+#                     both are the donor_d_in>0 lens-fold path).
+#       :structural — checkpoint file weights/step_<N>.gguf EXISTS + events
+#                     valid (lora; MATCHES the CPU lora gate, which does NOT
+#                     round-trip lora).
+#   (d) events.jsonl is valid JSONL, run_start first / run_end last.
 #
-#   ruby prep/train_cuda_gate.rb   # exit 0 on all-pass
+#   ruby prep/train_cuda_gate.rb   # exit 0 on all-arm pass
 #
-# DETERMINISM (LOUD): the byte-for-byte arm relies on CUDA from-scratch
-# training being EMPIRICALLY byte-deterministic run-to-run on THIS GB10
-# (sm_121, CUDA 13.0). This is NOT contractual — ggml-cuda float atomicAdd
-# accumulation order is not fixed across GPUs / drivers / CUDA-toolkit
-# versions / after a backend rebuild. If run on different hardware OR after
-# rebuilding tinynn/libtinynn_ggml_cuda.a, RE-PIN train_cuda_baseline.txt.
+# DETERMINISM (LOUD): the byte-for-byte arms rely on CUDA training being
+# EMPIRICALLY byte-deterministic run-to-run on THIS GB10 (sm_121, CUDA 13.0).
+# This is NOT contractual — ggml-cuda float atomicAdd accumulation order is not
+# fixed across GPUs / drivers / CUDA-toolkit versions / after a backend
+# rebuild. The NEW arms (warm-start + lora) are therefore RUN TWICE and the two
+# CUDA curves must be byte-identical to EACH OTHER and to the recorded
+# baseline; if an arm is NOT byte-deterministic run-to-run, this gate FAILS
+# LOUD (it does not silently fall back to a tolerance). If run on different
+# hardware OR after rebuilding tinynn/libtinynn_ggml_cuda.a, RE-PIN the
+# baselines.
 #
 # NOT GATED: CUDA-vs-CPU byte equality. The CUDA loss curve differs from the
-# CPU curve by ~0.3% (F32 vs f64 accumulation, docs/archive/
-# p1-grad-bisection-2026-05-22.md). This gate has its OWN fixture; comparing
-# against the CPU train_baseline.txt would be a false negative.
+# CPU curve by ~0.3% (F32 vs f64 accumulation). Each arm compares against its
+# OWN cuda fixture; comparing against the CPU train_baseline.txt would be a
+# false negative.
 #
 # `toy train` / `toy infer` build their runners themselves (ToyRoot.
-# ensure_built — `make libexec/toy-train-cuda`), so no separate `make` first.
+# ensure_built), so no separate `make` first.
 
 require "open3"
 require "json"
@@ -39,133 +47,174 @@ unless File.executable?(TOY)
   exit 2
 end
 
-BASELINE = File.join(ROOT, "prep", "fixtures", "train_cuda_baseline.txt")
-unless File.file?(BASELINE)
-  warn "train_cuda_gate: missing recorded baseline: #{BASELINE}"
-  exit 2
+# Per-arm criteria. `run_twice` runs the train step a second time and asserts
+# the curve is byte-identical to the first (the new-recipe determinism check).
+# from-scratch is the shipped no-regression arm (run once, byte-identical to
+# its recorded baseline + checkpoint round-trip), preserved exactly.
+CASES = [
+  { recipe: "from-scratch",
+    args: ["from-scratch", "--device", "cuda", "--steps", "5", "--seed", "0"],
+    baseline: "train_cuda_baseline.txt",
+    steps: 5,
+    run_twice: false,
+    ckpt: :roundtrip,
+    ids_fixture: "ckpt_roundtrip_baseline.txt" },
+  { recipe: "warm-start",
+    args: ["warm-start", "--device", "cuda", "--steps", "5", "--seed", "0",
+           "--corpus", "prep/fixtures/ts_seqs_gate.bin"],
+    baseline: "train_warm_start_cuda_baseline.txt",
+    steps: 5,
+    run_twice: true,
+    ckpt: :roundtrip,
+    ids_fixture: "ckpt_roundtrip_warm_start_cuda.txt" },
+  { recipe: "lora",
+    args: ["lora", "--device", "cuda", "--steps", "5"],
+    baseline: "train_lora_cuda_baseline.txt",
+    steps: 5,
+    run_twice: true,
+    ckpt: :structural,
+    ids_fixture: nil },
+]
+
+# Train once. Returns [ok, msgs, got(Array<String>), run_dir(String)].
+def train_once(c)
+  out, status = Open3.capture2e(TOY, "train", *c[:args], chdir: ROOT)
+  unless status.success?
+    return [false, ["`toy train #{c[:recipe]} --device cuda` exited " \
+                    "#{status.exitstatus}:\n#{out.lines.last(20).join}"], nil, nil]
+  end
+  got = out.lines.map(&:chomp).select { |l| l.start_with?("step ") }
+  run_line = out.lines.find { |l| l.start_with?("run ") }
+  unless run_line && run_line =~ /\Arun (\S+) .* (\/\S+)\s*\z/
+    return [false, ["could not parse run dir: #{run_line.inspect}"], got, nil]
+  end
+  [true, [], got, $2.strip]
 end
 
-# Load the recorded baseline: the bare "step N: loss=…" lines, in order.
-expected = []
-File.foreach(BASELINE) do |line|
-  next if line.strip.empty? || line.start_with?("#")
-  expected << line.chomp if line.start_with?("step ")
-end
-if expected.empty?
-  warn "train_cuda_gate: baseline has no `step ` records: #{BASELINE}"
-  exit 2
-end
+# Run one arm. Returns [ok(Boolean), messages(Array<String>)].
+def run_case(c)
+  tag      = "train-cuda-#{c[:recipe]}"
+  msgs     = []
+  baseline = File.join(ROOT, "prep", "fixtures", c[:baseline])
+  unless File.file?(baseline)
+    return [false, ["GATE FAIL [#{tag}]: missing recorded baseline: #{baseline}"]]
+  end
 
-IDS_FIXTURE = File.join(ROOT, "prep", "fixtures", "ckpt_roundtrip_baseline.txt")
-unless File.file?(IDS_FIXTURE)
-  warn "train_cuda_gate: missing ids fixture: #{IDS_FIXTURE}"
-  exit 2
-end
-expected_ids = nil
-File.foreach(IDS_FIXTURE) do |line|
-  next if line.strip.empty? || line.start_with?("#")
-  expected_ids = line.chomp if line.start_with?("ids:")
-end
-if expected_ids.nil?
-  warn "train_cuda_gate: ids fixture has no `ids:` body line: #{IDS_FIXTURE}"
-  exit 2
-end
+  expected = []
+  File.foreach(baseline) do |line|
+    next if line.strip.empty? || line.start_with?("#")
+    expected << line.chomp if line.start_with?("step ")
+  end
+  if expected.empty?
+    return [false, ["GATE FAIL [#{tag}]: baseline has no `step ` records: #{baseline}"]]
+  end
 
-# --- 1. TRAIN on CUDA (seeded, deterministic) ----------------------------
-out, status = Open3.capture2e(TOY, "train", "from-scratch", "--device", "cuda",
-                              "--steps", "5", "--seed", "0", chdir: ROOT)
-unless status.success?
-  warn "train_cuda_gate: `toy train --device cuda` exited #{status.exitstatus}:"
-  warn out.lines.last(20).join
-  exit 1
-end
+  # --- TRAIN (1st run; the gated/checkpointed run). ---
+  ok, sub, got, run_dir = train_once(c)
+  return [false, sub.map { |m| "GATE FAIL [#{tag}]: #{m}" }] unless ok
 
-# --- 2(a). STRONG byte arm: loss curve byte-for-byte ---------------------
-got = out.lines.map(&:chomp).select { |l| l.start_with?("step ") }
-if got != expected
-  warn "GATE FAIL [train-cuda]: loss curve diverged from recorded CUDA baseline"
-  warn "  expected:"
-  expected.each { |l| warn "    #{l}" }
-  warn "  actual:"
-  got.each { |l| warn "    #{l}" }
-  exit 1
-end
+  # (a) byte-for-byte vs recorded baseline (NO epsilon).
+  if got != expected
+    msgs << "GATE FAIL [#{tag}]: loss curve diverged from recorded CUDA baseline"
+    msgs << "  expected:"; expected.each { |l| msgs << "    #{l}" }
+    msgs << "  actual:";   got.each { |l| msgs << "    #{l}" }
+    return [false, msgs]
+  end
 
-# --- 2(b). loss-decrease: net-new honest invariant -----------------------
-first_loss = (got.first =~ /loss=(.+)\z/) ? $1.to_f : nil
-last_loss  = (got.last  =~ /loss=(.+)\z/) ? $1.to_f : nil
-if first_loss.nil? || last_loss.nil?
-  warn "GATE FAIL [train-cuda]: could not parse loss from step lines"
-  exit 1
-end
-unless last_loss < first_loss
-  warn "GATE FAIL [train-cuda]: loss did not decrease (initial=#{first_loss}, final=#{last_loss})"
-  exit 1
-end
+  # run-twice byte-determinism (new arms). LOUD on any drift — no tolerance.
+  if c[:run_twice]
+    ok2, sub2, got2, _ = train_once(c)
+    return [false, sub2.map { |m| "GATE FAIL [#{tag}] (2nd run): #{m}" }] unless ok2
+    if got2 != got
+      msgs << "GATE FAIL [#{tag}]: CUDA NOT byte-deterministic run-to-run"
+      msgs << "  run1:"; got.each  { |l| msgs << "    #{l}" }
+      msgs << "  run2:"; got2.each { |l| msgs << "    #{l}" }
+      return [false, msgs]
+    end
+  end
 
-# --- 3(c). CHECKPOINT round-trip through CPU `toy infer` -----------------
-run_line = out.lines.find { |l| l.start_with?("run ") }
-unless run_line && run_line =~ /\Arun (\S+) .* (\/\S+)\s*\z/
-  warn "train_cuda_gate: could not parse run dir: #{run_line.inspect}"
-  exit 1
-end
-run_dir = $2.strip
-ckpt    = File.join(run_dir, "weights", "step_5.gguf")
-unless File.file?(ckpt)
-  warn "train_cuda_gate: checkpoint missing: #{ckpt}"
-  exit 1
-end
+  # (b) loss decreases.
+  first_loss = (got.first =~ /loss=(.+)\z/) ? $1.to_f : nil
+  last_loss  = (got.last  =~ /loss=(.+)\z/) ? $1.to_f : nil
+  if first_loss.nil? || last_loss.nil?
+    return [false, ["GATE FAIL [#{tag}]: could not parse loss from step lines"]]
+  end
+  unless last_loss < first_loss
+    return [false, ["GATE FAIL [#{tag}]: loss did not decrease " \
+                    "(initial=#{first_loss}, final=#{last_loss})"]]
+  end
 
-out2, status2 = Open3.capture2e(TOY, "infer", ckpt,
-                                "--prompt-ids", "1 2 3", "--n", "5", chdir: ROOT)
-unless status2.success?
-  warn "train_cuda_gate: `toy infer` exited #{status2.exitstatus}:"
-  warn out2.lines.last(20).join
-  exit 1
-end
+  # (c) checkpoint criterion.
+  ckpt = File.join(run_dir, "weights", "step_#{c[:steps]}.gguf")
+  unless File.file?(ckpt)
+    return [false, ["GATE FAIL [#{tag}]: checkpoint missing: #{ckpt}"]]
+  end
 
-ids_line = out2.lines.map(&:chomp).find { |l| l.start_with?("ids:") }
-if ids_line.nil?
-  warn "train_cuda_gate: `toy infer` produced no `ids:` line; output was:"
-  warn out2.lines.last(20).join
-  exit 1
-end
-unless ids_line == expected_ids
-  warn "GATE FAIL [train-cuda]: checkpoint round-trip ids diverged from shared fixture"
-  warn "  expected: #{expected_ids.inspect}"
-  warn "  actual  : #{ids_line.inspect}"
-  exit 1
-end
+  if c[:ckpt] == :roundtrip
+    ids_fixture = File.join(ROOT, "prep", "fixtures", c[:ids_fixture])
+    unless File.file?(ids_fixture)
+      return [false, ["GATE FAIL [#{tag}]: missing ids fixture: #{ids_fixture}"]]
+    end
+    expected_ids = nil
+    File.foreach(ids_fixture) do |line|
+      next if line.strip.empty? || line.start_with?("#")
+      expected_ids = line.chomp if line.start_with?("ids:")
+    end
+    if expected_ids.nil?
+      return [false, ["GATE FAIL [#{tag}]: ids fixture has no `ids:` body line: #{ids_fixture}"]]
+    end
+    out2, status2 = Open3.capture2e(TOY, "infer", ckpt,
+                                    "--prompt-ids", "1 2 3", "--n", "5", chdir: ROOT)
+    unless status2.success?
+      return [false, ["GATE FAIL [#{tag}]: `toy infer` exited #{status2.exitstatus}:\n#{out2.lines.last(20).join}"]]
+    end
+    ids_line = out2.lines.map(&:chomp).find { |l| l.start_with?("ids:") }
+    if ids_line.nil?
+      return [false, ["GATE FAIL [#{tag}]: `toy infer` produced no `ids:` line:\n#{out2.lines.last(20).join}"]]
+    end
+    unless ids_line == expected_ids
+      msgs << "GATE FAIL [#{tag}]: checkpoint round-trip ids diverged from fixture"
+      msgs << "  expected: #{expected_ids.inspect}"
+      msgs << "  actual  : #{ids_line.inspect}"
+      return [false, msgs]
+    end
+  end
+  # :structural — existence already asserted above; events check below covers it.
 
-# --- 4. STRUCTURAL: events.jsonl valid JSONL (run_start first/run_end last)
-events = File.join(run_dir, "events.jsonl")
-if File.file?(events)
+  # (d) events.jsonl structural (run_start first / run_end last).
+  events = File.join(run_dir, "events.jsonl")
+  unless File.file?(events)
+    return [false, ["GATE FAIL [#{tag}]: events.jsonl missing: #{events}"]]
+  end
   parsed = []
   File.foreach(events) do |line|
     next if line.strip.empty?
     begin
       parsed << JSON.parse(line)
     rescue JSON::ParserError => e
-      warn "GATE FAIL [train-cuda]: events.jsonl unparseable line: #{e.message}"
-      exit 1
+      return [false, ["GATE FAIL [#{tag}]: events.jsonl unparseable line: #{e.message}"]]
     end
   end
   if parsed.empty?
-    warn "GATE FAIL [train-cuda]: events.jsonl has no events"
-    exit 1
+    return [false, ["GATE FAIL [#{tag}]: events.jsonl has no events"]]
   end
   unless parsed.first["kind"] == "run_start"
-    warn "GATE FAIL [train-cuda]: first event is #{parsed.first['kind'].inspect}, expected run_start"
-    exit 1
+    return [false, ["GATE FAIL [#{tag}]: first event is #{parsed.first['kind'].inspect}, expected run_start"]]
   end
   unless parsed.last["kind"] == "run_end"
-    warn "GATE FAIL [train-cuda]: last event is #{parsed.last['kind'].inspect}, expected run_end"
-    exit 1
+    return [false, ["GATE FAIL [#{tag}]: last event is #{parsed.last['kind'].inspect}, expected run_end"]]
   end
-else
-  warn "GATE FAIL [train-cuda]: events.jsonl missing: #{events}"
-  exit 1
+
+  ckpt_note = c[:ckpt] == :roundtrip ? "checkpoint round-trips" : "checkpoint structurally valid"
+  [true, ["GATE PASS [#{tag}]: byte-identical CUDA baseline" \
+          "#{c[:run_twice] ? ' (det 2x)' : ''} + loss decreases + #{ckpt_note}"]]
 end
 
-puts "GATE PASS [train-cuda]: byte-identical CUDA baseline + loss decreases + checkpoint round-trips"
-exit 0
+all_ok = true
+CASES.each do |c|
+  ok, msgs = run_case(c)
+  msgs.each { |m| ok ? puts(m) : warn(m) }
+  all_ok = false unless ok
+end
+
+exit(all_ok ? 0 : 1)

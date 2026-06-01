@@ -382,7 +382,9 @@ toy-train-lora: libexec/toy-train-lora
 # the CUDA ggml backend via -Wl,-u,tnn_cuda_force_link (every cuda target).
 # CPU-only; NOT in MIRRORABLE (hand-written, see prep/gen_cuda_mirror.rb).
 libexec/toy-train-cuda: lib/toy/run/train_cuda.rb lib/toy.rb lib/toy_smollm2.rb \
+		lib/toy_corpus_loader.rb lib/toy_lr_schedule.rb \
 		lib/llama_seq_forward_ffi_cuda.rb lib/toy/llm/recipes/from_scratch_cuda.rb \
+		lib/toy/llm/recipes/warm_start_cuda.rb \
 		lib/toy_gguf_writer.rb lib/toy_drift_grad.rb lib/toy_gguf_fuse.rb lib/transformer.rb \
 		lib/toy/llm/primitives/rms_norm_cuda.rb lib/toy/llm/primitives/rope_cuda.rb \
 		lib/toy/llm/primitives/swiglu_cuda.rb lib/toy/llm/primitives/gqa_cuda.rb \
@@ -390,6 +392,26 @@ libexec/toy-train-cuda: lib/toy/run/train_cuda.rb lib/toy.rb lib/toy_smollm2.rb 
 		lib/tinynn_cuda.rb lib/tinynn.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) | libexec
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 toy-train-cuda: libexec/toy-train-cuda
+
+# P4/GPU — LoRA CUDA TRAINING runner. CUDA twin of libexec/toy-train-lora.
+# SEPARATE binary from libexec/toy-train-cuda: the LoRA realize_for_mmap path
+# cannot share a Spinel compilation unit with the random-init path (cfg
+# type-merge miscompile; landmine #16 — same reason toy-train-lora is split
+# from toy-train). SINGLE-TYPE binary: TinyNNCuda is the compute path;
+# lib/tinynn.rb + lib/transformer.rb stay in deps because transformer.rb
+# requires tinynn -> defines CPU TinyNN for the checkpoint write seam
+# (ToyDriftGrad.params downloads via CPU TinyNN). toy_gguf_fuse is NOT a dep
+# (lora uses ToyDriftGrad.params, not the lens-fold path). Links the CUDA
+# ggml backend via -Wl,-u,tnn_cuda_force_link. NOT in MIRRORABLE (hand-written).
+libexec/toy-train-lora-cuda: lib/toy/run/train_lora_cuda.rb lib/toy.rb lib/toy_smollm2.rb \
+		lib/llama_seq_forward_ffi_cuda.rb lib/toy/llm/recipes/lora_cuda.rb \
+		lib/toy_gguf_writer.rb lib/toy_drift_grad.rb lib/transformer.rb \
+		lib/toy/llm/primitives/rms_norm_cuda.rb lib/toy/llm/primitives/rope_cuda.rb \
+		lib/toy/llm/primitives/swiglu_cuda.rb lib/toy/llm/primitives/gqa_cuda.rb \
+		lib/toy/llm/blocks/transformer_block_cuda.rb lib/toy/llm/archs/llama_arch_cuda.rb \
+		lib/tinynn_cuda.rb lib/tinynn.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
+toy-train-lora-cuda: libexec/toy-train-lora-cuda
 
 # P4/GPU — from-scratch METAL TRAINING runner (macOS ONLY). Metal twin of
 # libexec/toy-train-cuda, from-scratch ONLY. SINGLE-TYPE binary (landmine #16):
@@ -1454,7 +1476,7 @@ clean:
 	      examples/example_train_from_scratch_cpu \
 	      examples/example_train_from_scratch_cuda \
 	      examples/example_finetune examples/example_finetune_cuda \
-	      libexec/toy-infer libexec/toy-train libexec/toy-train-cuda libexec/toy-eval libexec/toy-serve examples/example_train \
+	      libexec/toy-infer libexec/toy-train libexec/toy-train-cuda libexec/toy-train-lora-cuda libexec/toy-eval libexec/toy-serve examples/example_train \
 	      libexec/toy-infer-metal libexec/toy-eval-metal libexec/toy-train-metal
 
 distclean: clean

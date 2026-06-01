@@ -53,6 +53,11 @@ module Toy
         # CUDA from-scratch runner — a SEPARATE per-device binary (single-type
         # binary, landmine #16). Selected only for --device cuda + from-scratch.
         CUDA_RUNNER_TARGET = "libexec/toy-train-cuda"
+        # CUDA lora runner — a SEPARATE single-type binary (landmine #16): its
+        # realize_for_mmap cfg path is monomorphic and cannot share a Spinel
+        # compilation unit with the random-init path. Selected only for
+        # --device cuda + lora.
+        LORA_CUDA_RUNNER_TARGET = "libexec/toy-train-lora-cuda"
         # Metal from-scratch runner — a SEPARATE per-device binary (single-type
         # binary, landmine #16). Selected only for --device metal + from-scratch,
         # and only on macOS (the build target is macOS-guarded).
@@ -100,11 +105,15 @@ module Toy
             )
           end
 
-          # Per-device binary (single-type, landmine #16). lora can never reach
-          # cuda (post-parse guard rejects non-cpu for non-from-scratch), so the
-          # cpu/lora link lines stay byte-identical.
+          # Per-device-AND-recipe binary (single-type, landmine #16).
+          #   lora + cuda      -> toy-train-lora-cuda (monomorphic mmap cfg)
+          #   lora + cpu       -> toy-train-lora      (unchanged)
+          #   from-scratch /   -> toy-train-cuda (the warm-start branch lives
+          #     warm-start +cuda                  in train_cuda.rb source)
+          #   metal (fs only)  -> toy-train-metal
+          #   cpu fs/warm-start-> toy-train
           target = if @recipe == "lora"
-                     LORA_RUNNER_TARGET
+                     @device == "cuda" ? LORA_CUDA_RUNNER_TARGET : LORA_RUNNER_TARGET
                    elsif @device == "cuda"
                      CUDA_RUNNER_TARGET
                    elsif @device == "metal"
@@ -283,10 +292,11 @@ module Toy
           if !@init.nil? && @init != "scratch"
             return bad_arg("--init #{@init.inspect} unsupported; only 'scratch' has a gate curve in this slice")
           end
-          # This slice ships --device for from-scratch only; lora/warm-start
-          # stay cpu-only (separate later slices).
-          if @device != "cpu" && @recipe != "from-scratch"
-            return bad_arg("--device #{@device.inspect} is only supported with recipe 'from-scratch' in this slice")
+          # cuda is valid for ALL three recipes (from-scratch + warm-start ->
+          # toy-train-cuda; lora -> toy-train-lora-cuda). metal ships
+          # from-scratch only (the macOS metal runner is from-scratch).
+          if @device == "metal" && @recipe != "from-scratch"
+            return bad_arg("--device metal is only supported with recipe 'from-scratch'")
           end
           true
         end

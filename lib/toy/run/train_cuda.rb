@@ -49,10 +49,22 @@ require_relative "../../toy"
 require_relative "../../toy_smollm2"
 require_relative "../../llama_seq_forward_ffi_cuda"
 require_relative "../llm/recipes/from_scratch_cuda"
+require_relative "../llm/recipes/warm_start_cuda"
+require_relative "../../toy_corpus_loader"
+require_relative "../../toy_lr_schedule"
 require_relative "../../toy_gguf_writer"
 require_relative "../../toy_drift_grad"
 require_relative "../../toy_gguf_fuse"
 
+# NOTE: this CUDA runner hosts the two RANDOM-INIT recipes (from-scratch +
+# warm-start, both LlamaSeqForwardFFICacheCuda#realize_for_random_init),
+# selected by RECIPE. The LoRA recipe lives in a SEPARATE binary
+# (lib/toy/run/train_lora_cuda.rb -> libexec/toy-train-lora-cuda): its
+# #realize_for_mmap path cannot share a Spinel compilation unit with the
+# random-init path without a cfg type-merge miscompile (landmine #16, same
+# rationale as the CPU split train_lora.rb vs train.rb).
+
+RECIPE      = ENV["RECIPE"] || "from-scratch"
 STEPS       = (ENV["STEPS"] || "5").to_i
 SEED        = (ENV["SEED"]  || "0").to_i
 TAO_RUN_DIR = ENV["TAO_RUN_DIR"] || ""
@@ -73,6 +85,189 @@ CONTEXT  = 32
 # Events sink — TOP-LEVEL (same constant-in-conditional Spinel caveat). FILE only.
 EVENTS = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/events.jsonl") : ""
 
+if RECIPE == "warm-start"
+  # ==================================================================
+  # WARM-START BRANCH (CUDA) — verbatim twin of the CPU warm-start branch
+  # (train.rb:87-263) with TinyNN. -> TinyNNCuda. on every compute/event
+  # call. INIT=scratch skips realize_warm! (no donor GGUF). The checkpoint
+  # write seam stays CPU TinyNN (lens-fold path, donor_d_in>0) — the fuser
+  # downloads from the CUDA session via CPU TinyNN.tnn_download_* on GB10 UVA,
+  # identical to the from-scratch-cuda seam.
+  # ==================================================================
+  lr_max = 0.001
+  lr_min = 0.00001
+  warmup = 5
+  corpus = ENV["CORPUS"] || "data/ts_seqs.bin"
+
+  cfg_ws = Toy::SmolLM2Config.new(VOCAB, D_MODEL, N_HEADS, N_HEADS,
+                                  D_FF, N_LAYERS, CONTEXT, 10000.0, 1.0e-5)
+  cfg_ws.donor_d_in = DONOR_D
+
+  recipe_ws = Toy::LLM::Recipes::WarmStartCuda.new
+  # untied=true is mandatory when donor_d_in > 0.
+  recipe_ws.realize_scratch!(cfg_ws, CONTEXT, 1, 0, true, false, SEED, 1.0)
+  # INIT=scratch: skip realize_warm! (no donor GGUF, train from random init).
+  recipe_ws.build!
+
+  # AdamW hp[1..6] constants (hp[2]/hp[5]/hp[6]=0.95, NOT 0.999);
+  # hp[0] (lr) refreshes each step from the cosine schedule.
+  m_hp = Mat.new(1, 7)
+  m_hp.flat[0] = lr_max
+  m_hp.flat[1] = 0.9
+  m_hp.flat[2] = 0.95
+  m_hp.flat[3] = 1.0e-8
+  m_hp.flat[4] = 0.0
+  m_hp.flat[5] = 0.9
+  m_hp.flat[6] = 0.95
+
+  positions = [0]; positions.pop
+  p = 0; while p < CONTEXT; positions.push(p); p = p + 1; end
+
+  m_labels = Mat.new(CONTEXT, VOCAB)
+
+  # --- Events (EVENTS hoisted to top-level; FILE only). ---
+  git_sha    = "unknown"
+  git_branch = "unknown"
+  if File.exist?(".git/HEAD")
+    head = File.read(".git/HEAD")
+    if head.length > 0 && head[head.length - 1...head.length] == "\n"
+      head = head[0...head.length - 1]
+    end
+    if head.length > 5 && head[0...5] == "ref: "
+      ref_rel = head[5...head.length]
+      pp = ref_rel.split("/")
+      if pp.length >= 3
+        git_branch = pp[pp.length - 1]
+      end
+      ref_path = ".git/" + ref_rel
+      if File.exist?(ref_path)
+        sha = File.read(ref_path)
+        if sha.length >= 40
+          git_sha = sha[0...40]
+        end
+      end
+    else
+      if head.length >= 40
+        git_sha    = head[0...40]
+        git_branch = "HEAD"
+      end
+    end
+  end
+
+  if EVENTS.length > 0
+    rc = TinyNNCuda.tnn_events_open(EVENTS)
+    if rc == 0
+      rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
+      rs  = "{\"kind\":\"run_start\",\"schema\":\"toy/v1\""
+      rs = rs + ",\"t\":" + TinyNNCuda.tnn_events_now_seconds.to_s
+      rs = rs + ",\"started_at\":\"" + TinyNNCuda.tnn_events_iso8601_now + "\""
+      rs = rs + ",\"run_id\":\"" + rid + "\""
+      rs = rs + ",\"phase\":\"train\""
+      rs = rs + ",\"host\":{\"name\":\""   + TinyNNCuda.tnn_provenance_host_name + "\""
+      rs = rs + ",\"os\":\""               + TinyNNCuda.tnn_provenance_host_os   + "\""
+      rs = rs + ",\"arch\":\""             + TinyNNCuda.tnn_provenance_host_arch + "\"}"
+      rs = rs + ",\"backend\":{\"kind\":\"" + TinyNNCuda.tnn_backend_name(recipe_ws.ws_cache.sess) + "\"}"
+      rs = rs + ",\"git\":{\"sha\":\""     + git_sha    + "\""
+      rs = rs + ",\"branch\":\""           + git_branch + "\"}"
+      rs = rs + ",\"model\":{\"arch\":\"llama\""
+      rs = rs + ",\"name\":\"warm-start-scratch-tinystories\""
+      rs = rs + ",\"vocab\":"    + cfg_ws.vocab.to_s
+      rs = rs + ",\"d_model\":"  + cfg_ws.d_model.to_s
+      rs = rs + ",\"n_layers\":" + cfg_ws.n_layers.to_s
+      rs = rs + ",\"n_heads\":"  + cfg_ws.n_heads.to_s
+      rs = rs + ",\"n_kv\":"     + cfg_ws.n_kv.to_s
+      rs = rs + ",\"d_head\":"   + cfg_ws.head_dim.to_s
+      rs = rs + ",\"d_ff\":"     + cfg_ws.d_ff.to_s
+      rs = rs + "}"
+      rs = rs + ",\"config\":{\"context\":" + CONTEXT.to_s
+      rs = rs + ",\"steps\":" + STEPS.to_s
+      rs = rs + ",\"lr\":0.001"
+      rs = rs + ",\"seed\":"  + SEED.to_s
+      rs = rs + "}"
+      rs = rs + "}"
+      TinyNNCuda.tnn_events_emit(rs)
+    else
+      puts "events_open failed: rc=" + rc.to_s + " (path=" + EVENTS + ")"
+    end
+  end
+
+  # --- Training loop (0-indexed; cosine LR + streamed corpus). ---
+  final_loss  = 0.0
+  byte_offset = 0
+  step        = 0
+  while step < STEPS
+    step_wall_start = TinyNNCuda.tnn_events_now_seconds
+    lr = ToyLR.cosine(step, STEPS, lr_max, lr_min, warmup)
+    m_hp.flat[0] = lr
+
+    seq_ids = ToyCorpusLoader.read_seq(corpus, byte_offset, CONTEXT)
+    byte_offset = byte_offset + CONTEXT * 4   # i32
+
+    j = 0
+    while j < CONTEXT * VOCAB
+      m_labels.flat[j] = 0.0
+      j = j + 1
+    end
+    k = 0
+    while k < CONTEXT
+      target = (k + 1 < CONTEXT) ? seq_ids[k + 1] : seq_ids[k]
+      if target >= 0 && target < VOCAB
+        m_labels.flat[k * VOCAB + target] = 1.0
+      end
+      k = k + 1
+    end
+
+    loss = recipe_ws.step!(seq_ids, positions, m_labels, m_hp, step == 0)
+    final_loss = loss
+    # The byte-gated line — to STDOUT.
+    puts "step " + (step + 1).to_s + ": loss=" + loss.to_s
+
+    if EVENTS.length > 0
+      step_wall_us = ((TinyNNCuda.tnn_events_now_seconds - step_wall_start) * 1.0e6).to_i
+      es  = "{\"kind\":\"step\",\"phase\":\"train\""
+      es = es + ",\"t\":"        + TinyNNCuda.tnn_events_now_seconds.to_s
+      es = es + ",\"step\":"     + (step + 1).to_s
+      es = es + ",\"loss\":"     + loss.to_s
+      es = es + ",\"lr\":"       + lr.to_s
+      es = es + ",\"tokens\":"   + CONTEXT.to_s
+      es = es + ",\"wall_us\":"  + step_wall_us.to_s
+      es = es + "}"
+      TinyNNCuda.tnn_events_emit(es)
+    end
+    step = step + 1
+  end
+
+  # --- Final checkpoint + run_end (FILE only). CPU-TinyNN write seam. ---
+  if EVENTS.length > 0 && TinyNNCuda.tnn_events_active == 1
+    rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
+    # FOLD the projection lens into the embedding so the checkpoint is a
+    # STANDARD fused-llama GGUF that `toy infer`'s realize_for_mmap loads
+    # unchanged (warm-start uses donor_d_in > 0 + untied=true — identical to
+    # the from-scratch arm). The write session is a CPU TinyNN session; the
+    # fuser downloads weights from the CUDA training session via CPU
+    # TinyNN.tnn_download_* (works on GB10 UVA). write_sess_ws +
+    # ws_cache.sess must stay alive until write_step returns.
+    write_sess_ws = TinyNN.tnn_session_new(0)
+    plist = ToyGGUFFuser.build_lens_folded_into_write_session(recipe_ws.ws_cache, write_sess_ws, true)
+    rc = ToyGGUFWriter.write_step(cfg_ws, plist, TAO_RUN_DIR + "/weights", rid, STEPS)
+    if rc != 0
+      puts "checkpoint write failed: rc=" + rc.to_s
+    end
+
+    re  = "{\"kind\":\"run_end\""
+    re = re + ",\"t\":"           + TinyNNCuda.tnn_events_now_seconds.to_s
+    re = re + ",\"ended_at\":\""  + TinyNNCuda.tnn_events_iso8601_now + "\""
+    re = re + ",\"reason\":\"completed\""
+    re = re + ",\"final_step\":"  + STEPS.to_s
+    re = re + ",\"final_loss\":"  + final_loss.to_s
+    re = re + ",\"exit_code\":0"
+    re = re + "}"
+    TinyNNCuda.tnn_events_emit(re)
+    TinyNNCuda.tnn_events_close
+  end
+
+else
+# from-scratch — the existing body, BYTE-UNCHANGED.
 cfg = Toy::SmolLM2Config.new(VOCAB, D_MODEL, N_HEADS, N_HEADS,
                              D_FF, N_LAYERS, CONTEXT, 10000.0, 1.0e-5)
 cfg.donor_d_in = DONOR_D
@@ -239,4 +434,5 @@ if EVENTS.length > 0 && TinyNNCuda.tnn_events_active == 1
   re = re + "}"
   TinyNNCuda.tnn_events_emit(re)
   TinyNNCuda.tnn_events_close
+end
 end

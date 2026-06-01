@@ -1,0 +1,18 @@
+# prep/fixtures/train_warm_start_cuda_baseline.txt — recorded CUDA warm-start
+# (INIT=scratch) loss curve. Gate: prep/train_cuda_gate.rb, arm warm-start.
+#
+# Recorded on THIS GB10 (sm_121, CUDA 13.0) from:
+#   bin/toy train warm-start --device cuda --steps 5 --seed 0 \
+#     --corpus prep/fixtures/ts_seqs_gate.bin
+# PINNED corpus (ts_seqs_gate.bin) so the curve is reproducible cross-machine.
+#
+# DETERMINISM (LOUD): byte-deterministic run-to-run on THIS GB10 (verified 2x).
+# NOT contractual — ggml-cuda float atomicAdd order is not fixed across GPUs/
+# drivers/CUDA versions/backend rebuilds. RE-PIN after rebuilding
+# tinynn/libtinynn_ggml_cuda.a. NOT comparable to the CPU curve (~0.3% F32/f64
+# drift) — this is the warm-start CUDA's OWN fixture.
+step 1: loss=6.440946102142334
+step 2: loss=6.437248229980469
+step 3: loss=6.431797981262207
+step 4: loss=6.417507171630859
+step 5: loss=6.383913040161133

@@ -1,0 +1,16 @@
+# prep/fixtures/ckpt_roundtrip_warm_start_cuda.txt — recorded token ids from
+# round-tripping the CUDA warm-start checkpoint through CPU `toy infer`.
+# Gate: prep/train_cuda_gate.rb, arm warm-start (checkpoint criterion).
+#
+# Recorded on THIS GB10 from:
+#   bin/toy train warm-start --device cuda --steps 5 --seed 0 \
+#     --corpus prep/fixtures/ts_seqs_gate.bin
+#   bin/toy infer <run>/weights/step_5.gguf --prompt-ids "1 2 3" --n 5
+#
+# A SEPARATE fixture (NOT the shared ckpt_roundtrip_baseline.txt, which was
+# recorded from the from-scratch checkpoint). warm-start trains a different
+# loss curve, so its post-train greedy-argmax ids differ (verified: 21s vs the
+# from-scratch fixture's 7s). The warm-start checkpoint is the lens-fold path
+# (donor_d_in>0), folded into a STANDARD fused-llama GGUF that CPU `toy infer`
+# loads unchanged — this fixture proves the CUDA->CPU checkpoint round-trip.
+ids: 1 2 3 21 21 21 21 21
