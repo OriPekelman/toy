@@ -171,6 +171,22 @@ module TinyNNMetal
   ffi_func :tnn_trace_active,         [],                           :int
   ffi_func :tnn_trace_set_op_capture, [:int],                       :void
   ffi_func :tnn_trace_op_capture_active, [],                        :int
+  # JSON Lines event stream. See tinynn/tinynn_events.h. These are shared C
+  # symbols already exported by libtinynn_ggml (linked into every backend);
+  # Spinel resolves TinyNNMetal.tnn_events_* as MODULE methods, so the
+  # declarations must live here even though the C symbol is backend-agnostic.
+  # train_metal.rb's events/provenance + run_start/step/run_end stream needs
+  # all nine. (cuda twin: lib/tinynn_cuda.rb:188-197.)
+  ffi_func :tnn_events_open,          [:str],                       :int
+  ffi_func :tnn_events_emit,          [:str],                       :void
+  ffi_func :tnn_events_close,         [],                           :void
+  ffi_func :tnn_events_active,        [],                           :int
+  ffi_func :tnn_events_now_seconds,   [],                           :double
+  # Provenance for run_start / run_end (tao#run-start-provenance).
+  ffi_func :tnn_events_iso8601_now,   [],                           :str
+  ffi_func :tnn_provenance_host_name, [],                           :str
+  ffi_func :tnn_provenance_host_os,   [],                           :str
+  ffi_func :tnn_provenance_host_arch, [],                           :str
   ffi_func :tnn_set_loss,             [:ptr],                       :void
   ffi_func :tnn_sum,                  [:ptr, :ptr],                 :ptr
   ffi_func :tnn_sum_rows,             [:ptr, :ptr],                 :ptr

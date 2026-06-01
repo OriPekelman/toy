@@ -261,6 +261,29 @@ libexec/toy-eval-cuda: lib/toy/run/eval_cuda.rb lib/arch.rb lib/transformer_lm_c
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 toy-eval-cuda: libexec/toy-eval-cuda
 
+# Metal twins of the infer/eval cuda runners (macOS ONLY). Same single-type
+# binary discipline (landmine #16): TinyNNMetal is the only compute module.
+# Source is the hand-written lib/toy/run/{infer,eval}_metal.rb (ToyLMMetal ctor
+# arity 1 -> NOT mechanically mirrorable -> ABSENT from MIRRORABLE, like the
+# cuda/CPU runners). The macOS guard MUST come first so Linux/gx10 never touches
+# the Apple frameworks; the metal --cc recipe links Foundation/Metal/MetalKit
+# with the leading-underscore force-link symbol (_tnn_metal_force_link, macOS
+# symbol convention) vs cuda's tnn_cuda_force_link. libtinynn_ggml.a (CPU
+# archive) stays in deps for the base ggml symbols. gx10 RUNTIME-UNVERIFIED.
+libexec/toy-infer-metal: lib/toy/run/infer_metal.rb lib/arch.rb lib/transformer_lm_metal.rb lib/toy_smollm2_ffi_kv_metal.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn_metal.rb lib/tokenizer.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_metal.a $(SPINEL_DEPS) | libexec
+ifneq ($(UNAME_S),Darwin)
+	@echo "toy-infer-metal: macOS-only"; exit 1
+endif
+	$(SPINEL) --cc='cc -Wl,-u,_tnn_metal_force_link -framework Foundation -framework Metal -framework MetalKit' $< -o $@
+toy-infer-metal: libexec/toy-infer-metal
+
+libexec/toy-eval-metal: lib/toy/run/eval_metal.rb lib/arch.rb lib/transformer_lm_metal.rb lib/toy_smollm2_ffi_kv_metal.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn_metal.rb lib/toy_logprobs.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_metal.a $(SPINEL_DEPS) | libexec
+ifneq ($(UNAME_S),Darwin)
+	@echo "toy-eval-metal: macOS-only"; exit 1
+endif
+	$(SPINEL) --cc='cc -Wl,-u,_tnn_metal_force_link -framework Foundation -framework Metal -framework MetalKit' $< -o $@
+toy-eval-metal: libexec/toy-eval-metal
+
 # Convenience: run both functional gates with the CUDA parity arm enabled.
 .PHONY: gate-cuda
 gate-cuda:
@@ -284,6 +307,24 @@ gate-ckpt-roundtrip:
 .PHONY: gate-train-cuda
 gate-train-cuda:
 	ruby prep/train_cuda_gate.rb
+
+# Metal RUNTIME parity gate (macOS ONLY). Builds the three metal runners then
+# runs prep/metal_gate.rb: infer (cpu-vs-metal byte-equal ids), eval (top-k id
+# ORDER equality), train-from-scratch (run-twice byte-determinism OR a Mac-
+# pinned baseline, loss-decrease, ckpt round-trip vs the SHARED fixture,
+# events.jsonl run_start/run_end). On Linux/gx10 this SKIPS GREEN (exit 0) so
+# umbrella `make gate-*` runs do not false-fail — Metal cannot build or run
+# here. THIS is the gate that actually validates metal numerics; run it on the
+# Mac. (The metal BUILD targets exit 1 on Linux — a gate that can't run skips
+# green, a build target that can't build errors red.)
+.PHONY: gate-metal
+gate-metal:
+ifneq ($(UNAME_S),Darwin)
+	@echo "gate-metal: Metal is macOS-only (uname -s = $(UNAME_S)) — skipping"; exit 0
+else
+	$(MAKE) libexec/toy-infer-metal libexec/toy-eval-metal libexec/toy-train-metal
+	ruby prep/metal_gate.rb
+endif
 
 # STRUCTURAL serving-telemetry gate: boot libexec/toy-serve with TAO_RUN_DIR
 # set, POST /v1/completions, SIGTERM, then assert runs/<id>/events.jsonl carries
@@ -349,6 +390,29 @@ libexec/toy-train-cuda: lib/toy/run/train_cuda.rb lib/toy.rb lib/toy_smollm2.rb 
 		lib/tinynn_cuda.rb lib/tinynn.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) | libexec
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 toy-train-cuda: libexec/toy-train-cuda
+
+# P4/GPU — from-scratch METAL TRAINING runner (macOS ONLY). Metal twin of
+# libexec/toy-train-cuda, from-scratch ONLY. SINGLE-TYPE binary (landmine #16):
+# TinyNNMetal is the compute path; lib/tinynn.rb + lib/transformer.rb stay in
+# deps because transformer.rb requires tinynn -> defines CPU TinyNN for the
+# checkpoint write/fuse/drift seam (dropping them breaks the writer). The macOS
+# guard MUST come first so Linux/gx10 never touches the Apple frameworks; the
+# metal --cc recipe links Foundation/Metal/MetalKit with _tnn_metal_force_link
+# (leading underscore, macOS symbol convention). libtinynn_ggml.a (CPU archive)
+# stays in deps for the write seam + base ggml. NOT in MIRRORABLE (hand-written).
+# gx10 RUNTIME-UNVERIFIED — pin baseline + gate on the Mac.
+libexec/toy-train-metal: lib/toy/run/train_metal.rb lib/toy.rb lib/toy_smollm2.rb \
+		lib/llama_seq_forward_ffi_metal.rb lib/toy/llm/recipes/from_scratch_metal.rb \
+		lib/toy_gguf_writer.rb lib/toy_drift_grad.rb lib/toy_gguf_fuse.rb lib/transformer.rb \
+		lib/toy/llm/primitives/rms_norm_metal.rb lib/toy/llm/primitives/rope_metal.rb \
+		lib/toy/llm/primitives/swiglu_metal.rb lib/toy/llm/primitives/gqa_metal.rb \
+		lib/toy/llm/blocks/transformer_block_metal.rb lib/toy/llm/archs/llama_arch_metal.rb \
+		lib/tinynn_metal.rb lib/tinynn.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_metal.a $(SPINEL_DEPS) | libexec
+ifneq ($(UNAME_S),Darwin)
+	@echo "toy-train-metal: macOS-only"; exit 1
+endif
+	$(SPINEL) --cc='cc -Wl,-u,_tnn_metal_force_link -framework Foundation -framework Metal -framework MetalKit' $< -o $@
+toy-train-metal: libexec/toy-train-metal
 
 # P4 — `toy serve` PERSISTENT compute runner (OpenAI-compatible HTTP).
 # Unlike infer/train/eval (compute-once), this runner blocks in Tep.run!.
@@ -1342,6 +1406,9 @@ tinynn/libtinynn_ggml_cuda.a: tinynn/tinynn_backend_cuda.o
 # own, just a C function calling into ggml-metal). Header search adds
 # the Metal build dir so ggml-metal.h is reachable.
 tinynn/tinynn_backend_metal.o: tinynn/tinynn_backend_metal.m
+ifneq ($(UNAME_S),Darwin)
+	@echo "tinynn_backend_metal.o: macOS-only (Objective-C + Metal frameworks); uname -s = $(UNAME_S)"; exit 1
+endif
 	$(CC) $(CFLAGS) -x objective-c $(GGML_INC) -c $< -o $@
 
 tinynn/libtinynn_ggml_metal.a: tinynn/tinynn_backend_metal.o
@@ -1387,7 +1454,8 @@ clean:
 	      examples/example_train_from_scratch_cpu \
 	      examples/example_train_from_scratch_cuda \
 	      examples/example_finetune examples/example_finetune_cuda \
-	      libexec/toy-infer libexec/toy-train libexec/toy-train-cuda libexec/toy-eval libexec/toy-serve examples/example_train
+	      libexec/toy-infer libexec/toy-train libexec/toy-train-cuda libexec/toy-eval libexec/toy-serve examples/example_train \
+	      libexec/toy-infer-metal libexec/toy-eval-metal libexec/toy-train-metal
 
 distclean: clean
 	rm -rf $(GGML_DIR)/build $(GGML_DIR)/build-cuda $(GGML_DIR)/build-metal
@@ -1459,6 +1527,7 @@ bench-vs-pytorch-heavy-report: demos/seq_train_bench_cuda demos/qwen25_bench_cud
 
 .PHONY: all clean distclean setup-ggml setup-ggml-cuda setup-ggml-metal smoke \
         example_inference_metal \
+        toy-infer-metal toy-eval-metal toy-train-metal gate-metal \
         ab-smoke ab-smoke-add ab-smoke-gelu ab-smoke-rms-norm \
         ab-smoke-softmax ab-smoke-transpose ab-smoke-scale ab-smoke-silu \
         ab-smoke-mul ab-smoke-pipeline ab-smoke-big ab-smoke-cuda \

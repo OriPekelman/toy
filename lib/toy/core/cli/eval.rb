@@ -54,7 +54,7 @@ module Toy
           # metal is accepted by the parser but only buildable in a macOS
           # build — gate it HERE, before any build/Open3, so the gx10 build
           # never tries to compile the (Apple-only) metal runner.
-          if @device == "metal"
+          if @device == "metal" && RUBY_PLATFORM !~ /darwin/
             return fail_out("metal is only available in a macOS build")
           end
 
@@ -75,7 +75,11 @@ module Toy
 
           # Per-device binary: the CPU target stays byte-unchanged (its link
           # line never sees the CUDA archive); cuda builds the sibling runner.
-          target = (@device == "cuda") ? "libexec/toy-eval-cuda" : RUNNER_TARGET
+          target = case @device
+                   when "cuda"  then "libexec/toy-eval-cuda"
+                   when "metal" then "libexec/toy-eval-metal"
+                   else RUNNER_TARGET
+                   end
 
           ok, err = ToyRoot.ensure_built(root, target, quiet: @json)
           return fail_out(err) unless ok

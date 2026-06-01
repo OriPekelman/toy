@@ -53,6 +53,10 @@ module Toy
         # CUDA from-scratch runner — a SEPARATE per-device binary (single-type
         # binary, landmine #16). Selected only for --device cuda + from-scratch.
         CUDA_RUNNER_TARGET = "libexec/toy-train-cuda"
+        # Metal from-scratch runner — a SEPARATE per-device binary (single-type
+        # binary, landmine #16). Selected only for --device metal + from-scratch,
+        # and only on macOS (the build target is macOS-guarded).
+        METAL_RUNNER_TARGET = "libexec/toy-train-metal"
 
         DEFAULT_STEPS = 5  # the gate config (smoke_recipe_from_scratch)
         DEFAULT_SEED  = 0
@@ -82,7 +86,7 @@ module Toy
           # The TOY INSTALL root (for `make`) — may differ from Dir.pwd.
           # metal is accepted by the parser but only buildable in a macOS
           # build — gate it HERE, before any build/Open3 (mirrors infer.rb).
-          if @device == "metal"
+          if @device == "metal" && RUBY_PLATFORM !~ /darwin/
             return fail_out("metal is only available in a macOS build")
           end
 
@@ -103,6 +107,8 @@ module Toy
                      LORA_RUNNER_TARGET
                    elsif @device == "cuda"
                      CUDA_RUNNER_TARGET
+                   elsif @device == "metal"
+                     METAL_RUNNER_TARGET
                    else
                      RUNNER_TARGET
                    end
