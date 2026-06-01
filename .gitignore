@@ -201,3 +201,24 @@ examples/example_train_from_scratch
 
 # spinelgems-built gem artifacts (rebuilt via `gem build`)
 toy-*.gem
+
+# ── Compiled example / smoke / tinynn binaries (Spinel builds; the .rb (and
+# .c/.cu/.m/.py) sources alongside them stay tracked). Glob-based so a newly
+# built binary is ignored AUTOMATICALLY — this replaces the fragile per-name
+# blocklist above and prevents `git add -A` from ever sweeping a build output
+# (incl. the ~680 MB CUDA binaries) into a commit.
+examples/example_*
+examples/smoke_*
+!examples/*.rb
+tinynn/ab_smoke_*
+tinynn/probe_*
+!tinynn/*.rb
+!tinynn/*.c
+!tinynn/*.h
+!tinynn/*.cu
+!tinynn/*.m
+!tinynn/*.py
+!tinynn/*.md
+# Regenerable smoke datasets (created by prep/ scripts)
+data/*.bin
+data/vit_smoke/

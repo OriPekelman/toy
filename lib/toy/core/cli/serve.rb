@@ -28,8 +28,10 @@
 #
 # NO --json: serve is persistent and returns no result envelope.
 
+require "fileutils"
 require_relative "exit_codes"
 require_relative "../toy_root"
+require_relative "../config"
 
 module Toy
   module Core
@@ -82,6 +84,25 @@ module Toy
           # the same derivation; we echo a friendly name pre-exec).
           name = @name || File.basename(path).sub(/\.gguf\z/, "")
 
+          # Resolve a run id + create runs/<id>/ in the PROJECT cwd, mirroring
+          # cli/train.rb:101-113. serve uses Kernel.exec (NOT Open3) — there is
+          # NO "after exec", so ALL resolution + mkdir MUST happen BEFORE the
+          # exec below. The runner assumes TAO_RUN_DIR pre-exists
+          # (tnn_events_open does no parent mkdir). serve has no fixed arch, so
+          # the {arch} run-id token is the literal "serve" (only shapes the
+          # run_id STRING, e.g. serve-20260531-001). Always-on (matches train,
+          # which has no off-switch): the runner's EVENTS.length>0 guard makes
+          # emission conditional on TAO_RUN_DIR being non-empty.
+          project = Dir.pwd
+          cfg     = Toy::Core::Config.load(project)
+          run_id  = resolve_run_id(cfg.run_id_template, project, "serve")
+          run_dir = File.join(project, "runs", run_id)
+          begin
+            FileUtils.mkdir_p(run_dir)
+          rescue SystemCallError => e
+            return fail_out("could not create run dir #{run_dir}: #{e.message}")
+          end
+
           # The toy-branded line BEFORE exec; after exec the child streams
           # its own "[openai_api_llama] ready; serving" + Tep's listening
           # line. Goes to stderr so it never pollutes any piped capture.
@@ -92,12 +113,48 @@ module Toy
           # caller's stale MODEL_PATH/MODEL_NAME/PORT can never leak in.
           # Control never returns past this line.
           Kernel.exec(
-            { "MODEL_PATH" => path, "MODEL_NAME" => name, "PORT" => @port.to_s },
+            { "MODEL_PATH" => path, "MODEL_NAME" => name, "PORT" => @port.to_s,
+              "TAO_RUN_DIR" => run_dir, "TOY_RUN_ID" => run_id },
             runner
           )
         end
 
         private
+
+        # Expand a run_id_template's brace tokens. Supported:
+        #   {arch} → caller-supplied (serve passes literal "serve")
+        #   {date} → YYYYMMDD   {time} → HHMMSS
+        #   {seq}  → 3-digit zero-padded daily counter (max existing run
+        #            sharing today's {date} substring, +1)
+        # COPIED VERBATIM from cli/train.rb:259-286 (pure CRuby: Time/Dir/File/
+        # format only, no train deps). NOT arch_for — serve passes "serve".
+        def resolve_run_id(template, project, arch)
+          now  = Time.now
+          date = now.strftime("%Y%m%d")
+          time = now.strftime("%H%M%S")
+          seq  = next_seq(project, date)
+          template
+            .gsub("{arch}", arch)
+            .gsub("{date}", date)
+            .gsub("{time}", time)
+            .gsub("{seq}", format("%03d", seq))
+        end
+
+        # Daily counter: scan existing runs/* dir names containing today's
+        # date substring; return max+1 (starting at 1). Robust to whatever the
+        # template put around {seq} — we just look for the date.
+        def next_seq(project, date)
+          runs_dir = File.join(project, "runs")
+          return 1 unless File.directory?(runs_dir)
+          max = 0
+          Dir.children(runs_dir).each do |name|
+            next unless name.include?(date)
+            m = name[/(\d+)\z/, 1]
+            n = m ? m.to_i : 0
+            max = n if n > max
+          end
+          max + 1
+        end
 
         # Parse argv. Returns true, or an Integer exit code (message already
         # emitted). model is a REQUIRED positional .gguf path; --port / --name

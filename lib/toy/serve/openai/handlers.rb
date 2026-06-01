@@ -66,9 +66,36 @@ class CompletionsHandler < Tep::Handler
     if n_new <= 0; n_new = 16; end
     if n_new > 256; n_new = 256; end
 
+    # Measure generation latency across the single compute call (cheap: two
+    # tnn_events_now_seconds reads regardless of whether events are active).
+    t_start = TinyNN.tnn_events_now_seconds
     new_ids = api_generate_ids(prompt_ids, n_new)
+    t_end   = TinyNN.tnn_events_now_seconds
     prompt_len = prompt_ids.length
     completion_len = new_ids.length
+    latency_us = ((t_end - t_start) * 1.0e6).to_i
+
+    # ONE eval/serve/request event per completion (toy/v1). FILE-only side
+    # effect: the response String below is byte-UNCHANGED. Guarded by the
+    # process-global C events state (tnn_events_active==1 only when the runner
+    # opened events.jsonl, i.e. TAO_RUN_DIR was set), so the handler needs no
+    # EVENTS-path knowledge. NO emit on the 400 empty-prompt early-return.
+    if TinyNN.tnn_events_active == 1
+      STATE.req_seq = STATE.req_seq + 1
+      req_id = "req-" + STATE.req_seq.to_s
+      ev  = "{\"kind\":\"eval\",\"phase\":\"serve\""
+      ev = ev + ",\"t\":"    + TinyNN.tnn_events_now_seconds.to_s
+      ev = ev + ",\"name\":\"request\""
+      ev = ev + ",\"extra\":{"
+      ev = ev +   "\"model\":\"" + STATE.model_name + "\""
+      ev = ev +   ",\"prompt_tokens\":"     + prompt_len.to_s
+      ev = ev +   ",\"completion_tokens\":" + completion_len.to_s
+      ev = ev +   ",\"latency_us\":"        + latency_us.to_s
+      ev = ev +   ",\"sampling\":{\"max_tokens\":" + n_new.to_s + "}"
+      ev = ev +   ",\"request_id\":\"" + req_id + "\""
+      ev = ev + "}}"
+      TinyNN.tnn_events_emit(ev)
+    end
 
     "{" +
       Tep::Json.encode_pair_str("id", api_gen_id("cmpl")) + "," +

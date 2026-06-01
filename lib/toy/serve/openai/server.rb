@@ -48,13 +48,18 @@ MAX_T      = (ENV["MAX_T"] || "256").to_i
 #      openai_api.rb). ----
 
 class State
-  attr_accessor :cfg, :kv, :gguf, :model_name, :ready
+  # :req_seq is a monomorphic Integer slot (always Integer) for the
+  # per-request monotonic counter the serving events emitter uses as a
+  # deterministic-shaped request_id. Held on the already-CONSTANT-held STATE
+  # so Spinel emits a typed slot; NO new polymorphic accessor (landmine #16).
+  attr_accessor :cfg, :kv, :gguf, :model_name, :ready, :req_seq
   def initialize
     @cfg  = nil
     @kv   = nil
     @gguf = TinyNN.tnn_null_ptr
     @model_name = MODEL_NAME
     @ready      = false
+    @req_seq    = 0
   end
 end
 STATE = State.new

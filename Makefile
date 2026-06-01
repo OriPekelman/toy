@@ -276,6 +276,21 @@ gate-cuda:
 gate-ckpt-roundtrip:
 	ruby prep/ckpt_roundtrip_gate.rb
 
+# STRUCTURAL serving-telemetry gate: boot libexec/toy-serve with TAO_RUN_DIR
+# set, POST /v1/completions, SIGTERM, then assert runs/<id>/events.jsonl carries
+# the toy/v1 run_start(serve) + eval/serve/request + run_end stream (Tao #6).
+# Honest STRUCTURAL (NOT byte-identical): t/latency_us/request_id are
+# wall-clock/counter and cannot be byte-stable. Self-builds the runner.
+.PHONY: gate-serve-events
+gate-serve-events:
+	ruby prep/serve_events_gate.rb
+
+# Umbrella: the byte-baseline serve gate THEN the structural events gate.
+.PHONY: gate-serve
+gate-serve:
+	ruby prep/serve_gate.rb
+	ruby prep/serve_events_gate.rb
+
 # P4 — from-scratch TRAINING compute runner (CRuby→runner COMPUTE BRIDGE,
 # same shape as toy-infer). Spinel source lib/toy/run/train.rb; the binary
 # path EQUALS the make target so ToyRoot.ensure_built("libexec/toy-train")
