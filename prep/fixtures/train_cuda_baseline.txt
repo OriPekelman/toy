@@ -1,0 +1,32 @@
+# prep/fixtures/train_cuda_baseline.txt — recorded CUDA from-scratch loss curve.
+#
+# Recorded by RUNNING the BUILT runner:
+#   bin/toy train from-scratch --device cuda --steps 5 --seed 0
+# (the lib/toy/run/train_cuda.rb path: untied=true, donor_d_in=128, lens-fold
+# write, "loss=" format, every step). NOT transcribed from the
+# examples/06_train_from_scratch_cuda output (which uses untied=false + a
+# different hp + "CE=" format + a step subset — a DIFFERENT curve).
+#
+# DETERMINISM — EMPIRICAL, NOT CONTRACTUAL. LOUD WARNING:
+#   * Recorded on THIS box: NVIDIA GB10 (sm_121), CUDA toolkit 13.0
+#     (nvcc V13.0.88), NVIDIA driver 580.142, against the
+#     tinynn/libtinynn_ggml_cuda.a built from this tree.
+#   * CUDA from-scratch training was verified byte-deterministic run-to-run
+#     here (3x @ STEPS=5 produced identical loss strings, no low-bit drift).
+#   * This is NOT guaranteed across hardware. ggml-cuda float atomicAdd
+#     accumulation ORDER in the backward reductions is not contractually
+#     fixed across GPUs / driver versions / CUDA-toolkit versions / after a
+#     backend rebuild. If this gate is run on different hardware OR after
+#     rebuilding tinynn/libtinynn_ggml_cuda.a, this baseline MUST be RE-PINNED.
+#     Never claim guaranteed determinism.
+#   * Do NOT compare this curve against the CPU fixture
+#     prep/fixtures/train_baseline.txt: the CUDA F32 curve differs from the
+#     CPU f64 curve by ~0.3% (accumulation precision), which is EXPECTED
+#     (docs/archive/p1-grad-bisection-2026-05-22.md), not a bug.
+#
+# Format: bare "step N: loss=…" lines; '#'/blank lines ignored by the gate.
+step 1: loss=6.440946102142334
+step 2: loss=6.4006571769714355
+step 3: loss=6.3215107917785645
+step 4: loss=6.23642635345459
+step 5: loss=6.161816120147705

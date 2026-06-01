@@ -50,6 +50,9 @@ module Toy
         # contract — only the binary differs.
         RUNNER_TARGET      = "libexec/toy-train"
         LORA_RUNNER_TARGET = "libexec/toy-train-lora"
+        # CUDA from-scratch runner — a SEPARATE per-device binary (single-type
+        # binary, landmine #16). Selected only for --device cuda + from-scratch.
+        CUDA_RUNNER_TARGET = "libexec/toy-train-cuda"
 
         DEFAULT_STEPS = 5  # the gate config (smoke_recipe_from_scratch)
         DEFAULT_SEED  = 0
@@ -69,6 +72,7 @@ module Toy
           @rank  = nil   # lora rank (Integer)
           @corpus = nil  # warm-start corpus path
           @init  = nil   # warm-start init mode
+          @device = "cpu"  # cpu | cuda | metal (from-scratch only for non-cpu)
         end
 
         def run
@@ -76,6 +80,12 @@ module Toy
           return parsed unless parsed == true
 
           # The TOY INSTALL root (for `make`) — may differ from Dir.pwd.
+          # metal is accepted by the parser but only buildable in a macOS
+          # build — gate it HERE, before any build/Open3 (mirrors infer.rb).
+          if @device == "metal"
+            return fail_out("metal is only available in a macOS build")
+          end
+
           root = ToyRoot.locate_root
           unless root
             return fail_out(
@@ -86,7 +96,16 @@ module Toy
             )
           end
 
-          target = @recipe == "lora" ? LORA_RUNNER_TARGET : RUNNER_TARGET
+          # Per-device binary (single-type, landmine #16). lora can never reach
+          # cuda (post-parse guard rejects non-cpu for non-from-scratch), so the
+          # cpu/lora link lines stay byte-identical.
+          target = if @recipe == "lora"
+                     LORA_RUNNER_TARGET
+                   elsif @device == "cuda"
+                     CUDA_RUNNER_TARGET
+                   else
+                     RUNNER_TARGET
+                   end
           ok, err = ToyRoot.ensure_built(root, target, quiet: @json)
           return fail_out(err) unless ok
 
@@ -212,6 +231,20 @@ module Toy
               @corpus = $1
             when /\A--init=(.*)\z/m
               @init = $1
+            when "--device"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--device requires a value") if val.nil?
+              unless %w[cpu cuda metal].include?(val)
+                return bad_arg("--device must be one of cpu, cuda, metal, got #{val.inspect}")
+              end
+              @device = val
+            when /\A--device=(.*)\z/
+              val = $1
+              unless %w[cpu cuda metal].include?(val)
+                return bad_arg("--device must be one of cpu, cuda, metal, got #{val.inspect}")
+              end
+              @device = val
             when /\A-/
               return bad_arg("unknown flag #{tok.inspect}")
             else
@@ -238,6 +271,11 @@ module Toy
           end
           if !@init.nil? && @init != "scratch"
             return bad_arg("--init #{@init.inspect} unsupported; only 'scratch' has a gate curve in this slice")
+          end
+          # This slice ships --device for from-scratch only; lora/warm-start
+          # stay cpu-only (separate later slices).
+          if @device != "cpu" && @recipe != "from-scratch"
+            return bad_arg("--device #{@device.inspect} is only supported with recipe 'from-scratch' in this slice")
           end
           true
         end

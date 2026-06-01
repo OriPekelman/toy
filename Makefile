@@ -276,6 +276,15 @@ gate-cuda:
 gate-ckpt-roundtrip:
 	ruby prep/ckpt_roundtrip_gate.rb
 
+# CUDA from-scratch TRAINING gate (STRONG arm, no epsilon): train
+# from-scratch --device cuda --steps 5 --seed 0, assert the "step N: loss="
+# curve byte-equals prep/fixtures/train_cuda_baseline.txt, loss decreases,
+# and the CUDA checkpoint round-trips through CPU `toy infer`. Determinism is
+# EMPIRICAL on this GB10 — see the fixture header. bin/toy auto-builds.
+.PHONY: gate-train-cuda
+gate-train-cuda:
+	ruby prep/train_cuda_gate.rb
+
 # STRUCTURAL serving-telemetry gate: boot libexec/toy-serve with TAO_RUN_DIR
 # set, POST /v1/completions, SIGTERM, then assert runs/<id>/events.jsonl carries
 # the toy/v1 run_start(serve) + eval/serve/request + run_end stream (Tao #6).
@@ -323,6 +332,23 @@ libexec/toy-train-lora: lib/toy/run/train_lora.rb lib/toy.rb lib/toy_smollm2.rb 
 		lib/tinynn.rb tinynn/libtinynn_ggml.a | libexec
 	$(SPINEL) $< -o $@
 toy-train-lora: libexec/toy-train-lora
+
+# P4/GPU — from-scratch CUDA TRAINING runner. CUDA twin of libexec/toy-train,
+# from-scratch ONLY (warm_start dropped). SINGLE-TYPE binary (landmine #16):
+# TinyNNCuda is the compute path; lib/tinynn.rb + lib/transformer.rb stay in
+# deps because transformer.rb requires tinynn -> defines CPU TinyNN for the
+# checkpoint write/fuse/drift seam (dropping them breaks the writer). Links
+# the CUDA ggml backend via -Wl,-u,tnn_cuda_force_link (every cuda target).
+# CPU-only; NOT in MIRRORABLE (hand-written, see prep/gen_cuda_mirror.rb).
+libexec/toy-train-cuda: lib/toy/run/train_cuda.rb lib/toy.rb lib/toy_smollm2.rb \
+		lib/llama_seq_forward_ffi_cuda.rb lib/toy/llm/recipes/from_scratch_cuda.rb \
+		lib/toy_gguf_writer.rb lib/toy_drift_grad.rb lib/toy_gguf_fuse.rb lib/transformer.rb \
+		lib/toy/llm/primitives/rms_norm_cuda.rb lib/toy/llm/primitives/rope_cuda.rb \
+		lib/toy/llm/primitives/swiglu_cuda.rb lib/toy/llm/primitives/gqa_cuda.rb \
+		lib/toy/llm/blocks/transformer_block_cuda.rb lib/toy/llm/archs/llama_arch_cuda.rb \
+		lib/tinynn_cuda.rb lib/tinynn.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
+toy-train-cuda: libexec/toy-train-cuda
 
 # P4 — `toy serve` PERSISTENT compute runner (OpenAI-compatible HTTP).
 # Unlike infer/train/eval (compute-once), this runner blocks in Tep.run!.
@@ -1361,7 +1387,7 @@ clean:
 	      examples/example_train_from_scratch_cpu \
 	      examples/example_train_from_scratch_cuda \
 	      examples/example_finetune examples/example_finetune_cuda \
-	      libexec/toy-infer libexec/toy-train libexec/toy-eval libexec/toy-serve examples/example_train
+	      libexec/toy-infer libexec/toy-train libexec/toy-train-cuda libexec/toy-eval libexec/toy-serve examples/example_train
 
 distclean: clean
 	rm -rf $(GGML_DIR)/build $(GGML_DIR)/build-cuda $(GGML_DIR)/build-metal
