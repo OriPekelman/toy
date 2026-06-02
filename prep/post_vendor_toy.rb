@@ -25,7 +25,7 @@
 
 require "fileutils"
 
-TOY_SRC  = ENV.fetch("TOY_SRC", File.expand_path("~/sites/toy_ruby_neural_network"))
+TOY_SRC  = ENV.fetch("TOY_SRC", File.expand_path("~/sites/toy"))
 VENDORED = File.expand_path("../vendor/spinel/toy/lib", __dir__)
 
 def die(msg)

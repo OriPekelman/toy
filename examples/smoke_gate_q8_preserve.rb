@@ -81,7 +81,7 @@ RMS_EPS   = 9.999999974752427e-07
 Q8_0 = 8
 F32  = 0
 
-GGUF_PATH = "/home/oripekelman/sites/toy_ruby_neural_network/data/qwen25-0.5b-native-q8.gguf"
+GGUF_PATH = "/home/oripekelman/sites/toy/data/qwen25-0.5b-native-q8.gguf"
 
 # Hand-written config (no Struct.new — Spinel #16). head_dim defaults to
 # D_MODEL/N_HEADS = 896/14 = 64 inside the ctor (key_length absent in GGUF).

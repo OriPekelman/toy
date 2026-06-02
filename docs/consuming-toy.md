@@ -28,7 +28,7 @@ for the broader convention.
 
 ## Prereqs (one-time)
 
-- A working toy checkout at e.g. `~/sites/toy_ruby_neural_network`,
+- A working toy checkout at e.g. `~/sites/toy`,
   with `make tinynn/libtinynn_ggml.a` already run (so the `.a`
   archives the consumer links against exist). For CUDA/Metal,
   `make setup-ggml-cuda` / `setup-ggml-metal` similarly.
@@ -46,7 +46,7 @@ cat > Gemfile <<'EOF'
 source "https://rubygems.org"
 ruby "3.2.3", engine: "spinel", engine_version: "0.0.0"
 
-gem "toy", path: "../toy_ruby_neural_network"   # or "../toy" if symlinked
+gem "toy", path: "../toy"   # or "../toy" if symlinked
 EOF
 
 # 2. Resolve — produces Gemfile.lock with a PATH source.
@@ -62,8 +62,8 @@ SPINEL_DIR=~/sites/spinel ~/sites/spinelgems/exe/spinel-compat vendor
 #    from toy's prep/ into your own prep/ (it's a template — same
 #    shape for every consumer):
 mkdir -p prep
-cp ../toy_ruby_neural_network/prep/post_vendor_toy.rb prep/
-./prep/post_vendor_toy.rb         # uses TOY_SRC=~/sites/toy_ruby_neural_network
+cp ../toy/prep/post_vendor_toy.rb prep/
+./prep/post_vendor_toy.rb         # uses TOY_SRC=~/sites/toy
 
 # 5. Compile your experiment.
 spinel experiment.rb -o experiment
@@ -97,7 +97,7 @@ against `LlamaSeqForwardFFICache` / `ViTTinyForwardFFICache` /
 
 | Env | Purpose |
 | --- | --- |
-| `TOY_SRC=…` | Absolute path to toy's checkout. Defaults to `~/sites/toy_ruby_neural_network`. The `-L` rewrites anchor here. |
+| `TOY_SRC=…` | Absolute path to toy's checkout. Defaults to `~/sites/toy`. The `-L` rewrites anchor here. |
 | `TOY_DISABLE=cuda,metal` | Skip rewriting backend files you don't compile. CPU is always rewritten. |
 | `CUDA_DIR_LIB=…` | Override the absolute CUDA libdir baked into `tinynn_cuda.rb`. Defaults to `/usr/local/cuda/lib64`. |
 
@@ -172,7 +172,7 @@ hand-pathed `require_relative` into toy's tree).
 
 ```sh
 # Initial:
-gem build ../toy_ruby_neural_network/toy.gemspec   # optional — produces a .gem
+gem build ../toy/toy.gemspec   # optional — produces a .gem
                                                    # for off-machine consumption.
                                                    # For path:-based consumers
                                                    # (siblings on the same host)

@@ -90,7 +90,7 @@ The consumer-side flow mirrors the tep flow, plus one post-vendor
 hook:
 
 ```sh
-# Gemfile:  gem "toy", path: "../toy_ruby_neural_network"
+# Gemfile:  gem "toy", path: "../toy"
 bundle lock
 SPINEL_DIR=~/sites/spinel ~/sites/spinelgems/exe/spinel-compat vendor
 ./prep/post_vendor_toy.rb          # rewrite link paths
@@ -110,7 +110,7 @@ Env knobs honored by `prep/post_vendor_toy.rb`:
 
 | Env | Purpose |
 | --- | --- |
-| `TOY_SRC=…` | Absolute path to toy's checkout (default `~/sites/toy_ruby_neural_network`). The `-L` rewrites anchor here. |
+| `TOY_SRC=…` | Absolute path to toy's checkout (default `~/sites/toy`). The `-L` rewrites anchor here. |
 | `TOY_DISABLE=cuda,metal` | Skip rewriting backend files the consumer doesn't compile. CPU is always rewritten. |
 | `CUDA_DIR_LIB=…` | Override the absolute CUDA libdir baked into `tinynn_cuda.rb` (default `/usr/local/cuda/lib64`). |
 
