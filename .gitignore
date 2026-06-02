@@ -225,3 +225,33 @@ tinynn/probe_*
 # deliberately NOT ignored here (the train_gate vit-tiny case must reproduce
 # cross-machine). Only top-level scratch .bin stay ignored.
 data/*.bin
+
+# ── Generated backend mirrors (CPU source is truth; _cuda/_metal generated at
+# build time by prep/gen_cuda_mirror.rb — see Makefile MIRROR_CUDA/MIRROR_METAL
+# rules). Gitignored so the ~19k generated lines never live in git; make/gates
+# regenerate on demand. Hand-written GPU files (tinynn_*, transformer_lm_*,
+# recipe twins, lib/toy/run/*_cuda) stay TRACKED — they are not in this list.
+lib/toy/llm/primitives/rms_norm_cuda.rb
+lib/toy/llm/primitives/rms_norm_metal.rb
+lib/toy/llm/primitives/rope_cuda.rb
+lib/toy/llm/primitives/rope_metal.rb
+lib/toy/llm/primitives/swiglu_cuda.rb
+lib/toy/llm/primitives/swiglu_metal.rb
+lib/toy/llm/primitives/gqa_cuda.rb
+lib/toy/llm/primitives/gqa_metal.rb
+lib/toy/llm/blocks/transformer_block_cuda.rb
+lib/toy/llm/blocks/transformer_block_metal.rb
+lib/toy/llm/archs/llama_arch_cuda.rb
+lib/toy/llm/archs/llama_arch_metal.rb
+lib/llama_seq_forward_ffi_cuda.rb
+lib/llama_seq_forward_ffi_metal.rb
+lib/toy_smollm2_ffi_kv_cuda.rb
+lib/toy_smollm2_ffi_kv_metal.rb
+lib/gpt2_ffi_cuda.rb
+lib/gpt2_ffi_metal.rb
+lib/gpt2_ffi_kv_cuda.rb
+lib/gpt2_ffi_kv_metal.rb
+examples/06_train_from_scratch_cuda.rb
+examples/06_train_from_scratch_metal.rb
+examples/smoke_projection_lens_cuda.rb
+examples/smoke_projection_lens_metal.rb

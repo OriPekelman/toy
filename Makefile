@@ -691,8 +691,35 @@ examples: toy-infer example_train example_finetune example_finetune_cuda
 gen-mirrors:
 	@ruby prep/gen_cuda_mirror.rb
 
+# Mirrors are off-disk build artifacts (gitignored), so there is no committed
+# copy to drift against. verify-mirrors now regenerates every mirror (incl. the
+# Metal twins, which no Linux build consumes) and then re-runs the generator in
+# --verify mode: this asserts the generator is healthy and IDEMPOTENT (generate
+# == verify), the only invariant left once nothing is committed.
 verify-mirrors:
+	@ruby prep/gen_cuda_mirror.rb
 	@ruby prep/gen_cuda_mirror.rb --verify
+
+# Mirrors generated at build time (off-disk; gitignored). Every runner rule
+# lists the mirror .rb as a prerequisite, so Make regenerates it on demand from
+# the CPU source of truth + the generator. `--backend` writes one backend, so
+# each target rebuilds exactly itself. These mirror MIRRORABLE in
+# prep/gen_cuda_mirror.rb — keep the two lists in sync. STATIC pattern rules
+# (targets restricted to this explicit list) so hand-written mirrors like
+# lib/tinynn_cuda.rb / lib/transformer_lm_cuda.rb are NOT captured.
+MIRROR_CUDA := \
+  lib/toy/llm/primitives/rms_norm_cuda.rb lib/toy/llm/primitives/rope_cuda.rb \
+  lib/toy/llm/primitives/swiglu_cuda.rb lib/toy/llm/primitives/gqa_cuda.rb \
+  lib/toy/llm/blocks/transformer_block_cuda.rb lib/toy/llm/archs/llama_arch_cuda.rb \
+  lib/llama_seq_forward_ffi_cuda.rb lib/toy_smollm2_ffi_kv_cuda.rb \
+  lib/gpt2_ffi_cuda.rb lib/gpt2_ffi_kv_cuda.rb \
+  examples/06_train_from_scratch_cuda.rb examples/smoke_projection_lens_cuda.rb
+MIRROR_METAL := $(MIRROR_CUDA:_cuda.rb=_metal.rb)
+
+$(MIRROR_CUDA): %_cuda.rb: %.rb prep/gen_cuda_mirror.rb
+	@ruby prep/gen_cuda_mirror.rb --backend cuda $<
+$(MIRROR_METAL): %_metal.rb: %.rb prep/gen_cuda_mirror.rb
+	@ruby prep/gen_cuda_mirror.rb --backend metal $<
 
 # Parity-checks vs native TransformerLM.forward.
 
