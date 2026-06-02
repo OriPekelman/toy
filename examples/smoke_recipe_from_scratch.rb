@@ -27,6 +27,8 @@
 require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
 require_relative "../lib/llama_seq_forward_ffi"
+require_relative "../lib/toy/llm/adamw"
+require_relative "../lib/toy/llm/labels"
 require_relative "../lib/toy/llm/recipes/from_scratch"
 
 STEPS    = (ENV["STEPS"]    || "5").to_i
@@ -39,7 +41,7 @@ D_FF     = 128
 N_LAYERS = 2
 CONTEXT  = 32
 
-cfg = Toy::SmolLM2Config.new(VOCAB, D_MODEL, N_HEADS, N_HEADS,
+cfg = Toy::SmolLM2Config.mha(VOCAB, D_MODEL, N_HEADS,
                               D_FF, N_LAYERS, CONTEXT, 10000.0, 1.0e-5)
 cfg.donor_d_in = DONOR_D
 puts "config: vocab=" + cfg.vocab.to_s +
@@ -67,21 +69,12 @@ while seq_ids.length < CONTEXT; seq_ids.push(0); end
 positions = [0]; positions.pop
 p = 0; while p < CONTEXT; positions.push(p); p = p + 1; end
 
-# Build labels: shift-by-one one-hot.
-m_labels = Mat.new(CONTEXT, VOCAB)
-j = 0; while j < CONTEXT * VOCAB; m_labels.flat[j] = 0.0; j = j + 1; end
-k = 0
-while k < CONTEXT
-  target = (k + 1 < CONTEXT) ? seq_ids[k + 1] : seq_ids[k]
-  m_labels.flat[k * VOCAB + target] = 1.0
-  k = k + 1
-end
+# Build labels: shift-by-one one-hot (UNGUARDED — known-good first line).
+m_labels = Toy::Labels.next_token(seq_ids, VOCAB, CONTEXT, 1)
 
-# CONSTANT hyper-params (NOT example 06's bias-corrected per-step hp).
-m_hp = Mat.new(1, 7)
-m_hp.flat[0] = 0.001; m_hp.flat[1] = 0.9; m_hp.flat[2] = 0.95
-m_hp.flat[3] = 1.0e-8; m_hp.flat[4] = 0.0
-m_hp.flat[5] = 0.9; m_hp.flat[6] = 0.95
+# CONSTANT hyper-params via NAMED AdamW (NOT example 06's bias-corrected
+# per-step hp; defaults beta2=0.95, bias_correct=false → slots5/6=betas).
+m_hp = Toy::AdamW.new.hp(0)
 
 losses = [0.0]; losses.pop
 step = 0

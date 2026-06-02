@@ -39,6 +39,8 @@ require_relative "../lib/toy_smollm2"
 require_relative "../lib/llama_seq_forward_ffi"
 require_relative "../lib/toy_corpus_loader"
 require_relative "../lib/toy_lr_schedule"
+require_relative "../lib/toy/llm/adamw"
+require_relative "../lib/toy/llm/labels"
 require_relative "../lib/toy/llm/recipes/warm_start"
 
 # All 09 defaults (the gate's resolved config).
@@ -56,7 +58,7 @@ LR_MIN   = (ENV["LR_MIN"]   || "0.00001").to_f
 WARMUP   = (ENV["WARMUP"]   || "5").to_i
 CORPUS   = ENV["CORPUS"]    || "data/ts_seqs.bin"
 
-cfg = Toy::SmolLM2Config.new(VOCAB, D_MODEL, N_HEADS, N_HEADS,
+cfg = Toy::SmolLM2Config.mha(VOCAB, D_MODEL, N_HEADS,
                               D_FF, N_LAYERS, CONTEXT, 10000.0, 1.0e-5)
 cfg.donor_d_in = DONOR_D
 puts "config: vocab=" + cfg.vocab.to_s +
@@ -75,24 +77,14 @@ recipe.realize_scratch!(cfg, CONTEXT, 1, 0, true, false, SEED, 1.0)
 recipe.build!
 puts "realize OK"
 
-# AdamW hp[1..6] are constants across steps; hp[0] (lr) refreshes each
-# step from the cosine schedule. VERBATIM from 09 L274-281 — note
-# hp[2]/hp[5]/hp[6] = 0.95 (NOT 0.999).
-m_hp = Mat.new(1, 7)
-m_hp.flat[0] = LR_MAX
-m_hp.flat[1] = 0.9
-m_hp.flat[2] = 0.95
-m_hp.flat[3] = 1.0e-8
-m_hp.flat[4] = 0.0
-m_hp.flat[5] = 0.9
-m_hp.flat[6] = 0.95
+# NAMED AdamW. Defaults (beta2=0.95, bias_correct=false) → slots5/6 =
+# constant betas — byte-identical to 09's inline hp. lr refreshes each
+# step from the cosine schedule; the hp Mat is rebuilt per step below.
+adamw = Toy::AdamW.new
 
 # Pre-compute the position vector (shared across steps). 09 L284-285.
 positions = [0]; positions.pop
 p = 0; while p < CONTEXT; positions.push(p); p = p + 1; end
-
-# Pre-allocate label buffer (overwritten each step). 09 L288.
-m_labels = Mat.new(CONTEXT, VOCAB)
 
 # Training loop — VERBATIM from 09 L290-356 (minus the events/checkpoint
 # side-channels). Cosine LR + streamed corpus + shift-by-one one-hot.
@@ -102,26 +94,15 @@ step          = 0
 while step < STEPS
   # Cosine LR for this step (09 L297-298).
   lr = ToyLR.cosine(step, STEPS, LR_MAX, LR_MIN, WARMUP)
-  m_hp.flat[0] = lr
+  adamw.lr = lr
+  m_hp = adamw.hp(step)   # bias_correct=false → slots5/6=betas
 
   # Read next sequence from the corpus (09 L301-302).
   seq_ids = ToyCorpusLoader.read_seq(CORPUS, byte_offset, CONTEXT)
   byte_offset = byte_offset + CONTEXT * 4   # i32
 
-  # Build shift-by-one one-hot labels with the in-vocab guard (09 L304-317).
-  j = 0
-  while j < CONTEXT * VOCAB
-    m_labels.flat[j] = 0.0
-    j = j + 1
-  end
-  k = 0
-  while k < CONTEXT
-    target = (k + 1 < CONTEXT) ? seq_ids[k + 1] : seq_ids[k]
-    if target >= 0 && target < VOCAB
-      m_labels.flat[k * VOCAB + target] = 1.0
-    end
-    k = k + 1
-  end
+  # Shift-by-one one-hot labels with the in-vocab guard (09 L304-317).
+  m_labels = Toy::Labels.next_token_guarded(seq_ids, VOCAB, CONTEXT, 1)
 
   loss = recipe.step!(seq_ids, positions, m_labels, m_hp, step == 0)
   losses.push(loss)

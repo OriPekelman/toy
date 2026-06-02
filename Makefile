@@ -371,6 +371,7 @@ libexec/toy-train: lib/toy/run/train.rb lib/toy.rb lib/toy_smollm2.rb \
 		lib/toy_corpus_loader.rb lib/toy_lr_schedule.rb \
 		lib/llama_seq_forward_ffi.rb lib/toy/llm/recipes/from_scratch.rb \
 		lib/toy/llm/recipes/warm_start.rb \
+		lib/toy/llm/adamw.rb lib/toy/llm/labels.rb \
 		lib/toy_gguf_writer.rb lib/toy_drift_grad.rb lib/transformer.rb \
 		lib/toy/llm/primitives/rms_norm.rb lib/toy/llm/primitives/rope.rb \
 		lib/toy/llm/primitives/swiglu.rb lib/toy/llm/primitives/gqa.rb \
@@ -385,6 +386,7 @@ toy-train: libexec/toy-train
 # header). CPU-only; NOT in MIRRORABLE.
 libexec/toy-train-lora: lib/toy/run/train_lora.rb lib/toy.rb lib/toy_smollm2.rb \
 		lib/llama_seq_forward_ffi.rb lib/toy/llm/recipes/lora.rb \
+		lib/toy/llm/adamw.rb \
 		lib/toy_gguf_writer.rb lib/toy_drift_grad.rb lib/transformer.rb \
 		lib/toy/llm/primitives/rms_norm.rb lib/toy/llm/primitives/rope.rb \
 		lib/toy/llm/primitives/swiglu.rb lib/toy/llm/primitives/gqa.rb \
@@ -403,6 +405,7 @@ toy-train-lora: libexec/toy-train-lora
 libexec/toy-train-vit: lib/toy/run/train_vit.rb lib/toy/llm/recipes/vit_tiny.rb \
 		lib/vit_tiny_forward_ffi.rb lib/toy_vit.rb lib/toy_smollm2.rb \
 		lib/toy_image_loader.rb lib/toy_lr_schedule.rb lib/toy_drift_grad.rb \
+		lib/toy/llm/adamw.rb \
 		lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
 	$(SPINEL) $< -o $@
 toy-train-vit: libexec/toy-train-vit
@@ -418,6 +421,7 @@ libexec/toy-train-cuda: lib/toy/run/train_cuda.rb lib/toy.rb lib/toy_smollm2.rb 
 		lib/toy_corpus_loader.rb lib/toy_lr_schedule.rb \
 		lib/llama_seq_forward_ffi_cuda.rb lib/toy/llm/recipes/from_scratch_cuda.rb \
 		lib/toy/llm/recipes/warm_start_cuda.rb \
+		lib/toy/llm/adamw.rb lib/toy/llm/labels.rb \
 		lib/toy_gguf_writer.rb lib/toy_drift_grad.rb lib/toy_gguf_fuse.rb lib/transformer.rb \
 		lib/toy/llm/primitives/rms_norm_cuda.rb lib/toy/llm/primitives/rope_cuda.rb \
 		lib/toy/llm/primitives/swiglu_cuda.rb lib/toy/llm/primitives/gqa_cuda.rb \
@@ -438,6 +442,7 @@ toy-train-cuda: libexec/toy-train-cuda
 # ggml backend via -Wl,-u,tnn_cuda_force_link. NOT in MIRRORABLE (hand-written).
 libexec/toy-train-lora-cuda: lib/toy/run/train_lora_cuda.rb lib/toy.rb lib/toy_smollm2.rb \
 		lib/llama_seq_forward_ffi_cuda.rb lib/toy/llm/recipes/lora_cuda.rb \
+		lib/toy/llm/adamw.rb \
 		lib/toy_gguf_writer.rb lib/toy_drift_grad.rb lib/transformer.rb \
 		lib/toy/llm/primitives/rms_norm_cuda.rb lib/toy/llm/primitives/rope_cuda.rb \
 		lib/toy/llm/primitives/swiglu_cuda.rb lib/toy/llm/primitives/gqa_cuda.rb \
@@ -458,6 +463,7 @@ toy-train-lora-cuda: libexec/toy-train-lora-cuda
 # gx10 RUNTIME-UNVERIFIED — pin baseline + gate on the Mac.
 libexec/toy-train-metal: lib/toy/run/train_metal.rb lib/toy.rb lib/toy_smollm2.rb \
 		lib/llama_seq_forward_ffi_metal.rb lib/toy/llm/recipes/from_scratch_metal.rb \
+		lib/toy/llm/adamw.rb lib/toy/llm/labels.rb \
 		lib/toy_gguf_writer.rb lib/toy_drift_grad.rb lib/toy_gguf_fuse.rb lib/transformer.rb \
 		lib/toy/llm/primitives/rms_norm_metal.rb lib/toy/llm/primitives/rope_metal.rb \
 		lib/toy/llm/primitives/swiglu_metal.rb lib/toy/llm/primitives/gqa_metal.rb \
@@ -545,13 +551,20 @@ examples/smoke_gate_b_gt_1: examples/smoke_gate_b_gt_1.rb lib/llama_seq_forward_
 # P2.6 — L4 FromScratch recipe gate. Drives the same random-init config
 # as smoke_projection_lens THROUGH Toy::LLM::Recipes::FromScratch; its
 # loss curve must byte-equal the projection-lens reference.
-examples/smoke_recipe_from_scratch: examples/smoke_recipe_from_scratch.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb lib/toy_drift_grad.rb lib/toy/llm/recipes/from_scratch.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+examples/smoke_recipe_from_scratch: examples/smoke_recipe_from_scratch.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb lib/toy_drift_grad.rb lib/toy/llm/adamw.rb lib/toy/llm/labels.rb lib/toy/llm/recipes/from_scratch.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
+
+# BLESSED from-scratch path — the short tutorial. Same gate-fixture
+# config as smoke_recipe_from_scratch, but the clean tutorial read using
+# the value objects (Toy::SmolLM2Config.mha + Toy::Labels + Toy::AdamW).
+examples/example_train_from_scratch_blessed: examples/train_from_scratch.rb lib/toy.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb lib/toy/llm/adamw.rb lib/toy/llm/labels.rb lib/toy/llm/recipes/from_scratch.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+example_train_from_scratch_blessed: examples/example_train_from_scratch_blessed
 
 # L4 LoRA recipe gate. Drives the same LoRA fine-tune config as the
 # frozen reference 03_finetune_lora THROUGH Toy::LLM::Recipes::LoRA; its
 # loss curve must byte-equal the reference at the fixed config.
-examples/smoke_recipe_lora: examples/smoke_recipe_lora.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/toy/llm/recipes/lora.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+examples/smoke_recipe_lora: examples/smoke_recipe_lora.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/gpt2.rb lib/gguf_load.rb lib/tinynn.rb lib/toy/llm/adamw.rb lib/toy/llm/recipes/lora.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
 # L4 WarmStart recipe gate. Drives the same warm-start config as the
@@ -559,7 +572,7 @@ examples/smoke_recipe_lora: examples/smoke_recipe_lora.rb lib/llama_seq_forward_
 # Toy::LLM::Recipes::WarmStart; its loss curve must byte-equal 09's at
 # the fixed config (SEED=0 STEPS=5). The fixture drives the cosine LR
 # schedule + streaming corpus loader (deps below); the recipe stays thin.
-examples/smoke_recipe_warm_start: examples/smoke_recipe_warm_start.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb lib/toy_drift_grad.rb lib/toy_corpus_loader.rb lib/toy_lr_schedule.rb lib/toy/llm/recipes/warm_start.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+examples/smoke_recipe_warm_start: examples/smoke_recipe_warm_start.rb lib/llama_seq_forward_ffi.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb lib/toy_drift_grad.rb lib/toy_corpus_loader.rb lib/toy_lr_schedule.rb lib/toy/llm/adamw.rb lib/toy/llm/labels.rb lib/toy/llm/recipes/warm_start.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
 # P2.6 gate — GGUF F32 mmap round-trip parity. Head-fuses a random_init

@@ -8,13 +8,15 @@
 #   │   ├── primitives/.keep   (L1 custom ops — rare)
 #   │   ├── blocks/.keep       (L2 custom blocks — rare)
 #   │   ├── archs/.keep        (L3 custom architectures — common)
-#   │   └── recipes/.keep      (L4 training plans / curricula — common)
+#   │   └── recipes/hello.rb   (L4 — a RUNNABLE from-scratch starter)
 #   ├── data/.keep       # GGUFs (HF-cache symlinks ok), corpora
 #   ├── runs/.keep       # event streams + checkpoints (Tao reads here)
 #   └── bin/toy          # courtesy binstub (thin ruby stub)
 #
 # The 4 algos/ subdirs are the documented convention but optional at use
-# time — discovery also accepts a single algos/my_llama.rb.
+# time — discovery also accepts a single algos/my_llama.rb. recipes/ ships
+# a runnable hello.rb (mirrors examples/train_from_scratch.rb) so the very
+# first thing a newcomer can do is RUN something end-to-end.
 
 require "fileutils"
 require "json"
@@ -60,6 +62,81 @@ module Toy
           exit Toy::Core::CLI.run(ARGV)
         RUBY
 
+        # A RUNNABLE L4 from-scratch starter, scaffolded into
+        # algos/recipes/hello.rb. Mirrors examples/train_from_scratch.rb:
+        # the blessed value-object path (SmolLM2Config.mha + Toy::Labels +
+        # Toy::AdamW + the FromScratch recipe).
+        #
+        # It is a COMPUTE file (loads the ffi-bearing TinyNN stack), so —
+        # like every toy example — it is compiled by Spinel, NOT run under
+        # MRI (ffi_lib crashes under MRI). Spinel resolves require_relative
+        # at COMPILE time from LITERAL relative paths, so the scaffold drops
+        # a `toy_lib` symlink → $TOY_HOME/lib next to it and hello.rb
+        # require_relative's THROUGH that symlink. Build + run (the toy
+        # checkout carries the ggml archives the link step needs):
+        #
+        #   spinel algos/recipes/hello.rb -o hello && ./hello
+        #
+        # Spinel-clean: literal require_relative, no #{} interpolation, no
+        # Struct.new, no kwargs / default args.
+        HELLO_RECIPE = <<~'RUBY'
+          # algos/recipes/hello.rb — a runnable from-scratch starter.
+          #
+          # The blessed value-object path: a tiny Llama-shape model
+          # (RMSNorm + GQA + RoPE + SwiGLU) trained through the L4
+          # FromScratch recipe. Mirrors examples/train_from_scratch.rb.
+          #
+          # Compile with Spinel (it loads the ffi-bearing TinyNN stack, so
+          # it cannot run under MRI). The `toy_lib` symlink (→ a toy source
+          # checkout's lib/, created by `toy new`) is how Spinel resolves
+          # the framework at compile time. TinyNN's ffi_cflags carry
+          # RELATIVE ggml archive paths (-Ltinynn -Lvendor/ggml/build/src),
+          # so build with the toy checkout reachable as the link CWD:
+          #
+          #   cd "$TOY_HOME" && \
+          #     spinel /abs/path/to/algos/recipes/hello.rb -o /abs/path/to/hello
+          #   /abs/path/to/hello   # → step 1: loss=…
+
+          require_relative "toy_lib/toy"
+          require_relative "toy_lib/toy_smollm2"
+          require_relative "toy_lib/llama_seq_forward_ffi"
+          require_relative "toy_lib/toy/llm/adamw"
+          require_relative "toy_lib/toy/llm/labels"
+          require_relative "toy_lib/toy/llm/recipes/from_scratch"
+
+          STEPS    = (ENV["STEPS"] || "3").to_i
+          VOCAB    = 64
+          D_MODEL  = 32
+          N_HEADS  = 2
+          D_FF     = 64
+          N_LAYERS = 1
+          CONTEXT  = 8
+          SEED     = (ENV["SEED"] || "0").to_i
+
+          # Model shape via the named factory (n_kv == n_heads = MHA).
+          cfg = Toy::SmolLM2Config.mha(VOCAB, D_MODEL, N_HEADS,
+                                       D_FF, N_LAYERS, CONTEXT, 10000.0, 1.0e-5)
+
+          recipe = Toy::LLM::Recipes::FromScratch.new
+          recipe.realize!(cfg, CONTEXT, 1, 0, true, false, SEED, 1.0)
+
+          # A trivial fixed sequence + positions.
+          seq_ids   = [1, 2, 3, 4, 5, 6, 7, 8]
+          positions = [0]; positions.pop
+          p = 0; while p < CONTEXT; positions.push(p); p = p + 1; end
+
+          # Shift-by-one one-hot labels + named AdamW hyper-params.
+          m_labels = Toy::Labels.next_token(seq_ids, VOCAB, CONTEXT, 1)
+          m_hp     = Toy::AdamW.new.hp(0)
+
+          step = 0
+          while step < STEPS
+            loss = recipe.step!(seq_ids, positions, m_labels, m_hp, step == 0)
+            puts "step " + (step + 1).to_s + ": loss=" + loss.to_s
+            step = step + 1
+          end
+        RUBY
+
         ALGO_SUBDIRS = %w[primitives blocks archs recipes].freeze
 
         def initialize(argv)
@@ -89,7 +166,9 @@ module Toy
             puts "Created toy project at #{target}"
             created.each { |rel| puts "  #{rel}" }
             puts ""
-            puts "Next: cd #{@path} && toy list"
+            puts "Next: cd #{@path} && toy train from-scratch --steps 5"
+            puts "      (algos/recipes/hello.rb is a runnable from-scratch starter:"
+            puts "       spinel algos/recipes/hello.rb -o hello && ./hello)"
           end
           EXIT_OK
         rescue SystemCallError => e
@@ -129,12 +208,28 @@ module Toy
             created << "#{rel}/"
           end
 
-          # .keep files so empty dirs survive git.
-          keep_dirs = ALGO_SUBDIRS.map { |d| "algos/#{d}" } + %w[data runs]
+          # .keep files so empty dirs survive git — for the rarely-used
+          # custom-op dirs (primitives/blocks/archs) + data/runs. recipes/
+          # gets a RUNNABLE hello.rb instead of an empty .keep, so the
+          # first thing a newcomer can do is run something end-to-end.
+          keep_dirs = %w[algos/primitives algos/blocks algos/archs data runs]
           keep_dirs.each do |rel|
             write_file(File.join(target, rel, ".keep"), "")
             created << "#{rel}/.keep"
           end
+
+          write_file(File.join(target, "algos", "recipes", "hello.rb"), HELLO_RECIPE)
+          created << "algos/recipes/hello.rb"
+
+          # Symlink algos/recipes/toy_lib → $TOY_HOME/lib so hello.rb's
+          # literal require_relative "toy_lib/..." resolves at Spinel
+          # compile time. If TOY_HOME is unset we still create a dangling
+          # link (the user repoints it at their toy checkout's lib/).
+          home    = ENV["TOY_HOME"]
+          libtgt  = home && !home.empty? ? File.join(home, "lib") : "/path/to/toy/lib"
+          linkpath = File.join(target, "algos", "recipes", "toy_lib")
+          File.symlink(libtgt, linkpath) unless File.symlink?(linkpath) || File.exist?(linkpath)
+          created << "algos/recipes/toy_lib -> #{libtgt}"
 
           write_file(File.join(target, "toy.yml"), TOY_YML)
           created << "toy.yml"

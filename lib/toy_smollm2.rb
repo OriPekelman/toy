@@ -156,6 +156,30 @@ module Toy
       Toy::SmolLM2Config.new(49152, 576, 9, 3, 1536, 30,
                              8192, 100000.0, 1.0e-5)
     end
+
+    # NAMED positional factories so call sites stop being 9-arg
+    # positional soup. Both produce a cfg BYTE-IDENTICAL to the
+    # equivalent .new(...): head_dim derives in initialize
+    # (d_model/n_heads), rope_scaling defaults to RopeScaling.none,
+    # donor_d_in defaults to 0 — all unchanged.
+    #
+    # NO kwargs / default args (Spinel landmine #4). rope_base + rms_eps
+    # are TRAILING POSITIONAL args, NOT hardcoded: the from-scratch /
+    # warm sites use rope_base=10000.0 (FOUR zeros) while the lora /
+    # smollm2_135m sites use 100000.0 (FIVE zeros) — a single hardcoded
+    # base CANNOT serve both, so the caller passes its exact value.
+
+    # MHA: n_kv == n_heads (every head has its own K/V).
+    def self.mha(vocab, d_model, heads, d_ff, layers, ctx, rope_base, rms_eps)
+      Toy::SmolLM2Config.new(vocab, d_model, heads, heads, d_ff, layers,
+                             ctx, rope_base, rms_eps)
+    end
+
+    # GQA: n_kv != n_heads (heads share K/V groups).
+    def self.gqa(vocab, d_model, heads, n_kv, d_ff, layers, ctx, rope_base, rms_eps)
+      Toy::SmolLM2Config.new(vocab, d_model, heads, n_kv, d_ff, layers,
+                             ctx, rope_base, rms_eps)
+    end
   end
 
   # Llama-style block: pre-norm + residual on each sublayer.

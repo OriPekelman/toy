@@ -56,6 +56,7 @@ require_relative "../../toy"
 require_relative "../../toy_smollm2"
 require_relative "../../llama_seq_forward_ffi_cuda"
 require_relative "../llm/recipes/lora_cuda"
+require_relative "../llm/adamw"
 require_relative "../../toy_gguf_writer"
 require_relative "../../toy_drift_grad"
 
@@ -76,7 +77,7 @@ end
 # Hardcoded smollm2-135m config (see CONFIG NOTE): bit-identical to
 # train_lora.rb, but with NO gpt2 require (avoids the iv_cfg type-merge
 # miscompile).
-cfg_lora = Toy::SmolLM2Config.new(49152, 576, 9, 3, 1536, 30,
+cfg_lora = Toy::SmolLM2Config.gqa(49152, 576, 9, 3, 1536, 30,
                                   8192, 100000.0, 1.0e-5)
 lora_untied   = false
 lora_qkv_bias = false
@@ -96,13 +97,15 @@ while ti < TOKENS.length
   ti = ti + 1
 end
 
-# Constant hp[0..4]; hp[5]/hp[6] are bias-corrected per step (beta2=0.999).
-m_hp = Mat.new(1, 7)
-m_hp.flat[0] = 0.001
-m_hp.flat[1] = 0.9
-m_hp.flat[2] = 0.999
-m_hp.flat[3] = 1.0e-8
-m_hp.flat[4] = 0.0
+# NAMED AdamW (byte-identical twin of the CPU lora runner). lora differs
+# from the from-scratch defaults: beta2=0.999 and bias_correct=true, so
+# slots 5/6 carry the PER-STEP bias-correction denominators 1/(1-beta^t)
+# — NOT constant betas (see the loud finding in lib/toy/llm/adamw.rb: the
+# lora FFI graph interprets slots 5/6 DIFFERENTLY from from-scratch/warm/
+# vit). m_hp is rebuilt per step below.
+adamw_lora = Toy::AdamW.new
+adamw_lora.beta2 = 0.999
+adamw_lora.bias_correct = true
 
 positions = [0, 1, 2, 3]
 
@@ -180,8 +183,9 @@ final_loss = 0.0
 step = 1
 while step <= STEPS
   step_wall_start = TinyNNCuda.tnn_events_now_seconds
-  m_hp.flat[5] = 1.0 / (1.0 - (0.9   ** step.to_f))
-  m_hp.flat[6] = 1.0 / (1.0 - (0.999 ** step.to_f))
+  # 1-indexed step; bias_correct=true → slots 5/6 = 1/(1-0.9^t),
+  # 1/(1-0.999^t). Byte-identical to the historical inline `** step.to_f`.
+  m_hp = adamw_lora.hp(step)
   loss = recipe_lora.step!(TOKENS, positions, m_labels, m_hp, step == 1)
   final_loss = loss
   # The byte-gated line — to STDOUT.

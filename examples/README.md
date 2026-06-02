@@ -8,13 +8,15 @@ runtime to install — `make`, run.
 
 | File | What it does | Runtime |
 |---|---|---|
+| `train_from_scratch.rb` | **BLESSED from-scratch path. Start here.** Tiny Llama-shape model trained through the L4 FromScratch recipe + `Toy::AdamW` / `Toy::Labels` / `Toy::SmolLM2Config.mha`. The short tutorial. | seconds |
 | `02_train_custom_gpt.rb` | Train a tiny GPT from scratch on TinyStories. Bumping EPOCHS makes a model that writes English. | ~3 min default |
 | `03_finetune_lora.rb`    | LoRA / **QLoRA** fine-tune via the sequence-mode forward graph (CPU). Needs a native-layout GGUF — see prep step below. | ~30 s |
 | `03_finetune_lora_cuda.rb` | CUDA mirror of the above. F32 by default; pass `Q8=1` for QLoRA (Q8-stays-Q8 path via `realize_for_q8_copy`). | ~10 s on GB10 |
-| `06_train_from_scratch.rb` | **Modern from-scratch trainer.** Llama-shape (RMSNorm + GQA + RoPE + SwiGLU); CPU + CUDA (DEVICE=cuda). Emits toy/v1 events. BATCH + GRAD_ACCUM + WEIGHT_DTYPE knobs. Tao's experiment harness rides this. | seconds–minutes |
+| `06_train_from_scratch.rb` | Instrumentation reference for the recipe path: events, checkpoints, drift sentinels, CKA taps, Tao harness. Read `train_from_scratch.rb` first; this is the full-knobs version. | seconds–minutes |
 | `07_train_vit_tiny.rb`   | ViT-Tiny image classifier with timm IN-21k AugReg donor warm-start. Patch embed + class token + 12 blocks + MLP head; CIFAR-shape smoke. | ~30 s for 200 steps |
 | `08_lmc.rb`              | Linear Mode Connectivity blend of two from-scratch checkpoints over an α grid; emits one `eval` per α. Tao's `Analyze.lmc` consumes these. | seconds |
 | `09_warm_start_train.rb` | Warm-start trainer w/ donor `token_embd` + optional PCA-init projection lens (Qwen-2.5-1.5B → 410M-shape transfer; see file header for the full invocation). | seconds–hours |
+| `smoke_recipe_{from_scratch,lora,warm_start}.rb` | The byte-gated recipe exemplars users read — each drives one L4 recipe through `realize!`/`step!` with `Toy::AdamW` + `Toy::Labels`. | < 5 s each |
 | `smoke_*.rb`             | Single-purpose wire smokes: corpus loader, decode logprobs, embed API, image loader, projection lens, ckpt reload, ViT-Tiny. Each verifies one primitive end-to-end. | < 5 s each |
 
 ## First run — find or fetch a model
@@ -71,24 +73,33 @@ Metal-accelerated GPU path is still `examples/01_inference_metal.rb`
 
 ## Training your own
 
+### Blessed path — `train_from_scratch.rb` (start here)
+
+The short tutorial. A tiny Llama-shape model (RMSNorm + GQA + RoPE +
+SwiGLU) trained through the L4 `FromScratch` recipe, composed from the
+three pure-Ruby value objects:
+
+- `Toy::SmolLM2Config.mha` — the model shape (no 9-arg positional soup).
+- `Toy::Labels.next_token` — the shift-by-one one-hot label Mat.
+- `Toy::AdamW` — the named optimizer hyper-params (`adamw.hp(step)`).
+
 ```sh
-./prep/prep_tinystories.rb               # one-time: builds vocab + sequences
-make example_train
-./examples/example_train
+make example_train_from_scratch_blessed
+./examples/example_train_from_scratch_blessed     # reproduces the gate curve
 ```
 
-The defaults are tiny so it finishes in seconds. To train a model
-that actually writes English-shaped stories, bump `EPOCHS=200` and
-`D_MODEL=128`, then go make coffee. `Toy::Trainer`
-(`lib/toy_trainer.rb`) absorbs the per-step boilerplate so what you
-read in `02_train_*.rb` **is** the algorithm.
+The four recipes (`from_scratch`, `lora`, `warm_start`, `vit_tiny`,
+under `lib/toy/llm/recipes/`) all share the same `realize!` / `step!`
+shape; the `smoke_recipe_*.rb` exemplars are the byte-gated reads.
 
-### From-scratch — Llama arch + Tao instrumentation (`06_train_from_scratch.rb`)
+### From-scratch — full knobs + Tao instrumentation (`06_train_from_scratch.rb`)
 
-The modern from-scratch path. Llama-shape (RMSNorm + GQA + RoPE +
-SwiGLU), full f32 weights + AdamW state in persistent memory, one
-forward + backward + opt_step graph per training step. Drives Tao's
-end-to-end experiment harness.
+The instrumentation reference for the recipe path. Same Llama-shape
+model as the blessed tutorial, but with the full knob surface: events,
+checkpoints, drift sentinels, CKA taps, BATCH / GRAD_ACCUM /
+WEIGHT_DTYPE, and Tao's end-to-end experiment harness. Read
+`train_from_scratch.rb` first; reach for this when you need the
+instrumentation.
 
 ```sh
 make example_train_from_scratch

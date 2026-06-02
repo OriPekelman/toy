@@ -28,6 +28,7 @@ require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
 require_relative "../lib/toy_smollm2_loader"
 require_relative "../lib/llama_seq_forward_ffi"
+require_relative "../lib/toy/llm/adamw"
 require_relative "../lib/toy/llm/recipes/lora"
 
 GGUF  = ENV["GGUF"]  || "data/smollm2-135m-native.gguf"
@@ -70,23 +71,25 @@ while ti < TOKENS.length
   ti = ti + 1
 end
 
-# Constant hp[0..4]; hp[5]/hp[6] are bias-corrected per-step below.
-# Identical to 03_finetune_lora.rb:88-93.
-m_hp = Mat.new(1, 7)
-m_hp.flat[0] = LR
-m_hp.flat[1] = 0.9
-m_hp.flat[2] = 0.999
-m_hp.flat[3] = 1.0e-8
-m_hp.flat[4] = 0.0
+# NAMED AdamW. lora differs from the from-scratch defaults: beta2=0.999
+# and bias_correct=true, so slots 5/6 carry the PER-STEP bias-correction
+# denominators 1/(1-beta^t) — NOT constant betas (see the loud finding in
+# lib/toy/llm/adamw.rb: the lora FFI graph reads slots 5/6 DIFFERENTLY
+# from the from-scratch/warm/vit graphs). lr comes from ENV (default
+# 0.001). m_hp is rebuilt per step below.
+adamw = Toy::AdamW.new
+adamw.lr = LR
+adamw.beta2 = 0.999
+adamw.bias_correct = true
 
 positions = [0, 1, 2, 3]
 
 losses = [0.0]; losses.pop
 step = 1
 while step <= STEPS
-  # Bias-corrected hp per step — VERBATIM from 03_finetune_lora.rb:177-178.
-  m_hp.flat[5] = 1.0 / (1.0 - (0.9   ** step.to_f))
-  m_hp.flat[6] = 1.0 / (1.0 - (0.999 ** step.to_f))
+  # 1-indexed step; bias_correct=true → slots5/6 = 1/(1-0.9^t),
+  # 1/(1-0.999^t). Byte-identical to 03_finetune_lora.rb:177-178.
+  m_hp = adamw.hp(step)
   loss = recipe.step!(TOKENS, positions, m_labels, m_hp, step == 1)
   losses.push(loss)
   puts "step " + step.to_s + ": loss=" + loss.to_s

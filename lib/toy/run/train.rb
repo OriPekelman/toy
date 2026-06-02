@@ -46,6 +46,8 @@ require_relative "../../toy_lr_schedule"
 require_relative "../../llama_seq_forward_ffi"
 require_relative "../llm/recipes/from_scratch"
 require_relative "../llm/recipes/warm_start"
+require_relative "../llm/adamw"
+require_relative "../llm/labels"
 require_relative "../../toy_gguf_writer"
 require_relative "../../toy_drift_grad"
 require_relative "../../toy_gguf_fuse"
@@ -95,7 +97,7 @@ if RECIPE == "warm-start"
   warmup = 5
   corpus = ENV["CORPUS"] || "data/ts_seqs.bin"
 
-  cfg_ws = Toy::SmolLM2Config.new(VOCAB, D_MODEL, N_HEADS, N_HEADS,
+  cfg_ws = Toy::SmolLM2Config.mha(VOCAB, D_MODEL, N_HEADS,
                                   D_FF, N_LAYERS, CONTEXT, 10000.0, 1.0e-5)
   cfg_ws.donor_d_in = DONOR_D
 
@@ -105,21 +107,15 @@ if RECIPE == "warm-start"
   # INIT=scratch: skip realize_warm! (no donor GGUF, train from random init).
   recipe_ws.build!
 
-  # AdamW hp[1..6] constants (hp[2]/hp[5]/hp[6]=0.95, NOT 0.999);
-  # hp[0] (lr) refreshes each step from the cosine schedule.
-  m_hp = Mat.new(1, 7)
-  m_hp.flat[0] = lr_max
-  m_hp.flat[1] = 0.9
-  m_hp.flat[2] = 0.95
-  m_hp.flat[3] = 1.0e-8
-  m_hp.flat[4] = 0.0
-  m_hp.flat[5] = 0.9
-  m_hp.flat[6] = 0.95
+  # NAMED AdamW hp. Defaults (beta2=0.95, bias_correct=false) → slots
+  # 5/6 = constant betas, byte-identical to the historical inline hp.
+  # adamw.lr refreshes each step from the cosine schedule; we rebuild a
+  # fresh 7-float Mat per step (NOT the hot path) instead of mutating
+  # flat[0] in place — byte-identical, and faithful to the named object.
+  adamw_ws = Toy::AdamW.new
 
   positions = [0]; positions.pop
   p = 0; while p < CONTEXT; positions.push(p); p = p + 1; end
-
-  m_labels = Mat.new(CONTEXT, VOCAB)
 
   # --- Events (EVENTS hoisted to top-level; FILE only). ---
   git_sha    = "unknown"
@@ -194,24 +190,14 @@ if RECIPE == "warm-start"
   while step < STEPS
     step_wall_start = TinyNN.tnn_events_now_seconds
     lr = ToyLR.cosine(step, STEPS, lr_max, lr_min, warmup)
-    m_hp.flat[0] = lr
+    adamw_ws.lr = lr
+    m_hp = adamw_ws.hp(step)   # bias_correct=false → slots5/6=betas
 
     seq_ids = ToyCorpusLoader.read_seq(corpus, byte_offset, CONTEXT)
     byte_offset = byte_offset + CONTEXT * 4   # i32
 
-    j = 0
-    while j < CONTEXT * VOCAB
-      m_labels.flat[j] = 0.0
-      j = j + 1
-    end
-    k = 0
-    while k < CONTEXT
-      target = (k + 1 < CONTEXT) ? seq_ids[k + 1] : seq_ids[k]
-      if target >= 0 && target < VOCAB
-        m_labels.flat[k * VOCAB + target] = 1.0
-      end
-      k = k + 1
-    end
+    # In-vocab-guarded shift-by-one one-hot (warm-start streams corpus).
+    m_labels = Toy::Labels.next_token_guarded(seq_ids, VOCAB, CONTEXT, 1)
 
     loss = recipe_ws.step!(seq_ids, positions, m_labels, m_hp, step == 0)
     final_loss = loss
@@ -266,7 +252,7 @@ else
 # from-scratch — the existing body. Shape constants (VOCAB/D_MODEL/…)
 # are now hoisted to top-level (see note above); the compute below is
 # byte-identical to the historical from-scratch runner.
-cfg = Toy::SmolLM2Config.new(VOCAB, D_MODEL, N_HEADS, N_HEADS,
+cfg = Toy::SmolLM2Config.mha(VOCAB, D_MODEL, N_HEADS,
                              D_FF, N_LAYERS, CONTEXT, 10000.0, 1.0e-5)
 cfg.donor_d_in = DONOR_D
 
@@ -294,21 +280,13 @@ positions = [0]; positions.pop
 p = 0; while p < CONTEXT; positions.push(p); p = p + 1; end
 
 # Labels: shift-by-one one-hot (target = next token, or self at last pos).
-m_labels = Mat.new(CONTEXT, VOCAB)
-j = 0; while j < CONTEXT * VOCAB; m_labels.flat[j] = 0.0; j = j + 1; end
-k = 0
-while k < CONTEXT
-  target = (k + 1 < CONTEXT) ? seq_ids[k + 1] : seq_ids[k]
-  m_labels.flat[k * VOCAB + target] = 1.0
-  k = k + 1
-end
+# UNGUARDED (from-scratch seq_ids come from a known-good first line).
+m_labels = Toy::Labels.next_token(seq_ids, VOCAB, CONTEXT, 1)
 
-# CONSTANT hyper-params (NOT 06's per-step bias-corrected hp; b2=0.95 here,
-# NOT 0.999). Using 06's hp breaks the byte gate.
-m_hp = Mat.new(1, 7)
-m_hp.flat[0] = 0.001; m_hp.flat[1] = 0.9; m_hp.flat[2] = 0.95
-m_hp.flat[3] = 1.0e-8; m_hp.flat[4] = 0.0
-m_hp.flat[5] = 0.9; m_hp.flat[6] = 0.95
+# CONSTANT hyper-params via NAMED AdamW (NOT 06's per-step bias-corrected
+# hp; beta2=0.95 here, NOT 0.999; bias_correct=false → slots5/6=betas).
+# Using 06's lora-style hp breaks the byte gate. Built ONCE (constant).
+m_hp = Toy::AdamW.new.hp(0)
 
 # --- Events (EVENTS hoisted to top-level; cheap-when-off; FILE only). ---
 

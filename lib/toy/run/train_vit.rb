@@ -41,6 +41,7 @@ require_relative "../../toy_image_loader"
 require_relative "../../toy_lr_schedule"
 require_relative "../../toy_drift_grad"
 require_relative "../llm/recipes/vit_tiny"
+require_relative "../llm/adamw"
 
 # ENV reads — TOP-LEVEL constants (Spinel constant-in-conditional caveat).
 STEPS       = (ENV["STEPS"]      || "5").to_i
@@ -86,10 +87,13 @@ record_f   = patch_flat * n_patches                                # 150528 (=60
 m_image  = Mat.new(patch_flat, n_patches)   # [768, 196]; upload_row_major matches t_image input_2d(196,768)
 m_labels = Mat.new(1, NUM_CLASSES)          # [1, 10]
 cls_idx  = [0]
-m_hp = Mat.new(1, 7)
-m_hp.flat[1] = 0.9; m_hp.flat[2] = 0.95
-m_hp.flat[3] = 1.0e-8; m_hp.flat[4] = 0.0
-m_hp.flat[5] = 0.9; m_hp.flat[6] = 0.95
+# NAMED AdamW. Defaults (beta2=0.95, bias_correct=false) → slots5/6 =
+# constant betas, byte-identical to the historical inline hp. lr is set
+# per step from the cosine schedule (vit never reads m_hp before the
+# per-step assignment), and the hp Mat is rebuilt per step below — the
+# original implicit flat[0]=0.0-until-set is reproduced by Mat.new's
+# zero-init inside hp(). Single-class labels stay inline (NOT shift-by-one).
+adamw_vit = Toy::AdamW.new
 
 images_path = IMG_DIR + "/images.bin"
 labels_path = IMG_DIR + "/labels.bin"
@@ -194,7 +198,8 @@ step = 0
 while step < STEPS
   step_wall_start = TinyNN.tnn_events_now_seconds
   lr = ToyLR.cosine(step, STEPS, LR_MAX, LR_MIN, WARMUP)
-  m_hp.flat[0] = lr
+  adamw_vit.lr = lr
+  m_hp = adamw_vit.hp(step)   # bias_correct=false → slots5/6=betas
 
   # Single-image memorisation: idx=0 every step (N_IMAGES=1, deterministic).
   idx = step % N_IMAGES

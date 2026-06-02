@@ -49,6 +49,8 @@ require_relative "../../toy"
 require_relative "../../toy_smollm2"
 require_relative "../../llama_seq_forward_ffi_metal"
 require_relative "../llm/recipes/from_scratch_metal"
+require_relative "../llm/adamw"
+require_relative "../llm/labels"
 require_relative "../../toy_gguf_writer"
 require_relative "../../toy_drift_grad"
 require_relative "../../toy_gguf_fuse"
@@ -73,7 +75,7 @@ CONTEXT  = 32
 # Events sink — TOP-LEVEL (same constant-in-conditional Spinel caveat). FILE only.
 EVENTS = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/events.jsonl") : ""
 
-cfg = Toy::SmolLM2Config.new(VOCAB, D_MODEL, N_HEADS, N_HEADS,
+cfg = Toy::SmolLM2Config.mha(VOCAB, D_MODEL, N_HEADS,
                              D_FF, N_LAYERS, CONTEXT, 10000.0, 1.0e-5)
 cfg.donor_d_in = DONOR_D
 
@@ -100,21 +102,13 @@ positions = [0]; positions.pop
 p = 0; while p < CONTEXT; positions.push(p); p = p + 1; end
 
 # Labels: shift-by-one one-hot (target = next token, or self at last pos).
-m_labels = Mat.new(CONTEXT, VOCAB)
-j = 0; while j < CONTEXT * VOCAB; m_labels.flat[j] = 0.0; j = j + 1; end
-k = 0
-while k < CONTEXT
-  target = (k + 1 < CONTEXT) ? seq_ids[k + 1] : seq_ids[k]
-  m_labels.flat[k * VOCAB + target] = 1.0
-  k = k + 1
-end
+# UNGUARDED (from-scratch seq_ids come from a known-good first line).
+m_labels = Toy::Labels.next_token(seq_ids, VOCAB, CONTEXT, 1)
 
-# CONSTANT hyper-params (NOT 06's per-step bias-corrected hp; b2=0.95 here,
-# NOT 0.999). Using 06's hp breaks the byte gate.
-m_hp = Mat.new(1, 7)
-m_hp.flat[0] = 0.001; m_hp.flat[1] = 0.9; m_hp.flat[2] = 0.95
-m_hp.flat[3] = 1.0e-8; m_hp.flat[4] = 0.0
-m_hp.flat[5] = 0.9; m_hp.flat[6] = 0.95
+# CONSTANT hyper-params via NAMED AdamW (NOT 06's per-step bias-corrected
+# hp; beta2=0.95 here, NOT 0.999; bias_correct=false → slots5/6=betas).
+# Using 06's lora-style hp breaks the byte gate. Built ONCE (constant).
+m_hp = Toy::AdamW.new.hp(0)
 
 # --- Events (EVENTS hoisted to top-level; cheap-when-off; FILE only). ---
 

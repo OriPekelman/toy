@@ -1,66 +1,41 @@
 # L4 — Recipes
 
-A Recipe is a training plan — one or more stages, each composing an
-Arch + a Trainer + a DataSpec (+ optional Decoder + Eval).
+A Recipe is a training plan: realize a model (random init, mmap'd
+base, or warm-started), then drive `step!` over the data.
 
-## Roster (target post-P2)
+## What's here (4 recipes)
 
-| File | Class | Stages | Notes |
+| File | Class | Realize | Notes |
 | --- | --- | --- | --- |
-| `from_scratch.rb` | `Toy::LLM::Recipes::FromScratch` | 1 | Random init → AdamW on CE. Default recipe for new archs. |
-| `lora.rb` | `Toy::LLM::Recipes::LoRA` | 1 | Frozen base + LoRA adapter on Q. Default recipe for fine-tuning pretrained checkpoints. |
-| `warm_start.rb` | `Toy::LLM::Recipes::WarmStart` | 2 | Stage 1: load pretrained. Stage 2: full fine-tune. |
-| `curriculum.rb` | `Toy::LLM::Recipes::Curriculum` | N | Template recipe showing the multi-stage shape. Each stage can swap dataset / context length / trainer. |
+| `from_scratch.rb` | `Toy::LLM::Recipes::FromScratch` | `realize!` | Random init → AdamW on cross-entropy. The blessed default for new models. |
+| `lora.rb` | `Toy::LLM::Recipes::LoRA` | `realize!` (mmap'd base + LoRA adapter) | Frozen base + LoRA on Q. QLoRA-capable. Fine-tune a pretrained GGUF. |
+| `warm_start.rb` | `Toy::LLM::Recipes::WarmStart` | `realize_scratch!` + (optional) `realize_warm!` + `build!` | Random init, then optionally graft a donor `token_embd` + PCA projection lens. |
+| `vit_tiny.rb` | `Toy::LLM::Recipes::VitTiny` | `realize!` | ViT-Tiny image classifier (patch embed + CLS token + MLP head). |
 
-## Contract
+Backend twins where they exist: `from_scratch_cuda.rb`,
+`from_scratch_metal.rb`, `lora_cuda.rb`, `warm_start_cuda.rb`.
 
-```ruby
-class Toy::LLM::Recipes::FromScratch
-  # Stages are evaluated lazily; each returns a stage-cfg the
-  # driver can dispatch on. A single-stage recipe yields once.
-  def each_stage(cfg)
-    yield Stage.new(
-      arch:    arch_for(cfg),
-      trainer: Toy::Trainers::AdamW.new(cfg.optim),
-      data:    Toy::DataSpecs.from(cfg.data),
-      eval:    Toy::Evals::CrossEntropy.new(cfg.eval),
-      stop:    cfg.steps,
-    )
-  end
-end
-```
+## The real API
 
-## CurriculumRecipe shape (template)
+Every recipe exposes `step!(inputs, positions, m_labels, m_hp, is_first)`
+(ViT: `step!(m_image, cls_idx, m_labels, m_hp, is_first)`), returning the
+scalar loss. The caller builds the two per-step Mats with the pure-Ruby
+value objects:
 
-```ruby
-class Toy::LLM::Recipes::Curriculum
-  def each_stage(cfg)
-    # Stage 1 — short context, large LR.
-    yield Stage.new(arch: arch_for(cfg).with_hyper(:t_seq, 512),
-                    trainer: trainer_for(cfg, lr: 3e-3),
-                    data:    short_data(cfg),
-                    stop:    5_000)
+- `Toy::Labels.next_token` / `Toy::Labels.next_token_guarded`
+  (`lib/toy/llm/labels.rb`) — the shift-by-one one-hot label Mat.
+- `Toy::AdamW` (`lib/toy/llm/adamw.rb`) — the named optimizer
+  hyper-params; `adamw.hp(step)` builds the `Mat(1,7)` the FFI
+  optimizer step reads.
 
-    # Stage 2 — long context, decayed LR.
-    yield Stage.new(arch: arch_for(cfg).with_hyper(:t_seq, 2048),
-                    trainer: trainer_for(cfg, lr: 5e-4),
-                    data:    long_data(cfg),
-                    stop:    20_000)
-  end
-end
-```
+Model shape is built with the named `Toy::SmolLM2Config.mha` /
+`.gqa` factories (`lib/toy_smollm2.rb`).
 
-## What lives on the RECIPE
+## Read these
 
-- Stage sequence (1..N stages).
-- Optimizer choice + schedule.
-- Data progression across stages.
-- Eval choices.
-- Stop conditions.
+The byte-gated exemplars users read:
 
-## What does NOT live here
-
-- Card composition operators (those live on `Toy::Card`).
-- Backend dispatch (that's the session / Kind).
-
-This file is a contract sketch. Real entries land in P2.6.
+- `examples/train_from_scratch.rb` — the blessed short tutorial.
+- `examples/smoke_recipe_from_scratch.rb`
+- `examples/smoke_recipe_warm_start.rb`
+- `examples/smoke_recipe_lora.rb`
