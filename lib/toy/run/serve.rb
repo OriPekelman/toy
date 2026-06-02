@@ -28,10 +28,9 @@
 require_relative "../../toy_smollm2_ffi_kv"
 require_relative "../../toy_smollm2_loader"
 require_relative "../../../vendor/spinel/deps"
-require_relative "../serve/openai/api_json"
-require_relative "../serve/openai/embeddings_handler"
 require_relative "../serve/openai/server"
 require_relative "../serve/openai/handlers"
+require_relative "../serve/openai/backend"
 
 # ---- Events sink (toy/v1 serving telemetry; FILE only). -------------------
 # TOP-LEVEL constants (NEVER inside a branch — Spinel does not initialize a
@@ -117,13 +116,16 @@ if EVENTS.length > 0
   end
 end
 
-# Routes -- Tep consumed purely as transport (Tep.get/post + Tep::Handler).
-Tep.get  "/",                     IndexHandler.new
-Tep.get  "/health",               HealthHandler.new
-Tep.get  "/v1/models",            ModelsHandler.new
-Tep.post "/v1/completions",       CompletionsHandler.new
-Tep.post "/v1/chat/completions",  ChatCompletionsHandler.new
-Tep.post "/v1/embeddings",        EmbeddingsHandler.new(STATE, MODEL_NAME)
+# Routes. Health + index stay toy-owned (app concerns). The OpenAI surface
+# (models / completions / chat / embeddings) is tep's Backend battery now
+# (toy#30): ToyBackend supplies the model surface, Server.serve! mounts the
+# /v1/* routes + owns the wire shapes (incl. choices[0].ids for IDs-only).
+# serve!'s own Events emitter is left unconfigured (no path) -- toy keeps
+# its richer C-side run_start/run_end + the per-request event (in ToyBackend).
+Tep.get "/",       IndexHandler.new
+Tep.get "/health", HealthHandler.new
+Tep::Llm::OpenAI::Server.use(ToyBackend.new)
+Tep::Llm::OpenAI::Server.serve!
 
 # PORT from the controlled env (NEW; replaces the ARGV -p/-w/-q parse the
 # tep_demo binary used -- `toy serve` owns the UX). CPU-only, workers=1,

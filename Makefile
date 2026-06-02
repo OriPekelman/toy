@@ -487,8 +487,8 @@ toy-train-metal: libexec/toy-train-metal
 # tep_demo recipe (Makefile:486) + the KV stack. CPU-only; NOT in
 # MIRRORABLE (see prep/gen_cuda_mirror.rb).
 libexec/toy-serve: lib/toy/run/serve.rb \
-		lib/toy/serve/openai/server.rb lib/toy/serve/openai/api_json.rb \
-		lib/toy/serve/openai/handlers.rb lib/toy/serve/openai/embeddings_handler.rb \
+		lib/toy/serve/openai/server.rb lib/toy/serve/openai/backend.rb \
+		lib/toy/serve/openai/handlers.rb \
 		vendor/spinel/tep/lib/tep.rb \
 		lib/toy_smollm2_ffi_kv.rb lib/toy_smollm2_loader.rb \
 		tinynn/libtinynn_ggml.a | libexec

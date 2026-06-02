@@ -96,16 +96,10 @@ STATE.ready = true
 puts "[openai_api_llama] ready; serving"
 
 # ---- Helpers ----
-
-def api_now_unix
-  Time.now.to_i
-end
-
-def api_gen_id(prefix)
-  t = Time.now
-  v = (t.to_i * 1_000_003) ^ ((t.to_f - t.to_i).to_f * 1.0e9).to_i
-  prefix + "-" + v.to_s
-end
+#
+# (api_now_unix / api_gen_id were removed in toy#30: the only callers
+# were the hand-rolled Models/Completions handlers, now replaced by
+# tep's battery which stamps `created` + the completion `id` itself.)
 
 # Greedy generation from a pre-tokenized prompt. KV-cache decode:
 # prefill the prompt one step at a time, then sample greedily for
