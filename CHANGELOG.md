@@ -1,6 +1,35 @@
 # Changelog
 
-## v0.7.0-pre-alpha — 2026-05-31
+## v0.7.0-pre-alpha — 2026-06-02
+
+### Deferred queue — full compute surface + GPU + packaging (2026-06-01/02)
+Landed after the initial v0.7 refactor; all bit-identical-gated, all on the
+canonical gx10 box (see gate-portability note below).
+- **`toy train` recipes:** `lora` + `warm-start` CLI dispatch (real recipes,
+  byte-exact gates), plus the existing `from-scratch`.
+- **GPU `--device`:** `cuda` for `infer`/`eval` (token-parity vs CPU) and for
+  `train {from-scratch,lora,warm-start}` (byte-deterministic CUDA gates +
+  checkpoint round-trip). `metal` runtime for `infer`/`eval`/`train`
+  (Mac-verified; clean errors off-platform).
+- **train→infer round-trip:** from-scratch/warm-start checkpoints fold the
+  projection-lens at write time into a standard fused-llama GGUF that
+  `toy infer` loads; `--prompt-ids` + fail-loud on tokenizer-less/out-of-range.
+- **`toy serve` telemetry:** emits toy/v1 `run_start` + per-request
+  `eval`/`serve`/`request` events (run_end a known gap — `Tep.run!` SIGSEGVs on
+  SIGTERM; tep#175).
+- **`toy eval lmc`:** two-checkpoint linear-mode-connectivity (pinned fixtures).
+- **`toy train vit-tiny`:** first non-llama arch — ViT-tiny from-scratch on the
+  committed `data/vit_smoke` corpus; fail-loud on a missing corpus.
+- **Gate portability:** float gates (train loss, eval logprobs) are
+  gx10-canonical strict byte-exact; cross-platform they gate the discrete
+  invariant + a tolerance (eval logprobs run through Ruby libm). Gate corpora
+  are pinned committed fixtures.
+- **Packaging:** MIT `LICENSE`; gemspec `files` hardened with `git ls-files`
+  (artifact-free ~432 KB gem); option-(c) build inputs ship for
+  `gem install toy && toy install`.
+- **Upstream:** filed tep#168/#172/#175, toy#30 (tep Backend convergence),
+  toy#31 (consume tep `~> 0.11`). GPT-2 training deferred (greenfield: ggml has
+  no LayerNorm backward).
 
 **Headline.** toy becomes a **CLI-driven framework**. The forward path is
 refactored into a five-layer algo stack (primitives → blocks → archs →

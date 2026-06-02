@@ -50,6 +50,12 @@ Gem::Specification.new do |s|
   #   - vendor/ggml/* (cloned fresh by `make setup` at install time)
   #   - data/* (model weights / pretokenized corpora — caller-managed)
   #   - the prebuilt .a (built on the user box by `toy install`)
+  # Ship only git-TRACKED files matching these globs. Intersecting with
+  # `git ls-files` keeps gitignored build artifacts OUT (compiled .o/.a, the
+  # native example/tinynn binaries, libexec/, data/*.bin) even if a glob would
+  # otherwise scoop them — belt-and-suspenders matching tep.gemspec. The
+  # `.reject` also drops any stray object files for a no-git unpacked build.
+  tracked = (`git ls-files -z`.split("\x0") rescue [])
   s.files = Dir[
     "README.md", "LICENSE", "CHANGELOG.md",
     "Makefile",
@@ -62,7 +68,8 @@ Gem::Specification.new do |s|
     "tinynn/tinynn_events.h", "tinynn/tinynn_events.c",
     "tinynn/tinynn_backend_metal.m",
     "tinynn/tinynn_backend_cuda.c",
-  ].reject { |f| File.directory?(f) }
+  ].reject { |f| File.directory?(f) || f =~ /\.(o|so|a|dylib|bundle)$/ }
+   .select { |f| tracked.empty? || tracked.include?(f) }
 
   # bin/toy is a plain-MRI binstub (the CRuby CLI shell under
   # lib/toy/core/). RubyGems ships it from bin/. (Was a stale exe/[]
