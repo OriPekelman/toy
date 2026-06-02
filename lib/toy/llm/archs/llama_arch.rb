@@ -4,7 +4,7 @@
 # → tied/untied logits matmul).
 #
 # Extracted from lib/llama_seq_forward_ffi.rb (P2.5). This is the
-# MINIMAL faithful lift of LlamaSeqForwardFFICache#build_forward_in_current_ctx:
+# MINIMAL faithful lift of Toy::LLM::Engine::LlamaSeqEngine#build_forward_in_current_ctx:
 # the orchestration body is moved VERBATIM (op order unchanged →
 # bit-identical graph). The arch now OWNS the arch-level persistent
 # tensor handles (token_embed, final_norm_gamma, output, w_proj, the
@@ -19,7 +19,7 @@
 # TransformerBlockCtx; one ctx is shared across all blocks; the LM head
 # is tied/untied via @seq_has_untied_output; an optional E2.3
 # projection-lens matmul sits between embed and blocks. This is the
-# minimal faithful lift of LlamaSeqForwardFFICache#build_forward_in_current_ctx
+# minimal faithful lift of Toy::LLM::Engine::LlamaSeqEngine#build_forward_in_current_ctx
 # (P2.5, orchestration only).
 #
 # Spinel hygiene: NEVER Struct.new (landmine #16 / matz/spinel#1043) —

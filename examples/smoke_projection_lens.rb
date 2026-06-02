@@ -14,7 +14,7 @@
 
 require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
-require_relative "../lib/llama_seq_forward_ffi"
+require_relative "../lib/toy/llm/engine/llama_seq_engine"
 require_relative "../lib/toy_drift_grad"
 
 STEPS    = (ENV["STEPS"]    || "5").to_i
@@ -35,7 +35,7 @@ puts "config: vocab=" + cfg.vocab.to_s +
      " d=" + cfg.d_model.to_s +
      " L=" + cfg.n_layers.to_s
 
-fcache = LlamaSeqForwardFFICache.new
+fcache = Toy::LLM::Engine::LlamaSeqEngine.new
 fcache.realize_for_random_init(cfg, CONTEXT, 1, 0, true, false, SEED, 1.0)
 puts "realize OK"
 

@@ -4,7 +4,7 @@
 # SEPARATE binary (libexec/toy-train-lora) for a hard Spinel reason, NOT a
 # stylistic one:
 #
-#   The LoRA recipe drives LlamaSeqForwardFFICache#realize_for_mmap (frozen
+#   The LoRA recipe drives Toy::LLM::Engine::LlamaSeqEngine#realize_for_mmap (frozen
 #   GGUF base, mmap'd in place); the from-scratch + warm-start recipes drive
 #   #realize_for_random_init. When BOTH realize paths are CALLED in the same
 #   Spinel compilation unit, whole-program type inference MERGES the `cfg`
@@ -45,7 +45,7 @@
 
 require_relative "../../toy"
 require_relative "../../toy_smollm2"
-require_relative "../../llama_seq_forward_ffi"
+require_relative "../llm/engine/llama_seq_engine"
 require_relative "../llm/recipes/lora"
 require_relative "../llm/adamw"
 require_relative "../../toy_gguf_writer"

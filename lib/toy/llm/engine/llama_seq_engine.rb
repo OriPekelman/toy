@@ -1,4 +1,4 @@
-# lib/llama_seq_forward_ffi.rb — sequence-mode forward graph for the
+# lib/toy/llm/engine/llama_seq_engine.rb — sequence-mode forward graph for the
 # llama-family architecture (RMSNorm + SwiGLU + RoPE + GQA).
 #
 # Sibling of lib/toy_smollm2_ffi_kv.rb (KV-cache decode for single
@@ -16,18 +16,19 @@
 # sidestep it cleanly, every dimension/parameter ivar here uses a
 # `@seq_*` prefix. Verbose but type-isolated.
 
-require_relative "transformer"
-require_relative "toy"
-require_relative "toy_smollm2"
-require_relative "tinynn"
-require_relative "toy/llm/primitives/rms_norm"
-require_relative "toy/llm/primitives/rope"
-require_relative "toy/llm/primitives/swiglu"
-require_relative "toy/llm/primitives/gqa"
-require_relative "toy/llm/blocks/transformer_block"
-require_relative "toy/llm/archs/llama_arch"
+require_relative "../../../transformer"
+require_relative "../../../toy"
+require_relative "../../../toy_smollm2"
+require_relative "../../../tinynn"
+require_relative "../primitives/rms_norm"
+require_relative "../primitives/rope"
+require_relative "../primitives/swiglu"
+require_relative "../primitives/gqa"
+require_relative "../blocks/transformer_block"
+require_relative "../archs/llama_arch"
 
-class LlamaSeqForwardFFICache
+module Toy; module LLM; module Engine
+class LlamaSeqEngine
   attr_accessor :sess,
                 # P2.5 — the five arch-level persistent handles
                 # (t_seq_token_embed, t_seq_final_norm_gamma, t_seq_output,
@@ -1335,3 +1336,4 @@ class LlamaSeqForwardFFICache
     end
   end
 end
+end; end; end

@@ -23,7 +23,7 @@
 require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
 require_relative "../lib/toy_smollm2_loader"
-require_relative "../lib/llama_seq_forward_ffi"
+require_relative "../lib/toy/llm/engine/llama_seq_engine"
 
 GGUF      = ENV["GGUF"]    || "data/smollm2-135m-native.gguf"
 RANK      = (ENV["RANK"]   || "8").to_i
@@ -64,7 +64,7 @@ puts "config: vocab=" + cfg.vocab.to_s + " d=" + cfg.d_model.to_s +
 puts "training: GGUF=" + GGUF + " RANK=" + RANK.to_s + " STEPS=" + STEPS.to_s
 
 gguf = TinyNN.tnn_gguf_load(GGUF)
-seq = LlamaSeqForwardFFICache.new
+seq = Toy::LLM::Engine::LlamaSeqEngine.new
 seq.enable_lora_q!(RANK)
 seq.enable_lora_q_adamw!
 seq.realize_for_mmap(gguf, cfg, TOKENS.length, flags.untied, flags.qkv_bias)

@@ -3,7 +3,7 @@
 # encapsulates the EXISTING random_init training loop (the inlined loop
 # in examples/smoke_projection_lens.rb:97-112 and the fuller driver in
 # examples/06_train_from_scratch.rb): realize a random-init forward+
-# backward+AdamW graph on a LlamaSeqForwardFFICache, then drive one
+# backward+AdamW graph on a Toy::LLM::Engine::LlamaSeqEngine, then drive one
 # training step at a time.
 #
 # Greenfield NOTE: unlike the L1-L3 lifts, the L4 Recipe classes did not
@@ -39,7 +39,7 @@
 module Toy; module LLM; module Recipes
   # The from-scratch random-init training recipe. Encapsulates the
   # existing loop: realize! builds the random-init forward+CE+backward+
-  # AdamW graph on a LlamaSeqForwardFFICache (random-init realize
+  # AdamW graph on a Toy::LLM::Engine::LlamaSeqEngine (random-init realize
   # self-enables full_finetune + train_embeddings, so no extra enable_*
   # call is needed), then step! drives one training step. The caller
   # (fixture) owns the experiment config and the per-step input Mats.
@@ -47,7 +47,7 @@ module Toy; module LLM; module Recipes
     attr_accessor :fs_cache, :fs_t_loss, :fs_t_labels, :fs_t_hp, :fs_step_index
 
     def initialize
-      @fs_cache      = LlamaSeqForwardFFICache.new
+      @fs_cache      = Toy::LLM::Engine::LlamaSeqEngine.new
       @fs_t_loss     = nil
       @fs_t_labels   = nil
       @fs_t_hp       = nil

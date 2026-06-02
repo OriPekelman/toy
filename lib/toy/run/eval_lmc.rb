@@ -48,7 +48,7 @@
 
 require_relative "../../toy"
 require_relative "../../toy_smollm2"
-require_relative "../../llama_seq_forward_ffi"
+require_relative "../llm/engine/llama_seq_engine"
 require_relative "../../toy_drift_grad"
 
 LMC_A    = ENV["LMC_A"]      || ""
@@ -170,7 +170,7 @@ ai = 0
 while ai < alphas_arr.length
   alpha = alphas_arr[ai]
 
-  fcache = LlamaSeqForwardFFICache.new
+  fcache = Toy::LLM::Engine::LlamaSeqEngine.new
   # untied=TRUE (arg5) so the session allocates output.weight (the fused
   # ckpt carries output.weight; train.rb folds with untied=true). We do NOT
   # set cfg.donor_d_in (it stays 0) so the session embed is the STANDARD

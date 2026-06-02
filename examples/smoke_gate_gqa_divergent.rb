@@ -18,7 +18,7 @@
 
 require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
-require_relative "../lib/llama_seq_forward_ffi"
+require_relative "../lib/toy/llm/engine/llama_seq_engine"
 require_relative "../lib/toy_drift_grad"
 
 STEPS    = (ENV["STEPS"] || "5").to_i
@@ -60,7 +60,7 @@ puts "ASSERT 1 OK: " + nhd.to_s + " != " + D_MODEL.to_s
 # Realize: B=1, weight_dtype=0 (F32), untied=true, qkv_bias=false,
 # init_scale=1.0. rope_scaling defaults to :none so t_seq_rope_freq_factors
 # is NULL and RoPE operates self-consistently on d_head=24.
-fcache = LlamaSeqForwardFFICache.new
+fcache = Toy::LLM::Engine::LlamaSeqEngine.new
 fcache.realize_for_random_init(cfg, CONTEXT, 1, 0, true, false, SEED, 1.0)
 puts "realize OK"
 

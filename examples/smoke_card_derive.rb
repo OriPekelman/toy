@@ -1,7 +1,7 @@
 require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
 require_relative "../lib/toy_smollm2_loader"
-require_relative "../lib/llama_seq_forward_ffi"
+require_relative "../lib/toy/llm/engine/llama_seq_engine"
 require_relative "../lib/toy_describe_flow"
 require_relative "../lib/toy_drift_grad"
 
@@ -15,7 +15,7 @@ flags = GGUFLoad.detect_smollm2_flags(GGUF)
 puts "m3"
 gguf = TinyNN.tnn_gguf_load(GGUF)
 puts "m4"
-seq = LlamaSeqForwardFFICache.new
+seq = Toy::LLM::Engine::LlamaSeqEngine.new
 puts "m5"
 seq.realize_for_mmap(gguf, cfg, CONTEXT, flags.untied, flags.qkv_bias)
 puts "m6 (realize done)"

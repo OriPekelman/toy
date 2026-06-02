@@ -1,6 +1,6 @@
 # demos/smollm2_seq_parity_t4.rb — M3 step 2 acceptance (CPU).
 #
-# Multi-token parity: LlamaSeqForwardFFICache#forward([id_0..id_3], [0..3])
+# Multi-token parity: Toy::LLM::Engine::LlamaSeqEngine#forward([id_0..id_3], [0..3])
 # should produce a (vocab, T=4) logit matrix whose column-t logits
 # match SmolLM2KV.decode_step(id_t, t) called sequentially. This proves
 # the full T×T causal attention shape — per-position seq logits track
@@ -21,7 +21,7 @@ require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
 require_relative "../lib/toy_smollm2_loader"
 require_relative "../lib/toy_smollm2_ffi_kv"
-require_relative "../lib/llama_seq_forward_ffi"
+require_relative "../lib/toy/llm/engine/llama_seq_engine"
 
 GGUF = ENV["GGUF"] || "data/smollm2-135m-native.gguf"
 
@@ -61,7 +61,7 @@ puts "  reference trajectory: " + ref_per_pos.length.to_s + " positions × " +
 puts ""
 puts "realizing seq cache at T=" + T_SEQ.to_s + "..."
 seq_gguf = TinyNN.tnn_gguf_load(GGUF)
-seq = LlamaSeqForwardFFICache.new
+seq = Toy::LLM::Engine::LlamaSeqEngine.new
 seq.realize_for_mmap(seq_gguf, cfg, T_SEQ, flags.untied, flags.qkv_bias)
 
 positions = [0, 1, 2, 3]

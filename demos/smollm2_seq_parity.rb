@@ -1,6 +1,6 @@
 # demos/smollm2_seq_parity.rb — M3 step 1 acceptance.
 #
-# Single-token parity: LlamaSeqForwardFFICache#forward([id], [0]) should
+# Single-token parity: Toy::LLM::Engine::LlamaSeqEngine#forward([id], [0]) should
 # produce the same logits as SmolLM2KVFFICache + SmolLM2KV.decode_step(id, 0)
 # (both reading the same SmolLM2-135M weights). At T=1 the K/V cache
 # stores exactly one position, so the math reduces to:
@@ -24,7 +24,7 @@ require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
 require_relative "../lib/toy_smollm2_loader"
 require_relative "../lib/toy_smollm2_ffi_kv"
-require_relative "../lib/llama_seq_forward_ffi"
+require_relative "../lib/toy/llm/engine/llama_seq_engine"
 
 GGUF = ENV["GGUF"] || "data/smollm2-135m-native.gguf"
 
@@ -54,7 +54,7 @@ puts "  ref_logits shape: 1 x " + cfg.vocab.to_s
 puts ""
 puts "realizing sequence-mode cache at T=1..."
 seq_gguf = TinyNN.tnn_gguf_load(GGUF)
-seq = LlamaSeqForwardFFICache.new
+seq = Toy::LLM::Engine::LlamaSeqEngine.new
 seq.realize_for_mmap(seq_gguf, cfg, 1, flags.untied, flags.qkv_bias)
 
 puts "forward([TOKEN], [0])..."

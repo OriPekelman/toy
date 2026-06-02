@@ -24,7 +24,7 @@
 
 require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
-require_relative "../lib/llama_seq_forward_ffi"
+require_relative "../lib/toy/llm/engine/llama_seq_engine"
 require_relative "../lib/toy_describe_flow"
 require_relative "../lib/toy_drift_grad"
 require_relative "../lib/toy_gguf_writer"
@@ -150,7 +150,7 @@ if !DESCRIBE_QUIET
 end
 
 t_realize = Time.now
-fcache = LlamaSeqForwardFFICache.new
+fcache = Toy::LLM::Engine::LlamaSeqEngine.new
 fcache.realize_for_random_init(cfg, CONTEXT, BATCH, WEIGHT_DTYPE, false, false, SEED, 1.0)
 if !DESCRIBE_QUIET
   puts "realize_for_random_init: " + ((Time.now - t_realize).to_f * 1000.0).to_s + " ms"

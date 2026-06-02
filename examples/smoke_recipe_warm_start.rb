@@ -36,7 +36,7 @@
 
 require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
-require_relative "../lib/llama_seq_forward_ffi"
+require_relative "../lib/toy/llm/engine/llama_seq_engine"
 require_relative "../lib/toy_corpus_loader"
 require_relative "../lib/toy_lr_schedule"
 require_relative "../lib/toy/llm/adamw"

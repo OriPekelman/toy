@@ -19,7 +19,7 @@
 require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
 require_relative "../lib/toy_smollm2_loader"
-require_relative "../lib/llama_seq_forward_ffi"
+require_relative "../lib/toy/llm/engine/llama_seq_engine"
 
 GGUF   = ENV["GGUF"]   || "data/smollm2-135m-native.gguf"
 STEPS  = (ENV["STEPS"] || "10").to_i
@@ -49,7 +49,7 @@ while b_idx < BATCH
   b_idx = b_idx + 1
 end
 
-seq = LlamaSeqForwardFFICache.new
+seq = Toy::LLM::Engine::LlamaSeqEngine.new
 seq.enable_lora_q!(8)
 seq.enable_lora_q_adamw!
 # GH#7 — caller opts in to micro-batching via attr_accessor BEFORE

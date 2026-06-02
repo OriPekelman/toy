@@ -13,7 +13,7 @@
 
 require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
-require_relative "../lib/llama_seq_forward_ffi"
+require_relative "../lib/toy/llm/engine/llama_seq_engine"
 require_relative "../lib/toy_drift_grad"
 
 LMC_A    = ENV["LMC_A"]    || ""
@@ -102,7 +102,7 @@ while ai < alphas_arr.length
   alpha = alphas_arr[ai]
   puts "α=" + alpha.to_s + " realizing …"
 
-  fcache = LlamaSeqForwardFFICache.new
+  fcache = Toy::LLM::Engine::LlamaSeqEngine.new
   fcache.realize_for_random_init(cfg, SEQ_LEN, 1, 0, false, false, SEED, 1.0)
 
   result   = fcache.build_training_step

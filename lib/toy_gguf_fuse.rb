@@ -1,5 +1,5 @@
 # P2.6 — head-fusing GGUF writer helper. ToyGGUFFuser converts a
-# random_init LlamaSeqForwardFFICache (whose attention weights are
+# random_init Toy::LLM::Engine::LlamaSeqEngine (whose attention weights are
 # named PER-HEAD: "blk.N.attn_q.head_H.weight", each a contiguous
 # [d_head, d_model] F32 tensor) into the FUSED llama.cpp naming
 # ("blk.N.attn_q.weight", a single [n_heads*d_head, d_model] tensor)
@@ -44,7 +44,7 @@ module ToyGGUFFuser
   # ready to hand to ToyGGUFWriter.write.
   #
   # Args (no default args — Spinel):
-  #   src_cache  : a realized LlamaSeqForwardFFICache (random_init, F32).
+  #   src_cache  : a realized Toy::LLM::Engine::LlamaSeqEngine (random_init, F32).
   #   write_sess : a fresh TinyNN.tnn_session_new(0); MUST stay alive
   #                until ToyGGUFWriter.write finalizes (gguf_add_tensor
   #                reads host data ptrs at finalize time).
@@ -219,7 +219,7 @@ module ToyGGUFFuser
   # the embed copy is replaced by the fold, and lens.proj is dropped.
   #
   # Args (no default args — Spinel):
-  #   src_cache  : a realized LlamaSeqForwardFFICache, donor_d_in > 0, F32.
+  #   src_cache  : a realized Toy::LLM::Engine::LlamaSeqEngine, donor_d_in > 0, F32.
   #   write_sess : fresh TinyNN.tnn_session_new(0); MUST stay alive until
   #                ToyGGUFWriter.write finalizes.
   #   untied     : true => emit "output.weight" (required when donor>0).

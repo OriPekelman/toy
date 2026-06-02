@@ -33,7 +33,7 @@
 
 require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
-require_relative "../lib/llama_seq_forward_ffi"
+require_relative "../lib/toy/llm/engine/llama_seq_engine"
 require_relative "../lib/toy_gguf_fuse"
 require_relative "../lib/toy_gguf_writer"
 
@@ -66,7 +66,7 @@ puts "config: vocab=" + cfg.vocab.to_s +
      " ctx=" + cfg.ctx.to_s
 
 # --- Step 1: random_init source model -------------------------------
-src = LlamaSeqForwardFFICache.new
+src = Toy::LLM::Engine::LlamaSeqEngine.new
 src.realize_for_random_init(cfg, CONTEXT, 1, 0, true, false, SEED, 1.0)
 puts "src realize_for_random_init OK (SEED=" + SEED.to_s + ")"
 
@@ -110,7 +110,7 @@ if handle == nil || handle == TinyNN.tnn_null_ptr
   STDERR.puts "FATAL: tnn_gguf_load returned null for " + path
   exit 1
 end
-rl = LlamaSeqForwardFFICache.new
+rl = Toy::LLM::Engine::LlamaSeqEngine.new
 rl.realize_for_mmap(handle, cfg, CONTEXT, true, false)
 puts "reload realize_for_mmap OK"
 

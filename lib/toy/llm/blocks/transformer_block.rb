@@ -242,7 +242,7 @@ module Toy; module LLM; module Blocks
     # P2.6 Step 4 — allocate this block's trainable persistent-F32 weight
     # tensors for the random_init realize path. Moved VERBATIM from the
     # per-block ALLOC loop body in
-    # LlamaSeqForwardFFICache#realize_for_random_init (op order unchanged
+    # Toy::LLM::Engine::LlamaSeqEngine#realize_for_random_init (op order unchanged
     # → bit-identical graph): the block now OWNS the alloc + assignment of
     # its self.t_seq_* handles, exactly as it already owns them at forward
     # time. NO ivar reads off the cache — every value (sess, the seq dims,
@@ -330,7 +330,7 @@ module Toy; module LLM; module Blocks
 
     # P2.7 — load this block's PERSISTENT weight handles from the mmap'd
     # GGUF for the realize_for_mmap path. Moved VERBATIM from the per-block
-    # ALLOC-from-offsets loop body in LlamaSeqForwardFFICache#realize_for_mmap
+    # ALLOC-from-offsets loop body in Toy::LLM::Engine::LlamaSeqEngine#realize_for_mmap
     # (op order unchanged → bit-identical graph): the block now OWNS the
     # alloc + assignment of its self.t_seq_* handles, exactly as it already
     # owns them at forward time and in alloc_trainable_f32_weights!. NO ivar
@@ -518,7 +518,7 @@ module Toy; module LLM; module Blocks
     # P2.7 pass-3 — allocate this block's PERSISTENT weight handles for the
     # realize_for_q8_copy path (Q8-stays-Q8 verbatim copy on CUDA). Moved
     # VERBATIM from the per-block ALLOC-typed loop body in
-    # LlamaSeqForwardFFICache#realize_for_q8_copy (op order unchanged →
+    # Toy::LLM::Engine::LlamaSeqEngine#realize_for_q8_copy (op order unchanged →
     # bit-identical graph): the block now OWNS the alloc + assignment of its
     # self.t_seq_* handles, exactly as in load_from_gguf_mmap! /
     # alloc_trainable_f32_weights!. NO ivar reads off the cache — every value
@@ -644,7 +644,7 @@ module Toy; module LLM; module Blocks
     # P2.7 pass-3 Step 2 — fill this block's PERSISTENT backend buffers from
     # the GGUF for the realize_for_q8_copy path (Q8-stays-Q8 verbatim copy).
     # Moved VERBATIM from the per-block VERBATIM-COPY loop body in
-    # LlamaSeqForwardFFICache#realize_for_q8_copy (op order unchanged →
+    # Toy::LLM::Engine::LlamaSeqEngine#realize_for_q8_copy (op order unchanged →
     # bit-identical weights): this is the COPY phase that follows the
     # alloc_q8_typed_from_gguf! ALLOC phase. The block READS its own
     # self.t_seq_* handles (allocated by alloc_q8_typed_from_gguf!) and

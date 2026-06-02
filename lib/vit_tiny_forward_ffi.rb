@@ -337,7 +337,7 @@ class ViTTinyForwardFFICache
     TinyNN.tnn_add(@sess, t_x_attn, t_dn)
   end
 
-  # --- bookkeeping helpers (parallel to LlamaSeqForwardFFICache) ---
+  # --- bookkeeping helpers (parallel to Toy::LLM::Engine::LlamaSeqEngine) ---
 
   def ft_add_global_2d(weight, rows, cols)
     m = TinyNN.tnn_input_2d_f32_persistent(@sess, rows, cols)

@@ -52,7 +52,7 @@
 module Toy; module LLM; module Recipes
   # The warm-start training recipe. realize_scratch! builds the
   # random-init forward+CE+backward+AdamW graph on a
-  # LlamaSeqForwardFFICache (random-init realize self-enables
+  # Toy::LLM::Engine::LlamaSeqEngine (random-init realize self-enables
   # full_finetune + train_embeddings, so no extra enable_* call is
   # needed) and OPENS the warm window; realize_warm! (optional) uploads
   # an already-read donor embedding into the realize'd embed table BEFORE
@@ -65,7 +65,7 @@ module Toy; module LLM; module Recipes
     attr_accessor :ws_cache, :ws_t_loss, :ws_t_labels, :ws_t_hp, :ws_step_index
 
     def initialize
-      @ws_cache      = LlamaSeqForwardFFICache.new
+      @ws_cache      = Toy::LLM::Engine::LlamaSeqEngine.new
       @ws_t_loss     = nil
       @ws_t_labels   = nil
       @ws_t_hp       = nil

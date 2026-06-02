@@ -63,7 +63,7 @@
 
 require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
-require_relative "../lib/llama_seq_forward_ffi"
+require_relative "../lib/toy/llm/engine/llama_seq_engine"
 
 # VERIFIED Qwen2.5-0.5B-Instruct native GGUF dims.
 VOCAB   = 151936
@@ -136,7 +136,7 @@ puts "ASSERT b OK: blk.0.attn_q.weight is F32 (type 0)"
 # CRITICAL: untied=FALSE (output.weight ABSENT => TIED). qkv_bias=TRUE
 # forces @seq_has_qkv_bias=true so the 635-661 branch + the
 # transformer_block tnn_add(b_q/b_k/b_v) are genuinely exercised.
-kv = LlamaSeqForwardFFICache.new
+kv = Toy::LLM::Engine::LlamaSeqEngine.new
 kv.realize_for_mmap(handle, cfg, CONTEXT, false, true)
 puts "realize_for_mmap OK (untied=false, qkv_bias=true)"
 

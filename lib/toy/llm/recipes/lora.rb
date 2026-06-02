@@ -38,7 +38,7 @@
 module Toy; module LLM; module Recipes
   # The LoRA fine-tune recipe. realize! builds the frozen-base +
   # LoRA-Q-adapter forward+CE+backward+AdamW graph on a
-  # LlamaSeqForwardFFICache (base weights mmap'd from the GGUF, only the
+  # Toy::LLM::Engine::LlamaSeqEngine (base weights mmap'd from the GGUF, only the
   # rank-r adapters + Adam moments are trainable), then step! drives one
   # training step. The caller (fixture) owns the loaded GGUF handle, the
   # experiment config, and the per-step input Mats.
@@ -46,7 +46,7 @@ module Toy; module LLM; module Recipes
     attr_accessor :lora_cache, :lora_t_loss, :lora_t_labels, :lora_t_hp, :lora_step_index
 
     def initialize
-      @lora_cache      = LlamaSeqForwardFFICache.new
+      @lora_cache      = Toy::LLM::Engine::LlamaSeqEngine.new
       @lora_t_loss     = nil
       @lora_t_labels   = nil
       @lora_t_hp       = nil

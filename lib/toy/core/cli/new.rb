@@ -99,7 +99,7 @@ module Toy
 
           require_relative "toy_lib/toy"
           require_relative "toy_lib/toy_smollm2"
-          require_relative "toy_lib/llama_seq_forward_ffi"
+          require_relative "toy_lib/toy/llm/engine/llama_seq_engine"
           require_relative "toy_lib/toy/llm/adamw"
           require_relative "toy_lib/toy/llm/labels"
           require_relative "toy_lib/toy/llm/recipes/from_scratch"

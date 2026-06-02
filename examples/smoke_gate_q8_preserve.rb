@@ -64,7 +64,7 @@
 
 require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
-require_relative "../lib/llama_seq_forward_ffi"
+require_relative "../lib/toy/llm/engine/llama_seq_engine"
 
 # VERIFIED Qwen2.5-0.5B-Instruct native-Q8 GGUF dims.
 VOCAB   = 151936
@@ -146,7 +146,7 @@ puts "ASSERT b OK (on-disk): blk.0.attn_q.weight type == " + Q8_0.to_s + " (Q8_0
 # CRITICAL: untied=FALSE (output.weight ABSENT => TIED). qkv_bias=TRUE
 # forces @seq_has_qkv_bias=true. This path allocates each weight at its
 # on-disk type and verbatim-copies bytes (NO dequant-to-F32).
-kv = LlamaSeqForwardFFICache.new
+kv = Toy::LLM::Engine::LlamaSeqEngine.new
 kv.realize_for_q8_copy(handle, cfg, CONTEXT, false, true)
 puts "realize_for_q8_copy OK (untied=false, qkv_bias=true)"
 

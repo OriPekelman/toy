@@ -32,7 +32,7 @@
 
 require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
-require_relative "../lib/llama_seq_forward_ffi"
+require_relative "../lib/toy/llm/engine/llama_seq_engine"
 require_relative "../lib/toy_drift_grad"
 
 STEPS    = (ENV["STEPS"] || "5").to_i
@@ -73,7 +73,7 @@ end
 # Realize with t_batch=2 (3rd arg) so @seq_b=2. weight_dtype=0 (F32),
 # untied=true, qkv_bias=false, init_scale=1.0. rope_scaling defaults to
 # :none so t_seq_rope_freq_factors is NULL.
-fcache = LlamaSeqForwardFFICache.new
+fcache = Toy::LLM::Engine::LlamaSeqEngine.new
 fcache.realize_for_random_init(cfg, CONTEXT, BATCH, 0, true, false, SEED, 1.0)
 puts "realize OK"
 

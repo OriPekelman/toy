@@ -53,7 +53,7 @@
 
 require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
-require_relative "../lib/llama_seq_forward_ffi"
+require_relative "../lib/toy/llm/engine/llama_seq_engine"
 
 # llama-3.2 rope params (factor=8.0, low=1.0, high=4.0, orig_max_pos=8192,
 # base=500000) + d_head=64. T sequence positions, single batch.
