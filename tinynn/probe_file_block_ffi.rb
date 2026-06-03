@@ -2,7 +2,7 @@
 # the same program. On Spinel d59926a/568cf0d this segfaulted during
 # FFI init. Verify current Spinel HEAD a03bb49 fixes it.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 # Pin Mat by touching it once so Spinel resolves sp_Mat.

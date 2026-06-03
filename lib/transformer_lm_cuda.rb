@@ -21,12 +21,12 @@
 # CUDA decode_step (see docs/design/arch-struct.md for the open
 # divergence note).
 
-require_relative "transformer"
-require_relative "arch"
+require_relative "toy/models/transformer"
+require_relative "toy/models/arch"
 require_relative "toy/train/sampler"
 require_relative "toy"
-require_relative "toy_smollm2"
-require_relative "toy_smollm2_loader"
+require_relative "toy/models/toy_smollm2"
+require_relative "toy/models/toy_smollm2_loader"
 require_relative "toy_smollm2_ffi_kv_cuda"
 
 class ToyLMCuda

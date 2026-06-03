@@ -31,8 +31,8 @@
 #   OPENAI_API_BASE=http://127.0.0.1:4567/v1 openai api chat_completions.create \
 #     -m gpt2 -g user "Hello, my name is" --max-tokens 15
 
-require_relative "../lib/transformer"
-require_relative "../lib/gpt2"
+require_relative "../lib/toy/models/transformer"
+require_relative "../lib/toy/models/gpt2"
 require_relative "../lib/gpt2_ffi_kv"
 require_relative "../lib/toy/io/gguf_load"
 require_relative "../lib/toy/io/bpe"

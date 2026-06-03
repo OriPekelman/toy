@@ -35,7 +35,7 @@
 # llama_seq_forward_ffi) before the recipe is required.
 
 require_relative "../lib/toy"
-require_relative "../lib/toy_smollm2"
+require_relative "../lib/toy/models/toy_smollm2"
 require_relative "../lib/toy/llm/engine/llama_seq_engine"
 require_relative "../lib/toy/io/toy_corpus_loader"
 require_relative "../lib/toy/train/toy_lr_schedule"

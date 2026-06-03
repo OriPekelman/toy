@@ -13,8 +13,8 @@
 # losses are ggml-internal → byte-exact across CPU backends + machines.
 
 require_relative "../lib/toy"
-require_relative "../lib/toy_smollm2"
-require_relative "../lib/toy_smollm2_loader"
+require_relative "../lib/toy/models/toy_smollm2"
+require_relative "../lib/toy/models/toy_smollm2_loader"
 require_relative "../lib/toy/llm/engine/llama_seq_engine"
 
 GGUF      = ENV["GGUF"]   || "data/smollm2-135m-native.gguf"

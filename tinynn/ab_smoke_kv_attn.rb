@@ -14,7 +14,7 @@
 #   - attn     = soft_max_ext(scores, mask, 1/sqrt(d_head), 0)
 #   - head_out = mul_mat(V_after, attn)                 -- ne=[d_head, 1]
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 MAX_T  = 4

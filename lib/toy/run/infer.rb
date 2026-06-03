@@ -30,7 +30,7 @@
 # ModelIndex auto-select fallback (a silent fallback the never-mask rule
 # forbids). This runner requires an explicit GGUF and fails loud on a bad one.
 
-require_relative "../../arch"
+require_relative "../models/arch"
 require_relative "../../transformer_lm"
 require_relative "../io/tokenizer"
 

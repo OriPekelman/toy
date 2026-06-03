@@ -6,7 +6,7 @@
 # deterministic weights and compares its forward() to the FFI graph's
 # logits.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 vocab_size = 10

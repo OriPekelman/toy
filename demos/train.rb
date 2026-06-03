@@ -5,7 +5,7 @@
 # per-step boilerplate into one verb, so the outer epoch/sequence
 # loop stays visible — what you're reading IS the training algorithm.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/toy/train/training"
 require_relative "../lib/toy/train/toy_trainer"
 

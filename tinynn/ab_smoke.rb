@@ -5,7 +5,7 @@
 #   [0,0]=58   [0,1]=64
 #   [1,0]=139  [1,1]=154
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 a = Mat.new(2, 3)

@@ -5,8 +5,8 @@
 # Pair with prep/parity.py which produces data/ref_logits.txt from
 # HF transformers on the same input, then compares the two.
 
-require_relative "../lib/transformer"
-require_relative "../lib/gpt2"
+require_relative "../lib/toy/models/transformer"
+require_relative "../lib/toy/models/gpt2"
 require_relative "../lib/toy/io/gguf_load"
 require_relative "../lib/toy/train/training"   # parse_ids
 

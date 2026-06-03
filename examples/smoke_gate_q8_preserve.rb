@@ -63,7 +63,7 @@
 # or if the Q8 path is not taken; prints VERDICT + baseline logits on success.
 
 require_relative "../lib/toy"
-require_relative "../lib/toy_smollm2"
+require_relative "../lib/toy/models/toy_smollm2"
 require_relative "../lib/toy/llm/engine/llama_seq_engine"
 
 # VERIFIED Qwen2.5-0.5B-Instruct native-Q8 GGUF dims.

@@ -13,7 +13,7 @@
 # validated by working full-inference output on CPU, so any
 # mismatch implicates the CUDA kernel.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 require_relative "../lib/tinynn_cuda"
 

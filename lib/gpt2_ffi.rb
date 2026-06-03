@@ -16,8 +16,8 @@
 # T_SEQ. The KV-cache version reuses the same persistent weights and
 # only rebuilds the compute graph (cheap — metadata only).
 
-require_relative "transformer"
-require_relative "gpt2"
+require_relative "toy/models/transformer"
+require_relative "toy/models/gpt2"
 require_relative "tinynn"
 
 # Per-block tensor handles. Distinct class from BlockFFICache (in

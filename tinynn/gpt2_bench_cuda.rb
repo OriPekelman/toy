@@ -6,8 +6,8 @@
 # T_SEQ each step (no KV ffi_full_cache_cuda); a KV-ffi_full_cache_cuda version would be
 # substantially faster.
 
-require_relative "../lib/transformer"
-require_relative "../lib/gpt2"
+require_relative "../lib/toy/models/transformer"
+require_relative "../lib/toy/models/gpt2"
 require_relative "../lib/gpt2_ffi_cuda"
 require_relative "../lib/gpt2_ffi_kv_cuda"
 require_relative "../lib/toy/io/gguf_load"

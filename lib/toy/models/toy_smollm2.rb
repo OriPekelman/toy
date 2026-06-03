@@ -13,7 +13,7 @@
 #   d_model=576, n_heads=9, n_kv=3, d_ff=1536, n_layers=30,
 #   vocab=49152, ctx=8192, rope_base=100000, rms_eps=1e-5
 
-require_relative "toy"
+require_relative "../../toy"
 
 module Toy
   # RoPE-scaling parameters extracted from a model's GGUF metadata.

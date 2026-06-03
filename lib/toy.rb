@@ -19,7 +19,7 @@
 #   • Methods return concrete types (always Mat for tensor-valued ops)
 #     so Spinel's type inference flows cleanly.
 
-require_relative "transformer"   # Mat lives here
+require_relative "toy/models/transformer"   # Mat lives here
 require_relative "toy/dev/toy_card"      # Toy::Card structured IR
 
 require_relative "toy/version"   # defines Toy::VERSION; gem-loadable

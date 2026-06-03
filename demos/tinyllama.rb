@@ -2,8 +2,8 @@
 # (no FFI). Slow but useful for debugging the FFI-only issue.
 
 require_relative "../lib/toy"
-require_relative "../lib/toy_smollm2"
-require_relative "../lib/toy_smollm2_loader"
+require_relative "../lib/toy/models/toy_smollm2"
+require_relative "../lib/toy/models/toy_smollm2_loader"
 require_relative "../lib/toy/train/training"
 
 GGUF     = "data/tinyllama-1.1b-f32.gguf"

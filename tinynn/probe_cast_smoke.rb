@@ -9,7 +9,7 @@
 # If this passes, the ggml_cast op + tnn_cast FFI are wired
 # correctly and ready for GH#9's master-copy mixed-precision pattern.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 # Pin Mat type so sp_Mat resolves.

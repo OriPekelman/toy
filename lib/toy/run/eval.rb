@@ -36,7 +36,7 @@
 #   "logprob: <id> <logprob>"
 # All human chatter is omitted; the gated lines are ONLY the "logprob: " ones.
 
-require_relative "../../arch"
+require_relative "../models/arch"
 require_relative "../../transformer_lm"
 
 GGUF  = ENV["GGUF"] || "data/smollm2-135m-f32.gguf"

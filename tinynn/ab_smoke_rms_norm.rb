@@ -4,7 +4,7 @@
 #     rms = sqrt( mean(x[r,*]²) + eps )
 #     y[r,c] = x[r,c] / rms * gamma[c]
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 def rms_norm_native(x, gamma, eps)

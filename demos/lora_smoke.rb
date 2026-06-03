@@ -11,7 +11,7 @@
 # Pure Mat math (no FFI). This is the algorithm scaffold; F1.1 swaps
 # it into FFI graph form for performance.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 
 K = 4      # input dim
 OUT = 3    # output dim

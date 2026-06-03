@@ -7,7 +7,7 @@
 # Toy graph: y = W @ x; loss = sum(y²); W is the only param.
 # Expected: loss → 0 as adam learns to drive y → 0.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 K = 3

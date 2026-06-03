@@ -35,7 +35,7 @@
 # interpolation); ENV reads are TOP-LEVEL constants (a constant assigned
 # inside a conditional arm reads back empty at runtime); no Struct.new.
 
-require_relative "../../toy_vit"
+require_relative "../models/toy_vit"
 require_relative "../llm/engine/vit_tiny_engine"
 require_relative "../io/toy_image_loader"
 require_relative "../train/toy_lr_schedule"

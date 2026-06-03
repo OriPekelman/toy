@@ -8,7 +8,7 @@
 # Pattern mirror from lib/toy_smollm2_ffi_kv.rb:
 #   t_attn = TinyNN.tnn_soft_max_ext(@sess, t_scores, t_mask_or_null, scale, 0.0)
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 require_relative "../lib/tinynn_cuda"
 

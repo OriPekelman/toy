@@ -1,7 +1,7 @@
 # Phase 0.5 smoke: Qwen2.5 inference via the generic TransformerLM
 # delegation layer. Expect bit-identical output vs demos/qwen25_native_mmap.
 
-require_relative "../lib/arch"
+require_relative "../lib/toy/models/arch"
 require_relative "../lib/transformer_lm"
 
 GGUF  = ENV["GGUF"]  || "data/qwen25-1.5b-native.gguf"

@@ -13,7 +13,7 @@
 #   3. switch_b + upload grad + compute_b -> t_w mutated in place
 #   4. switch_a + compute -> result2 should equal NEW t_w (differs from result1)
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn_cuda"
 
 rows = 3

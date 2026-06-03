@@ -11,7 +11,7 @@
 #   MODE=topp    ./demos/sampler_smoke         # +top_p (small vocab only)
 #   SEED=123     ./demos/sampler_smoke         # different seed
 
-require_relative "../lib/arch"
+require_relative "../lib/toy/models/arch"
 require_relative "../lib/transformer_lm"
 require_relative "../lib/toy/train/sampler"
 

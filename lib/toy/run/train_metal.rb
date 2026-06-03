@@ -46,7 +46,7 @@
 # interpolation, no Math.exp); no Struct.new; VOCAB is a hardcoded int literal.
 
 require_relative "../../toy"
-require_relative "../../toy_smollm2"
+require_relative "../models/toy_smollm2"
 require_relative "../llm/engine/llama_seq_engine_metal"
 require_relative "../llm/recipes/from_scratch_metal"
 require_relative "../llm/adamw"

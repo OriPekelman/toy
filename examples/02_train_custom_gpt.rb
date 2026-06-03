@@ -9,7 +9,7 @@
 # Bumping EPOCHS produces a model that writes English-shaped stories.
 # Defaults stay small so the example finishes in seconds.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/toy/train/training"
 require_relative "../lib/toy/train/toy_trainer"
 

@@ -52,7 +52,7 @@
 #   ./examples/smoke_gate_llama3_tensor        # run from repo root
 
 require_relative "../lib/toy"
-require_relative "../lib/toy_smollm2"
+require_relative "../lib/toy/models/toy_smollm2"
 require_relative "../lib/toy/llm/engine/llama_seq_engine"
 
 # llama-3.2 rope params (factor=8.0, low=1.0, high=4.0, orig_max_pos=8192,

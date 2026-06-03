@@ -11,7 +11,7 @@
 # multi-GPU host which we don't have on gx10. Once available, run
 # this with kind=1 device=1 to validate.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 m = Mat.new(2, 2); m.flat[0] = 1.0

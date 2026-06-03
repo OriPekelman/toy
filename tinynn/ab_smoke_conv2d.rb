@@ -14,7 +14,7 @@
 #   kernel ne=[KW=2, KH=2, IC=3, OC=2] — 24 floats
 #   stride 1, no padding → output ne=[3, 3, 2, 1] = 18 floats
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 OUT = ENV["OUT"] || "/tmp/conv2d_ref.json"

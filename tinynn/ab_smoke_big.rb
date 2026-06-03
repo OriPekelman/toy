@@ -14,7 +14,7 @@
 # Tolerance is loose (1e-2 on the big matmuls) because per-element f32
 # rounding accumulates over the inner-product k-dim.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 def fill_lcg(m, seed)

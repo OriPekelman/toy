@@ -5,7 +5,7 @@
 # Spinel doesn't expose ARGV reliably, so the path is hardcoded; flip
 # GGUF_PATH below to point at whichever file you want to inspect.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 GGUF_PATH  = "data/distilgpt2-f32.gguf"

@@ -1,6 +1,6 @@
 # A/B parity for transpose: Mat#transpose vs TinyNN.transpose.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 # 3x2 -> 2x3

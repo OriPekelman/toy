@@ -3,7 +3,7 @@
 # backward), it gives us a verification platform for S2 *now* — swap a
 # Mat#matmul in feed_forward and compare logits with vs. without FFI.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 # Same dimensions train_minimal uses: vocab=7, d_model=16, d_ff=32,

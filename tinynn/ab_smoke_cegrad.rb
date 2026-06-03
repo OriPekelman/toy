@@ -3,7 +3,7 @@
 #
 # Native reference computes softmax + subtract one_hot + divide inline.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 def softmax_native(x)

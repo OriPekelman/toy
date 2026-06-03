@@ -1,4 +1,4 @@
-require_relative "../lib/arch"
+require_relative "../lib/toy/models/arch"
 require_relative "../lib/transformer_lm"
 
 GGUF = "data/tinyllama-1.1b-f32.gguf"

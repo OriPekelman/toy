@@ -12,7 +12,7 @@
 # the eval sequence is the same. Midpoint bump tells the basin story.
 
 require_relative "../lib/toy"
-require_relative "../lib/toy_smollm2"
+require_relative "../lib/toy/models/toy_smollm2"
 require_relative "../lib/toy/llm/engine/llama_seq_engine"
 require_relative "../lib/toy/train/toy_drift_grad"
 

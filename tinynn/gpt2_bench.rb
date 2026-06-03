@@ -6,8 +6,8 @@
 # T_SEQ each step (no KV ffi_full_cache); a KV-ffi_full_cache version would be
 # substantially faster.
 
-require_relative "../lib/transformer"
-require_relative "../lib/gpt2"
+require_relative "../lib/toy/models/transformer"
+require_relative "../lib/toy/models/gpt2"
 require_relative "../lib/gpt2_ffi"
 require_relative "../lib/gpt2_ffi_kv"
 require_relative "../lib/toy/io/gguf_load"

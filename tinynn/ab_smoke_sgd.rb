@@ -2,7 +2,7 @@
 # Native baseline matches the inner loop of TransformerLM#apply_gradients_sgd:
 #   @flat[i] -= lr * grad.flat[i]
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 def sgd_native(param, grad, lr)

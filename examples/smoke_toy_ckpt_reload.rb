@@ -13,7 +13,7 @@
 #   make examples/smoke_toy_ckpt_reload
 #   GGUF=/tmp/ckpt/weights/latest ./examples/smoke_toy_ckpt_reload
 
-require_relative "../lib/arch"
+require_relative "../lib/toy/models/arch"
 require_relative "../lib/transformer_lm"
 
 GGUF = ENV["GGUF"] || "/tmp/ckpt_test/weights/latest"

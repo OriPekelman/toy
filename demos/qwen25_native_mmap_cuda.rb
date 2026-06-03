@@ -11,8 +11,8 @@
 # to the CUDA decode_step). Defaults to 1.5B F32.
 
 require_relative "../lib/toy"
-require_relative "../lib/toy_smollm2"
-require_relative "../lib/toy_smollm2_loader"
+require_relative "../lib/toy/models/toy_smollm2"
+require_relative "../lib/toy/models/toy_smollm2_loader"
 require_relative "../lib/toy_smollm2_ffi_kv_cuda"
 
 GGUF  = ENV["GGUF"]  || "data/qwen25-1.5b-native.gguf"

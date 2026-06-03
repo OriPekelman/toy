@@ -19,10 +19,10 @@
 # Sampler integration is via the optional SamplerConfig argument. When
 # nil (default), greedy argmax is used.
 
-require_relative "transformer"
-require_relative "arch"
+require_relative "toy/models/transformer"
+require_relative "toy/models/arch"
 require_relative "toy/train/sampler"
-require_relative "toy_smollm2_loader"
+require_relative "toy/models/toy_smollm2_loader"
 require_relative "toy_smollm2_ffi_kv"
 require_relative "toy/dev/toy_logprobs"
 

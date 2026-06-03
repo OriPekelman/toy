@@ -67,7 +67,7 @@ def emit_gpt2(hyper)
   ctx = hyper.fetch("ctx")
   <<~RUBY
     require_relative "../lib/toy"
-    require_relative "../lib/toy_gpt2"
+    require_relative "../lib/toy/models/toy_gpt2"
     # Hand-written from card: Toy::GPT2 (HF GPT-2 family).
     # Weights must be loaded separately (e.g. via GGUFLoad.load_toy_gpt2).
     cfg   = Toy::GPT2Config.new(#{v}, #{d}, #{h}, #{d_f}, #{n}, #{ctx})
@@ -87,7 +87,7 @@ def emit_smollm2(hyper)
   theta_b = hyper.fetch("θ_base")
   <<~RUBY
     require_relative "../lib/toy"
-    require_relative "../lib/toy_smollm2"
+    require_relative "../lib/toy/models/toy_smollm2"
     # Reconstructed from algorithm card: Toy::SmolLM2 (Llama-family).
     # The card encodes hyperparameters; rms_eps defaults to 1e-5.
     # Weights must be loaded separately (e.g. via GGUFLoad.load_toy_smollm2).
@@ -114,7 +114,7 @@ end
 # value as a String (we coerce to Int/Float here for the emitter).
 #
 # Usage from in-process code:
-#   require_relative "../lib/toy_gpt2"
+#   require_relative "../lib/toy/models/toy_gpt2"
 #   model = Toy::GPT2.new(cfg)
 #   puts emit_from_card(model.algorithm)
 def emit_from_card(card)

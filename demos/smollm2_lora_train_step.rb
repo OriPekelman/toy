@@ -25,8 +25,8 @@
 # Run: GGUF=data/smollm2-135m-native.gguf ./demos/smollm2_lora_train_step
 
 require_relative "../lib/toy"
-require_relative "../lib/toy_smollm2"
-require_relative "../lib/toy_smollm2_loader"
+require_relative "../lib/toy/models/toy_smollm2"
+require_relative "../lib/toy/models/toy_smollm2_loader"
 require_relative "../lib/toy_smollm2_ffi_kv"
 
 GGUF  = ENV["GGUF"]  || "data/smollm2-135m-native.gguf"

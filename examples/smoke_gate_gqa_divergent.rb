@@ -17,7 +17,7 @@
 # fixed first line of data/ts_seqs.txt => bit-reproducible loss curve.
 
 require_relative "../lib/toy"
-require_relative "../lib/toy_smollm2"
+require_relative "../lib/toy/models/toy_smollm2"
 require_relative "../lib/toy/llm/engine/llama_seq_engine"
 require_relative "../lib/toy/train/toy_drift_grad"
 

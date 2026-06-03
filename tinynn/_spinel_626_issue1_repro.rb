@@ -20,7 +20,7 @@
 # attr_readers + transitively required gguf_kv.rb / tinynn.rb FFI modules).
 # Pull the project at HEAD and run from project root.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/toy/io/tokenizer"
 
 m = Mat.new(2, 3)

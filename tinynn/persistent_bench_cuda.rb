@@ -2,7 +2,7 @@
 # GPU. Expected outcome: one-shot loses badly (per-call cudaMalloc),
 # persistent wins because backend buffers are allocated once.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn_cuda"
 
 T   = 8

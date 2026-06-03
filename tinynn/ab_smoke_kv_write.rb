@@ -10,7 +10,7 @@
 #   4. Download t_K and check row 2 holds k_new's values; rows 0/1/3
 #      remain zero.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 MAX_T  = 4

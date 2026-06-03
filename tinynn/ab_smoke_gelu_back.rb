@@ -6,7 +6,7 @@
 #   dy/dx = 0.5 (1 + tanh u) + 0.5 x (1 - tanh^2 u) * c * (1 + 3 k x^2)
 #   dx = dh * dy/dx
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 def gelu_back_native(x, dh)

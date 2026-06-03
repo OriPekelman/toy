@@ -24,7 +24,7 @@
 # have. The OS reclaims everything cleanly; see tinynn_backend_metal.m
 # for the full rationale.
 
-require_relative "../lib/arch"
+require_relative "../lib/toy/models/arch"
 require_relative "../lib/tinynn_metal"
 require_relative "../lib/transformer_lm_metal"
 require_relative "../lib/toy/io/tokenizer"

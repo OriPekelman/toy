@@ -55,7 +55,7 @@ NEG_INF_SCORE = -1.0e30
 
 # tinynn is always required so FFNFFICache is defined (it lives in
 # lib/tinynn.rb). Set USE_FFI_MATMUL=true to enable FFI dispatch.
-require_relative "tinynn"
+require_relative "../../tinynn"
 
 # One-shot diagnostic: when MAT_SHAPES_ON=true, every matmul prints
 # its shape triple on stdout (post-process with sort | uniq -c). Off

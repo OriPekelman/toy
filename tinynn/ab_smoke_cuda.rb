@@ -4,7 +4,7 @@
 #
 # Run via `make ab-smoke-cuda`.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn_cuda"
 
 a = Mat.new(2, 3)

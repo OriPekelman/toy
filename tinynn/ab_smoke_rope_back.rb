@@ -8,7 +8,7 @@
 # Real parity validation lands when rope_back is wired into a forward
 # graph via ggml_build_backward_expand (Phase F0.4).
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 D_HEAD = 4

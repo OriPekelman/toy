@@ -6,7 +6,7 @@
 #   vh = sqrt(v_new * beta2h) + eps  (beta2h = 1/omc2)
 #   p  = p*(1 - alpha*wd) - alpha * mh / vh    (with wd=0 -> p = p - alpha*mh/vh)
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn_cuda"
 
 def adam_native(param, grad, m, v, lr, b1, b2, eps, omc1, omc2)

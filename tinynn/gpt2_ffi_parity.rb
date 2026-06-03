@@ -5,8 +5,8 @@
 # Pair with prep/parity.py compare --ours data/ours_ffi_logits.txt to
 # check that the FFI path matches HF transformers within F32 noise.
 
-require_relative "../lib/transformer"
-require_relative "../lib/gpt2"
+require_relative "../lib/toy/models/transformer"
+require_relative "../lib/toy/models/gpt2"
 require_relative "../lib/gpt2_ffi"
 require_relative "../lib/toy/io/gguf_load"
 require_relative "../lib/toy/train/training"   # parse_ids

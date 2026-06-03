@@ -13,9 +13,9 @@
 # via cpy-into-view (same pattern as the GPT-2 cache). Cost per step:
 # constant in prompt length.
 
-require_relative "transformer"
+require_relative "toy/models/transformer"
 require_relative "toy"
-require_relative "toy_smollm2"
+require_relative "toy/models/toy_smollm2"
 require_relative "tinynn"
 # NOTE: not requiring "toy_smollm2_loader" here. Requiring it from
 # inside this file triggers a Spinel GC mark crash in decode_step
@@ -23,7 +23,7 @@ require_relative "tinynn"
 # isolated — likely something about require-order interaction with
 # Spinel's type inference around GGUFLoad. Callers that use
 # realize_and_load_auto (or any method here that references
-# GGUFLoad) must `require_relative "toy_smollm2_loader"` from their
+# GGUFLoad) must `require_relative "toy/models/toy_smollm2_loader"` from their
 # top-level driver file BEFORE this file is loaded. The OpenAI API
 # binaries and the realize-mmap demos already do.
 
@@ -833,7 +833,7 @@ class SmolLM2KVFFICache
   # handle (or null for the legacy path); the kv_cache holds it via
   # @gguf_handle_keepalive so the mmap stays valid for inference.
   #
-  # Caller must have `require_relative "toy_smollm2_loader"` at the
+  # Caller must have `require_relative "toy/models/toy_smollm2_loader"` at the
   # top-level driver — this file deliberately does NOT require it
   # (require-order with GGUFLoad's methods that touch `weight_type`
   # was triggering a Spinel GC crash in decode_step).

@@ -3,8 +3,8 @@
 # and the call shapes are consistent; values are meaningless (random
 # init, no real weights loaded yet).
 
-require_relative "../lib/transformer"
-require_relative "../lib/gpt2"
+require_relative "../lib/toy/models/transformer"
+require_relative "../lib/toy/models/gpt2"
 
 VOCAB    = 32
 D_MODEL  = 16

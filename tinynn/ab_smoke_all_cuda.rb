@@ -4,7 +4,7 @@
 # Run via `make ab-smoke-all-cuda` once `make setup-ggml-cuda` has
 # produced vendor/ggml/build-cuda.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn_cuda"
 
 # --- reference helpers ---

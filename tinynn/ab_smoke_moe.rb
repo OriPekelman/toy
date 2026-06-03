@@ -14,7 +14,7 @@
 # Then re-run with ids = [1] → 2x.
 # Then top_k(router=[0.1, 0.9], k=1) → [1] (expert 1 wins).
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 sess = TinyNN.tnn_session_new(0)

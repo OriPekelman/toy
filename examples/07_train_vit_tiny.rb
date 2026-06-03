@@ -14,7 +14,7 @@
 #   make example_train_vit_tiny
 #   STEPS=200 TAO_RUN_DIR=/tmp/vit ./examples/example_train_vit_tiny
 
-require_relative "../lib/toy_vit"
+require_relative "../lib/toy/models/toy_vit"
 require_relative "../lib/toy/llm/engine/vit_tiny_engine"
 require_relative "../lib/toy/io/toy_image_loader"
 require_relative "../lib/toy/train/toy_lr_schedule"

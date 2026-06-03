@@ -21,8 +21,8 @@
 # (~460 MB on disk) that's < a second on GB10.
 
 require_relative "../lib/toy"
-require_relative "../lib/toy_smollm2"
-require_relative "../lib/toy_smollm2_loader"
+require_relative "../lib/toy/models/toy_smollm2"
+require_relative "../lib/toy/models/toy_smollm2_loader"
 require_relative "../lib/toy/llm/engine/llama_seq_engine_cuda"
 
 GGUF      = ENV["GGUF"]    || "data/qwen25-0.5b-native-q8.gguf"

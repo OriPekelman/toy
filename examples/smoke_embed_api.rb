@@ -10,7 +10,7 @@
 # end-to-end smoke; vocab is small (627) and the embedding rows are f32.
 # For a quantized-table test, set GGUF=data/qwen25-0.5b-native-q8.gguf.
 
-require_relative "../lib/arch"
+require_relative "../lib/toy/models/arch"
 require_relative "../lib/transformer_lm"
 
 GGUF = ENV["GGUF"] || "data/llama-3.2-1b-native.gguf"

@@ -20,12 +20,12 @@
 # F32-only on Metal today; quantized inference works through the
 # scheduler's host→device copy path but not yet validated end-to-end.
 
-require_relative "transformer"
-require_relative "arch"
+require_relative "toy/models/transformer"
+require_relative "toy/models/arch"
 require_relative "toy/train/sampler"
 require_relative "toy"
-require_relative "toy_smollm2"
-require_relative "toy_smollm2_loader"
+require_relative "toy/models/toy_smollm2"
+require_relative "toy/models/toy_smollm2_loader"
 require_relative "toy_smollm2_ffi_kv_metal"
 
 class ToyLMMetal

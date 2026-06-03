@@ -1,4 +1,4 @@
-require_relative "../lib/arch"
+require_relative "../lib/toy/models/arch"
 require_relative "../lib/transformer_lm"
 GGUF = "data/smollm2-135m-f32.gguf"
 arch = Arch.from_gguf(GGUF)

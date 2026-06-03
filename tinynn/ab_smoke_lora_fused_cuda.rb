@@ -21,7 +21,7 @@
 # tensor with ne0=Y, ne1=X (args are "math (rows, cols)"; ggml stores
 # them as column-major).
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn_cuda"
 
 # Heavy bench shape: Qwen2.5-1.5B at seq=256, r=8 (defaults).

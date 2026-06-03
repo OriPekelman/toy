@@ -1,7 +1,7 @@
 # A/B parity for element-wise add: Mat#add vs TinyNN.add.
 # Run via `make ab-smoke-add`.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 a = Mat.new(2, 3)

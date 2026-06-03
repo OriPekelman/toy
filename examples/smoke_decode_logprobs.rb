@@ -6,7 +6,7 @@
 #   make examples/smoke_decode_logprobs
 #   GGUF=data/llama-3.2-1b-native.gguf ./examples/smoke_decode_logprobs
 
-require_relative "../lib/arch"
+require_relative "../lib/toy/models/arch"
 require_relative "../lib/transformer_lm"
 
 GGUF = ENV["GGUF"] || "data/llama-3.2-1b-native.gguf"

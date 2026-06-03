@@ -21,10 +21,10 @@
 # Spinel landmines respected: no Array<Array<mixed>> seeds, all
 # helper arrays seed-and-pop with concrete element types.
 
-require_relative "../../../transformer"
+require_relative "../../models/transformer"
 require_relative "../../../tinynn"
-require_relative "../../../toy_vit"
-require_relative "../../../toy_smollm2"   # for Toy::RopeScaling stub (unused, but consistent)
+require_relative "../../models/toy_vit"
+require_relative "../../models/toy_smollm2"   # for Toy::RopeScaling stub (unused, but consistent)
 
 module Toy; module LLM; module Engine
 class ViTTinyBlockFFI

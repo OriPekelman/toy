@@ -1,4 +1,4 @@
-require_relative "../lib/arch"
+require_relative "../lib/toy/models/arch"
 require_relative "../lib/transformer_lm"
 
 GGUF = ENV["GGUF"] || "data/llama-3.2-1b-f32.gguf"

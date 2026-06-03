@@ -2,7 +2,7 @@
 # Tells us whether the persistent API earns its complexity at scale, or
 # just at the toy shapes. Native Mat#matmul is included for reference.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 T     = 64

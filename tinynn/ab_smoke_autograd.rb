@@ -8,7 +8,7 @@
 # reads W's gradient via tnn_tensor_grad, compares to the analytical
 # reference.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 # Tiny shape: x is [k=3, T=1]; W is [k=3, out=2]; y = W·x → ne=[out=2, T=1]

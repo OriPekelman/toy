@@ -10,9 +10,9 @@
 # Shapes chosen small for hand-verifiability but ViT-Tiny-shaped at
 # the axes: image 8×8×3, patch 4, d_model=16 → 4 patches × 16 dim.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
-require_relative "../lib/toy_vit"
+require_relative "../lib/toy/models/toy_vit"
 
 OUT = ENV["OUT"] || "/tmp/patch_embed_ref.json"
 W = 8; H = 8; IC = 3

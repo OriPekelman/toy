@@ -8,7 +8,7 @@
 # random class label; verifies forward + backward + AdamW step
 # without crashing and that loss decreases.
 
-require_relative "../lib/toy_vit"
+require_relative "../lib/toy/models/toy_vit"
 require_relative "../lib/toy/llm/engine/vit_tiny_engine"
 
 IMAGE_SIZE  = (ENV["IMAGE_SIZE"]  || "16").to_i

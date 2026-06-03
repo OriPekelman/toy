@@ -23,7 +23,7 @@
 # before the recipe + value objects are required.
 
 require_relative "../lib/toy"
-require_relative "../lib/toy_smollm2"
+require_relative "../lib/toy/models/toy_smollm2"
 require_relative "../lib/toy/llm/engine/llama_seq_engine"
 require_relative "../lib/toy/llm/adamw"
 require_relative "../lib/toy/llm/labels"

@@ -14,8 +14,8 @@
 # ~17 ms per full-T_SEQ forward at T_SEQ=5 (and that grows linearly
 # in T_SEQ; the KV path is flat).
 
-require_relative "transformer"
-require_relative "gpt2"
+require_relative "toy/models/transformer"
+require_relative "toy/models/gpt2"
 require_relative "tinynn"
 
 # Per-block persistent tensor handles. Includes per-head K/V buffers

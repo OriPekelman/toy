@@ -1,7 +1,7 @@
 # A/B parity for the chained-graph FFNFFICache: pre, hidden, out from
 # the persistent session vs hand-rolled native FFN values.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 def gelu_native(x)

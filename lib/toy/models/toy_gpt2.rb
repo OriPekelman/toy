@@ -13,7 +13,7 @@
 # │     x ← x + ffn (ln2(x))                                         │
 # └──────────────────────────────────────────────────────────────────┘
 
-require_relative "toy"
+require_relative "../../toy"
 
 module Toy
   # Hyperparameter bag. Use a class (not Hash) so Spinel sees a

@@ -7,7 +7,7 @@
 #     https://huggingface.co/ggml-org/models/resolve/main/...
 #   ./tinynn/gguf_smoke data/tinystories.gguf
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 def ggml_type_name(t)

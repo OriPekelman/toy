@@ -1,8 +1,8 @@
 # Smoke test for lib/arch.rb. Builds Arch instances from three GGUFs
 # and prints summaries; verifies the factory does what the docs say.
 
-require_relative "../lib/transformer"
-require_relative "../lib/arch"
+require_relative "../lib/toy/models/transformer"
+require_relative "../lib/toy/models/arch"
 
 paths = ["data/qwen25-1.5b-native.gguf",
          "data/llama-3.2-1b-f32.gguf",

@@ -1,4 +1,4 @@
-require_relative "../lib/arch"
+require_relative "../lib/toy/models/arch"
 require_relative "../lib/transformer_lm"
 
 GGUF = ENV["GGUF"] || "data/mistral-7b-instruct-v0.2.gguf"

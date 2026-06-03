@@ -28,8 +28,8 @@
 #   - throughput: tok/s for decode
 
 require_relative "../lib/toy"
-require_relative "../lib/toy_smollm2"
-require_relative "../lib/toy_smollm2_loader"
+require_relative "../lib/toy/models/toy_smollm2"
+require_relative "../lib/toy/models/toy_smollm2_loader"
 require_relative "../lib/toy_smollm2_ffi_kv_cuda"
 
 GGUF      = ENV["GGUF"]       || "data/qwen25-0.5b-native.gguf"

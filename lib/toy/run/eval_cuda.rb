@@ -25,7 +25,7 @@
 # stable) + manual top-K (strict-< first-seen tie-break). No sampler/seed.
 # prep/eval_gate.rb (TOY_GATE_CUDA=1) gates the top-K id ORDERING cuda-vs-cpu.
 
-require_relative "../../arch"
+require_relative "../models/arch"
 require_relative "../../transformer_lm_cuda"
 require_relative "../dev/toy_logprobs"
 

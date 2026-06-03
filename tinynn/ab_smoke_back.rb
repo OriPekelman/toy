@@ -7,7 +7,7 @@
 # a backend dispatch issue; leaving the FFI function in place and
 # coming back to it. Not blocking the rest of the backward op set.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 def softmax_back_native(softmax_out, dy)

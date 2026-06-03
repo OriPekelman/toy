@@ -13,7 +13,7 @@
 # Acceptance: max abs diff < 0.02 per element on a unit-scale gaussian
 # input (Q8_0 has ~1/128 step at unit scale). RMS error < 0.005.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 GGML_TYPE_F32  = 0

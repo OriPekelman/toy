@@ -62,7 +62,7 @@
 # prints the VERDICT line + the baseline logits on success.
 
 require_relative "../lib/toy"
-require_relative "../lib/toy_smollm2"
+require_relative "../lib/toy/models/toy_smollm2"
 require_relative "../lib/toy/llm/engine/llama_seq_engine"
 
 # VERIFIED Qwen2.5-0.5B-Instruct native GGUF dims.

@@ -29,7 +29,7 @@
 #
 # Exit status: 0 if all gates pass, non-zero otherwise.
 
-require_relative "../lib/arch"
+require_relative "../lib/toy/models/arch"
 require_relative "../lib/transformer_lm"
 
 PROMPT = [9707, 11, 847, 829, 374]   # "Hello, my name is" in Qwen2 tokens

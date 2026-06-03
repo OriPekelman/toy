@@ -10,8 +10,8 @@
 # buffers, no copies after the FFI write. token_embd alone is 38.6 M
 # elements (~300 MB f64); a copy step would be wasteful.
 
-require_relative "../../transformer"
-require_relative "../../gpt2"
+require_relative "../models/transformer"
+require_relative "../models/gpt2"
 require_relative "../../tinynn"
 
 # GPT-2 hyperparameters read from the GGUF's kv metadata. Same shape

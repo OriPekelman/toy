@@ -7,7 +7,7 @@
 # warm-up is the only call that pays the device-init bill; subsequent
 # calls reuse the cached backend.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn_cuda"
 
 def fill_lcg(m, seed)

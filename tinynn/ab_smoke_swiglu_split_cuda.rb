@@ -13,7 +13,7 @@
 # output. The difference is whether ggml-cuda dispatches one fused
 # kernel or two separate ones (silu then mul) per layer.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn_cuda"
 
 # Llama-1.5B FFN shape: d_model=1536, d_ff=8960, T=256.

@@ -7,7 +7,7 @@
 #   BENCH infer_toks_per_sec <float>
 #   BENCH infer_step_ms <float>
 
-require_relative "../lib/arch"
+require_relative "../lib/toy/models/arch"
 require_relative "../lib/transformer_lm"
 
 GGUF  = ENV["GGUF"]  || "data/smollm2-135m-f32.gguf"

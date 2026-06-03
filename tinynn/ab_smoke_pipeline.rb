@@ -3,7 +3,7 @@
 # Realistic shape of what an S4 FFN port will do: build matmul --- gelu ---
 # matmul as one ggml graph rather than three FFI calls.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 def gelu_native(x)

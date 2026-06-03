@@ -24,7 +24,7 @@
 #
 # Acceptance: numeric within 1e-4 of hand-computed reference.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 D_MODEL = 4

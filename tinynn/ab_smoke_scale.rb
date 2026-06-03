@@ -2,7 +2,7 @@
 # Project's Mat#scale! is in-place; we use a `dup-and-scale` pattern
 # native side to keep semantics out-of-place for comparison.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 def scale_native(a, s)

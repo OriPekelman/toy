@@ -31,7 +31,7 @@
 # n_heads*head_dim == d_model (no w_o divergence — that is a separate gate).
 
 require_relative "../lib/toy"
-require_relative "../lib/toy_smollm2"
+require_relative "../lib/toy/models/toy_smollm2"
 require_relative "../lib/toy/llm/engine/llama_seq_engine"
 require_relative "../lib/toy/train/toy_drift_grad"
 

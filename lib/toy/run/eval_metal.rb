@@ -26,7 +26,7 @@
 # prep/metal_gate.rb gates the top-K id ORDERING metal-vs-cpu.
 # RUNTIME-UNVERIFIED on gx10 (Linux, no Apple frameworks) — gate on the Mac.
 
-require_relative "../../arch"
+require_relative "../models/arch"
 require_relative "../../transformer_lm_metal"
 require_relative "../dev/toy_logprobs"
 

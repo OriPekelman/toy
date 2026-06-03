@@ -13,7 +13,7 @@
 #   V: ne=[max_T, d_head]   transposed; ne0=max_T is the k_dim for
 #                            head_out = matmul(V_view, attn)
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 MAX_T  = 8

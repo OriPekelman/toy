@@ -8,8 +8,8 @@
 # Acceptance: loss decreases monotonically, final < 0.5 × initial.
 
 require_relative "../lib/toy"
-require_relative "../lib/toy_smollm2"
-require_relative "../lib/toy_smollm2_loader"
+require_relative "../lib/toy/models/toy_smollm2"
+require_relative "../lib/toy/models/toy_smollm2_loader"
 require_relative "../lib/toy/llm/engine/llama_seq_engine_cuda"
 
 GGUF      = ENV["GGUF"]    || "data/smollm2-135m-native.gguf"

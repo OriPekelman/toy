@@ -40,7 +40,7 @@
 # (never read ts_vocab.txt strings — poly-dispatch landmine, 06:21).
 
 require_relative "../../toy"
-require_relative "../../toy_smollm2"
+require_relative "../models/toy_smollm2"
 require_relative "../io/toy_corpus_loader"
 require_relative "../train/toy_lr_schedule"
 require_relative "../llm/engine/llama_seq_engine"

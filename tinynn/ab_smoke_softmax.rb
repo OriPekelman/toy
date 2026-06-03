@@ -2,7 +2,7 @@
 # Native reference matches lib/transformer.rb's softmax_rows!:
 #   for each row: subtract row max, exp, divide by row sum.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 def softmax_native(x)

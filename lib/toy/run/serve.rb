@@ -26,7 +26,7 @@
 # MIRRORABLE (prep/gen_cuda_mirror.rb): CPU-only, no CUDA mirror.
 
 require_relative "../../toy_smollm2_ffi_kv"
-require_relative "../../toy_smollm2_loader"
+require_relative "../models/toy_smollm2_loader"
 require_relative "../../../vendor/spinel/deps"
 require_relative "../serve/openai/api_json"
 require_relative "../serve/openai/embeddings_handler"

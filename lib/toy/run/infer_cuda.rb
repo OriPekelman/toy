@@ -25,7 +25,7 @@
 # CPU runner's generated token IDs; prep/infer_gate.rb (TOY_GATE_CUDA=1) gates
 # that discrete invariant cuda-vs-cpu in the same run.
 
-require_relative "../../arch"
+require_relative "../models/arch"
 require_relative "../../transformer_lm_cuda"
 require_relative "../io/tokenizer"
 

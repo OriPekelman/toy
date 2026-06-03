@@ -8,7 +8,7 @@
 #   "The quick brown fox"            → 464 2068 7586 21831
 #   "It's a test."                   → 1026 338 257 1332 13
 
-require_relative "../lib/transformer"   # for Mat (unused but pulls in deps)
+require_relative "../lib/toy/models/transformer"   # for Mat (unused but pulls in deps)
 require_relative "../lib/toy/io/bpe"
 
 puts "loading BPE tables..."

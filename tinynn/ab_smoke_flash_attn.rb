@@ -18,7 +18,7 @@
 # n_head=1 so its 2D tensors match the flash path's 3D after squeezing
 # n_head=1.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 D_HEAD = 4

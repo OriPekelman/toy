@@ -32,7 +32,7 @@
 # STDERR) on ANY logit divergence; prints the VERDICT line on full match.
 
 require_relative "../lib/toy"
-require_relative "../lib/toy_smollm2"
+require_relative "../lib/toy/models/toy_smollm2"
 require_relative "../lib/toy/llm/engine/llama_seq_engine"
 require_relative "../lib/toy/train/toy_gguf_fuse"
 require_relative "../lib/toy/train/toy_gguf_writer"

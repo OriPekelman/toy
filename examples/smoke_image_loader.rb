@@ -6,7 +6,7 @@
 #   make examples/smoke_image_loader
 #   ./examples/smoke_image_loader
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 require_relative "../lib/toy/io/toy_image_loader"
 

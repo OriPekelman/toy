@@ -7,7 +7,7 @@
 # show the persistent pattern winning by 1-2 orders of magnitude on
 # the per-iteration cost — most of which is currently graph alloc.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 T   = 8

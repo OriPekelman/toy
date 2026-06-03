@@ -2,7 +2,7 @@
 # at a "more than toy" shape (vocab=64, d_model=64, d_ff=128, n_heads=4,
 # n_layers=2, T=32). 20 iterations each, deterministic weights.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn_cuda"
 
 VOCAB    = 4096

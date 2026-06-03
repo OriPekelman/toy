@@ -3,8 +3,8 @@
 # each weight type. Used to confirm name mapping + per-head split are
 # correct before doing the full forward.
 
-require_relative "../lib/transformer"
-require_relative "../lib/gpt2"
+require_relative "../lib/toy/models/transformer"
+require_relative "../lib/toy/models/gpt2"
 require_relative "../lib/toy/io/gguf_load"
 
 # distilgpt2 hyperparams. Hardcoded — eventually read from GGUF metadata.

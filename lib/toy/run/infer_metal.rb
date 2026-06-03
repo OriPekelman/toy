@@ -26,7 +26,7 @@
 # invariant metal-vs-cpu in the same run. RUNTIME-UNVERIFIED on gx10 (Linux,
 # no Apple frameworks) — the parity gate runs on the Mac.
 
-require_relative "../../arch"
+require_relative "../models/arch"
 require_relative "../../transformer_lm_metal"
 require_relative "../io/tokenizer"
 

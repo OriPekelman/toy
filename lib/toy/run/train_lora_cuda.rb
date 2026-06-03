@@ -53,7 +53,7 @@
 # "step N: loss=" line.
 
 require_relative "../../toy"
-require_relative "../../toy_smollm2"
+require_relative "../models/toy_smollm2"
 require_relative "../llm/engine/llama_seq_engine_cuda"
 require_relative "../llm/recipes/lora_cuda"
 require_relative "../llm/adamw"

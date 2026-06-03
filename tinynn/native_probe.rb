@@ -1,4 +1,4 @@
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 class NativeProbe

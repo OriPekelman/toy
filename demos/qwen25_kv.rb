@@ -12,8 +12,8 @@
 #   ./prep/qwen25_tokens.py encode "Hello, my name is"
 
 require_relative "../lib/toy"
-require_relative "../lib/toy_smollm2"
-require_relative "../lib/toy_smollm2_loader"
+require_relative "../lib/toy/models/toy_smollm2"
+require_relative "../lib/toy/models/toy_smollm2_loader"
 require_relative "../lib/toy_smollm2_ffi_kv"
 require_relative "../lib/toy/train/training"
 

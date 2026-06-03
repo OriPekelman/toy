@@ -4,10 +4,10 @@
 # Useful for seeing the "shape of the problem" without burning a forward.
 
 require_relative "../lib/toy"
-require_relative "../lib/toy_gpt2"
-require_relative "../lib/toy_smollm2"
-require_relative "../lib/toy_gpt2_loader"
-require_relative "../lib/toy_smollm2_loader"
+require_relative "../lib/toy/models/toy_gpt2"
+require_relative "../lib/toy/models/toy_smollm2"
+require_relative "../lib/toy/models/toy_gpt2_loader"
+require_relative "../lib/toy/models/toy_smollm2_loader"
 
 GPT2_GGUF    = "data/distilgpt2-f32.gguf"
 SMOLLM2_GGUF = "data/smollm2-135m-f32.gguf"

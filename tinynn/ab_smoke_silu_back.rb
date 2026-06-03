@@ -6,7 +6,7 @@
 #           = sigmoid(x) * (1 + x * (1 - sigmoid(x)))
 #   dx      = dy * dy/dx
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 def silu_back_native(x, dy)

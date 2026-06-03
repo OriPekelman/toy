@@ -8,7 +8,7 @@
 # name unify to sp_RbVal and break the existing backward code.
 
 require_relative "../lib/toy"
-require_relative "../lib/toy_smollm2"
+require_relative "../lib/toy/models/toy_smollm2"
 
 # ---- Toy::RMSNorm ----
 puts "=== Toy::RMSNorm ==="

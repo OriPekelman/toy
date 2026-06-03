@@ -5,8 +5,8 @@
 #   GGUF=data/qwen25-0.5b-native.gguf PREFILL_T=128 N_NEW=64 ./demos/qwen25_bench_cpu
 
 require_relative "../lib/toy"
-require_relative "../lib/toy_smollm2"
-require_relative "../lib/toy_smollm2_loader"
+require_relative "../lib/toy/models/toy_smollm2"
+require_relative "../lib/toy/models/toy_smollm2_loader"
 require_relative "../lib/toy_smollm2_ffi_kv"
 
 GGUF      = ENV["GGUF"]       || "data/qwen25-0.5b-native.gguf"

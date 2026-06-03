@@ -9,7 +9,7 @@
 # prints cosine LR at a few representative steps to verify the
 # schedule shape (warmup → cosine → tail).
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 require_relative "../lib/toy/io/toy_corpus_loader"
 require_relative "../lib/toy/train/toy_lr_schedule"

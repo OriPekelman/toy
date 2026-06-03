@@ -2,7 +2,7 @@
 # Native reference matches lib/transformer.rb's feed_forward GeLU:
 #   c = sqrt(2/π);  u = c * (x + 0.044715 * x^3);  y = 0.5 * x * (1 + tanh(u))
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 def gelu_native(x)

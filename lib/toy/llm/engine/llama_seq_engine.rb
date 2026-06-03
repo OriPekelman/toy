@@ -16,9 +16,9 @@
 # sidestep it cleanly, every dimension/parameter ivar here uses a
 # `@seq_*` prefix. Verbose but type-isolated.
 
-require_relative "../../../transformer"
+require_relative "../../models/transformer"
 require_relative "../../../toy"
-require_relative "../../../toy_smollm2"
+require_relative "../../models/toy_smollm2"
 require_relative "../../../tinynn"
 require_relative "../primitives/rms_norm"
 require_relative "../primitives/rope"

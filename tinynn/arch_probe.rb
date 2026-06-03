@@ -1,7 +1,7 @@
 # Reads general.architecture + key tokenizer metadata from a GGUF.
 # Path is hardcoded; flip GGUF_PATH to inspect different models.
 
-require_relative "../lib/transformer"
+require_relative "../lib/toy/models/transformer"
 require_relative "../lib/tinynn"
 
 GGUF_PATH = ENV["GGUF"] || "data/qwen25-1.5b-native.gguf"
