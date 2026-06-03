@@ -70,22 +70,36 @@ data offline (the block layout has a hierarchical scale + per-sub-
 block offset structure that's not trivial to synthesize). The
 real-model repro:
 
-```bash
-# Q4_K_M — broken output
-toy infer data/OLMoE-1b-7b-0924-Instruct-Q4_K_M.gguf \
-  --prompt 'The capital of France is' --n 8
-# → "The capital of France is Dub Dub Dub Dub Dub Dub Dub Dub"
+Prefer the **token-ID-level** repro: it is decode-independent (the text path
+has a separate space-dropping bug, toy#34, that mangles the rendered string).
+Same prompt ("The capital of France is" → ids `510 38479 1171 33639 261`),
+same graph, greedy decode; **only the expert tensor dtype differs**:
 
-# Q8_0 — coherent output
+```bash
+# Q4_K_M experts — degenerate (token 20065 = "Dub", repeated)
+toy infer data/OLMoE-1b-7b-0924-Instruct-Q4_K_M.gguf \
+  --prompt-ids '510 38479 1171 33639 261' --n 10
+# ids: … 261 | 20065 20065 20065 20065 20065 42859 42859 42859 42859 42859
+
+# Q8_0 experts — coherent / varied
 toy infer data/OLMoE-1b-7b-0924-Instruct-q8_0.gguf \
-  --prompt 'The capital of France is' --n 8
-# → "The capital of France is called Paris."
+  --prompt-ids '510 38479 1171 33639 261' --n 10
+# ids: … 261 | 1373 1171 33639 15 11368 3 2303 23604 22473 1138
 ```
+
+(The text form `--prompt '…'` shows "Dub Dub…" only when the tokenizer decode
+is intact; on current `main` toy#34 strips spaces, so compare IDs.)
 
 ## Upstream
 
 Reported to ggml-org/ggml:
 <https://github.com/ggml-org/ggml/issues/1506> (filed 2026-05-24).
+
+2026-06-03: a maintainer could not reproduce on M1 Metal + current master.
+Re-confirmed still present on **aarch64 CPU @ ggml 41e7949** (the ID-level repro
+above); replied with the backend/arch specificity (their M1 Metal ≠ our aarch64
+CPU) + version note (post-pin `mul_mat_id` commits are webgpu/zendnn/vulkan/CANN
+only — no generic CPU fix). Still OPEN.
 
 When upstream lands a fix:
 - Remove the runtime warning from realize_for_mmap.
