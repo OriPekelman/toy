@@ -82,7 +82,11 @@ def build_bench(source, binary)
     warn "missing bench source: #{source}"; return false
   end
   return true if File.exist?(bin_path) && File.mtime(bin_path) > File.mtime(src_path)
-  cmd = "cd #{ROOT} && ~/sites/spinel/spinel #{source} -o #{binary} 2>&1"
+  # bench/build/ is gitignored, so a fresh checkout has no such dir — the
+  # linker's `-o bench/build/<bin>` then fails with errno=2. Create it first
+  # so `make bench` works on a clean clone (e.g. Mac), not just where a prior
+  # run already made the dir.
+  cmd = "cd #{ROOT} && mkdir -p #{File.dirname(binary)} && ~/sites/spinel/spinel #{source} -o #{binary} 2>&1"
   out = `#{cmd}`
   unless $?.success?
     warn "build failed: #{source}\n#{out}"; return false
