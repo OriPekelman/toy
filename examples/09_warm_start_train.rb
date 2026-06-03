@@ -63,10 +63,10 @@
 require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
 require_relative "../lib/toy/llm/engine/llama_seq_engine"
-require_relative "../lib/toy_drift_grad"
-require_relative "../lib/toy_gguf_writer"
+require_relative "../lib/toy/train/toy_drift_grad"
+require_relative "../lib/toy/train/toy_gguf_writer"
 require_relative "../lib/toy/io/toy_corpus_loader"
-require_relative "../lib/toy_lr_schedule"
+require_relative "../lib/toy/train/toy_lr_schedule"
 
 D_MODEL  = (ENV["D_MODEL"]  || "64").to_i
 DONOR_D  = (ENV["DONOR_D"]  || "128").to_i

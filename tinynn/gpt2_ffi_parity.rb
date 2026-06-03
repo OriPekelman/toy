@@ -9,7 +9,7 @@ require_relative "../lib/transformer"
 require_relative "../lib/gpt2"
 require_relative "../lib/gpt2_ffi"
 require_relative "../lib/toy/io/gguf_load"
-require_relative "../lib/training"   # parse_ids
+require_relative "../lib/toy/train/training"   # parse_ids
 
 VOCAB    = 50257
 D_MODEL  = 768

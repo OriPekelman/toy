@@ -15,7 +15,7 @@ require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
 require_relative "../lib/toy_smollm2_loader"
 require_relative "../lib/toy_smollm2_ffi_kv"
-require_relative "../lib/training"
+require_relative "../lib/toy/train/training"
 
 GGUF     = ENV["GGUF"]     || "data/qwen25-0.5b-f32.gguf"
 IDS_PATH = ENV["IDS_PATH"] || "data/qwen25_prompt_ids.txt"

@@ -42,15 +42,15 @@
 require_relative "../../toy"
 require_relative "../../toy_smollm2"
 require_relative "../io/toy_corpus_loader"
-require_relative "../../toy_lr_schedule"
+require_relative "../train/toy_lr_schedule"
 require_relative "../llm/engine/llama_seq_engine"
 require_relative "../llm/recipes/from_scratch"
 require_relative "../llm/recipes/warm_start"
 require_relative "../llm/adamw"
 require_relative "../llm/labels"
-require_relative "../../toy_gguf_writer"
-require_relative "../../toy_drift_grad"
-require_relative "../../toy_gguf_fuse"
+require_relative "../train/toy_gguf_writer"
+require_relative "../train/toy_drift_grad"
+require_relative "../train/toy_gguf_fuse"
 
 # NOTE: this runner hosts the two RANDOM-INIT recipes (from-scratch +
 # warm-start, both Toy::LLM::Engine::LlamaSeqEngine#realize_for_random_init). The

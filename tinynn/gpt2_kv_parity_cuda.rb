@@ -7,7 +7,7 @@ require_relative "../lib/transformer"
 require_relative "../lib/gpt2"
 require_relative "../lib/gpt2_ffi_kv_cuda"
 require_relative "../lib/toy/io/gguf_load"
-require_relative "../lib/training"
+require_relative "../lib/toy/train/training"
 
 MAX_T    = 32          # KV-cache capacity (≥ prompt + generation)
 IDS_PATH = "data/prompt_ids.txt"

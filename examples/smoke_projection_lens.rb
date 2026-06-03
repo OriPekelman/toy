@@ -15,7 +15,7 @@
 require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
 require_relative "../lib/toy/llm/engine/llama_seq_engine"
-require_relative "../lib/toy_drift_grad"
+require_relative "../lib/toy/train/toy_drift_grad"
 
 STEPS    = (ENV["STEPS"]    || "5").to_i
 D_MODEL  = (ENV["D_MODEL"]  || "64").to_i

@@ -3,7 +3,7 @@ require_relative "../lib/toy_smollm2"
 require_relative "../lib/toy_smollm2_loader"
 require_relative "../lib/toy/llm/engine/llama_seq_engine"
 require_relative "../lib/toy/dev/toy_describe_flow"
-require_relative "../lib/toy_drift_grad"
+require_relative "../lib/toy/train/toy_drift_grad"
 
 GGUF    = ENV["GGUF"]    || "data/smollm2-135m-native.gguf"
 CONTEXT = (ENV["CONTEXT"] || "16").to_i

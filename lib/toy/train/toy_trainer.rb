@@ -31,7 +31,7 @@
 #     step += 1
 #   end
 
-require_relative "transformer"
+require_relative "../../transformer"
 require_relative "training"
 
 module Toy

@@ -13,7 +13,7 @@
 
 require_relative "../lib/arch"
 require_relative "../lib/transformer_lm"
-require_relative "../lib/sampler"
+require_relative "../lib/toy/train/sampler"
 
 GGUF = ENV["GGUF"] || "data/smollm2-135m-native.gguf"
 MODE = ENV["MODE"] || "topk"

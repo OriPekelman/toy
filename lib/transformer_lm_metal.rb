@@ -22,7 +22,7 @@
 
 require_relative "transformer"
 require_relative "arch"
-require_relative "sampler"
+require_relative "toy/train/sampler"
 require_relative "toy"
 require_relative "toy_smollm2"
 require_relative "toy_smollm2_loader"

@@ -6,8 +6,8 @@
 # loop stays visible — what you're reading IS the training algorithm.
 
 require_relative "../lib/transformer"
-require_relative "../lib/training"
-require_relative "../lib/toy_trainer"
+require_relative "../lib/toy/train/training"
+require_relative "../lib/toy/train/toy_trainer"
 
 # ---- hyperparams ----------------------------------------------------------
 D_MODEL  = 32

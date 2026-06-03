@@ -12,7 +12,7 @@
 # inference-table-local; main scope only sees the final String
 # returned from `detokenize`.
 
-require_relative "tinynn"
+require_relative "../../tinynn"
 
 module ToySample
   # Greedy autoregressive decode using a realized forward graph.

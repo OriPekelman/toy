@@ -17,7 +17,7 @@ require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
 require_relative "../lib/toy_smollm2_loader"
 require_relative "../lib/toy_smollm2_ffi_kv_cuda"
-require_relative "../lib/training"
+require_relative "../lib/toy/train/training"
 
 GGUF = "data/qwen25-1.5b-native-q8.gguf"   # D=1536, multiple of 512
 

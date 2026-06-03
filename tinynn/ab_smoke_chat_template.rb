@@ -1,7 +1,7 @@
 # Smoke: render the 4 chat-template families against a fixed 3-message
 # conversation. Verifies the wire, not Tokenizer integration.
 
-require_relative "../lib/toy_chat_template"
+require_relative "../lib/toy/train/toy_chat_template"
 
 # msgs: Array<Array<String>> — [role, content]. Sample chat:
 msgs = [["", ""]]; msgs.pop

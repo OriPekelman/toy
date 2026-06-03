@@ -14,7 +14,7 @@
 require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
 require_relative "../lib/toy/llm/engine/llama_seq_engine"
-require_relative "../lib/toy_drift_grad"
+require_relative "../lib/toy/train/toy_drift_grad"
 
 LMC_A    = ENV["LMC_A"]    || ""
 LMC_B    = ENV["LMC_B"]    || ""

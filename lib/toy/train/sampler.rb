@@ -15,7 +15,7 @@
 # Context (`SamplerContext`) carries generated IDs (for rep penalty)
 # + RNG seed. Config (`SamplerConfig`) carries per-call hyperparams.
 
-require_relative "transformer"   # for Mat
+require_relative "../../transformer"   # for Mat
 
 class SamplerConfig
   attr_accessor :temperature, :top_k, :top_p, :rep_penalty, :seed, :max_tokens

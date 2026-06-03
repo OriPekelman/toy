@@ -8,7 +8,7 @@
 require_relative "../lib/toy"
 require_relative "../lib/toy_gpt2"
 require_relative "../lib/toy_gpt2_loader"
-require_relative "../lib/training"   # parse_ids: comma- or space-separated int line
+require_relative "../lib/toy/train/training"   # parse_ids: comma- or space-separated int line
 
 # --- config from GGUF ----
 GGUF = "data/distilgpt2-f32.gguf"

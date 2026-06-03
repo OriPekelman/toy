@@ -49,7 +49,7 @@
 require_relative "../../toy"
 require_relative "../../toy_smollm2"
 require_relative "../llm/engine/llama_seq_engine"
-require_relative "../../toy_drift_grad"
+require_relative "../train/toy_drift_grad"
 
 LMC_A    = ENV["LMC_A"]      || ""
 LMC_B    = ENV["LMC_B"]      || ""

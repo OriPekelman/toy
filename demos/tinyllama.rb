@@ -4,7 +4,7 @@
 require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
 require_relative "../lib/toy_smollm2_loader"
-require_relative "../lib/training"
+require_relative "../lib/toy/train/training"
 
 GGUF     = "data/tinyllama-1.1b-f32.gguf"
 IDS_PATH = "data/tinyllama_prompt_ids.txt"

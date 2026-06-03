@@ -51,9 +51,9 @@ require_relative "../llm/engine/llama_seq_engine_metal"
 require_relative "../llm/recipes/from_scratch_metal"
 require_relative "../llm/adamw"
 require_relative "../llm/labels"
-require_relative "../../toy_gguf_writer"
-require_relative "../../toy_drift_grad"
-require_relative "../../toy_gguf_fuse"
+require_relative "../train/toy_gguf_writer"
+require_relative "../train/toy_drift_grad"
+require_relative "../train/toy_gguf_fuse"
 
 STEPS       = (ENV["STEPS"] || "5").to_i
 SEED        = (ENV["SEED"]  || "0").to_i

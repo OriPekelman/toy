@@ -48,8 +48,8 @@ require_relative "../../toy_smollm2"
 require_relative "../llm/engine/llama_seq_engine"
 require_relative "../llm/recipes/lora"
 require_relative "../llm/adamw"
-require_relative "../../toy_gguf_writer"
-require_relative "../../toy_drift_grad"
+require_relative "../train/toy_gguf_writer"
+require_relative "../train/toy_drift_grad"
 
 STEPS       = (ENV["STEPS"] || "5").to_i
 TAO_RUN_DIR = ENV["TAO_RUN_DIR"] || ""
