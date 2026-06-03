@@ -20,7 +20,7 @@
 #     so Spinel's type inference flows cleanly.
 
 require_relative "transformer"   # Mat lives here
-require_relative "toy_card"      # Toy::Card structured IR
+require_relative "toy/dev/toy_card"      # Toy::Card structured IR
 
 require_relative "toy/version"   # defines Toy::VERSION; gem-loadable
 

@@ -24,7 +24,7 @@ require_relative "arch"
 require_relative "sampler"
 require_relative "toy_smollm2_loader"
 require_relative "toy_smollm2_ffi_kv"
-require_relative "toy_logprobs"
+require_relative "toy/dev/toy_logprobs"
 
 class ToyLM
   attr_reader :arch, :backend, :tokenizer, :max_T

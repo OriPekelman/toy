@@ -17,7 +17,7 @@ require_relative "../model_scan"
 require_relative "../gguf_meta"
 
 # toy_card.rb is MRI-clean (verified: no ffi_lib). Reused verbatim.
-require_relative "../../../toy_card"
+require_relative "../../dev/toy_card"
 
 module Toy
   module Core

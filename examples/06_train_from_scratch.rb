@@ -25,12 +25,12 @@
 require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
 require_relative "../lib/toy/llm/engine/llama_seq_engine"
-require_relative "../lib/toy_describe_flow"
+require_relative "../lib/toy/dev/toy_describe_flow"
 require_relative "../lib/toy_drift_grad"
 require_relative "../lib/toy_gguf_writer"
-require_relative "../lib/toy_tap"
+require_relative "../lib/toy/dev/toy_tap"
 require_relative "../lib/toy_sample"
-require_relative "../lib/toy_token_drift"
+require_relative "../lib/toy/dev/toy_token_drift"
 
 VOCAB_SIZE = 627
 D_MODEL    = (ENV["D_MODEL"]  || "64").to_i

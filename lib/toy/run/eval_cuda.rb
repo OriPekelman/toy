@@ -27,7 +27,7 @@
 
 require_relative "../../arch"
 require_relative "../../transformer_lm_cuda"
-require_relative "../../toy_logprobs"
+require_relative "../dev/toy_logprobs"
 
 GGUF  = ENV["GGUF"] || "data/smollm2-135m-f32.gguf"
 TOP_K = (ENV["TOP_K"] || "5").to_i
