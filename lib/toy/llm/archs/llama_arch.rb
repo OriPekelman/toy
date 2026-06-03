@@ -139,6 +139,39 @@ module Toy; module LLM; module Archs
       end
     end
 
+    # P2-finish — the RANDOM-INIT (+ projection-lens) trainable-F32 GLOBAL alloc,
+    # lifted VERBATIM from Toy::LLM::Engine::LlamaSeqEngine#realize_for_random_init
+    # (alloc + ft_add_global / ft_name_last_global ORDER unchanged → bit-identical
+    # graph; gated by train_gate from-scratch + smoke_projection_lens). The arch
+    # already OWNS these handles (the load_globals_from_gguf_mmap! precedent); the
+    # engine's @ft_globals_* recorders + the frozen-embed :str namer are back-called
+    # through `cache` (the tnn_tensor_set_name :str FFI stays on the cache realize
+    # runtime path — same discipline as ft_name_last / lora_name_q!). donor_d_in>0 =
+    # projection lens (frozen donor-width embed + trainable lens.proj); 0 = standard.
+    def alloc_globals_trainable_f32!(sess, cache, vocab, d_model, donor_d_in, untied)
+      if donor_d_in > 0
+        self.t_seq_token_embed = TinyNN.tnn_input_2d_f32_persistent(sess, vocab, donor_d_in)
+        cache.name_global!(self.t_seq_token_embed, "token_embd.weight")
+        self.t_seq_w_proj = TinyNN.tnn_input_2d_f32_persistent(sess, d_model, donor_d_in)
+        cache.ft_add_global_2d(self.t_seq_w_proj, d_model, donor_d_in)
+        cache.ft_name_last_global("lens.proj.weight")
+      else
+        self.t_seq_token_embed = TinyNN.tnn_input_2d_f32_persistent(sess, vocab, d_model)
+        cache.ft_add_global_2d(self.t_seq_token_embed, vocab, d_model)
+        cache.ft_name_last_global("token_embd.weight")
+      end
+
+      self.t_seq_final_norm_gamma = TinyNN.tnn_input_1d_f32_persistent(sess, d_model)
+      cache.ft_add_global_1d(self.t_seq_final_norm_gamma)
+      cache.ft_name_last_global("output_norm.weight")
+
+      if untied
+        self.t_seq_output = TinyNN.tnn_input_2d_f32_persistent(sess, vocab, d_model)
+        cache.ft_add_global_2d(self.t_seq_output, vocab, d_model)
+        cache.ft_name_last_global("output.weight")
+      end
+    end
+
     # SEQ-MODE forward orchestration. The per-graph INPUT handles
     # (token_ids, positions) are ALLOCATED BY THE CACHE before this call
     # (cache-owned graph I/O, read by forward() and the uploaders) and

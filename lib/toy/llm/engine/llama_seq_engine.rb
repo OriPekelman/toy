@@ -616,45 +616,13 @@ class LlamaSeqEngine
       @t_seq_rope_freq_factors = TinyNN.tnn_null_ptr
     end
 
-    # Globals — all trainable persistent F32. Each gets a llama.cpp-
-    # convention name so drift/grad/checkpoint consumers can align
-    # across runs (toy#semantic-tensor-names, GH#11).
-    # E2.3 — projection lens. When cfg.donor_d_in > 0 the embed
-    # table has donor_d_in columns (typically loaded from a donor
-    # GGUF post-realize, frozen); a trainable Linear(donor_d_in,
-    # d_model) named "lens.proj.weight" sits between get_rows and
-    # the first block. When 0, behaviour is identical to before.
-    if @seq_donor_d_in > 0
-      # token_embd ne=[donor_d_in, vocab] — donor-width rows.
-      self.t_seq_token_embed = TinyNN.tnn_input_2d_f32_persistent(@sess,
-                             @seq_vocab_size, @seq_donor_d_in)
-      # Frozen — NOT in ft_globals so backward won't compute its grad
-      # and build_training_step won't emit an opt_step for it. Caller
-      # uploads donor values post-finalize.
-      TinyNN.tnn_tensor_set_name(self.t_seq_token_embed, "token_embd.weight")
-      # W_proj ne=[donor_d_in, d_model] so matmul(W_proj, embed)
-      # contracts donor_d_in → d_model. Trainable.
-      self.t_seq_w_proj = TinyNN.tnn_input_2d_f32_persistent(@sess,
-                        @seq_d_model, @seq_donor_d_in)
-      ft_add_global_2d(self.t_seq_w_proj, @seq_d_model, @seq_donor_d_in)
-      ft_name_last_global("lens.proj.weight")
-    else
-      self.t_seq_token_embed = TinyNN.tnn_input_2d_f32_persistent(@sess,
-                             @seq_vocab_size, @seq_d_model)
-      ft_add_global_2d(self.t_seq_token_embed, @seq_vocab_size, @seq_d_model)
-      ft_name_last_global("token_embd.weight")
-    end
-
-    self.t_seq_final_norm_gamma = TinyNN.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
-    ft_add_global_1d(self.t_seq_final_norm_gamma)
-    ft_name_last_global("output_norm.weight")
-
-    if untied
-      self.t_seq_output = TinyNN.tnn_input_2d_f32_persistent(@sess,
-                        @seq_vocab_size, @seq_d_model)
-      ft_add_global_2d(self.t_seq_output, @seq_vocab_size, @seq_d_model)
-      ft_name_last_global("output.weight")
-    end
+    # Globals — trainable persistent F32 (+ E2.3 projection-lens branch when
+    # @seq_donor_d_in > 0). P2-finish: the alloc lifted onto the arch
+    # (LlamaArch#alloc_globals_trainable_f32!), which already owns these handles
+    # — verbatim, same order, byte-identical. @ft_globals_* recorders + the
+    # frozen-embed namer are back-called through `self`.
+    @seq_arch.alloc_globals_trainable_f32!(@sess, self, @seq_vocab_size,
+                                           @seq_d_model, @seq_donor_d_in, untied)
 
     # Per-block weights — identical structure to realize_for_full_finetune.
     # P2.6 Step 2 — the block-array seeding loop now lives on the arch
@@ -866,6 +834,15 @@ class LlamaSeqEngine
     TinyNN.tnn_tensor_set_name(@ft_globals_weights[last], name)
     TinyNN.tnn_tensor_set_name(@ft_globals_m[last],       name + ".m")
     TinyNN.tnn_tensor_set_name(@ft_globals_v[last],       name + ".v")
+  end
+
+  # Name a single FROZEN global (e.g. the projection-lens donor embed, which is
+  # NOT pushed to @ft_globals so ft_name_last_global cannot reach it). Kept on
+  # the engine so this tnn_tensor_set_name(:str) FFI stays on the cache realize
+  # runtime path — same discipline as ft_name_last / lora_name_q!. Back-called
+  # by LlamaArch#alloc_globals_trainable_f32!.
+  def name_global!(t, name)
+    TinyNN.tnn_tensor_set_name(t, name)
   end
 
   # P2.7 — LoRA-Q tensor naming callbacks for the extracted block-side
