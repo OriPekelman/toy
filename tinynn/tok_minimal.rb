@@ -1,4 +1,4 @@
-require_relative "../lib/tokenizer"
+require_relative "../lib/toy/io/tokenizer"
 puts "loading..."
 $stdout.flush
 t = Tokenizer.from_gguf("data/smollm2-135m-tok.gguf")

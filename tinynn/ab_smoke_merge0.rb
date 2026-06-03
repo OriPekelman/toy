@@ -3,7 +3,7 @@
 # but vocab has no "?Ċ" entry, we have an inconsistent BPE
 # serialization — that's the SmolLM2 bug.
 
-require_relative "../lib/gguf_kv"
+require_relative "../lib/toy/io/gguf_kv"
 
 def dump(path)
   h = GgufKV.tnn_gguf_load(path)

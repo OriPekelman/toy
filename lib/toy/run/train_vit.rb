@@ -37,7 +37,7 @@
 
 require_relative "../../toy_vit"
 require_relative "../llm/engine/vit_tiny_engine"
-require_relative "../../toy_image_loader"
+require_relative "../io/toy_image_loader"
 require_relative "../../toy_lr_schedule"
 require_relative "../../toy_drift_grad"
 require_relative "../llm/recipes/vit_tiny"

@@ -28,7 +28,7 @@
 
 require_relative "../../arch"
 require_relative "../../transformer_lm_metal"
-require_relative "../../tokenizer"
+require_relative "../io/tokenizer"
 
 GGUF  = ENV["GGUF"] || "data/smollm2-135m-f32.gguf"
 PROMPT = ENV["PROMPT"] || "Once upon a time"

@@ -11,7 +11,7 @@
 # in the failing prompts*, whether the corresponding merges produce
 # in-vocab strings.
 
-require_relative "../lib/gguf_kv"
+require_relative "../lib/toy/io/gguf_kv"
 
 # Pull vocab + merges directly. Don't go through Tokenizer; we want
 # the raw arrays so we can search them.

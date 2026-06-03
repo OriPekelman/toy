@@ -5,7 +5,7 @@
 
 require_relative "../lib/transformer"
 require_relative "../lib/gpt2"
-require_relative "../lib/gguf_load"
+require_relative "../lib/toy/io/gguf_load"
 
 # distilgpt2 hyperparams. Hardcoded — eventually read from GGUF metadata.
 VOCAB    = 50257

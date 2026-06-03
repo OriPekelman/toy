@@ -138,7 +138,7 @@ const FACETS = [
   },
   {
     key: 'cache-context',
-    prompt: `Map the CACHE/ARCH context that must STAY on LlamaSeqForwardFFICache: the block-stacking loop (where build_seq_block is called per layer — grep build_seq_block call sites), the final norm + LM head, token embedding, and the per-forward scalars/tensors (positions, rope_cfg, scale, eps, seq dims) that the block body reads but does NOT own. Distinguish "stays on cache, handed to block per forward" from "moves into block".`,
+    prompt: `Map the CACHE/ARCH context that must STAY on Toy::LLM::Engine::LlamaSeqEngine: the block-stacking loop (where build_seq_block is called per layer — grep build_seq_block call sites), the final norm + LM head, token embedding, and the per-forward scalars/tensors (positions, rope_cfg, scale, eps, seq dims) that the block body reads but does NOT own. Distinguish "stays on cache, handed to block per forward" from "moves into block".`,
   },
   {
     key: 'mirror-gen',

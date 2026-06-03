@@ -6,7 +6,7 @@
 require_relative "../lib/transformer"
 require_relative "../lib/gpt2"
 require_relative "../lib/gpt2_ffi_kv_cuda"
-require_relative "../lib/gguf_load"
+require_relative "../lib/toy/io/gguf_load"
 require_relative "../lib/training"
 
 MAX_T    = 32          # KV-cache capacity (≥ prompt + generation)

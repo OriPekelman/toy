@@ -8,7 +8,7 @@
 require_relative "../lib/transformer"
 require_relative "../lib/gpt2"
 require_relative "../lib/gpt2_ffi_cuda"
-require_relative "../lib/gguf_load"
+require_relative "../lib/toy/io/gguf_load"
 require_relative "../lib/training"   # parse_ids
 
 VOCAB    = 50257

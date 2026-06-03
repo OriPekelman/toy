@@ -11,7 +11,7 @@
 
 require_relative "../lib/transformer"
 require_relative "../lib/tinynn"
-require_relative "../lib/toy_corpus_loader"
+require_relative "../lib/toy/io/toy_corpus_loader"
 require_relative "../lib/toy_lr_schedule"
 
 PATH    = ENV["CORPUS"] || "data/ts_seqs.bin"

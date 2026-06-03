@@ -10,7 +10,7 @@ require_relative "../lib/transformer"
 require_relative "../lib/gpt2"
 require_relative "../lib/gpt2_ffi"
 require_relative "../lib/gpt2_ffi_kv"
-require_relative "../lib/gguf_load"
+require_relative "../lib/toy/io/gguf_load"
 require_relative "../lib/training"
 
 T_SEQ    = 5

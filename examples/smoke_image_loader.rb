@@ -8,7 +8,7 @@
 
 require_relative "../lib/transformer"
 require_relative "../lib/tinynn"
-require_relative "../lib/toy_image_loader"
+require_relative "../lib/toy/io/toy_image_loader"
 
 DIR        = ENV["IMG_DIR"]      || "data/vit_smoke"
 N          = (ENV["N"]           || "3").to_i

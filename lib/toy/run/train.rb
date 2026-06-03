@@ -41,7 +41,7 @@
 
 require_relative "../../toy"
 require_relative "../../toy_smollm2"
-require_relative "../../toy_corpus_loader"
+require_relative "../io/toy_corpus_loader"
 require_relative "../../toy_lr_schedule"
 require_relative "../llm/engine/llama_seq_engine"
 require_relative "../llm/recipes/from_scratch"

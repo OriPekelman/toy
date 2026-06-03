@@ -21,7 +21,7 @@
 # Pull the project at HEAD and run from project root.
 
 require_relative "../lib/transformer"
-require_relative "../lib/tokenizer"
+require_relative "../lib/toy/io/tokenizer"
 
 m = Mat.new(2, 3)
 t = Tokenizer.from_gguf("data/smollm2-135m-tok.gguf")

@@ -1,4 +1,4 @@
-require_relative "../lib/tokenizer"
+require_relative "../lib/toy/io/tokenizer"
 t = Tokenizer.from_gguf("data/smollm2-135m-tok.gguf")
 puts "vocab=" + t.vocab_size.to_s + " merges=" + t.vocab_size.to_s
 

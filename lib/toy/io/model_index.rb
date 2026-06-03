@@ -21,8 +21,8 @@
 # Dir.entries / opendir. That keeps the library Spinel-compilable into
 # a single binary (the link edge survives via examples/01_inference_metal.rb).
 
-require_relative "transformer"   # Mat is referenced via tinynn FFI bindings
-require_relative "arch"
+require_relative "../../transformer"   # Mat is referenced via tinynn FFI bindings
+require_relative "../../arch"
 
 class ModelEntry
   attr_reader :name      # friendly name shown to the user

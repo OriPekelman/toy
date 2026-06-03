@@ -34,8 +34,8 @@
 require_relative "../lib/transformer"
 require_relative "../lib/gpt2"
 require_relative "../lib/gpt2_ffi_kv"
-require_relative "../lib/gguf_load"
-require_relative "../lib/bpe"
+require_relative "../lib/toy/io/gguf_load"
+require_relative "../lib/toy/io/bpe"
 
 set :workers, 1   # one worker; FFI session isn't thread-safe.
 

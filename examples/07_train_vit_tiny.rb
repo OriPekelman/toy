@@ -16,7 +16,7 @@
 
 require_relative "../lib/toy_vit"
 require_relative "../lib/toy/llm/engine/vit_tiny_engine"
-require_relative "../lib/toy_image_loader"
+require_relative "../lib/toy/io/toy_image_loader"
 require_relative "../lib/toy_lr_schedule"
 require_relative "../lib/toy_drift_grad"
 # NB: NOT requiring toy_gguf_writer here — its `cfg.vocab` / `cfg.d_ff`

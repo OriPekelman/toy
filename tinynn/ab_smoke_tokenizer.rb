@@ -12,8 +12,8 @@
 # across all three families is the v1 "tokenizer works" signal — the
 # next step is wiring it into the infer runner + the OpenAI server.
 
-require_relative "../lib/tokenizer"
-require_relative "../lib/gguf_kv"
+require_relative "../lib/toy/io/tokenizer"
+require_relative "../lib/toy/io/gguf_kv"
 
 # Test corpus: short English samples that exercise common edge cases.
 SAMPLES = ["Once upon a time",

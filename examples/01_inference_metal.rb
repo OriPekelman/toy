@@ -27,7 +27,7 @@
 require_relative "../lib/arch"
 require_relative "../lib/tinynn_metal"
 require_relative "../lib/transformer_lm_metal"
-require_relative "../lib/tokenizer"
+require_relative "../lib/toy/io/tokenizer"
 
 DEFAULT_GGUF = "data/smollm2-135m-f32.gguf"
 GGUF_ENV     = ENV["GGUF"]

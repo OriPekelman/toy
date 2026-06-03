@@ -8,7 +8,7 @@
 #   BENCH tokenizer_encode_us_per_tok <float>
 #   BENCH tokenizer_encode_toks_per_sec <float>
 
-require_relative "../lib/tokenizer"
+require_relative "../lib/toy/io/tokenizer"
 
 GGUF   = ENV["GGUF"]  || "data/smollm2-135m-tok.gguf"
 ITERS  = (ENV["ITERS"] || "2000").to_i
