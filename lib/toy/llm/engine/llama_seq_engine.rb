@@ -529,102 +529,19 @@ class LlamaSeqEngine
     # P2.6 Step 2 — seeding loop moved onto the arch (LlamaArch#seed_blocks!).
     @seq_arch.seed_blocks!(@seq_n_layers)
 
-    # Per-block: allocate writable F32 weights + Adam m/v. Record
-    # each (weight, m, v) triple on the block's parallel arrays so
-    # build_training_step can emit opt_step per weight.
+    # P2-finish — per-block FT alloc lifted onto the block (verbatim:
+    # TransformerBlock#alloc_full_finetune_f32_weights!), mirroring how
+    # realize_for_random_init drives alloc_trainable_f32_weights!. The block
+    # owns its self.t_seq_* handles + the per-block set_param loop; the cache
+    # passes @sess + dims + qkv_bias and the ft_add_*/ft_name_last recorders
+    # are back-called. Gated byte-exact by prep/full_finetune_gate.rb.
     li = 0
     while li < @seq_n_layers
       blk = self.seq_blocks_ffi[li]
       prefix = "blk." + li.to_s + "."
-
-      blk.t_seq_rn1_gamma = TinyNN.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
-      blk.t_seq_rn2_gamma = TinyNN.tnn_input_1d_f32_persistent(@sess, @seq_d_model)
-      ft_add_1d(blk, blk.t_seq_rn1_gamma)
-      ft_name_last(blk, prefix + "attn_norm.weight")
-      ft_add_1d(blk, blk.t_seq_rn2_gamma)
-      ft_name_last(blk, prefix + "ffn_norm.weight")
-
-      blk.t_seq_w_q = [TinyNN.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model)]
-      hq = 1
-      while hq < @seq_n_heads
-        blk.t_seq_w_q.push(TinyNN.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model))
-        hq = hq + 1
-      end
-      hq2 = 0
-      while hq2 < @seq_n_heads
-        ft_add_2d(blk, blk.t_seq_w_q[hq2], @seq_d_head, @seq_d_model)
-        ft_name_last(blk, prefix + "attn_q.head_" + hq2.to_s + ".weight")
-        hq2 = hq2 + 1
-      end
-
-      blk.t_seq_w_k = [TinyNN.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model)]
-      blk.t_seq_w_v = [TinyNN.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model)]
-      hkv = 1
-      while hkv < @seq_n_kv
-        blk.t_seq_w_k.push(TinyNN.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model))
-        blk.t_seq_w_v.push(TinyNN.tnn_input_2d_f32_persistent(@sess, @seq_d_head, @seq_d_model))
-        hkv = hkv + 1
-      end
-      hkv2 = 0
-      while hkv2 < @seq_n_kv
-        ft_add_2d(blk, blk.t_seq_w_k[hkv2], @seq_d_head, @seq_d_model)
-        ft_name_last(blk, prefix + "attn_k.head_" + hkv2.to_s + ".weight")
-        ft_add_2d(blk, blk.t_seq_w_v[hkv2], @seq_d_head, @seq_d_model)
-        ft_name_last(blk, prefix + "attn_v.head_" + hkv2.to_s + ".weight")
-        hkv2 = hkv2 + 1
-      end
-
-      if qkv_bias
-        blk.t_seq_b_q = [TinyNN.tnn_input_1d_f32_persistent(@sess, @seq_d_head)]
-        hbq = 1
-        while hbq < @seq_n_heads
-          blk.t_seq_b_q.push(TinyNN.tnn_input_1d_f32_persistent(@sess, @seq_d_head))
-          hbq = hbq + 1
-        end
-        blk.t_seq_b_k = [TinyNN.tnn_input_1d_f32_persistent(@sess, @seq_d_head)]
-        blk.t_seq_b_v = [TinyNN.tnn_input_1d_f32_persistent(@sess, @seq_d_head)]
-        hbkv = 1
-        while hbkv < @seq_n_kv
-          blk.t_seq_b_k.push(TinyNN.tnn_input_1d_f32_persistent(@sess, @seq_d_head))
-          blk.t_seq_b_v.push(TinyNN.tnn_input_1d_f32_persistent(@sess, @seq_d_head))
-          hbkv = hbkv + 1
-        end
-        hbq2 = 0
-        while hbq2 < @seq_n_heads
-          ft_add_1d(blk, blk.t_seq_b_q[hbq2])
-          ft_name_last(blk, prefix + "attn_q.head_" + hbq2.to_s + ".bias")
-          hbq2 = hbq2 + 1
-        end
-        hbkv2 = 0
-        while hbkv2 < @seq_n_kv
-          ft_add_1d(blk, blk.t_seq_b_k[hbkv2])
-          ft_name_last(blk, prefix + "attn_k.head_" + hbkv2.to_s + ".bias")
-          ft_add_1d(blk, blk.t_seq_b_v[hbkv2])
-          ft_name_last(blk, prefix + "attn_v.head_" + hbkv2.to_s + ".bias")
-          hbkv2 = hbkv2 + 1
-        end
-      end
-
-      blk.t_seq_w_o    = TinyNN.tnn_input_2d_f32_persistent(@sess, @seq_d_model, @seq_d_model)
-      blk.t_seq_w_gate = TinyNN.tnn_input_2d_f32_persistent(@sess, @seq_d_ff,    @seq_d_model)
-      blk.t_seq_w_up   = TinyNN.tnn_input_2d_f32_persistent(@sess, @seq_d_ff,    @seq_d_model)
-      blk.t_seq_w_down = TinyNN.tnn_input_2d_f32_persistent(@sess, @seq_d_model, @seq_d_ff)
-      ft_add_2d(blk, blk.t_seq_w_o,    @seq_d_model, @seq_d_model)
-      ft_name_last(blk, prefix + "attn_output.weight")
-      ft_add_2d(blk, blk.t_seq_w_gate, @seq_d_ff,    @seq_d_model)
-      ft_name_last(blk, prefix + "ffn_gate.weight")
-      ft_add_2d(blk, blk.t_seq_w_up,   @seq_d_ff,    @seq_d_model)
-      ft_name_last(blk, prefix + "ffn_up.weight")
-      ft_add_2d(blk, blk.t_seq_w_down, @seq_d_model, @seq_d_ff)
-      ft_name_last(blk, prefix + "ffn_down.weight")
-
-      # Mark every recorded weight as a trainable parameter.
-      wi = 0
-      while wi < blk.ft_weights.length
-        TinyNN.tnn_set_param(blk.ft_weights[wi])
-        wi = wi + 1
-      end
-
+      blk.alloc_full_finetune_f32_weights!(@sess, self, prefix,
+                                           @seq_d_model, @seq_d_ff, @seq_d_head,
+                                           @seq_n_heads, @seq_n_kv, qkv_bias)
       li = li + 1
     end
 

@@ -328,6 +328,112 @@ module Toy; module LLM; module Blocks
       end
     end
 
+    # P2-finish — full fine-tune per-block alloc. Lifted VERBATIM from
+    # Toy::LLM::Engine::LlamaSeqEngine#realize_for_full_finetune's per-block loop
+    # (op order unchanged → bit-identical graph, gated by prep/full_finetune_gate.rb).
+    # The block OWNS the alloc + assignment of its self.t_seq_* handles, exactly
+    # as alloc_trainable_f32_weights! does. NO ivar reads off the cache — sess,
+    # the seq dims and qkv_bias arrive as ARGS; cache.ft_add_* / cache.ft_name_last
+    # are back-called (the :str naming stays on the cache realize runtime path —
+    # step_bind / :str landmine).
+    #
+    # TWO deliberate divergences from alloc_trainable_f32_weights! (why this is a
+    # SEPARATE method, NOT a reuse):
+    #   - w_o is HARD-SQUARE ne=[d_model, d_model] (full_finetune loads a real
+    #     GGUF whose attn_output.weight is square) — NOT random_init's divergent
+    #     [d_model, n_heads*d_head].
+    #   - qkv biases ARE allocated when qkv_bias (alloc_trainable has none).
+    def alloc_full_finetune_f32_weights!(sess, cache, prefix,
+                                         seq_d_model, seq_d_ff, seq_d_head,
+                                         seq_n_heads, seq_n_kv, qkv_bias)
+      self.t_seq_rn1_gamma = TinyNN.tnn_input_1d_f32_persistent(sess, seq_d_model)
+      self.t_seq_rn2_gamma = TinyNN.tnn_input_1d_f32_persistent(sess, seq_d_model)
+      cache.ft_add_1d(self, self.t_seq_rn1_gamma)
+      cache.ft_name_last(self, prefix + "attn_norm.weight")
+      cache.ft_add_1d(self, self.t_seq_rn2_gamma)
+      cache.ft_name_last(self, prefix + "ffn_norm.weight")
+
+      self.t_seq_w_q = [TinyNN.tnn_input_2d_f32_persistent(sess, seq_d_head, seq_d_model)]
+      hq = 1
+      while hq < seq_n_heads
+        self.t_seq_w_q.push(TinyNN.tnn_input_2d_f32_persistent(sess, seq_d_head, seq_d_model))
+        hq = hq + 1
+      end
+      hq2 = 0
+      while hq2 < seq_n_heads
+        cache.ft_add_2d(self, self.t_seq_w_q[hq2], seq_d_head, seq_d_model)
+        cache.ft_name_last(self, prefix + "attn_q.head_" + hq2.to_s + ".weight")
+        hq2 = hq2 + 1
+      end
+
+      self.t_seq_w_k = [TinyNN.tnn_input_2d_f32_persistent(sess, seq_d_head, seq_d_model)]
+      self.t_seq_w_v = [TinyNN.tnn_input_2d_f32_persistent(sess, seq_d_head, seq_d_model)]
+      hkv = 1
+      while hkv < seq_n_kv
+        self.t_seq_w_k.push(TinyNN.tnn_input_2d_f32_persistent(sess, seq_d_head, seq_d_model))
+        self.t_seq_w_v.push(TinyNN.tnn_input_2d_f32_persistent(sess, seq_d_head, seq_d_model))
+        hkv = hkv + 1
+      end
+      hkv2 = 0
+      while hkv2 < seq_n_kv
+        cache.ft_add_2d(self, self.t_seq_w_k[hkv2], seq_d_head, seq_d_model)
+        cache.ft_name_last(self, prefix + "attn_k.head_" + hkv2.to_s + ".weight")
+        cache.ft_add_2d(self, self.t_seq_w_v[hkv2], seq_d_head, seq_d_model)
+        cache.ft_name_last(self, prefix + "attn_v.head_" + hkv2.to_s + ".weight")
+        hkv2 = hkv2 + 1
+      end
+
+      if qkv_bias
+        self.t_seq_b_q = [TinyNN.tnn_input_1d_f32_persistent(sess, seq_d_head)]
+        hbq = 1
+        while hbq < seq_n_heads
+          self.t_seq_b_q.push(TinyNN.tnn_input_1d_f32_persistent(sess, seq_d_head))
+          hbq = hbq + 1
+        end
+        self.t_seq_b_k = [TinyNN.tnn_input_1d_f32_persistent(sess, seq_d_head)]
+        self.t_seq_b_v = [TinyNN.tnn_input_1d_f32_persistent(sess, seq_d_head)]
+        hbkv = 1
+        while hbkv < seq_n_kv
+          self.t_seq_b_k.push(TinyNN.tnn_input_1d_f32_persistent(sess, seq_d_head))
+          self.t_seq_b_v.push(TinyNN.tnn_input_1d_f32_persistent(sess, seq_d_head))
+          hbkv = hbkv + 1
+        end
+        hbq2 = 0
+        while hbq2 < seq_n_heads
+          cache.ft_add_1d(self, self.t_seq_b_q[hbq2])
+          cache.ft_name_last(self, prefix + "attn_q.head_" + hbq2.to_s + ".bias")
+          hbq2 = hbq2 + 1
+        end
+        hbkv2 = 0
+        while hbkv2 < seq_n_kv
+          cache.ft_add_1d(self, self.t_seq_b_k[hbkv2])
+          cache.ft_name_last(self, prefix + "attn_k.head_" + hbkv2.to_s + ".bias")
+          cache.ft_add_1d(self, self.t_seq_b_v[hbkv2])
+          cache.ft_name_last(self, prefix + "attn_v.head_" + hbkv2.to_s + ".bias")
+          hbkv2 = hbkv2 + 1
+        end
+      end
+
+      self.t_seq_w_o    = TinyNN.tnn_input_2d_f32_persistent(sess, seq_d_model, seq_d_model)
+      self.t_seq_w_gate = TinyNN.tnn_input_2d_f32_persistent(sess, seq_d_ff,    seq_d_model)
+      self.t_seq_w_up   = TinyNN.tnn_input_2d_f32_persistent(sess, seq_d_ff,    seq_d_model)
+      self.t_seq_w_down = TinyNN.tnn_input_2d_f32_persistent(sess, seq_d_model, seq_d_ff)
+      cache.ft_add_2d(self, self.t_seq_w_o,    seq_d_model, seq_d_model)
+      cache.ft_name_last(self, prefix + "attn_output.weight")
+      cache.ft_add_2d(self, self.t_seq_w_gate, seq_d_ff,    seq_d_model)
+      cache.ft_name_last(self, prefix + "ffn_gate.weight")
+      cache.ft_add_2d(self, self.t_seq_w_up,   seq_d_ff,    seq_d_model)
+      cache.ft_name_last(self, prefix + "ffn_up.weight")
+      cache.ft_add_2d(self, self.t_seq_w_down, seq_d_model, seq_d_ff)
+      cache.ft_name_last(self, prefix + "ffn_down.weight")
+
+      wi = 0
+      while wi < self.ft_weights.length
+        TinyNN.tnn_set_param(self.ft_weights[wi])
+        wi = wi + 1
+      end
+    end
+
     # P2.7 — load this block's PERSISTENT weight handles from the mmap'd
     # GGUF for the realize_for_mmap path. Moved VERBATIM from the per-block
     # ALLOC-from-offsets loop body in Toy::LLM::Engine::LlamaSeqEngine#realize_for_mmap
