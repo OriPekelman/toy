@@ -47,7 +47,7 @@
 
 require_relative "../../toy"
 require_relative "../../toy_smollm2"
-require_relative "../../llama_seq_forward_ffi_cuda"
+require_relative "../llm/engine/llama_seq_engine_cuda"
 require_relative "../llm/recipes/from_scratch_cuda"
 require_relative "../llm/recipes/warm_start_cuda"
 require_relative "../llm/adamw"
@@ -59,7 +59,7 @@ require_relative "../../toy_drift_grad"
 require_relative "../../toy_gguf_fuse"
 
 # NOTE: this CUDA runner hosts the two RANDOM-INIT recipes (from-scratch +
-# warm-start, both LlamaSeqForwardFFICacheCuda#realize_for_random_init),
+# warm-start, both Toy::LLM::Engine::LlamaSeqEngineCuda#realize_for_random_init),
 # selected by RECIPE. The LoRA recipe lives in a SEPARATE binary
 # (lib/toy/run/train_lora_cuda.rb -> libexec/toy-train-lora-cuda): its
 # #realize_for_mmap path cannot share a Spinel compilation unit with the

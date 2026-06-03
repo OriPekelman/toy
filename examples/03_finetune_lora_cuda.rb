@@ -12,7 +12,7 @@
 require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
 require_relative "../lib/toy_smollm2_loader"
-require_relative "../lib/llama_seq_forward_ffi_cuda"
+require_relative "../lib/toy/llm/engine/llama_seq_engine_cuda"
 
 GGUF      = ENV["GGUF"]    || "data/smollm2-135m-native.gguf"
 RANK      = (ENV["RANK"]   || "8").to_i
@@ -32,7 +32,7 @@ puts "config: vocab=" + cfg.vocab.to_s + " d=" + cfg.d_model.to_s +
 puts "training (CUDA): GGUF=" + GGUF + " RANK=" + RANK.to_s + " STEPS=" + STEPS.to_s
 
 gguf = TinyNNCuda.tnn_gguf_load(GGUF)
-seq = LlamaSeqForwardFFICacheCuda.new
+seq = Toy::LLM::Engine::LlamaSeqEngineCuda.new
 seq.enable_lora_q!(RANK)
 seq.enable_lora_q_adamw!
 if (ENV["Q8"] || "0").to_i == 1

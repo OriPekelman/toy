@@ -47,7 +47,7 @@
 
 require_relative "../../toy"
 require_relative "../../toy_smollm2"
-require_relative "../../llama_seq_forward_ffi_metal"
+require_relative "../llm/engine/llama_seq_engine_metal"
 require_relative "../llm/recipes/from_scratch_metal"
 require_relative "../llm/adamw"
 require_relative "../llm/labels"

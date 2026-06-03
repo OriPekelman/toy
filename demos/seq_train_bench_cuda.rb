@@ -1,7 +1,7 @@
 require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
 require_relative "../lib/toy_smollm2_loader"
-require_relative "../lib/llama_seq_forward_ffi_cuda"
+require_relative "../lib/toy/llm/engine/llama_seq_engine_cuda"
 
 # CUDA sequence-mode training bench (LoRA-Q or full-FT).
 #
@@ -40,7 +40,7 @@ while i < SEQ_LEN
 end
 
 gguf = TinyNNCuda.tnn_gguf_load(GGUF)
-seq = LlamaSeqForwardFFICacheCuda.new
+seq = Toy::LLM::Engine::LlamaSeqEngineCuda.new
 if MODE == "ft"
   seq.enable_full_finetune!
   seq.realize_for_full_finetune(gguf, cfg, SEQ_LEN, flags.untied, flags.qkv_bias)

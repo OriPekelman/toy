@@ -16,7 +16,7 @@
 require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
 require_relative "../lib/toy_smollm2_loader"
-require_relative "../lib/llama_seq_forward_ffi_cuda"
+require_relative "../lib/toy/llm/engine/llama_seq_engine_cuda"
 
 GGUF      = ENV["GGUF"]    || "data/smollm2-135m-native.gguf"
 STEPS     = (ENV["STEPS"]  || "20").to_i
@@ -32,7 +32,7 @@ puts "config: vocab=" + cfg.vocab.to_s + " d=" + cfg.d_model.to_s +
 puts "full fine-tune (CUDA): GGUF=" + GGUF + " STEPS=" + STEPS.to_s + " LR=" + LR.to_s
 
 gguf = TinyNNCuda.tnn_gguf_load(GGUF)
-seq = LlamaSeqForwardFFICacheCuda.new
+seq = Toy::LLM::Engine::LlamaSeqEngineCuda.new
 seq.enable_full_finetune!
 # Train embeddings when EMBED=1 in env. Works for any vocab size
 # after vendor-patches/0006 chunked the get_rows_back kernel launch

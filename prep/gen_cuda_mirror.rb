@@ -227,6 +227,13 @@ def subs_for(cpu_path, backend)
       # arch and its TinyNN.* calls would hit the CPU backend).
       [/^require_relative "\.\.\/archs\/llama_arch"$/,
        'require_relative "../archs/llama_arch_' + backend.to_s + '"'],
+      # The engine lives 3 levels deep (lib/toy/llm/engine/), so its TinyNN
+      # require is depth-prefixed ("../../../tinynn"). common_module_tail's
+      # rewrite only matches the BARE "tinynn" (the pre-relocation form), so
+      # rewrite the depth-prefixed path to the backend TinyNN here — else the
+      # GPU mirror loads CPU TinyNN and every TinyNN<Backend>.* fails to resolve.
+      [/^require_relative "\.\.\/\.\.\/\.\.\/tinynn"$/,
+       'require_relative "../../../tinynn_' + backend.to_s + '"'],
       [/\bLlamaSeqEngine\b/, "LlamaSeqEngine" + suffix],
     ] + common_module_tail
 

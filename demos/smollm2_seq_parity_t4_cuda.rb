@@ -8,7 +8,7 @@ require_relative "../lib/toy"
 require_relative "../lib/toy_smollm2"
 require_relative "../lib/toy_smollm2_loader"
 require_relative "../lib/toy_smollm2_ffi_kv"
-require_relative "../lib/llama_seq_forward_ffi_cuda"
+require_relative "../lib/toy/llm/engine/llama_seq_engine_cuda"
 
 GGUF = ENV["GGUF"] || "data/smollm2-135m-native.gguf"
 
@@ -39,7 +39,7 @@ end
 puts ""
 puts "realizing CUDA seq cache at T=" + T_SEQ.to_s + "..."
 seq_gguf = TinyNNCuda.tnn_gguf_load(GGUF)
-seq = LlamaSeqForwardFFICacheCuda.new
+seq = Toy::LLM::Engine::LlamaSeqEngineCuda.new
 seq.realize_for_mmap(seq_gguf, cfg, T_SEQ, flags.untied, flags.qkv_bias)
 puts "CUDA forward..."
 t_logits = seq.forward(TOKENS, [0, 1, 2, 3])

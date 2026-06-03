@@ -6,7 +6,7 @@
 # maintained by hand. `make verify-mirrors` stays green.
 #
 # This recipe drives the random-init-plus-(optional)donor warm-start
-# forward+CE+backward+AdamW graph on a LlamaSeqForwardFFICacheCuda (the
+# forward+CE+backward+AdamW graph on a Toy::LLM::Engine::LlamaSeqEngineCuda (the
 # CUDA cache) and computes via TinyNNCuda. Numerics / op-order are
 # IDENTICAL to the CPU recipe (warm_start.rb); only the cache type (the
 # ctor line: @ws_cache) and the compute module prefix (TinyNN. ->
@@ -30,7 +30,7 @@
 module Toy; module LLM; module Recipes
   # The warm-start training recipe, CUDA backend. realize_scratch! builds
   # the random-init forward+CE+backward+AdamW graph on a
-  # LlamaSeqForwardFFICacheCuda (random-init realize self-enables
+  # Toy::LLM::Engine::LlamaSeqEngineCuda (random-init realize self-enables
   # full_finetune + train_embeddings) and OPENS the warm window;
   # realize_warm! (optional) uploads an already-read donor embedding into
   # the realize'd embed table BEFORE the graph is baked; build! CLOSES the
@@ -42,7 +42,7 @@ module Toy; module LLM; module Recipes
     attr_accessor :ws_cache, :ws_t_loss, :ws_t_labels, :ws_t_hp, :ws_step_index
 
     def initialize
-      @ws_cache      = LlamaSeqForwardFFICacheCuda.new
+      @ws_cache      = Toy::LLM::Engine::LlamaSeqEngineCuda.new
       @ws_t_loss     = nil
       @ws_t_labels   = nil
       @ws_t_hp       = nil

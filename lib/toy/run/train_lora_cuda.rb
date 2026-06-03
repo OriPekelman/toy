@@ -9,7 +9,7 @@
 #
 # DEDICATED lora-cuda binary (libexec/toy-train-lora-cuda), SEPARATE from
 # libexec/toy-train-cuda for a hard Spinel reason, NOT a stylistic one: the
-# LoRA recipe drives LlamaSeqForwardFFICacheCuda#realize_for_mmap (frozen GGUF
+# LoRA recipe drives Toy::LLM::Engine::LlamaSeqEngineCuda#realize_for_mmap (frozen GGUF
 # base, mmap'd in place); the from-scratch + warm-start recipes drive
 # #realize_for_random_init. When BOTH realize paths are compiled in the same
 # Spinel unit, whole-program type inference MERGES the `cfg` receiver type and
@@ -54,7 +54,7 @@
 
 require_relative "../../toy"
 require_relative "../../toy_smollm2"
-require_relative "../../llama_seq_forward_ffi_cuda"
+require_relative "../llm/engine/llama_seq_engine_cuda"
 require_relative "../llm/recipes/lora_cuda"
 require_relative "../llm/adamw"
 require_relative "../../toy_gguf_writer"

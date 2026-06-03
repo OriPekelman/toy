@@ -6,7 +6,7 @@
 # stays green.
 #
 # This recipe drives the frozen-base + LoRA-Q-adapter forward+CE+backward+
-# AdamW graph on a LlamaSeqForwardFFICacheCuda (the CUDA cache) and computes
+# AdamW graph on a Toy::LLM::Engine::LlamaSeqEngineCuda (the CUDA cache) and computes
 # via TinyNNCuda. Numerics / op-order are IDENTICAL to the CPU recipe
 # (lora.rb); only the cache type (the ctor line: @lora_cache) and the
 # compute module prefix in step! (TinyNN. -> TinyNNCuda.) differ.
@@ -27,7 +27,7 @@
 module Toy; module LLM; module Recipes
   # The LoRA fine-tune recipe, CUDA backend. realize! builds the frozen-base +
   # LoRA-Q-adapter forward+CE+backward+AdamW graph on a
-  # LlamaSeqForwardFFICacheCuda (base weights mmap'd from the GGUF, only the
+  # Toy::LLM::Engine::LlamaSeqEngineCuda (base weights mmap'd from the GGUF, only the
   # rank-r adapters + Adam moments are trainable), then step! drives one
   # training step via TinyNNCuda. The caller (runner) owns the loaded GGUF
   # handle, the experiment config, and the per-step input Mats.
@@ -35,7 +35,7 @@ module Toy; module LLM; module Recipes
     attr_accessor :lora_cache, :lora_t_loss, :lora_t_labels, :lora_t_hp, :lora_step_index
 
     def initialize
-      @lora_cache      = LlamaSeqForwardFFICacheCuda.new
+      @lora_cache      = Toy::LLM::Engine::LlamaSeqEngineCuda.new
       @lora_t_loss     = nil
       @lora_t_labels   = nil
       @lora_t_hp       = nil

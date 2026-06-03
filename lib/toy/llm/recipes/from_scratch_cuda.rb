@@ -5,7 +5,7 @@
 # rewriter — it is kept ABSENT from MIRRORABLE and maintained by hand.
 #
 # This recipe drives the random-init forward+CE+backward+AdamW graph on a
-# LlamaSeqForwardFFICacheCuda (the CUDA cache) and computes via TinyNNCuda.
+# Toy::LLM::Engine::LlamaSeqEngineCuda (the CUDA cache) and computes via TinyNNCuda.
 # Numerics / op-order are IDENTICAL to the CPU recipe; only the cache type
 # (line: @fs_cache) and the compute module prefix (TinyNN. -> TinyNNCuda.)
 # differ.
@@ -26,7 +26,7 @@
 module Toy; module LLM; module Recipes
   # The from-scratch random-init training recipe, CUDA backend. Encapsulates
   # the existing loop: realize! builds the random-init forward+CE+backward+
-  # AdamW graph on a LlamaSeqForwardFFICacheCuda (random-init realize
+  # AdamW graph on a Toy::LLM::Engine::LlamaSeqEngineCuda (random-init realize
   # self-enables full_finetune + train_embeddings, so no extra enable_*
   # call is needed), then step! drives one training step via TinyNNCuda.
   # The caller (runner) owns the experiment config and the per-step input Mats.
@@ -34,7 +34,7 @@ module Toy; module LLM; module Recipes
     attr_accessor :fs_cache, :fs_t_loss, :fs_t_labels, :fs_t_hp, :fs_step_index
 
     def initialize
-      @fs_cache      = LlamaSeqForwardFFICacheCuda.new
+      @fs_cache      = Toy::LLM::Engine::LlamaSeqEngineCuda.new
       @fs_t_loss     = nil
       @fs_t_labels   = nil
       @fs_t_hp       = nil
