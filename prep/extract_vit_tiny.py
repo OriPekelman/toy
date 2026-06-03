@@ -10,7 +10,7 @@
 # ///
 """
 E1.4 / GH#13 — extract vit_tiny_patch16_224 (IN-21k AugReg) into a
-GGUF that toy's ViTTinyForwardFFICache can load.
+GGUF that toy's Toy::LLM::Engine::ViTTinyEngine can load.
 
 Per E1's pure-embedding spec, only THREE tensors need to round-trip
 for the warm-start arms:

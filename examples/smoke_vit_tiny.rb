@@ -9,7 +9,7 @@
 # without crashing and that loss decreases.
 
 require_relative "../lib/toy_vit"
-require_relative "../lib/vit_tiny_forward_ffi"
+require_relative "../lib/toy/llm/engine/vit_tiny_engine"
 
 IMAGE_SIZE  = (ENV["IMAGE_SIZE"]  || "16").to_i
 PATCH_SIZE  = (ENV["PATCH_SIZE"]  || "4").to_i
@@ -32,7 +32,7 @@ puts "config: image=" + cfg.image_size.to_s +
      " L=" + cfg.n_layers.to_s +
      " classes=" + cfg.num_classes.to_s
 
-cache = ViTTinyForwardFFICache.new
+cache = Toy::LLM::Engine::ViTTinyEngine.new
 cache.realize_for_random_init(cfg, SEED, 1.0)
 puts "realize OK"
 

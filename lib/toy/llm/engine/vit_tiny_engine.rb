@@ -1,4 +1,4 @@
-# lib/vit_tiny_forward_ffi.rb — ViT-Tiny forward + training graph
+# lib/toy/llm/engine/vit_tiny_engine.rb — ViT-Tiny forward + training graph
 # (towards GH#13 / E1.3).
 #
 # Single image (N=1) per training step for now; batching is the
@@ -21,11 +21,12 @@
 # Spinel landmines respected: no Array<Array<mixed>> seeds, all
 # helper arrays seed-and-pop with concrete element types.
 
-require_relative "transformer"
-require_relative "tinynn"
-require_relative "toy_vit"
-require_relative "toy_smollm2"   # for Toy::RopeScaling stub (unused, but consistent)
+require_relative "../../../transformer"
+require_relative "../../../tinynn"
+require_relative "../../../toy_vit"
+require_relative "../../../toy_smollm2"   # for Toy::RopeScaling stub (unused, but consistent)
 
+module Toy; module LLM; module Engine
 class ViTTinyBlockFFI
   # NOTE on norm choice: ggml has no backward for GGML_OP_NORM
   # (LayerNorm); only GGML_OP_RMS_NORM has a registered backward.
@@ -56,7 +57,7 @@ class ViTTinyBlockFFI
   end
 end
 
-class ViTTinyForwardFFICache
+class ViTTinyEngine
   attr_accessor :sess,
                 :cfg, :n_patches, :seq_t,
                 :t_patch_kernel, :t_cls_token, :t_pos_embed,
@@ -463,3 +464,4 @@ class ViTTinyForwardFFICache
     TinyNN.tnn_upload_from_float_array(@sess, tensor, buf, n)
   end
 end
+end; end; end

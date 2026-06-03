@@ -413,7 +413,7 @@ toy-train-lora: libexec/toy-train-lora
 # dep (cfg.vocab/d_ff poly-collide with ViTTinyConfig — #169 checkpoint
 # follow-up). CPU-only; absent from MIRRORABLE (no CUDA/Metal twin this slice).
 libexec/toy-train-vit: lib/toy/run/train_vit.rb lib/toy/llm/recipes/vit_tiny.rb \
-		lib/vit_tiny_forward_ffi.rb lib/toy_vit.rb lib/toy_smollm2.rb \
+		lib/toy/llm/engine/vit_tiny_engine.rb lib/toy_vit.rb lib/toy_smollm2.rb \
 		lib/toy_image_loader.rb lib/toy_lr_schedule.rb lib/toy_drift_grad.rb \
 		lib/toy/llm/adamw.rb \
 		lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
@@ -966,7 +966,7 @@ tinynn/ab_smoke_patch_embed: tinynn/ab_smoke_patch_embed.rb lib/transformer.rb l
 	$(SPINEL) tinynn/ab_smoke_patch_embed.rb -o tinynn/ab_smoke_patch_embed
 
 # E1.3 / GH#13 — ViT-Tiny forward + training smoke.
-examples/smoke_vit_tiny: examples/smoke_vit_tiny.rb lib/vit_tiny_forward_ffi.rb lib/toy_vit.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+examples/smoke_vit_tiny: examples/smoke_vit_tiny.rb lib/toy/llm/engine/vit_tiny_engine.rb lib/toy_vit.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
 # E1.5 / GH#13 — image-loader smoke.
@@ -974,7 +974,7 @@ examples/smoke_image_loader: examples/smoke_image_loader.rb lib/toy_image_loader
 	$(SPINEL) $< -o $@
 
 # E1.6 / GH#13 — ViT-Tiny training driver.
-examples/example_train_vit_tiny: examples/07_train_vit_tiny.rb lib/vit_tiny_forward_ffi.rb lib/toy_vit.rb lib/toy_smollm2.rb lib/toy_image_loader.rb lib/toy_lr_schedule.rb lib/toy_drift_grad.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+examples/example_train_vit_tiny: examples/07_train_vit_tiny.rb lib/toy/llm/engine/vit_tiny_engine.rb lib/toy_vit.rb lib/toy_smollm2.rb lib/toy_image_loader.rb lib/toy_lr_schedule.rb lib/toy_drift_grad.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 example_train_vit_tiny: examples/example_train_vit_tiny
 

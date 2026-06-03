@@ -16,7 +16,7 @@ path. Produces two parallel binary files:
 
 The Ruby loader (lib/toy_image_loader.rb) reads single records by
 index via tnn_read_f32_file / tnn_read_i32_file. The patch-flatten
-math matches lib/vit_tiny_forward_ffi.rb's flat-linear patch_embed:
+math matches lib/vit_tiny_engine.rb's flat-linear patch_embed:
 each image is pre-flattened to [IC*P*P, N_patches] before disk.
 
 Two modes:

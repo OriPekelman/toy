@@ -36,7 +36,7 @@
 # inside a conditional arm reads back empty at runtime); no Struct.new.
 
 require_relative "../../toy_vit"
-require_relative "../../vit_tiny_forward_ffi"
+require_relative "../llm/engine/vit_tiny_engine"
 require_relative "../../toy_image_loader"
 require_relative "../../toy_lr_schedule"
 require_relative "../../toy_drift_grad"

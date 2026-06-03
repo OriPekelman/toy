@@ -1,7 +1,7 @@
 # lib/toy/llm/recipes/vit_tiny.rb — L4 recipe: ViT-Tiny from-scratch
 # random-init image-classifier training plan. Encapsulates the EXISTING
 # ViT training loop (examples/07_train_vit_tiny.rb at INIT=scratch): realize
-# a random-init forward+CE+backward+AdamW graph on a ViTTinyForwardFFICache,
+# a random-init forward+CE+backward+AdamW graph on a Toy::LLM::Engine::ViTTinyEngine,
 # then drive one training step at a time.
 #
 # Mirrors the CLASS SHAPE of from_scratch.rb (hand-written plain class, NO
@@ -12,7 +12,7 @@
 # returns — t_labels/t_hp/t_cls_idx are cache accessors here).
 #
 # NO require_relative: the runner (lib/toy/run/train_vit.rb) requires
-# vit_tiny_forward_ffi.rb first, which pulls TinyNN + transformer + toy_vit
+# vit_tiny_engine.rb first, which pulls TinyNN + transformer + toy_vit
 # + toy_smollm2 — same bare-header convention as from_scratch.rb. This recipe
 # inlines TinyNN.* in step! so it is backend-coupled; CPU-only this slice (no
 # CUDA twin — vit train is absent from MIRRORABLE).
@@ -27,7 +27,7 @@ module Toy; module LLM; module Recipes
     attr_accessor :vt_cache, :vt_t_loss
 
     def initialize
-      @vt_cache  = ViTTinyForwardFFICache.new
+      @vt_cache  = Toy::LLM::Engine::ViTTinyEngine.new
       @vt_t_loss = nil
     end
 

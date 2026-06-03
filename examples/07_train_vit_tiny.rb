@@ -2,7 +2,7 @@
 #
 #   - prep/preprocess_images.py  → images.bin + labels.bin (one-time)
 #   - lib/toy_image_loader.rb    → per-step record reads
-#   - lib/vit_tiny_forward_ffi.rb → forward + backward + AdamW graph
+#   - lib/vit_tiny_engine.rb → forward + backward + AdamW graph
 #   - lib/toy_lr_schedule.rb     → cosine LR with linear warmup
 #
 # Acceptance per E1's scope doc:
@@ -15,7 +15,7 @@
 #   STEPS=200 TAO_RUN_DIR=/tmp/vit ./examples/example_train_vit_tiny
 
 require_relative "../lib/toy_vit"
-require_relative "../lib/vit_tiny_forward_ffi"
+require_relative "../lib/toy/llm/engine/vit_tiny_engine"
 require_relative "../lib/toy_image_loader"
 require_relative "../lib/toy_lr_schedule"
 require_relative "../lib/toy_drift_grad"
@@ -76,7 +76,7 @@ puts "config: image=" + cfg.image_size.to_s +
      " L=" + cfg.n_layers.to_s +
      " classes=" + cfg.num_classes.to_s
 
-cache = ViTTinyForwardFFICache.new
+cache = Toy::LLM::Engine::ViTTinyEngine.new
 cache.realize_for_random_init(cfg, SEED, 1.0)
 t_loss = cache.build_training_step
 puts "realize + build_training_step OK"
