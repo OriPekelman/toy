@@ -1,7 +1,7 @@
 # ToyLMCuda smoke. Mirror of demos/qwen25_transformer_lm.rb.
 
 require_relative "../lib/toy/models/arch"
-require_relative "../lib/transformer_lm_cuda"
+require_relative "../lib/toy/models/transformer_lm_cuda"
 
 GGUF  = ENV["GGUF"]  || "data/qwen25-1.5b-native.gguf"
 N_NEW = (ENV["N_NEW"] || "8").to_i

@@ -1,5 +1,5 @@
 require_relative "../lib/toy/models/arch"
-require_relative "../lib/transformer_lm"
+require_relative "../lib/toy/models/transformer_lm"
 GGUF = "data/smollm2-135m-f32.gguf"
 arch = Arch.from_gguf(GGUF)
 puts arch.summary

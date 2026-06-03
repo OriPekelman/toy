@@ -26,7 +26,7 @@
 # that discrete invariant cuda-vs-cpu in the same run.
 
 require_relative "../models/arch"
-require_relative "../../transformer_lm_cuda"
+require_relative "../models/transformer_lm_cuda"
 require_relative "../io/tokenizer"
 
 GGUF  = ENV["GGUF"] || "data/smollm2-135m-f32.gguf"

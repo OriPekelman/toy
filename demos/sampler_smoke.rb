@@ -12,7 +12,7 @@
 #   SEED=123     ./demos/sampler_smoke         # different seed
 
 require_relative "../lib/toy/models/arch"
-require_relative "../lib/transformer_lm"
+require_relative "../lib/toy/models/transformer_lm"
 require_relative "../lib/toy/train/sampler"
 
 GGUF = ENV["GGUF"] || "data/smollm2-135m-native.gguf"

@@ -11,7 +11,7 @@
 # For a quantized-table test, set GGUF=data/qwen25-0.5b-native-q8.gguf.
 
 require_relative "../lib/toy/models/arch"
-require_relative "../lib/transformer_lm"
+require_relative "../lib/toy/models/transformer_lm"
 
 GGUF = ENV["GGUF"] || "data/llama-3.2-1b-native.gguf"
 

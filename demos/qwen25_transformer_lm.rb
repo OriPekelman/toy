@@ -2,7 +2,7 @@
 # delegation layer. Expect bit-identical output vs demos/qwen25_native_mmap.
 
 require_relative "../lib/toy/models/arch"
-require_relative "../lib/transformer_lm"
+require_relative "../lib/toy/models/transformer_lm"
 
 GGUF  = ENV["GGUF"]  || "data/qwen25-1.5b-native.gguf"
 N_NEW = (ENV["N_NEW"] || "8").to_i

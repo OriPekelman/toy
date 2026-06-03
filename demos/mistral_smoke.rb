@@ -1,5 +1,5 @@
 require_relative "../lib/toy/models/arch"
-require_relative "../lib/transformer_lm"
+require_relative "../lib/toy/models/transformer_lm"
 
 GGUF = ENV["GGUF"] || "data/mistral-7b-instruct-v0.2.gguf"
 arch = Arch.from_gguf(GGUF)

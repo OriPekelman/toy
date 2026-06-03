@@ -31,7 +31,7 @@
 # forbids). This runner requires an explicit GGUF and fails loud on a bad one.
 
 require_relative "../models/arch"
-require_relative "../../transformer_lm"
+require_relative "../models/transformer_lm"
 require_relative "../io/tokenizer"
 
 GGUF  = ENV["GGUF"] || "data/smollm2-135m-f32.gguf"

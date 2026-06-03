@@ -230,7 +230,7 @@ help:
 # NOT in MIRRORABLE (see prep/gen_cuda_mirror.rb).
 libexec:
 	mkdir -p libexec
-libexec/toy-infer: lib/toy/run/infer.rb lib/toy/models/arch.rb lib/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a | libexec
+libexec/toy-infer: lib/toy/run/infer.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a | libexec
 	$(SPINEL) $< -o $@
 toy-infer: libexec/toy-infer
 
@@ -240,7 +240,7 @@ toy-infer: libexec/toy-infer
 # locates it. Deps = infer's deps + lib/toy/dev/toy_logprobs.rb (a transitive require
 # of transformer_lm; listed explicitly so a touch of it rebuilds the runner).
 # CPU-only; NOT in MIRRORABLE (see prep/gen_cuda_mirror.rb).
-libexec/toy-eval: lib/toy/run/eval.rb lib/toy/models/arch.rb lib/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn.rb lib/toy/io/tokenizer.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a | libexec
+libexec/toy-eval: lib/toy/run/eval.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn.rb lib/toy/io/tokenizer.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a | libexec
 	$(SPINEL) $< -o $@
 toy-eval: libexec/toy-eval
 
@@ -264,11 +264,11 @@ toy-eval-lmc: libexec/toy-eval-lmc
 # hand-written lib/toy/run/{infer,eval}_cuda.rb (ToyLMCuda ctor arity 1 →
 # NOT mechanically mirrorable → ABSENT from MIRRORABLE, like the CPU runners).
 # Force-link recipe matches every other cuda target (-Wl,-u,tnn_cuda_force_link).
-libexec/toy-infer-cuda: lib/toy/run/infer_cuda.rb lib/toy/models/arch.rb lib/transformer_lm_cuda.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn_cuda.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) | libexec
+libexec/toy-infer-cuda: lib/toy/run/infer_cuda.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm_cuda.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn_cuda.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) | libexec
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 toy-infer-cuda: libexec/toy-infer-cuda
 
-libexec/toy-eval-cuda: lib/toy/run/eval_cuda.rb lib/toy/models/arch.rb lib/transformer_lm_cuda.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn_cuda.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) | libexec
+libexec/toy-eval-cuda: lib/toy/run/eval_cuda.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm_cuda.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn_cuda.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) | libexec
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 toy-eval-cuda: libexec/toy-eval-cuda
 
@@ -281,14 +281,14 @@ toy-eval-cuda: libexec/toy-eval-cuda
 # with the leading-underscore force-link symbol (_tnn_metal_force_link, macOS
 # symbol convention) vs cuda's tnn_cuda_force_link. libtinynn_ggml.a (CPU
 # archive) stays in deps for the base ggml symbols. gx10 RUNTIME-UNVERIFIED.
-libexec/toy-infer-metal: lib/toy/run/infer_metal.rb lib/toy/models/arch.rb lib/transformer_lm_metal.rb lib/toy_smollm2_ffi_kv_metal.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn_metal.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_metal.a $(SPINEL_DEPS) | libexec
+libexec/toy-infer-metal: lib/toy/run/infer_metal.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm_metal.rb lib/toy_smollm2_ffi_kv_metal.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn_metal.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_metal.a $(SPINEL_DEPS) | libexec
 ifneq ($(UNAME_S),Darwin)
 	@echo "toy-infer-metal: macOS-only"; exit 1
 endif
 	$(SPINEL) --cc='cc -Wl,-u,_tnn_metal_force_link -framework Foundation -framework Metal -framework MetalKit' $< -o $@
 toy-infer-metal: libexec/toy-infer-metal
 
-libexec/toy-eval-metal: lib/toy/run/eval_metal.rb lib/toy/models/arch.rb lib/transformer_lm_metal.rb lib/toy_smollm2_ffi_kv_metal.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn_metal.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_metal.a $(SPINEL_DEPS) | libexec
+libexec/toy-eval-metal: lib/toy/run/eval_metal.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm_metal.rb lib/toy_smollm2_ffi_kv_metal.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn_metal.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_metal.a $(SPINEL_DEPS) | libexec
 ifneq ($(UNAME_S),Darwin)
 	@echo "toy-eval-metal: macOS-only"; exit 1
 endif
@@ -507,11 +507,11 @@ toy-serve: libexec/toy-serve
 
 # toy#gguf-checkpoint-reload (#153) — smoke binary that loads a
 # from-scratch toy GGUF and runs a tiny generation. No tokenizer.
-examples/smoke_toy_ckpt_reload: examples/smoke_toy_ckpt_reload.rb lib/toy/models/arch.rb lib/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a
+examples/smoke_toy_ckpt_reload: examples/smoke_toy_ckpt_reload.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 # toy#embed-api (#145) — smoke for ToyLM#embed_lookup.
-examples/smoke_embed_api: examples/smoke_embed_api.rb lib/toy/models/arch.rb lib/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn.rb lib/toy/io/tokenizer.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a
+examples/smoke_embed_api: examples/smoke_embed_api.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn.rb lib/toy/io/tokenizer.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 # P1 framework refactor — runtime Card derivation smoke. Loads a
@@ -521,7 +521,7 @@ examples/smoke_card_derive: examples/smoke_card_derive.rb lib/toy.rb lib/toy/mod
 	$(SPINEL) $< -o $@
 
 # toy#decode-logprobs (#151) — smoke for ToyLM#decode_step_with_logprobs.
-examples/smoke_decode_logprobs: examples/smoke_decode_logprobs.rb lib/toy/models/arch.rb lib/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn.rb lib/toy/io/tokenizer.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a
+examples/smoke_decode_logprobs: examples/smoke_decode_logprobs.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn.rb lib/toy/io/tokenizer.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 # GH#18 — LMC interpolate-and-eval runner.
@@ -667,7 +667,7 @@ example_finetune_cuda: examples/example_finetune_cuda
 # weak-symbol resolution. macOS expects a leading underscore on
 # external symbols, hence `-Wl,-u,_tnn_metal_force_link`.
 # Frameworks (Foundation/Metal/MetalKit) are linked via -framework.
-examples/example_inference_metal: examples/01_inference_metal.rb lib/toy/models/arch.rb lib/transformer_lm_metal.rb lib/toy_smollm2_ffi_kv_metal.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn_metal.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_metal.a
+examples/example_inference_metal: examples/01_inference_metal.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm_metal.rb lib/toy_smollm2_ffi_kv_metal.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn_metal.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_metal.a
 ifneq ($(UNAME_S),Darwin)
 	@echo "example_inference_metal: macOS-only"; exit 1
 endif
@@ -719,7 +719,7 @@ verify-mirrors:
 # each target rebuilds exactly itself. These mirror MIRRORABLE in
 # prep/gen_cuda_mirror.rb — keep the two lists in sync. STATIC pattern rules
 # (targets restricted to this explicit list) so hand-written mirrors like
-# lib/tinynn_cuda.rb / lib/transformer_lm_cuda.rb are NOT captured.
+# lib/tinynn_cuda.rb / lib/toy/models/transformer_lm_cuda.rb are NOT captured.
 MIRROR_CUDA := \
   lib/toy/llm/primitives/rms_norm_cuda.rb lib/toy/llm/primitives/rope_cuda.rb \
   lib/toy/llm/primitives/swiglu_cuda.rb lib/toy/llm/primitives/gqa_cuda.rb \
@@ -1198,7 +1198,7 @@ demos/qwen25_native_mmap: demos/qwen25_native_mmap.rb lib/toy_smollm2_ffi_kv.rb 
 # parity against locked-in golden token-ID sequences. Run before tagging
 # a release; see docs/design/phase-07-acceptance.md.
 qwen25_acceptance:        demos/qwen25_acceptance
-demos/qwen25_acceptance: demos/qwen25_acceptance.rb lib/toy/models/arch.rb lib/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
+demos/qwen25_acceptance: demos/qwen25_acceptance.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 # Inference bench (CPU). Long warmup + long prefill + per-token stats.

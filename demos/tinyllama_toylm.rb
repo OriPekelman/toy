@@ -1,5 +1,5 @@
 require_relative "../lib/toy/models/arch"
-require_relative "../lib/transformer_lm"
+require_relative "../lib/toy/models/transformer_lm"
 
 GGUF = "data/tinyllama-1.1b-f32.gguf"
 arch = Arch.from_gguf(GGUF)

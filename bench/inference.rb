@@ -8,7 +8,7 @@
 #   BENCH infer_step_ms <float>
 
 require_relative "../lib/toy/models/arch"
-require_relative "../lib/transformer_lm"
+require_relative "../lib/toy/models/transformer_lm"
 
 GGUF  = ENV["GGUF"]  || "data/smollm2-135m-f32.gguf"
 N_NEW = (ENV["N_NEW"] || "32").to_i

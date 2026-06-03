@@ -27,7 +27,7 @@
 # no Apple frameworks) — the parity gate runs on the Mac.
 
 require_relative "../models/arch"
-require_relative "../../transformer_lm_metal"
+require_relative "../models/transformer_lm_metal"
 require_relative "../io/tokenizer"
 
 GGUF  = ENV["GGUF"] || "data/smollm2-135m-f32.gguf"

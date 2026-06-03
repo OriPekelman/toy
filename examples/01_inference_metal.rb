@@ -26,7 +26,7 @@
 
 require_relative "../lib/toy/models/arch"
 require_relative "../lib/tinynn_metal"
-require_relative "../lib/transformer_lm_metal"
+require_relative "../lib/toy/models/transformer_lm_metal"
 require_relative "../lib/toy/io/tokenizer"
 
 DEFAULT_GGUF = "data/smollm2-135m-f32.gguf"

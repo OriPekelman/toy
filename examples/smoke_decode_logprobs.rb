@@ -7,7 +7,7 @@
 #   GGUF=data/llama-3.2-1b-native.gguf ./examples/smoke_decode_logprobs
 
 require_relative "../lib/toy/models/arch"
-require_relative "../lib/transformer_lm"
+require_relative "../lib/toy/models/transformer_lm"
 
 GGUF = ENV["GGUF"] || "data/llama-3.2-1b-native.gguf"
 TOP_K = (ENV["TOP_K"] || "5").to_i

@@ -27,7 +27,7 @@
 # RUNTIME-UNVERIFIED on gx10 (Linux, no Apple frameworks) — gate on the Mac.
 
 require_relative "../models/arch"
-require_relative "../../transformer_lm_metal"
+require_relative "../models/transformer_lm_metal"
 require_relative "../dev/toy_logprobs"
 
 GGUF  = ENV["GGUF"] || "data/smollm2-135m-f32.gguf"
