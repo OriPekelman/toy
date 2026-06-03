@@ -318,6 +318,16 @@ gate-ckpt-roundtrip:
 gate-lmc:
 	ruby prep/lmc_gate.rb
 
+# The 6th realize-gate (F3 full fine-tune) — past P2's accepted ceiling.
+# Records the engine's full_finetune CE curve and re-verifies it byte-for-byte
+# so the per-block alloc lift onto TransformerBlock is provably behavior-
+# preserving. MODEL-GATED: needs data/smollm2-135m-native.gguf (gitignored dev
+# artifact); SKIPs loudly when absent. Train losses are ggml-internal → byte-
+# exact. Re-record with `ruby prep/full_finetune_gate.rb --record`.
+.PHONY: gate-full-finetune
+gate-full-finetune:
+	ruby prep/full_finetune_gate.rb
+
 # CUDA from-scratch TRAINING gate (STRONG arm, no epsilon): train
 # from-scratch --device cuda --steps 5 --seed 0, assert the "step N: loss="
 # curve byte-equals prep/fixtures/train_cuda_baseline.txt, loss decreases,
@@ -583,6 +593,9 @@ examples/smoke_recipe_warm_start: examples/smoke_recipe_warm_start.rb lib/toy/ll
 # WRITE half reads host data ptrs (tnn_gguf_w_add_tensor), which the CUDA
 # writer doesn't implement — do NOT auto-mirror this to CUDA.
 examples/smoke_gguf_roundtrip: examples/smoke_gguf_roundtrip.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy_smollm2.rb lib/transformer.rb lib/tinynn.rb lib/toy_gguf_fuse.rb lib/toy_gguf_writer.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+
+examples/smoke_full_finetune: examples/smoke_full_finetune.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy_smollm2.rb lib/toy_smollm2_loader.rb lib/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
 # P2.6 gate — qkv_bias mmap branch. Loads the real Qwen2.5-0.5B native GGUF
