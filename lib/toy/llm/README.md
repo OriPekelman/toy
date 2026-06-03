@@ -1,33 +1,41 @@
-# `Toy::LLM` — layered transformer/SSM stdlib
+# `Toy::LLM` — layered transformer stdlib
 
-This directory is the destination of the P2 refactor (see
-`docs/roadmap/toy-framework-roadmap-2026-05-28.md`).
-
-The current monolith (`lib/llama_seq_forward_ffi.rb` + CUDA / Metal
-mirrors) decomposes into:
+The LLM algorithm stack. The CPU file is the source of truth in every
+layer; the `_cuda` / `_metal` mirrors are generated at build time from
+`MIRRORABLE` markers (`prep/gen_cuda_mirror.rb`) and held bit-identical by
+`make verify-mirrors`.
 
 ```
 toy/llm/
-├── primitives/  # L1 — one file per named op       (RMSNorm, RoPE, GQA, ...)
-├── blocks/      # L2 — one state-threading unit    (TransformerBlock, SSMBlock)
-├── archs/       # L3 — embedding + N blocks + head (LlamaArch, GPT2Arch, ViTArch)
-└── recipes/     # L4 — training plan (1..N stages) (FromScratch, LoRA, WarmStart)
+├── primitives/  # L1 — one named op per file        (RMSNorm, RoPE, SwiGLU, GQA)
+├── blocks/      # L2 — one state-threading unit      (TransformerBlock)
+├── archs/       # L3 — embed + N blocks + head       (LlamaArch)
+├── engine/      # session + realize + training-step  (LlamaSeqEngine, ViTTinyEngine)
+└── recipes/     # training entry points              (FromScratch, LoRA, WarmStart, ViTTiny)
 ```
+
+The **engine** owns the FFI session, the four `realize_for_*` paths
+(random_init / mmap / q8_copy / full_finetune), the forward + cross-entropy
++ backward + AdamW graph (`build_training_step`), and LoRA setup. It
+composes L1–L3 for the compute and delegates per-block / per-global tensor
+allocation to `TransformerBlock` / `LlamaArch`. The **recipes** instantiate
+an engine and drive its `realize!` / `step!` surface.
 
 See each subdirectory's README for the layer-specific contract.
 
 ## Reading order
 
-1. `primitives/README.md` — what a primitive looks like; pure-function shape.
-2. `blocks/README.md` — what a block looks like; state contract.
-3. `archs/README.md` — what an arch looks like; per-layer overrides.
-4. `recipes/README.md` — what a recipe looks like; stage sequence.
+1. `primitives/README.md` — a primitive: pure-function shape.
+2. `blocks/README.md` — a block: state contract.
+3. `archs/README.md` — an arch: embed + blocks + head orchestration.
+4. `recipes/README.md` — a recipe: realize + step loop.
 
-## Status (2026-05-28)
+## Status
 
-P2.2 — skeleton + contract READMEs landed. No code has moved yet.
-The monolith `lib/llama_seq_forward_ffi.rb` is still authoritative.
-
-P2.3 (next) will extract the **RoPE primitive** first as the pilot
-— it's the right Goldilocks (8-arg signature, no weights, used in
-both K and Q paths). See the roadmap §P2.0 survey findings.
+The five-layer refactor is complete. The former top-level monolith
+(`lib/llama_seq_forward_ffi.rb`) is retired — it is now
+`engine/llama_seq_engine.rb` (`Toy::LLM::Engine::LlamaSeqEngine`). All four
+realize paths are decomposed onto `TransformerBlock` / `LlamaArch`, and the
+`full_finetune` path is gated byte-exact by `prep/full_finetune_gate.rb`.
+Every training path (from-scratch, LoRA, warm-start, ViT, full-finetune) is
+gated bit-identical on CPU and CUDA.

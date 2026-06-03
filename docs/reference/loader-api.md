@@ -2,7 +2,7 @@
 
 There are two ways to bring GGUF weights into memory. They are
 **peers**, not "old vs new" — pick the one that matches the use case.
-The functions live in `lib/toy_smollm2_loader.rb` (module `GGUFLoad`),
+The functions live in `lib/toy/models/toy_smollm2_loader.rb` (module `GGUFLoad`),
 the FFI cache in `lib/toy_smollm2_ffi_kv.rb`, and the low-level
 download primitive in `lib/tinynn.rb`.
 

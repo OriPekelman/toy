@@ -2,6 +2,28 @@
 
 ## v0.7.0-pre-alpha — 2026-06-02
 
+### P2-finish + directory tidy (2026-06-03, branches `p2-retire-monolith` / `p2-dir-tidy`)
+Past P2's accepted ceiling; all bit-identical-gated on CPU+CUDA (Metal
+Mac-verified). Not yet merged to `main`.
+- **Monolith retired.** `lib/llama_seq_forward_ffi.rb` → `lib/toy/llm/engine/llama_seq_engine.rb`
+  as `Toy::LLM::Engine::LlamaSeqEngine`; `vit_tiny_forward_ffi.rb` likewise →
+  `engine/vit_tiny_engine.rb`. The L1–L4 tree is now the engine.
+- **`full_finetune` lifted** onto `TransformerBlock` (the 4th realize path,
+  left inline at the ceiling) + a 6th byte-exact gate (`prep/full_finetune_gate.rb`),
+  recorded from the inline path first. `random_init` global-tensor alloc lifted
+  onto `LlamaArch`.
+- **Mirrors off-disk.** The 24 `_cuda`/`_metal` twins are generated at build time
+  (Makefile static-pattern rules) and gitignored, not committed (−~11k lines);
+  `verify-mirrors` regenerates + checks idempotency.
+- **Directory tidy.** Top-level `lib/*.rb` grouped under `lib/toy/`: `io/`
+  (tokenizer, gguf, loaders), `models/` (transformer, arch, smollm2, gpt2, vit,
+  transformer_lm), `train/` (training, lr_schedule, drift_grad, gguf_writer/fuse,
+  sampler), `dev/` (describe_flow, card, tap, logprobs). `toy.rb` (package entry)
+  and `tinynn.rb` (FFI bridge) kept at root.
+- Fixed `bench/check.rb` to `mkdir -p bench/build` (fresh-clone build). Filed
+  toy#34: `Tokenizer#decode` drops spaces (byte-level `Ġ` not restored;
+  pre-existing on `main`).
+
 ### Deferred queue — full compute surface + GPU + packaging (2026-06-01/02)
 Landed after the initial v0.7 refactor; all bit-identical-gated, all on the
 canonical gx10 box (see gate-portability note below).

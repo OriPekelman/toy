@@ -12,7 +12,7 @@ the "Quick reference" at the bottom for routine re-runs.
 ## Why vendor instead of `require_relative` toy directly?
 
 You _can_ run `spinel my_experiment.rb -o exp` with a
-`require_relative "../toy/lib/llama_seq_forward_ffi"` line — but
+`require_relative "../toy/lib/toy/llm/engine/llama_seq_engine"` line — but
 when toy's own build runs, it's compiled with a particular layout
 of relative paths in `ffi_cflags`. A consumer running from a
 different working directory gets stale link paths AND, more subtly,
@@ -77,17 +77,17 @@ the auto-generated `vendor/spinel/deps.rb` only pulls in
 
 ```ruby
 require_relative "vendor/spinel/deps"
-require_relative "vendor/spinel/toy/lib/toy_smollm2"
-require_relative "vendor/spinel/toy/lib/llama_seq_forward_ffi"
+require_relative "vendor/spinel/toy/lib/toy/models/toy_smollm2"
+require_relative "vendor/spinel/toy/lib/toy/llm/engine/llama_seq_engine"
 
 cfg = Toy::SmolLM2Config.new(627, 64, 4, 4, 128, 2, 32, 10000.0, 1.0e-5)
-fcache = LlamaSeqForwardFFICache.new
+fcache = Toy::LLM::Engine::LlamaSeqEngine.new
 fcache.realize_for_random_init(cfg, 32, false, false, 0, 1.0)
 # … build_training_step, upload, compute, …
 ```
 
 That's it. From here you write whatever experiment loop you want
-against `LlamaSeqForwardFFICache` / `ViTTinyForwardFFICache` /
+against `Toy::LLM::Engine::LlamaSeqEngine` / `Toy::LLM::Engine::ViTTinyEngine` /
 `SmolLM2KVFFICache` / the GGUF loaders. The Tao project at
 `~/sites/tao_transfer` is the canonical worked example.
 
@@ -155,10 +155,10 @@ No tep dependency at all from a pure training experiment.
 ## Why this matters (the "no Mat landmine" half)
 
 Tao tried before this work landed: hand-pathed
-`require_relative "../toy/lib/toy_smollm2"` etc. Compile-time it
+`require_relative "../toy/lib/toy/models/toy_smollm2"` etc. Compile-time it
 PASSED, but generated a Spinel poly-dispatch crash referencing an
 undefined `sp_Mat` type in an Array<Mat> declaration. Root cause:
-when toy's `lib/transformer.rb` (where Mat lives) is loaded via a
+when toy's `lib/toy/models/transformer.rb` (where Mat lives) is loaded via a
 non-vendored relative path, Spinel's whole-program inference
 fragments the type table differently than for toy's own builds.
 The vendored layout — same tree shape for every consumer — keeps

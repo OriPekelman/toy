@@ -29,7 +29,7 @@ value objects:
   optimizer step reads.
 
 Model shape is built with the named `Toy::SmolLM2Config.mha` /
-`.gqa` factories (`lib/toy_smollm2.rb`).
+`.gqa` factories (`lib/toy/models/toy_smollm2.rb`).
 
 ## Read these
 

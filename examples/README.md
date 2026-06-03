@@ -145,7 +145,7 @@ make example_finetune_cuda
 ```
 
 Both build on the same sequence-mode forward graph
-(`lib/llama_seq_forward_ffi*.rb`): T positions per forward, masked CE
+(`lib/toy/llm/engine/llama_seq_engine*.rb`): T positions per forward, masked CE
 in one compute, AdamW state in persistent memory. The LoRA-Q rank-8
 adapters add ~5 MB on top of an mmap'd base.
 

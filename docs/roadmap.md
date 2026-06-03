@@ -22,32 +22,33 @@ future and optional.
 | Phase | Scope | Status |
 | --- | --- | --- |
 | **P0** | Design lock — five-layer algo contract, `runs/<id>/` layout, `toy.yml` minimalism | **DONE** |
-| **P1** | Card derivation — Cards come from a runtime graph-walk (`lib/toy_describe_flow.rb`), not hand-written `algorithm` methods | **DONE** |
-| **P2** | Five-layer refactor of the LLM stdlib into L1–L4 | **DONE to the gated ceiling** |
+| **P1** | Card derivation — Cards come from a runtime graph-walk (`lib/toy/dev/toy_describe_flow.rb`), not hand-written `algorithm` methods | **DONE** |
+| **P2** | Five-layer refactor of the LLM stdlib into L1–L4 | **DONE** |
 | **P3** | Core + CLI MVP — `new`/`install`/`list`/`describe`/`fetch` + `--manifest` | **DONE** (2/3 platforms gated) |
 | **P4** | `infer`/`train`/`eval`/`serve` CLI commands | **DONE + gated on `main`** |
 | **P5** | Generators (`toy g arch|recipe|primitive`) | **FUTURE / optional** |
 | **P6** | Prism lowerer (`toy build`) | **FUTURE / optional** |
 
-### P2 — the documented accepted ceiling
+### P2 — complete
 
-The five layers all landed and are gated bit-identical:
+The five layers landed and are gated bit-identical:
 
 - **L1** primitives: `rope`, `swiglu`, `rms_norm`, `gqa`
   (`lib/toy/llm/primitives/`, `_cuda` + `_metal` mirrors).
 - **L2** block: `transformer_block`.
 - **L3** arch: `llama_arch`.
-- **L4** recipes: `from_scratch`, `lora`, `warm_start`.
+- **engine**: `llama_seq_engine`, `vit_tiny_engine` (`lib/toy/llm/engine/`).
+- **L4** recipes: `from_scratch`, `lora`, `warm_start`, `vit_tiny`.
 
-The `realize` decomposition was carried to an **accepted ceiling, not
-to completion**: 3 of the 4 realize paths (`random_init`, `mmap`,
-`q8_copy`) are decomposed onto `TransformerBlock` / `LlamaArch`; the
-4th, **`full_finetune`, is left inline** in
-`lib/llama_seq_forward_ffi.rb`. It works; it was simply not lifted onto
-the block. A 6th gate (`full_finetune`) is constructible if ever
-wanted — the user chose to accept the ceiling rather than build it.
+The former top-level monolith `lib/llama_seq_forward_ffi.rb` is **retired**
+— relocated to `lib/toy/llm/engine/llama_seq_engine.rb` as
+`Toy::LLM::Engine::LlamaSeqEngine`. All four `realize` paths
+(`random_init`, `mmap`, `q8_copy`, `full_finetune`) are decomposed onto
+`TransformerBlock` / `LlamaArch`; the `full_finetune` lift is gated
+byte-exact by `prep/full_finetune_gate.rb` (the 6th realize gate). The
+`_cuda` / `_metal` mirrors are generated at build time (not committed).
 
-Two further realize residuals are documented as out-of-scope:
+Two realize residuals remain out-of-scope:
 
 - **llama3 `rope_freq_factors` realize-wiring** is genuinely
   un-gateable here: the toy forward is rope-angle-insensitive at the
@@ -125,9 +126,10 @@ block phases — they land inside the layered structure when picked up.
 - **ViT / vision in the CLI** — the ViT examples and image-loader
   smokes have no CLI command yet.
 - **GPT-2 arch in `toy train`** — only the Llama arch is exposed.
-- **Realize fixture cascade** — the `full_finetune` 6th gate (see P2
-  ceiling above), llama3 `rope_freq_factors` wiring (un-gateable), and
-  GQA-divergent on mmap/q8.
+- **Realize residuals** — llama3 `rope_freq_factors` wiring (un-gateable;
+  the toy forward is rope-angle-insensitive at the logit level), and
+  GQA-divergent on mmap/q8 (no divergent-head GGUF to gate against). The
+  `full_finetune` 6th gate is built (`prep/full_finetune_gate.rb`).
 - **MoE.** `ggml_mul_mat_id` produces garbage on K-quant expert weights
   (Q4_K / Q5_K / Q6_K) — see [`reference/coverage.md`](coverage.md)
   and ggml-org/ggml#1506. Workaround: **Q8_0 experts** (non-expert
@@ -195,7 +197,7 @@ architectures deserve their own scoping); diffusion; encoder-decoder.
 - **CPU/CUDA LoRA-train numeric divergence.** Root cause is a
   still-OPEN ggml-cpu `ggml_backend_sched` buffer-slot aliasing bug on
   long backward chains. It is **masked** by a
-  `tnn_pin_all_graph_b_nodes` call in `lib/llama_seq_forward_ffi.rb`
+  `tnn_pin_all_graph_b_nodes` call in `lib/toy/llm/engine/llama_seq_engine.rb`
   (and the CUDA/Metal mirrors) between build-backward and
   realize-backward, which prevents slot reuse. With the pin in place,
   CPU and CUDA gradients agree to float32 tolerance. The upstream fix

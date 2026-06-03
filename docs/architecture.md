@@ -48,7 +48,7 @@ TinyStories dataset" — composing one of each Kind. An `RMSNorm`
 The unifying contract is `Toy::Card`, the IR. Crucially, **Cards are
 derived, not authored**: users write `realize`, and the framework
 derives the Card by walking the runtime compute graph
-(`lib/toy_describe_flow.rb`, leveraged by `lib/toy_card.rb`). No
+(`lib/toy/dev/toy_describe_flow.rb`, leveraged by `lib/toy/dev/toy_card.rb`). No
 hand-written step descriptions to drift from the code.
 
 ## The five Card layers (granularity)
@@ -159,7 +159,7 @@ across L" forces fork-and-edit.
 ## The Arch data model
 
 An Arch (L3) is **data the graph builder reads**, not a monolithic
-model class. The per-model architecture struct lives at `lib/arch.rb`:
+model class. The per-model architecture struct lives at `lib/toy/models/arch.rb`:
 plain `attr_reader` fields, no inheritance, no metaprogramming. All
 fields are required (no nil-defaults) so a new arch declares every
 choice explicitly — that surfaces silent assumptions.

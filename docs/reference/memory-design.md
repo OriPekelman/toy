@@ -101,7 +101,7 @@ realize+attach step is just pointer wiring.
 The CPU code path lives in `tinynn/tinynn_ggml.c`
 (`tnn_session_attach_weight_mmap` → `ggml_backend_cpu_buffer_from_ptr`)
 and `tinynn/tinynn_gguf.c`; the Ruby side is
-`lib/llama_seq_forward_ffi.rb` (`realize_for_mmap`). FFI bindings:
+`lib/toy/llm/engine/llama_seq_engine.rb` (`realize_for_mmap`). FFI bindings:
 `lib/tinynn.rb`, `lib/tinynn_cuda.rb`, `lib/tinynn_metal.rb`.
 
 ## CUDA: UVA buffer-from-ptr (landed)

@@ -1,7 +1,7 @@
 # tinynn: Mat ↔ ggml FFI bridge
 
 A thin layer that lets the pure-Ruby `Mat` / `TransformerLM` from
-`lib/transformer.rb` dispatch its hot matrix operations through
+`lib/toy/models/transformer.rb` dispatch its hot matrix operations through
 [ggml](https://github.com/ggml-org/ggml) — CPU or CUDA — via Spinel's
 FFI.
 
@@ -17,7 +17,7 @@ Pure-Ruby `Mat#matmul` at training shapes:
 LLM-scale matmul in pure interpreted Ruby is unviable. Through this
 bridge the same call runs in ~29 ms (≈90× faster) on CPU FFI, and
 even less on CUDA once activations stay on-device. The bridge is
-**opt-in** via a `USE_FFI_MATMUL` flag in `lib/transformer.rb`; pure
+**opt-in** via a `USE_FFI_MATMUL` flag in `lib/toy/models/transformer.rb`; pure
 Ruby remains the default.
 
 ## Layout
@@ -82,7 +82,7 @@ the op, tears down. Good for ad-hoc tests; **slow for hot loops**
 (per-call ggml_init + scheduler-alloc dominates the math).
 
 ```ruby
-require_relative "lib/transformer"
+require_relative "lib/toy/models/transformer"
 require_relative "lib/tinynn"
 
 a = Mat.new(2, 3); ...
@@ -147,7 +147,7 @@ for the FFN shape (`matmul → gelu → matmul`).
 
 `TransformerLM` owns a per-block `@ffn_ffi_caches` array — one
 `FFNFFICache` per layer, lazy-realized on first forward call. When
-`USE_FFI_MATMUL = true` in `lib/transformer.rb`, `transformer_block_into`
+`USE_FFI_MATMUL = true` in `lib/toy/models/transformer.rb`, `transformer_block_into`
 calls `feed_forward_ffi(h, block, ffi_cache)` instead of
 `feed_forward(h, block)`. Each cache reuses its ggml graphs across
 all 40 SGD steps × 3 sequences × 2 matmuls = 240 calls per training
@@ -171,7 +171,7 @@ For CUDA the equivalent class is `FFNFFICacheCuda` in
 into one Spinel translation unit without colliding). To switch
 `train_minimal` to CUDA: change `require_relative "tinynn"` to
 `"tinynn_cuda"`, sed `TinyNN.` → `TinyNNCuda.` and `FFNFFICache.new`
-→ `FFNFFICacheCuda.new` in `lib/transformer.rb`, then rebuild.
+→ `FFNFFICacheCuda.new` in `lib/toy/models/transformer.rb`, then rebuild.
 A `USE_FFI_CUDA` constant for compile-time dispatch is a
 straightforward future addition.
 

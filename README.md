@@ -4,18 +4,19 @@
   <img src="toy_logo.png" alt="toy" width="240" />
 </p>
 
-**v0.7.0-pre-alpha** · early signal · not API-stable
+**v0.7.0-pre-alpha** · not API-stable
 &nbsp;·&nbsp; [CHANGELOG](CHANGELOG.md)
 &nbsp;·&nbsp; [docs](docs/architecture.md)
 &nbsp;·&nbsp; [op coverage](docs/coverage.md)
 
 A transformer LM framework in Ruby, [Spinel](https://github.com/matz/spinel)-compiled
 to native binaries. A plain CRuby CLI (`bin/toy`) drives Spinel-compiled
-compute runners; the model algorithms are organized in five layers
-(primitives → blocks → archs → recipes), and **every layer is gated
-bit-identical** against a reference. Runs real HuggingFace models —
-SmolLM2, Llama 3, Qwen 2.5, Qwen 3, Mistral, Gemma 2, OLMoE (MoE) — at
-output-identical fidelity to PyTorch. CPU, CUDA, Metal.
+compute runners; the model algorithms are organized as a layered stack
+(primitives → blocks → archs → recipes), and each layer is gated
+bit-identical against a reference. Runs HuggingFace models — SmolLM2,
+Llama 3, Qwen 2.5, Qwen 3, Mistral, Gemma 2, OLMoE (MoE) — with output
+matched against PyTorch per the [coverage table](docs/coverage.md).
+CPU, CUDA, Metal.
 
 End-to-end as single native binaries:
 
@@ -44,8 +45,8 @@ def transformer_block(x, block)
 end
 ```
 
-Every model has an `algorithm_card` (in `lib/toy_gpt2.rb`,
-`lib/toy_smollm2.rb`) emitting Phuong–Hutter style pseudocode
+Every model has an `algorithm_card` (in `lib/toy/models/toy_gpt2.rb`,
+`lib/toy/models/toy_smollm2.rb`) emitting Phuong–Hutter style pseudocode
 (arXiv:2207.09238) with shape annotations:
 
 ```
@@ -255,5 +256,3 @@ See [`docs/reference/backends.md`](docs/reference/backends.md).
 - `make bench-vs-pytorch` / `make bench-heavy` — ratio-not-ms comparison
   against a reference PyTorch run (see
   [`docs/reference/backends.md`](docs/reference/backends.md)).
-
-A toy you can read top-to-bottom that happens to run real models.

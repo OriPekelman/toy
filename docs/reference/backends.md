@@ -98,7 +98,7 @@ TinyNN.persistent_free(sess)
 
 Mixing several `build_*` calls before `realize` builds a multi-op graph that
 runs as one ggml dispatch. The seq-forward builders
-(`lib/llama_seq_forward_ffi.rb` + `_cuda` / `_metal`) realize the whole
+(`lib/toy/llm/engine/llama_seq_engine.rb` + `_cuda` / `_metal`) realize the whole
 forward — and the training backward — as one persistent graph: weights live in
 a `ctx_w` context uploaded once, and per step only `token_ids` cross the FFI
 boundary.
@@ -405,7 +405,7 @@ symbolically." Tiered plan, smallest primitive first:
 
 Gating dependencies, ranked: (1) **batching** — a batch=1 replica isn't a serious
 contributor; (2) **numerical consistency** — the CPU/CUDA training divergence
-(masked today by `tnn_pin_all_graph_b_nodes` in `lib/llama_seq_forward_ffi.rb`)
+(masked today by `tnn_pin_all_graph_b_nodes` in `lib/toy/llm/engine/llama_seq_engine.rb`)
 must be root-caused first, or the outer step compounds diverging pseudo-gradients;
 (3) transport (sockets suffice); (4) membership (~100 LOC); (5) async/staleness.
 Toy's `runs/<id>/events.jsonl` and gradient sentinels are a real head start for

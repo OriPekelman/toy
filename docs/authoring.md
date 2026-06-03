@@ -50,7 +50,7 @@ Toy::LLM::Primitives::GQA.attention(sess, t_k, t_q, t_vt,
 small `Cfg` value object carrying plain scalars, and one `self.apply_2d`
 that does integer/shape math plus FFI passthrough. It does **not**
 `require_relative "tinynn"` — the loading module
-(`lib/llama_seq_forward_ffi.rb`) has already loaded the correct backend's
+(`lib/toy/llm/engine/llama_seq_engine.rb`) has already loaded the correct backend's
 `TinyNN` before this file is required, and leaving the require out is
 what lets the mirror generator pick the backend (see Mirrors, below).
 
@@ -214,7 +214,7 @@ and the framework derives the Card.
 
 Today's mechanism is a **runtime graph-walk**: realize the graph (with
 tiny dims), then walk the built ggml graph and classify every tensor.
-This lives in `lib/toy_describe_flow.rb` — `ToyDescribeFlow.card(sess)`
+This lives in `lib/toy/dev/toy_describe_flow.rb` — `ToyDescribeFlow.card(sess)`
 emits a structural Card (param leaves, input leaves, compute-node count,
 the output node), and `.text` / `.json` / `.mermaid` emit the same DAG in
 other forms. Because the Card comes from the realized graph, it cannot

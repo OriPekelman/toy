@@ -129,7 +129,7 @@ For the full consumer recipe see the worked example at
 
 ## `Mat#add` was renamed to `Mat#plus`
 
-In `lib/transformer.rb`, the element-wise add on `Mat` is `#plus`,
+In `lib/toy/models/transformer.rb`, the element-wise add on `Mat` is `#plus`,
 not `#add`. The rename avoids a Spinel polymorphic-dispatch collision
 with `Tep::Router#add` (a same-named method on an unrelated class):
 Spinel's arg-type narrowing keys on method **name**, not signature, so
@@ -150,14 +150,14 @@ patterns deserves a re-test (`make bench-heavy` is the proof gate).
   silently corrupts. toy writes
   `out = [TinyNN.tnn_null_ptr]; out.pop` (or `[0.0]; .pop`,
   `[""]; .pop`) to pin the element type. Heaviest in the
-  `llama_seq_forward_ffi{,_cuda,_metal}.rb` and
-  `toy_smollm2_ffi_kv*.rb` files. Partial upstream fix (issue #688)
+  `lib/toy/llm/engine/llama_seq_engine{,_cuda,_metal}.rb` and
+  `lib/toy_smollm2_ffi_kv*.rb` files. Partial upstream fix (issue #688)
   promotes the local but locks the function-parameter type before the
   promotion is observed, so cross-function passes still need the seed.
 - **`has_key?` guards on `IntHash`.** `*IntHash#[]` returns `0` on
   miss (and `*StrHash#[]` returns `""`), both truthy under Spinel
   coercion. toy guards lookups with `has_key?` (notably across
-  `lib/tokenizer.rb`). Upstream `*StrHash` now returns NULL, but
+  `lib/toy/io/tokenizer.rb`). Upstream `*StrHash` now returns NULL, but
   `*IntHash` nil-semantics (`SP_INT_NIL`, the path tokenizer uses) is
   deferred, so the guards stay.
 - **No `STDERR`.** Spinel has no `STDERR` constant; diagnostic warnings
@@ -191,5 +191,5 @@ concat-backward (live at `vendor/ggml/src/ggml.c`, gates training),
 These divergences are deliberately confined to `vendor/`. The one
 open upstream issue that toy masks at the application layer — the
 ggml-cpu sched grad-aliasing bug, masked by
-`tnn_pin_all_graph_b_nodes` in `lib/llama_seq_forward_ffi.rb` — is
+`tnn_pin_all_graph_b_nodes` in `lib/toy/llm/engine/llama_seq_engine.rb` — is
 tracked under known-issues in **[roadmap.md](roadmap.md)**.
