@@ -155,15 +155,25 @@ each → `tnn_finalize_weights` (allocates the weight buffer) → upload weight 
 `tnn_realize_backward` → train loop. Uploading a persistent weight BEFORE
 `tnn_finalize_weights` aborts with "tensor buffer not set".
 
+**Step 2 DONE (2026-06-04): full minimal GPT-2 block trains.** Added single-head
+causal self-attention (qkv biases, `tnn_diag_mask_inf` causal mask, `tnn_softmax`,
+transpose/`cont_2d` for V); the pre-LN block is ln1→attn→res→ln2→GELU-FFN→res. CE
+drops 3.46 → 0.0077 — every GPT-2-distinctive op now trains end-to-end.
+
+**ggml training gotcha (carry to the full arch):** `transpose(v)`'s backward yields
+a NON-contiguous gradient that `repeat_back` (the bias-broadcast backward) rejects
+(`ops.cpp` `GGML_ASSERT(nb00 == sizeof(float))`). Since softmax rows sum to 1,
+`Σ_k probs·(v+b_v) = Σ_k probs·v + b_v`, so the V bias is added to the attention
+OUTPUT, not before the transpose — exact, and keeps the grad contiguous. Q/K
+biases are fine (their grads come from matmul, already contiguous). When porting
+to multi-head, the per-head reshape/permute will need the same care.
+
 **Remaining increments:**
-1. **Add causal MHA** to the inline trainer (qkv matmul + bias, reshape to heads,
-   scaled scores, `tnn_diag_mask_inf` + `tnn_soft_max_ext`, weighted V, out-proj
-   + bias, residual; pre-LN block: ln1→attn→res→ln2→FFN→res). All primitives
-   exist (`tnn_matmul/scale/permute/cont_2d/reshape_*/diag_mask_inf/soft_max_ext`).
-2. **`prep/gpt2_train_gate.rb`** — byte-exact loss-curve fixture (record-from-inline,
-   like `full_finetune_gate.rb`); ggml-internal CE is byte-exact on gx10.
-3. **Engine integration** — a `GPT2Arch` (L3) + `realize_for_random_init_gpt2` that
+1. **`prep/gpt2_train_gate.rb`** — byte-exact loss-curve fixture (record-from-inline,
+   like `full_finetune_gate.rb`); ggml-internal CE is byte-exact on gx10. Also
+   widen to multi-head (`n_heads>1`) via reshape-to-heads.
+2. **Engine integration** — a `GPT2Arch` (L3) + `realize_for_random_init_gpt2` that
    registers GPT-2 weights as `ft_globals` and dispatches `build_forward_in_current_ctx`
    to the GPT-2 forward, reusing `build_training_step` unchanged. Then a
    `toy train from-scratch --arch gpt2` surface.
-4. **CUDA/Metal mirrors** after the CPU reference is gated.
+3. **CUDA/Metal mirrors** after the CPU reference is gated.
