@@ -6,9 +6,16 @@
 # vendor-patches/0007) end-to-end through the toy FFI, on the GPT-2-
 # distinctive structure: learned positional embeddings (wte + wpe), GELU
 # FFN, LayerNorm (= ggml_norm + mul γ + add β, the composite tnn_layer_norm),
-# and a tied output embedding. Attention is OMITTED in this minimal proof
-# (the next increment adds it); the FFN sub-block alone drives both new
-# kernels (norm_back via LayerNorm, gelu_back via the GELU FFN).
+# single-head causal self-attention (with qkv biases), and a tied output
+# embedding. The pre-LN block is ln1→attn→residual→ln2→GELU-FFN→residual.
+# norm_back fires on every LayerNorm; gelu_back on the FFN.
+#
+# Attention V-bias gotcha (carry to the full arch): transpose(v)'s backward
+# yields a non-contiguous gradient that ggml's repeat_back (bias broadcast)
+# rejects (ops.cpp: GGML_ASSERT(nb00 == sizeof(float))). Fix: drop the V bias
+# before the transpose and add it to the attention OUTPUT — exact because
+# softmax rows sum to 1 (Σ_k probs·(v+b) = Σ_k probs·v + b). Q/K biases are
+# fine (their grads come from matmul, already contiguous).
 #
 # Realize ordering (mirrors the engine's realize_for_random_init):
 #   alloc all weights (ctx_w) → set_param → tnn_finalize_weights (alloc the
@@ -96,7 +103,20 @@ end
 wte = alloc_w2(sess, weights, opt_m, opt_v, inits, VOCAB,   D_MODEL, random_mat(VOCAB,   D_MODEL, 0.02))
 wpe = alloc_w2(sess, weights, opt_m, opt_v, inits, CONTEXT, D_MODEL, random_mat(CONTEXT, D_MODEL, 0.02))
 
-# Per-layer FFN-block weights (no attention in this minimal proof).
+# Per-layer block weights. GPT-2 pre-LN block:
+#   x = x + attn(ln1(x));  x = x + ffn(ln2(x))
+# Single-head attention (d_head == D_MODEL) to avoid the head-reshape; the
+# qkv/out projections carry learned biases (GPT-2 convention).
+ln1_g = [TinyNN.tnn_null_ptr]; ln1_g.pop
+ln1_b = [TinyNN.tnn_null_ptr]; ln1_b.pop
+w_q   = [TinyNN.tnn_null_ptr]; w_q.pop
+b_q   = [TinyNN.tnn_null_ptr]; b_q.pop
+w_k   = [TinyNN.tnn_null_ptr]; w_k.pop
+b_k   = [TinyNN.tnn_null_ptr]; b_k.pop
+w_v   = [TinyNN.tnn_null_ptr]; w_v.pop
+b_v   = [TinyNN.tnn_null_ptr]; b_v.pop
+w_o   = [TinyNN.tnn_null_ptr]; w_o.pop
+b_o   = [TinyNN.tnn_null_ptr]; b_o.pop
 ln2_g = [TinyNN.tnn_null_ptr]; ln2_g.pop
 ln2_b = [TinyNN.tnn_null_ptr]; ln2_b.pop
 fc_W  = [TinyNN.tnn_null_ptr]; fc_W.pop
@@ -105,6 +125,16 @@ pr_W  = [TinyNN.tnn_null_ptr]; pr_W.pop
 pr_b  = [TinyNN.tnn_null_ptr]; pr_b.pop
 li = 0
 while li < N_LAYERS
+  ln1_g.push(alloc_w1(sess, weights, opt_m, opt_v, inits, D_MODEL, const_mat(1, D_MODEL, 1.0)))
+  ln1_b.push(alloc_w1(sess, weights, opt_m, opt_v, inits, D_MODEL, const_mat(1, D_MODEL, 0.0)))
+  w_q.push(  alloc_w2(sess, weights, opt_m, opt_v, inits, D_MODEL, D_MODEL, random_mat(D_MODEL, D_MODEL, 0.02)))
+  b_q.push(  alloc_w1(sess, weights, opt_m, opt_v, inits, D_MODEL, const_mat(1, D_MODEL, 0.0)))
+  w_k.push(  alloc_w2(sess, weights, opt_m, opt_v, inits, D_MODEL, D_MODEL, random_mat(D_MODEL, D_MODEL, 0.02)))
+  b_k.push(  alloc_w1(sess, weights, opt_m, opt_v, inits, D_MODEL, const_mat(1, D_MODEL, 0.0)))
+  w_v.push(  alloc_w2(sess, weights, opt_m, opt_v, inits, D_MODEL, D_MODEL, random_mat(D_MODEL, D_MODEL, 0.02)))
+  b_v.push(  alloc_w1(sess, weights, opt_m, opt_v, inits, D_MODEL, const_mat(1, D_MODEL, 0.0)))
+  w_o.push(  alloc_w2(sess, weights, opt_m, opt_v, inits, D_MODEL, D_MODEL, random_mat(D_MODEL, D_MODEL, 0.02)))
+  b_o.push(  alloc_w1(sess, weights, opt_m, opt_v, inits, D_MODEL, const_mat(1, D_MODEL, 0.0)))
   ln2_g.push(alloc_w1(sess, weights, opt_m, opt_v, inits, D_MODEL, const_mat(1, D_MODEL, 1.0)))
   ln2_b.push(alloc_w1(sess, weights, opt_m, opt_v, inits, D_MODEL, const_mat(1, D_MODEL, 0.0)))
   fc_W.push( alloc_w2(sess, weights, opt_m, opt_v, inits, D_FF, D_MODEL, random_mat(D_FF, D_MODEL, 0.02)))
@@ -144,8 +174,29 @@ x_pos = TinyNN.tnn_get_rows(sess, wpe, t_pos)   # [d, T]
 x = TinyNN.tnn_add(sess, x_tok, x_pos)
 TinyNN.tnn_set_output(x)
 
+att_scale = 1.0 / Math.sqrt(D_MODEL.to_f)
 li2 = 0
 while li2 < N_LAYERS
+  # --- attention sub-block: x = x + attn(ln1(x)) ---
+  h1 = TinyNN.tnn_layer_norm(sess, x, ln1_g[li2], ln1_b[li2], LN_EPS)
+  q  = TinyNN.tnn_add(sess, TinyNN.tnn_matmul(sess, w_q[li2], h1), b_q[li2])  # [d,T]
+  k  = TinyNN.tnn_add(sess, TinyNN.tnn_matmul(sess, w_k[li2], h1), b_k[li2])  # [d,T]
+  # V carries NO bias here: transpose(v)'s backward yields a non-contiguous
+  # grad that ggml's repeat_back (bias broadcast) rejects. Since softmax rows
+  # sum to 1, Σ_k probs·(v+b_v) = (Σ_k probs·v) + b_v, so we add b_v to the
+  # attention OUTPUT instead (mathematically exact, keeps the grad contiguous).
+  v  = TinyNN.tnn_matmul(sess, w_v[li2], h1)                                  # [d,T]
+  # scores[T_k, T_q] = K·Q contracting d; scale; causal mask; softmax over keys.
+  scores = TinyNN.tnn_scale(sess, TinyNN.tnn_matmul(sess, k, q), att_scale)
+  scores = TinyNN.tnn_diag_mask_inf(sess, scores, 0)
+  probs  = TinyNN.tnn_softmax(sess, scores)                                   # [T_k,T_q]
+  v_t    = TinyNN.tnn_cont_2d(sess, TinyNN.tnn_transpose(sess, v), CONTEXT, D_MODEL) # [T_k,d]
+  attn   = TinyNN.tnn_add(sess, TinyNN.tnn_matmul(sess, v_t, probs), b_v[li2]) # [d,T_q] + b_v
+  ao     = TinyNN.tnn_add(sess, TinyNN.tnn_matmul(sess, w_o[li2], attn), b_o[li2]) # [d,T]
+  x      = TinyNN.tnn_add(sess, x, ao)   # residual
+  TinyNN.tnn_set_output(x)
+
+  # --- FFN sub-block: x = x + ffn(ln2(x)) ---
   h    = TinyNN.tnn_layer_norm(sess, x, ln2_g[li2], ln2_b[li2], LN_EPS)
   pre  = TinyNN.tnn_add(sess, TinyNN.tnn_matmul(sess, fc_W[li2], h), fc_b[li2])   # [d_ff,T]
   act  = TinyNN.tnn_gelu(sess, pre)
