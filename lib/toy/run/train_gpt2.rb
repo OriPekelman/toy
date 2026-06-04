@@ -1,19 +1,13 @@
 # lib/toy/run/train_gpt2.rb — Spinel-compiled GPT-2 from-scratch TRAINING runner.
 #
-# ⚠️ WIP — BLOCKED on a Spinel poly-degradation (toy#32 class). The
-# GPT2SeqEngine + this runner COMPILE and TRAIN CORRECTLY at small dims (proven
-# by prep/gpt2_engine_smoke.rb: VOCAB=32 → 72 weights, CE 3.46→0.96), but at
-# realistic dims (VOCAB=627) the engine's @g_weights array and the label Mat
-# degrade to EMPTY/ZERO in this compilation unit → CE=0, no training. It is
-# SIZE-dependent, not env-vs-literal: literal VOCAB=627 fails the same way; the
-# llama engine works at 627 because its unit constrains Mat/Array types
-# differently (it doesn't build many diverse-dim Ruby Mats). NOT wired into the
-# `toy train` CLI yet (so nothing user-facing is broken). The byte-exact INLINE
-# trainer (prep/gpt2_train_min.rb, `make gate-gpt2`) is the working reference.
-# Fix hypotheses for the next pass: (a) replace Mat+upload_row_major init with
-# flat-Array + tnn_upload_from_float_array (the llama upload_random_init!
-# pattern, no Ruby Mat in the hot path); (b) reduce Mat polymorphism in the
-# engine; (c) pin the realize! dim params. See docs/notes/gpt2-backward-patches.md.
+# Trains a GPT-2-shape model from scratch (loss 6.44 → decreasing on the
+# from-scratch corpus). REQUIRE-PATH CAUTION (this bit us hard, 2026-06-04): the
+# toplevel lib files are `require_relative "../../toy"` / `"../../tinynn"` (two
+# levels up from lib/toy/run/), NOT `"../toy"`. A wrong path resolves to a
+# nonexistent file; Spinel *ignores* the require (warning only), so TinyNN/Mat
+# are never loaded and every `TinyNN.*`/`Mat.new` call emits 0 → zero
+# weights/labels → CE=0, no crash. `spinel <file>.rb --emit-types` surfaces the
+# "require could not be resolved … ignored" line that fingerprints this.
 #
 # The lib-side compute for `toy train from-scratch --arch gpt2`. A SEPARATE
 # binary (libexec/toy-train-gpt2) from the llama runner (lib/toy/run/train.rb):
@@ -32,21 +26,16 @@
 # LayerNorm + GELU rides the two vendored kernels (vendor-patches/0007). CPU
 # only (this slice); the CUDA/Metal mirrors come after the CPU gate.
 
-require_relative "../toy"
-require_relative "../tinynn"
-require_relative "../llm/labels"
-require_relative "../llm/adamw"
+require_relative "../../toy"
+require_relative "../../tinynn"
 require_relative "../llm/engine/gpt2_seq_engine"
 
 STEPS    = (ENV["STEPS"]    || "5").to_i
 SEED     = (ENV["SEED"]     || "0").to_i
 LR       = (ENV["LR"]       || "0.001").to_f
-# Shape dims are LITERAL constants, NOT ENV.to_i. Critical (toy#32 poly-degrade
-# class): a runtime-Int VOCAB/CONTEXT degrades the label one-hot indexing
-# (m.flat[k*VOCAB + tgt]) to emit-0, silently zeroing the labels → CE=0. Spinel
-# needs the concrete-Int literal to keep the numerical path monomorphic. The
-# llama from-scratch runner is literal-shaped for the same reason; env-driven
-# shapes are a follow-up once the dims are pinned. From-scratch gate shape.
+# From-scratch gate shape (literal, like the llama from-scratch runner). Env-driven
+# shapes are a follow-up; not blocked by anything (the earlier "runtime dims
+# degrade" claim was a misdiagnosis of the require-path bug — see the header).
 VOCAB    = 627
 D_MODEL  = 64
 N_HEADS  = 4
@@ -80,10 +69,8 @@ while p < CONTEXT
 end
 
 # Shift-by-one next-token one-hot labels (target = next token, self at last pos).
-# Built INLINE (not Toy::Labels.next_token): the cross-module call degrades to
-# emitting an all-zero Mat in this compilation unit (the toy#32 poly-degrade
-# class — seq_ids/Mat writes lose their concrete arm across the module
-# boundary, so CE came out 0). Inlining keeps seq_ids/Mat monomorphic here.
+# (Toy::Labels.next_token would also work now that the requires are correct; kept
+# inline as the minimal self-contained form.)
 m_labels = Mat.new(CONTEXT, VOCAB)
 zj = 0
 while zj < CONTEXT * VOCAB; m_labels.flat[zj] = 0.0; zj = zj + 1; end
@@ -94,8 +81,7 @@ while lk < CONTEXT
   lk = lk + 1
 end
 
-# AdamW hyper-params built INLINE (cross-module value objects degrade in this
-# unit — see the labels note). slots 5/6 = 1/(1-beta^t) (bias correction),
+# AdamW hyper-params (inline). slots 5/6 = 1/(1-beta^t) (bias correction),
 # matching the gated inline GPT-2 trainer's dynamics.
 m_hp = Mat.new(1, 7)
 m_hp.flat[0] = LR

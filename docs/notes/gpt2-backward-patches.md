@@ -177,8 +177,15 @@ per-head-loop pattern — NOT reshape/permute, so no segfault juggling). `N_HEAD
 default 4; `N_HEADS=1` reproduces the single-head curve byte-for-byte (correctness
 check). Gate re-recorded at the multi-head default.
 
-**Step 5 STARTED but BLOCKED (2026-06-04): engine integration.** Landed as WIP
-(not wired into the CLI, so nothing user-facing is broken):
+**Step 5 DONE (2026-06-04): `toy train --arch gpt2` ships.** `GPT2SeqEngine` +
+`lib/toy/run/train_gpt2.rb` → `libexec/toy-train-gpt2`, wired into the CLI
+(`toy train from-scratch --arch gpt2`, CPU/from-scratch this slice), gated
+byte-exact + decreasing by `make gate-gpt2-train` (loss 6.44 → 5.46). The
+multi-hour "Spinel poly-degradation blocker" turned out to be a **require-path
+bug** (`"../toy"` vs `"../../toy"` → `TinyNN`/`Mat` never loaded → emit-0 cascade
+→ CE=0); `spinel --emit-types` surfaced the ignored require. Full post-mortem:
+[`gpt2-engine-spinel-blocker.md`](gpt2-engine-spinel-blocker.md). The original
+WIP commit notes below are kept for history but the blocker is RESOLVED:
 - `lib/toy/llm/engine/gpt2_seq_engine.rb` — `GPT2SeqEngine` (SEPARATE from
   `LlamaSeqEngine` → protects the Llama gates; a separate binary anyway per
   landmine #16). `realize!` builds the proven forward+CE+backward+AdamW; `step!`

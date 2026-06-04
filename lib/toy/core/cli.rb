@@ -81,6 +81,7 @@ module Toy
           args:  [{ name: "recipe", required: true, desc: "'from-scratch'" }],
           flags: [{ name: "--steps", desc: "training steps (default 5)" },
                   { name: "--seed", desc: "random-init seed (default 0)" },
+                  { name: "--arch", desc: "llama (default) | gpt2 (from-scratch, CPU)" },
                   { name: "--out", desc: "run dir override (default runs/<id>)" },
                   { name: "--json", desc: "machine output" }]
         },

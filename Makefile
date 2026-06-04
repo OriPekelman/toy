@@ -322,6 +322,13 @@ gate-gpt2-min: libexec/gpt2-train-min
 gate-gpt2: libexec/gpt2-train-min
 	ruby prep/gpt2_train_gate.rb
 .PHONY: gate-gpt2
+# Byte-exact gate for the GPT-2 ENGINE runner (libexec/toy-train-gpt2 →
+# Toy::LLM::Engine::GPT2SeqEngine, the `toy train --arch gpt2` compute). Asserts
+# the from-scratch loss curve is byte-identical + decreasing. Re-record with
+# `ruby prep/gpt2_train_engine_gate.rb --record`.
+gate-gpt2-train: libexec/toy-train-gpt2
+	ruby prep/gpt2_train_engine_gate.rb
+.PHONY: gate-gpt2-train
 
 # Deterministic train→infer ROUND-TRIP gate: train from-scratch --steps 5
 # --seed 0, then infer a fixed numeric prompt greedily from the written

@@ -67,6 +67,11 @@ module Toy
         # SmolLM2Config. CPU-only this slice. Binary path EQUALS the make
         # target so ToyRoot.ensure_built builds + locates it.
         VIT_RUNNER_TARGET = "libexec/toy-train-vit"
+        # GPT-2 from-scratch CPU runner — a SEPARATE binary (landmine #16): the
+        # GPT2SeqEngine realize path can't share a Spinel unit with the llama one.
+        # Selected by `--arch gpt2` (from-scratch, CPU only this slice). Backward
+        # of its LayerNorm + GELU rides the vendored kernels (vendor-patches/0007).
+        GPT2_RUNNER_TARGET = "libexec/toy-train-gpt2"
 
         DEFAULT_STEPS = 5  # the gate config (smoke_recipe_from_scratch)
         DEFAULT_SEED  = 0
@@ -87,6 +92,7 @@ module Toy
           @corpus = nil  # warm-start corpus path
           @init  = nil   # warm-start init mode
           @device = "cpu"  # cpu | cuda | metal (from-scratch only for non-cpu)
+          @arch   = ARCH   # llama | gpt2 (gpt2 = from-scratch CPU only this slice)
         end
 
         def run
@@ -98,6 +104,12 @@ module Toy
           # build — gate it HERE, before any build/Open3 (mirrors infer.rb).
           if @device == "metal" && RUBY_PLATFORM !~ /darwin/
             return fail_out("metal is only available in a macOS build")
+          end
+
+          # --arch gpt2 is from-scratch + CPU only in this slice (its own runner,
+          # libexec/toy-train-gpt2; CUDA/Metal mirrors come after the CPU gate).
+          if @arch == "gpt2" && (@recipe != "from-scratch" || @device != "cpu")
+            return fail_out("--arch gpt2 supports only `from-scratch` on CPU in this slice")
           end
 
           root = ToyRoot.locate_root
@@ -121,6 +133,8 @@ module Toy
                      @device == "cuda" ? LORA_CUDA_RUNNER_TARGET : LORA_RUNNER_TARGET
                    elsif @recipe == "vit-tiny"
                      VIT_RUNNER_TARGET
+                   elsif @arch == "gpt2"
+                     GPT2_RUNNER_TARGET
                    elsif @device == "cuda"
                      CUDA_RUNNER_TARGET
                    elsif @device == "metal"
@@ -145,7 +159,8 @@ module Toy
           # mkdir).
           project  = Dir.pwd
           cfg      = Toy::Core::Config.load(project)
-          run_id   = resolve_run_id(cfg.run_id_template, project, arch_for(@recipe))
+          run_id   = resolve_run_id(cfg.run_id_template, project,
+                                    @arch == "gpt2" ? "gpt2" : arch_for(@recipe))
           run_dir  = @out ? File.expand_path(@out) : File.join(project, "runs", run_id)
           begin
             FileUtils.mkdir_p(run_dir)
@@ -223,6 +238,16 @@ module Toy
               val = @argv[i]
               return bad_arg("--out requires a value") if val.nil?
               @out = val
+            when "--arch"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--arch requires a value") if val.nil?
+              return bad_arg("--arch must be llama or gpt2, got #{val.inspect}") unless %w[llama gpt2].include?(val)
+              @arch = val
+            when /\A--arch=(.*)\z/
+              val = $1
+              return bad_arg("--arch must be llama or gpt2, got #{val.inspect}") unless %w[llama gpt2].include?(val)
+              @arch = val
             when /\A--steps=(.*)\z/
               val = $1
               return bad_arg("--steps must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i > 0

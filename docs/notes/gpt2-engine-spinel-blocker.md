@@ -1,95 +1,56 @@
-# GPT-2 engine integration — Spinel poly-degradation blocker + spinel-dev asks
+# GPT-2 engine integration — post-mortem (it was a require-path bug, not Spinel)
 
-A spinel-dev-driven investigation of why `GPT2SeqEngine` (the
-`toy train --arch gpt2` path) silently produces CE=0 at realistic model
-dimensions. Done with `spinel doctor` (`~/sites/spinel-dev/tools/doctor`) as far
-as the current tooling allows; the remainder is tool proposals for spinel-dev.
+`toy train --arch gpt2` works (loss 6.44 → decreasing on the from-scratch
+corpus; `make gate-gpt2-train`). This note records the false trail, because the
+*shape* of the bug (a silent emit-0 cascade that looked exactly like a
+poly-degradation) is worth recognizing fast next time.
 
-## Symptom
+## The bug
 
-`prep/gpt2_engine_smoke.rb` (the engine, tiny dims VOCAB=32) **trains** — CE
-3.46→0.96, 72 weights. The same engine at realistic dims (VOCAB=627, the
-llama-from-scratch gate shape) silently produces **CE=0, no training**:
-`tnn_realize_backward` and `tnn_compute_backward` both return success, but the
-loss is identically 0. The inline trainer `prep/gpt2_train_min.rb` (`make
-gate-gpt2`, same math, NOT in a class) is unaffected and is the working
-byte-exact reference.
+The runner `lib/toy/run/train_gpt2.rb` had `require_relative "../toy"` /
+`"../tinynn"` — but the toplevel lib files are **two** levels up from
+`lib/toy/run/` (`"../../toy"` / `"../../tinynn"`, as the working `train.rb`
+uses). The wrong path resolves to a nonexistent file; Spinel **ignores the
+require** (warning only) and keeps compiling. So `TinyNN` (the FFI module) and
+`Mat` were **never loaded** — every `TinyNN.tnn_*` / `Mat.new` / `.flat` call had
+no definition, resolved "on int", and **emitted 0** (no-op / returned 0). Result:
+weights and labels uploaded as zeros → logits 0 → CE=0 → no training, no crash,
+`realize`/`compute` both reporting success.
 
-## What `spinel doctor` showed
+Fix: two characters per line (`../` → `../../`). The engine code was correct the
+whole time.
 
-`sh doctor.sh --no-cruby --no-bisect lib/toy/run/train_gpt2.rb`:
-- **0** `on int (emitting 0)` warnings at tiny dims; **9** (engine) / **40+**
-  (runner) at realistic dims. Each is a `TinyNN.tnn_*` / `Mat.new` / `.flat`
-  call resolving "on int" — the *receivers* (the `TinyNN` module, `Mat`, and
-  even the `engine` instance at top level) are typed as `int`, so the call
-  "emits 0" (no-op / returns 0).
-- The degradation is **size-dependent, not value-dependent**: ANY single dim
-  raised above the tiny baseline (VOCAB, D_MODEL, D_FF, *or* CONTEXT) flips it
-  on; it correlates with a Ruby array/alloc crossing a ~512–1024-element
-  threshold, NOT with a specific value or env-vs-literal.
-- It is **restructure-resistant**: the `Mat`-based init degrades the engine's
-  `@g_weights` Array<:ptr> to empty at big dims; reworking init to the llama
-  `flat-Array + tnn_upload_from_float_array` pattern (no Ruby `Mat`) FIXES the
-  weight array (72 weights at 627) but then the **`tnn_upload_from_float_array`
-  FFI calls themselves** degrade to emit-0 at ALL dims → weights+labels upload
-  as zeros → logits=0, CE=0. Each fix trades one poly-degradation for another.
-- The llama engine does the same FFI uploads at VOCAB=627 and works — so it's
-  this *compilation unit's* complexity (many distinct Array<:ptr> ivars + large
-  buffers + per-(layer,head) flat indexing in one class), not the operations.
+## Why it looked like a deep Spinel poly-degradation (the false trail)
 
-## Why the current tooling didn't close it
+- The `prep/gpt2_engine_smoke.rb` smoke **worked** — because it's in `prep/` and
+  its requires (`"../lib/toy"`) happen to resolve correctly from the repo root.
+- Every "it fails at realistic dims" repro I built was a `/tmp/*.rb` copy, run
+  **from `/tmp`**, where `"../lib/toy"` resolves to `/lib/toy` — the SAME broken
+  require. So "big dims fail / small dims pass" was an artifact of *where the
+  file lived*, not the dimensions. The dims were a complete red herring.
+- `spinel doctor`'s `on int (emitting 0)` count rose with the (apparent) dims,
+  reinforcing the wrong story — but that count also fires on benign `:ptr`-as-int
+  FFI lowering, so it conflated "module not loaded" (fatal) with "normal FFI".
 
-`spinel doctor` localizes the **symptom** but not the **root**, and two of its
-signals are misleading here:
+## What actually found it: `spinel <file>.rb --emit-types`
 
-1. **No provenance for the degradation.** The doctor lists dozens of downstream
-   `X on int (emitting 0)` lines but never points at the operation/merge site
-   that made the receiver `int` in the first place. With ~40 symptoms and no
-   first-cause, you bisect by hand (dims, requires, corpus, Mat-vs-flat) — slow
-   and inconclusive.
-2. **`--emit-rbs` says CLEAN while the compile leg degrades.** The inference leg
-   reports `realize!: (Integer×7) -> nil`, `@g_weights: Array[Integer]`, **0
-   untyped slots** — i.e. inference is happy — yet the codegen leg emits-0. This
-   inference-clean-but-codegen-degrades case is exactly the silent miscompile,
-   and nothing flags the discrepancy.
-3. **The `on int` count conflates benign and malign.** A trivial working FFI
-   script also shows nonzero `on int` (the `:ptr`-as-`int` lowering is normal).
-   So the count is a noisy metric — some "on int" calls work, some silently
-   no-op, and the doctor doesn't distinguish them.
+The delivered compiler flag printed:
+`require_relative "../tinynn" … could not be resolved (no such file …); the call
+is ignored`. That one line — plus diffing against a working runner's
+`require_relative "../../toy"` — was the whole fix. `--emit-types` (and
+`--emit-rbs`, `--debug`) ship in `matz/spinel`; the spinel-dev doctor wraps them.
 
-## Proposals to spinel-dev (tooling)
+## Lesson + the one surviving spinel-dev ask (see [OriPekelman/spinel-dev#9](https://github.com/OriPekelman/spinel-dev/issues/9))
 
-**Filed: [OriPekelman/spinel-dev#9](https://github.com/OriPekelman/spinel-dev/issues/9)**
-(2026-06-04) — the 5 below as an actionable checklist. **Resume condition for
-`toy train --arch gpt2`: once #9's provenance/`--explain` (or an authoritative
-pin) lands, re-localize the root and pin it.**
+An **ignored `require_relative` that defines the very module being called** is
+almost always the root of an emit-0 cascade. `--emit-types` surfaces it but
+`doctor`'s human summary buries it under the downstream symptoms. Ask: doctor
+should hoist ignored/unresolved requires to the top as the prime suspect, and
+severity-rank `on int` (unloaded-module → fatal, vs `:ptr` lowering → benign).
+(Proposals 1–3 and 5 on #9 were withdrawn — they were premised on this being a
+real poly-degradation, which it wasn't.)
 
-
-1. **Degradation provenance / `--explain <symbol>`.** When a receiver or slot
-   degrades to `int`/poly, report the *first cause*: the merge site, the
-   operation, and the triggering value/array. "Why is `engine` int here?" is the
-   question the doctor should answer, not "here are 40 calls on int."
-2. **Flag inference↔codegen disagreement.** A distinct, high-severity verdict
-   when `--emit-rbs` resolves a slot but the codegen leg emits-0 for it — that's
-   the silent-miscompile fingerprint and currently passes the inference leg.
-3. **Authoritative pin (not advisory).** Make `--rbs DIR` (or a
-   `# @spinel: monomorphic` / `keep` annotation) able to FORCE a class/method to
-   stay monomorphic, so a known-good signature (e.g. emitted from the tiny-dim
-   build) prevents the large-dim degradation.
-4. **Severity-ranked `on int`.** Distinguish benign `:ptr`-lowering "on int"
-   (the call works) from malign "on int" (the call silently no-ops / zeros
-   data). The count today is unusable as a pass/fail signal.
-5. **Reproducer minimizer (`spinel-reduce`).** Shrink a degrading program to the
-   minimal trigger — here it would isolate array-count vs array-size vs
-   ivar-count vs FFI-call-count as the cause.
-
-## Status / next
-
-The engine + runner are committed as WIP (NOT wired into the `toy train` CLI, so
-nothing user-facing is broken). The GPT-2 **arch is proven and gated** (`make
-gate-gpt2`); only the engine *surfacing* is blocked. Next, pending spinel-dev:
-file proposals 1–5; if a provenance trace lands, re-localize and pin. Meanwhile
-the inline trainer is the demo/reference. A non-Spinel workaround worth trying:
-move the heavy init out of the engine class into a C-side random-fill primitive
-(`tnn_fill_uniform(tensor, n, scale, seed)`), so the engine unit never builds
-large Ruby arrays at all — sidesteps the trigger rather than fighting it.
+**Debugging rule for this repo:** a silent CE=0 / all-zero-output with
+`realize`/`compute` returning success ⇒ check `--emit-types` for an *ignored
+require* before suspecting anything subtle. Run `spinel` from the repo root (or
+build via `make`), never from `/tmp`, so relative requires resolve.
