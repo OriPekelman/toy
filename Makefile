@@ -826,8 +826,8 @@ tep_demo/hello: tep_demo/hello_api.rb vendor/spinel/tep/lib/tep.rb
 	$(SPINEL) tep_demo/hello_api.rb -o tep_demo/hello
 
 # Inference API: /generate?n=N runs greedy generation via FullForwardFFICache.
-tep_demo/api: tep_demo/inference_api.rb vendor/spinel/tep/lib/tep.rb lib/toy/models/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
-	$(SPINEL) tep_demo/inference_api.rb -o tep_demo/api
+tep_demo/api: tep_demo/legacy/inference_api.rb vendor/spinel/tep/lib/tep.rb lib/toy/models/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
+	$(SPINEL) tep_demo/legacy/inference_api.rb -o tep_demo/api
 
 # --- ggml vendor ------------------------------------------------------------
 # Vendor patches that must land before any ggml build target. See

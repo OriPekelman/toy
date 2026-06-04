@@ -16,13 +16,19 @@ OpenAI-shape server).
 > See the project README "serve" section for the endpoint contract.
 > The demos below are the leftover Tep+Spinel examples.
 
-## Demo servers
+## Demo servers (curated)
 
-| Source | Binary | What it does |
-|---|---|---|
-| `hello_api.rb`         | `tep_demo/hello`             | Minimal `GET /` smoke; baseline HTTP throughput |
-| `inference_api.rb`     | `tep_demo/api`               | Toy random-init `FullForwardFFICache`, `/generate?n=N` |
-| `openai_api.rb`        | `tep_demo/openai_api`        | DistilGPT2/GPT-2 KV-cache decode behind `POST /v1/chat/completions` (uses `lib/bpe.rb` server-side tokenizer) |
+For real serving, use **`toy serve <model.gguf>`** (above). These are the
+remaining Tep+Spinel *framework* demos:
+
+| Source | Binary | What it does | Status |
+|---|---|---|---|
+| `hello_api.rb` | `tep_demo/hello` | Minimal `GET /` smoke; baseline HTTP throughput | **kept** — the minimal Tep demo |
+| `openai_api.rb` | `tep_demo/openai_api` | DistilGPT2/GPT-2 KV-cache decode behind `POST /v1/chat/completions` (`lib/bpe.rb` server tokenizer; `chat.rb` is a client, `post_smoke.rb` a POST smoke) | **pending** the GPT-2 serve convergence ([toy#30](https://github.com/OriPekelman/toy/issues/30)) |
+
+`legacy/inference_api.rb` (toy random-init `FullForwardFFICache`, `/generate?n=N`)
+moved to [`legacy/`](legacy/) — a second serving demo, superseded by `toy serve`
+as the canonical serving path. It still builds (`make tep_demo/api`).
 
 ## Build
 
