@@ -197,12 +197,17 @@ llama engine works at 627 because its unit constrains Mat/Array types differentl
 Mats). **This is a concrete real-world instance of exactly what toy#32's
 spinel-doctor gate is meant to catch** — a numerical path silently emitting 0.
 
-**Fix hypotheses for the next pass:** (a) replace `Mat` + `upload_row_major` init
-with flat `Array<Float>` + `tnn_upload_from_float_array` (the
-`upload_random_init!` pattern — no Ruby `Mat` in the hot path); (b) reduce `Mat`
-polymorphism in the engine (fewer distinct-dim `Mat.new` shapes); (c) run
-`spinel doctor` on `train_gpt2.rb` to pinpoint the degrading call. The byte-exact
-INLINE trainer (`make gate-gpt2`) stays the working reference + the curve the
-engine path must reproduce once unblocked.
+**Investigated with `spinel doctor` (2026-06-04) — full diagnosis + spinel-dev
+tool proposals in [`gpt2-engine-spinel-blocker.md`](gpt2-engine-spinel-blocker.md).**
+Findings: the degradation is **restructure-resistant** — fix hypothesis (a)
+(flat `Array<Float>` + `tnn_upload_from_float_array`, no `Mat`) *fixes* the
+`@g_weights` array at VOCAB=627 but then the `tnn_upload_from_float_array` FFI
+calls themselves degrade to emit-0 at ALL dims (logits=0, CE=0). Each
+restructure trades one poly-degradation for another. The doctor localizes the
+symptom (`X on int (emitting 0)`) but not the root, and `--emit-rbs` is
+misleadingly clean. **Most promising next step (sidestep, not fight):** a C-side
+`tnn_fill_uniform(tensor, n, scale, seed)` so the engine unit never builds large
+Ruby arrays. The byte-exact INLINE trainer (`make gate-gpt2`) stays the working
+reference + the curve the engine path must reproduce once unblocked.
 
 **Then:** CUDA/Metal mirrors after the CPU engine path is gated.
