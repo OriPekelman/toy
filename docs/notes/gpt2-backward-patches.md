@@ -168,12 +168,24 @@ OUTPUT, not before the transpose — exact, and keeps the grad contiguous. Q/K
 biases are fine (their grads come from matmul, already contiguous). When porting
 to multi-head, the per-head reshape/permute will need the same care.
 
-**Remaining increments:**
-1. **`prep/gpt2_train_gate.rb`** — byte-exact loss-curve fixture (record-from-inline,
-   like `full_finetune_gate.rb`); ggml-internal CE is byte-exact on gx10. Also
-   widen to multi-head (`n_heads>1`) via reshape-to-heads.
-2. **Engine integration** — a `GPT2Arch` (L3) + `realize_for_random_init_gpt2` that
-   registers GPT-2 weights as `ft_globals` and dispatches `build_forward_in_current_ctx`
-   to the GPT-2 forward, reusing `build_training_step` unchanged. Then a
-   `toy train from-scratch --arch gpt2` surface.
-3. **CUDA/Metal mirrors** after the CPU reference is gated.
+**Step 3 DONE: byte-exact gate.** `prep/gpt2_train_gate.rb` (`make gate-gpt2`)
+pins the CE curve to `prep/fixtures/gpt2_train_baseline.txt`; deterministic
+(seeded LCG + fixed data), ggml-internal CE byte-exact on aarch64.
+
+**Step 4 DONE: multi-head.** Per-head weights + `tnn_concat` (the engine's
+per-head-loop pattern — NOT reshape/permute, so no segfault juggling). `N_HEADS`
+default 4; `N_HEADS=1` reproduces the single-head curve byte-for-byte (correctness
+check). Gate re-recorded at the multi-head default.
+
+**Remaining:**
+1. **Engine integration → `toy train --arch gpt2`.** The cleanest/safest shape is a
+   SEPARATE `GPT2SeqEngine` (parallel to `LlamaSeqEngine`, NOT a modification of it —
+   protects the Llama byte-exact gates) that formalizes `prep/gpt2_train_min.rb` into
+   the engine: `realize_for_random_init_gpt2` allocates the GPT-2 weights, registers
+   them via `ft_add_global_*`, sets `@t_seq_logits` from a `GPT2Arch#build_forward`,
+   and reuses the forward-agnostic `build_training_step` (CE+backward+AdamW). Then a
+   `GPT2FromScratch` recipe + `--arch gpt2` dispatch in `lib/toy/run/train.rb` (likely
+   a new runner binary). The inline gate stays the byte-exact reference the engine
+   path must reproduce. Mind the Spinel landmines (no Struct, no default-arg ctor,
+   `:str` at runtime only, type-isolated ivar names).
+2. **CUDA/Metal mirrors** after the CPU engine path is gated.
