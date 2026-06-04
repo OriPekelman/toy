@@ -72,6 +72,11 @@ module Toy
         # Selected by `--arch gpt2` (from-scratch, CPU only this slice). Backward
         # of its LayerNorm + GELU rides the vendored kernels (vendor-patches/0007).
         GPT2_RUNNER_TARGET = "libexec/toy-train-gpt2"
+        # GPT-2 GPU twins (--arch gpt2 --device cuda|metal). SEPARATE single-type
+        # binaries (landmine #16); link the generated CUDA/Metal engine mirrors.
+        # The GELU/LayerNorm backward ops fall back to the CPU backend on GPU.
+        GPT2_CUDA_RUNNER_TARGET  = "libexec/toy-train-gpt2-cuda"
+        GPT2_METAL_RUNNER_TARGET = "libexec/toy-train-gpt2-metal"
 
         DEFAULT_STEPS = 5  # the gate config (smoke_recipe_from_scratch)
         DEFAULT_SEED  = 0
@@ -106,10 +111,11 @@ module Toy
             return fail_out("metal is only available in a macOS build")
           end
 
-          # --arch gpt2 is from-scratch + CPU only in this slice (its own runner,
-          # libexec/toy-train-gpt2; CUDA/Metal mirrors come after the CPU gate).
-          if @arch == "gpt2" && (@recipe != "from-scratch" || @device != "cpu")
-            return fail_out("--arch gpt2 supports only `from-scratch` on CPU in this slice")
+          # --arch gpt2 is from-scratch only (CPU/CUDA/Metal). Metal is gated to
+          # macOS by the @device check above; CUDA/Metal back the GELU/LayerNorm
+          # backward on the CPU fallback backend (no GPU kernel yet).
+          if @arch == "gpt2" && @recipe != "from-scratch"
+            return fail_out("--arch gpt2 supports only the `from-scratch` recipe")
           end
 
           root = ToyRoot.locate_root
@@ -134,7 +140,11 @@ module Toy
                    elsif @recipe == "vit-tiny"
                      VIT_RUNNER_TARGET
                    elsif @arch == "gpt2"
-                     GPT2_RUNNER_TARGET
+                     case @device
+                     when "cuda"  then GPT2_CUDA_RUNNER_TARGET
+                     when "metal" then GPT2_METAL_RUNNER_TARGET
+                     else              GPT2_RUNNER_TARGET
+                     end
                    elsif @device == "cuda"
                      CUDA_RUNNER_TARGET
                    elsif @device == "metal"

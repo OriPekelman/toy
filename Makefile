@@ -329,6 +329,13 @@ gate-gpt2: libexec/gpt2-train-min
 gate-gpt2-train: libexec/toy-train-gpt2
 	ruby prep/gpt2_train_engine_gate.rb
 .PHONY: gate-gpt2-train
+# CUDA arm: `toy train --arch gpt2 --device cuda`. Forward + most backward on
+# CUDA; GELU/LayerNorm backward fall back to CPU (no GPU kernel). CUDA-vs-CUDA
+# byte-exact (empirical on GB10) + decreasing. Re-record with
+# `ruby prep/gpt2_train_cuda_gate.rb --record`.
+gate-gpt2-train-cuda: libexec/toy-train-gpt2-cuda
+	ruby prep/gpt2_train_cuda_gate.rb
+.PHONY: gate-gpt2-train-cuda
 
 # Deterministic train→infer ROUND-TRIP gate: train from-scratch --steps 5
 # --seed 0, then infer a fixed numeric prompt greedily from the written
@@ -444,6 +451,31 @@ libexec/toy-train-gpt2: lib/toy/run/train_gpt2.rb lib/toy.rb \
 	$(SPINEL) $< -o $@
 toy-train-gpt2: libexec/toy-train-gpt2
 .PHONY: toy-train-gpt2
+
+# CUDA twin of toy-train-gpt2 (`--arch gpt2 --device cuda`). SEPARATE single-type
+# binary (landmine #16): links the generated CUDA engine mirror + the CUDA TinyNN
+# shim; the GELU/LayerNorm backward ops fall back to the CPU backend via the
+# scheduler (no CUDA kernel). lib/tinynn.rb + transformer.rb stay in deps (Mat /
+# CPU-TinyNN seam). NOT in MIRRORABLE (the engine mirror IS; the runner is hand-written).
+libexec/toy-train-gpt2-cuda: lib/toy/run/train_gpt2_cuda.rb lib/toy.rb \
+		lib/toy/llm/engine/gpt2_seq_engine_cuda.rb lib/toy/models/transformer.rb \
+		lib/tinynn_cuda.rb lib/tinynn.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
+toy-train-gpt2-cuda: libexec/toy-train-gpt2-cuda
+.PHONY: toy-train-gpt2-cuda
+
+# Metal twin (`--arch gpt2 --device metal`), macOS ONLY. Same structure; links
+# the generated Metal engine mirror + the Metal TinyNN shim + Apple frameworks.
+# gx10 RUNTIME-UNVERIFIED (codegen + structural parity here; runtime-gate on Mac).
+libexec/toy-train-gpt2-metal: lib/toy/run/train_gpt2_metal.rb lib/toy.rb \
+		lib/toy/llm/engine/gpt2_seq_engine_metal.rb lib/toy/models/transformer.rb \
+		lib/tinynn_metal.rb lib/tinynn.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_metal.a $(SPINEL_DEPS) | libexec
+ifneq ($(UNAME_S),Darwin)
+	@echo "toy-train-gpt2-metal: macOS-only"; exit 1
+endif
+	$(SPINEL) --cc='cc -Wl,-u,_tnn_metal_force_link -framework Foundation -framework Metal -framework MetalKit' $< -o $@
+toy-train-gpt2-metal: libexec/toy-train-gpt2-metal
+.PHONY: toy-train-gpt2-metal
 
 # P4/vit — ViT-Tiny from-scratch CPU TRAINING runner. SEPARATE binary
 # (landmine #16): ViTTinyConfig must NOT share a Spinel compilation unit

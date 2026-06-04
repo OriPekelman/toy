@@ -217,4 +217,15 @@ misleadingly clean. **Most promising next step (sidestep, not fight):** a C-side
 Ruby arrays. The byte-exact INLINE trainer (`make gate-gpt2`) stays the working
 reference + the curve the engine path must reproduce once unblocked.
 
-**Then:** CUDA/Metal mirrors after the CPU engine path is gated.
+**Step 6 (2026-06-04): CUDA/Metal mirrors.** `GPT2SeqEngine` added to
+`gen_cuda_mirror.rb` MIRRORABLE → generated `gpt2_seq_engine_{cuda,metal}.rb`
+(`GPT2SeqEngine{Cuda,Metal}`, `TinyNN{Cuda,Metal}`, `session_new(1)`/`(2)`).
+Hand-written runners `train_gpt2_{cuda,metal}.rb` → `libexec/toy-train-gpt2-{cuda,metal}`
+(separate single-type binaries, landmine #16). CLI: `--arch gpt2 --device cuda|metal`.
+**The GELU/LayerNorm backward ops have NO CUDA/Metal kernel — the backend
+scheduler runs them on the CPU fallback backend** (correct, slower); the forward
++ rest run on the GPU. `build-cuda` rebuilt with the kernels (the May-28 build was
+stale → would abort at backward-expand). CUDA gated by `make gate-gpt2-train-cuda`
+(CUDA-vs-CUDA byte-exact + decreasing). Metal is codegen/structure-verified on
+gx10, runtime-gated on the Mac (can't run Metal on Linux). Adding native CUDA
+`gelu_back`/`norm_back` kernels (so the backward stays on-GPU) is a follow-up.

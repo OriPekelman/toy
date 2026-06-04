@@ -245,6 +245,8 @@ lib/toy/llm/archs/llama_arch_cuda.rb
 lib/toy/llm/archs/llama_arch_metal.rb
 lib/toy/llm/engine/llama_seq_engine_cuda.rb
 lib/toy/llm/engine/llama_seq_engine_metal.rb
+lib/toy/llm/engine/gpt2_seq_engine_cuda.rb
+lib/toy/llm/engine/gpt2_seq_engine_metal.rb
 lib/toy_smollm2_ffi_kv_cuda.rb
 lib/toy_smollm2_ffi_kv_metal.rb
 lib/gpt2_ffi_cuda.rb
