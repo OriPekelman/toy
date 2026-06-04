@@ -427,6 +427,17 @@ libexec/toy-train-lora: lib/toy/run/train_lora.rb lib/toy.rb lib/toy/models/toy_
 	$(SPINEL) $< -o $@
 toy-train-lora: libexec/toy-train-lora
 
+# `toy train from-scratch --arch gpt2` DEDICATED runner. Separate binary from
+# toy-train (landmine #16: the GPT-2 realize path can't share a Spinel unit with
+# the llama random-init path). Self-contained GPT2SeqEngine (no llama engine /
+# primitives dep), so it also can't churn the llama gates. CPU-only this slice.
+libexec/toy-train-gpt2: lib/toy/run/train_gpt2.rb lib/toy.rb \
+		lib/toy/llm/engine/gpt2_seq_engine.rb lib/toy/llm/labels.rb lib/toy/llm/adamw.rb \
+		lib/toy/models/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a | libexec
+	$(SPINEL) $< -o $@
+toy-train-gpt2: libexec/toy-train-gpt2
+.PHONY: toy-train-gpt2
+
 # P4/vit — ViT-Tiny from-scratch CPU TRAINING runner. SEPARATE binary
 # (landmine #16): ViTTinyConfig must NOT share a Spinel compilation unit
 # with SmolLM2Config. Source lib/toy/run/train_vit.rb; binary path EQUALS

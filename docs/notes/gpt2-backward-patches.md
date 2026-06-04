@@ -177,15 +177,32 @@ per-head-loop pattern — NOT reshape/permute, so no segfault juggling). `N_HEAD
 default 4; `N_HEADS=1` reproduces the single-head curve byte-for-byte (correctness
 check). Gate re-recorded at the multi-head default.
 
-**Remaining:**
-1. **Engine integration → `toy train --arch gpt2`.** The cleanest/safest shape is a
-   SEPARATE `GPT2SeqEngine` (parallel to `LlamaSeqEngine`, NOT a modification of it —
-   protects the Llama byte-exact gates) that formalizes `prep/gpt2_train_min.rb` into
-   the engine: `realize_for_random_init_gpt2` allocates the GPT-2 weights, registers
-   them via `ft_add_global_*`, sets `@t_seq_logits` from a `GPT2Arch#build_forward`,
-   and reuses the forward-agnostic `build_training_step` (CE+backward+AdamW). Then a
-   `GPT2FromScratch` recipe + `--arch gpt2` dispatch in `lib/toy/run/train.rb` (likely
-   a new runner binary). The inline gate stays the byte-exact reference the engine
-   path must reproduce. Mind the Spinel landmines (no Struct, no default-arg ctor,
-   `:str` at runtime only, type-isolated ivar names).
-2. **CUDA/Metal mirrors** after the CPU engine path is gated.
+**Step 5 STARTED but BLOCKED (2026-06-04): engine integration.** Landed as WIP
+(not wired into the CLI, so nothing user-facing is broken):
+- `lib/toy/llm/engine/gpt2_seq_engine.rb` — `GPT2SeqEngine` (SEPARATE from
+  `LlamaSeqEngine` → protects the Llama gates; a separate binary anyway per
+  landmine #16). `realize!` builds the proven forward+CE+backward+AdamW; `step!`
+  drives one step.
+- `lib/toy/run/train_gpt2.rb` → `libexec/toy-train-gpt2` (Makefile target added).
+
+**BLOCKER — Spinel poly-degradation (the toy#32 class).** The engine COMPILES and
+TRAINS at small dims (`prep/gpt2_engine_smoke.rb`: VOCAB=32 → 72 weights, CE
+3.46→0.96), but at realistic dims (VOCAB=627) the engine's `@g_weights`
+Array<:ptr> and the label Mat degrade to EMPTY/ZERO in this compilation unit →
+`compute_backward` runs but CE=0, no training. **SIZE-dependent, not
+env-vs-literal** (literal VOCAB=627 fails identically; `realize_backward`/
+`compute_backward` both return success — the arrays are silently emptied). The
+llama engine works at 627 because its unit constrains Mat/Array types differently
+(it uploads init via flat `tnn_upload_from_float_array`, not many diverse-dim Ruby
+Mats). **This is a concrete real-world instance of exactly what toy#32's
+spinel-doctor gate is meant to catch** — a numerical path silently emitting 0.
+
+**Fix hypotheses for the next pass:** (a) replace `Mat` + `upload_row_major` init
+with flat `Array<Float>` + `tnn_upload_from_float_array` (the
+`upload_random_init!` pattern — no Ruby `Mat` in the hot path); (b) reduce `Mat`
+polymorphism in the engine (fewer distinct-dim `Mat.new` shapes); (c) run
+`spinel doctor` on `train_gpt2.rb` to pinpoint the degrading call. The byte-exact
+INLINE trainer (`make gate-gpt2`) stays the working reference + the curve the
+engine path must reproduce once unblocked.
+
+**Then:** CUDA/Metal mirrors after the CPU engine path is gated.
