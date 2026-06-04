@@ -209,6 +209,7 @@ toy-*.gem
 # (incl. the ~680 MB CUDA binaries) into a commit.
 examples/example_*
 examples/smoke_*
+examples/gpt2_train
 !examples/*.rb
 tinynn/ab_smoke_*
 tinynn/probe_*

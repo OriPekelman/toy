@@ -147,11 +147,11 @@ gate fixtures.
 | Example | What it does |
 |---|---|
 | `examples/02_train_custom_gpt.rb` | Train a tiny GPT from scratch on TinyStories. |
-| `examples/03_finetune_lora.rb` | LoRA / QLoRA fine-tune via the sequence-mode forward graph (CPU). |
+| `examples/legacy/03_finetune_lora.rb` (or `toy train lora`) | LoRA / QLoRA fine-tune via the sequence-mode forward graph (CPU). |
 | `examples/06_train_from_scratch.rb` | Modern Llama-shape from-scratch trainer (RMSNorm + GQA + RoPE + SwiGLU); CPU + CUDA. Emits `toy/v1` events. |
 | `examples/07_train_vit_tiny.rb` | ViT-Tiny image classifier with timm AugReg donor warm-start. |
-| `examples/08_lmc.rb` | Linear Mode Connectivity blend of two from-scratch checkpoints over an α grid. |
-| `examples/09_warm_start_train.rb` | Warm-start trainer with donor `token_embd` + optional PCA-init projection lens. |
+| `examples/legacy/08_lmc.rb` (or `toy eval lmc`) | Linear Mode Connectivity blend of two from-scratch checkpoints over an α grid. |
+| `examples/legacy/09_warm_start_train.rb` (or `toy train warm-start`) | Warm-start trainer with donor `token_embd` + optional PCA-init projection lens. |
 | `examples/smoke_*.rb` | Single-purpose wire smokes — also the gate fixtures (see [gating.md](gating.md)). |
 
 CUDA / Metal mirrors exist for several (`*_cuda.rb`, `*_metal.rb`).

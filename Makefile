@@ -195,12 +195,13 @@ help:
 	@if [ "$$(uname -s)" = "Darwin" ]; then \
 	    echo "    make example_inference_metal       same, Metal-accelerated (macOS) — use this on Mac"; \
 	fi
-	@echo "    make example_train                 tiny GPT trained from scratch on TinyStories"
-	@echo "    make example_train_from_scratch    modern Llama-shape from-scratch trainer (CPU + CUDA)"
-	@echo "    make example_finetune              LoRA / QLoRA fine-tune on a GGUF base"
+	@echo "    Most tasks are the CLI now: toy train|infer|eval|serve (see 'toy --help')."
+	@echo "    Curated library/instrumentation examples:"
+	@echo "    make example_train                 tiny GPT from scratch on TinyStories (pure-Ruby teaching path)"
+	@echo "    make example_train_from_scratch    modern Llama-shape from-scratch trainer (instrumentation ref)"
 	@echo "    make example_train_vit_tiny        ViT-Tiny image-classifier + warm-start from timm"
-	@echo "    make example_warm_start_train      Qwen-style warm-start trainer with projection lens"
-	@echo "    make example_lmc                   linear-mode-connectivity blend of two checkpoints"
+	@echo "    toy train from-scratch --arch gpt2 GPT-2 from-scratch (CPU/CUDA) — see examples/gpt2_train.rb"
+	@echo "    (CLI-superseded demos moved to examples/legacy/: lora, warm-start, lmc, metal-infer.)"
 	@echo ""
 	@echo "  HTTP SERVING — tep_demo/"
 	@echo "    make tep_demo/hello                minimal Tep HTTP smoke"
@@ -597,7 +598,7 @@ examples/smoke_decode_logprobs: examples/smoke_decode_logprobs.rb lib/toy/models
 	$(SPINEL) $< -o $@
 
 # GH#18 — LMC interpolate-and-eval runner.
-examples/example_lmc: examples/08_lmc.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/tinynn.rb lib/toy/train/toy_drift_grad.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+examples/example_lmc: examples/legacy/08_lmc.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/tinynn.rb lib/toy/train/toy_drift_grad.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 example_lmc: examples/example_lmc
 
@@ -701,7 +702,7 @@ examples/smoke_corpus_loader: examples/smoke_corpus_loader.rb lib/toy/models/tra
 	$(SPINEL) $< -o $@
 
 # E2.5 (towards GH#14) — warm-start training driver.
-examples/example_warm_start_train: examples/09_warm_start_train.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/tinynn.rb lib/toy/train/toy_drift_grad.rb lib/toy/train/toy_gguf_writer.rb lib/toy/io/toy_corpus_loader.rb lib/toy/train/toy_lr_schedule.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+examples/example_warm_start_train: examples/legacy/09_warm_start_train.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/tinynn.rb lib/toy/train/toy_drift_grad.rb lib/toy/train/toy_gguf_writer.rb lib/toy/io/toy_corpus_loader.rb lib/toy/train/toy_lr_schedule.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 example_warm_start_train: examples/example_warm_start_train
 
@@ -721,7 +722,7 @@ examples/example_train: examples/02_train_custom_gpt.rb lib/toy/models/transform
 	$(SPINEL) $< -o $@
 example_train: examples/example_train
 
-examples/example_finetune: examples/03_finetune_lora.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
+examples/example_finetune: examples/legacy/03_finetune_lora.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 example_finetune: examples/example_finetune
 
@@ -730,7 +731,7 @@ example_finetune: examples/example_finetune
 # carries CUDA symbols too (no source change). For real GPU speedup
 # users typically write a `_cuda` variant; this mirror is for the
 # build-recipe story.
-examples/example_finetune_cuda: examples/03_finetune_lora_cuda.rb lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
+examples/example_finetune_cuda: examples/legacy/03_finetune_lora_cuda.rb lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 example_finetune_cuda: examples/example_finetune_cuda
 
@@ -739,7 +740,7 @@ example_finetune_cuda: examples/example_finetune_cuda
 # weak-symbol resolution. macOS expects a leading underscore on
 # external symbols, hence `-Wl,-u,_tnn_metal_force_link`.
 # Frameworks (Foundation/Metal/MetalKit) are linked via -framework.
-examples/example_inference_metal: examples/01_inference_metal.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm_metal.rb lib/toy_smollm2_ffi_kv_metal.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn_metal.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_metal.a
+examples/example_inference_metal: examples/legacy/01_inference_metal.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm_metal.rb lib/toy_smollm2_ffi_kv_metal.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn_metal.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_metal.a
 ifneq ($(UNAME_S),Darwin)
 	@echo "example_inference_metal: macOS-only"; exit 1
 endif
@@ -767,7 +768,17 @@ examples/example_train_from_scratch: examples/example_train_from_scratch_cpu
 example_train_from_scratch: examples/example_train_from_scratch
 example_train_from_scratch_cuda: examples/example_train_from_scratch_cuda
 
-examples: toy-infer example_train example_finetune example_finetune_cuda
+# GPT-2 from-scratch via the GPT2SeqEngine library API (the curated GPT-2 demo;
+# CLI surface is `toy train from-scratch --arch gpt2`). Memorizes a synthetic
+# sequence so CE visibly collapses; exercises the vendored LayerNorm/GELU kernels.
+examples/gpt2_train: examples/gpt2_train.rb lib/toy.rb \
+		lib/toy/llm/engine/gpt2_seq_engine.rb lib/toy/models/transformer.rb \
+		lib/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) $< -o $@
+gpt2_train: examples/gpt2_train
+.PHONY: gpt2_train
+
+examples: toy-infer example_train example_train_from_scratch gpt2_train
 
 # Phase 0.6 — CUDA-mirror generator. The CPU file is the source of
 # truth; the CUDA file is auto-generated by prep/gen_cuda_mirror.rb.

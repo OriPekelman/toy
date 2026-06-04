@@ -1,23 +1,43 @@
 # examples/
 
-Short, focused entry points. Each file is one runnable Ruby program
-that Spinel compiles to a native binary. No Python, no PyTorch, no
-runtime to install — `make`, run.
+## The CLI is the primary surface
 
-## What's here
+Most tasks are the `toy` CLI now — no example script needed:
+
+```sh
+toy train from-scratch [--arch gpt2] [--device cuda]   # train (Llama or GPT-2)
+toy train lora|warm-start                              # fine-tune / transfer
+toy infer <model.gguf> [--device cuda|metal]           # generate
+toy eval <model.gguf> | toy eval lmc --ckpt A --other B
+toy serve <model.gguf>                                 # OpenAI-compatible HTTP
+toy list | toy fetch | toy describe                    # discover / inspect
+```
+
+The scripts below are the ones worth reading as **library-API / instrumentation
+examples** — things the CLI hides or doesn't cover. Each is one runnable Ruby
+program Spinel compiles to a native binary (no Python, no runtime — `make`, run).
+
+## Curated examples
 
 | File | What it does | Runtime |
 |---|---|---|
-| `train_from_scratch.rb` | **BLESSED from-scratch path. Start here.** Tiny Llama-shape model trained through the L4 FromScratch recipe + `Toy::AdamW` / `Toy::Labels` / `Toy::SmolLM2Config.mha`. The short tutorial. | seconds |
-| `02_train_custom_gpt.rb` | Train a tiny GPT from scratch on TinyStories. Bumping EPOCHS makes a model that writes English. | ~3 min default |
-| `03_finetune_lora.rb`    | LoRA / **QLoRA** fine-tune via the sequence-mode forward graph (CPU). Needs a native-layout GGUF — see prep step below. | ~30 s |
-| `03_finetune_lora_cuda.rb` | CUDA mirror of the above. F32 by default; pass `Q8=1` for QLoRA (Q8-stays-Q8 path via `realize_for_q8_copy`). | ~10 s on GB10 |
-| `06_train_from_scratch.rb` | Instrumentation reference for the recipe path: events, checkpoints, drift sentinels, CKA taps, Tao harness. Read `train_from_scratch.rb` first; this is the full-knobs version. | seconds–minutes |
-| `07_train_vit_tiny.rb`   | ViT-Tiny image classifier with timm IN-21k AugReg donor warm-start. Patch embed + class token + 12 blocks + MLP head; CIFAR-shape smoke. | ~30 s for 200 steps |
-| `08_lmc.rb`              | Linear Mode Connectivity blend of two from-scratch checkpoints over an α grid; emits one `eval` per α. Tao's `Analyze.lmc` consumes these. | seconds |
-| `09_warm_start_train.rb` | Warm-start trainer w/ donor `token_embd` + optional PCA-init projection lens (Qwen-2.5-1.5B → 410M-shape transfer; see file header for the full invocation). | seconds–hours |
-| `smoke_recipe_{from_scratch,lora,warm_start}.rb` | The byte-gated recipe exemplars users read — each drives one L4 recipe through `realize!`/`step!` with `Toy::AdamW` + `Toy::Labels`. | < 5 s each |
-| `smoke_*.rb`             | Single-purpose wire smokes: corpus loader, decode logprobs, embed API, image loader, projection lens, ckpt reload, ViT-Tiny. Each verifies one primitive end-to-end. | < 5 s each |
+| `train_from_scratch.rb` | **Start here.** Tiny Llama-shape model trained through the L4 `FromScratch` recipe + `Toy::AdamW` / `Toy::Labels` / `Toy::SmolLM2Config.mha`. The library-API read. | seconds |
+| `gpt2_train.rb` | **GPT-2 from scratch via `GPT2SeqEngine`** (wte+wpe / LayerNorm / multi-head attn / GELU FFN / tied output). CE collapses on a memorizable sequence. CLI: `toy train from-scratch --arch gpt2`. | seconds |
+| `02_train_custom_gpt.rb` | The **pure-Ruby teaching GPT** (the math in plain Ruby, no FFI engine). Bump EPOCHS → writes English. | ~3 min default |
+| `06_train_from_scratch.rb` | **Instrumentation reference**: events, checkpoints, drift sentinels, CKA taps, Tao harness — the full-knobs version of `train_from_scratch.rb`. | seconds–minutes |
+| `07_train_vit_tiny.rb` | **ViT-Tiny** image classifier (no CLI surface yet): patch embed + class token + 12 blocks + MLP head; timm AugReg donor warm-start. | ~30 s / 200 steps |
+
+## Gates (the test suite, not demos)
+
+`smoke_*.rb` are the **byte-identical gate suite** (wired into `docs/gating.md`
++ `make verify`), not tutorials — each verifies one primitive/recipe end-to-end.
+They live here for historical reasons; treat them as tests.
+
+## Legacy
+
+CLI-superseded demos moved to [`legacy/`](legacy/README.md): `01_inference_metal`
+(`toy infer --device metal`), `03_finetune_lora` (`toy train lora`), `08_lmc`
+(`toy eval lmc`), `09_warm_start_train` (`toy train warm-start`). They still build.
 
 ## First run — find or fetch a model
 
