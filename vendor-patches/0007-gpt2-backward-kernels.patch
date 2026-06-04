@@ -1,0 +1,438 @@
+diff --git a/include/ggml.h b/include/ggml.h
+index f672526..88ecfc1 100644
+--- a/include/ggml.h
++++ b/include/ggml.h
+@@ -583,6 +583,10 @@ extern "C" {
+ 
+         GGML_OP_GLU,
+ 
++        // toy: vendored fused backwards for GPT-2 training (CPU reference)
++        GGML_OP_GELU_BACK,
++        GGML_OP_NORM_BACK,
++
+         GGML_OP_COUNT,
+     };
+ 
+@@ -1196,6 +1200,14 @@ extern "C" {
+             struct ggml_tensor  * a,
+             struct ggml_tensor  * b);
+ 
++    // toy: backward of the tanh-approx gelu (GPT-2 training)
++    // a - dy (gradient w.r.t. gelu output)
++    // b - x  (gelu input from the forward pass)
++    GGML_API struct ggml_tensor * ggml_gelu_back(
++            struct ggml_context * ctx,
++            struct ggml_tensor  * a,
++            struct ggml_tensor  * b);
++
+     // hardswish(x) = x * relu6(x + 3) / 6
+     GGML_API struct ggml_tensor * ggml_hardswish(
+             struct ggml_context * ctx,
+@@ -1411,6 +1423,15 @@ extern "C" {
+             struct ggml_tensor  * b,
+             float                 eps);
+ 
++    // toy: backward of the pure normalize ggml_norm (no affine) for GPT-2 training
++    // a - x  (norm input from the forward pass)
++    // b - dy (gradient w.r.t. the normalize output)
++    GGML_API struct ggml_tensor * ggml_norm_back(
++            struct ggml_context * ctx,
++            struct ggml_tensor  * a,
++            struct ggml_tensor  * b,
++            float                 eps);
++
+     // A: k columns, n rows => [ne03, ne02, n, k]
+     // B: k columns, m rows  (i.e. we transpose it internally) => [ne03 * x, ne02 * y, m, k]
+     // result is n columns, m rows => [ne03 * x, ne02 * y, m, n]
+diff --git a/src/ggml-alloc.c b/src/ggml-alloc.c
+index 3bda9ab..f989c29 100644
+--- a/src/ggml-alloc.c
++++ b/src/ggml-alloc.c
+@@ -38,6 +38,8 @@ bool ggml_op_can_inplace(enum ggml_op op) {
+         case GGML_OP_ROPE:
+         case GGML_OP_ROPE_BACK:
+         case GGML_OP_SILU_BACK:
++        case GGML_OP_GELU_BACK:
++        case GGML_OP_NORM_BACK:
+         case GGML_OP_RMS_NORM:
+         case GGML_OP_RMS_NORM_BACK:
+         case GGML_OP_SOFT_MAX:
+diff --git a/src/ggml-backend-meta.cpp b/src/ggml-backend-meta.cpp
+index df0f405..f445d60 100644
+--- a/src/ggml-backend-meta.cpp
++++ b/src/ggml-backend-meta.cpp
+@@ -834,10 +834,12 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(co
+             case GGML_OP_CONCAT: {
+                 split_state = handle_concat(src_ss);
+             } break;
+-            case GGML_OP_SILU_BACK: {
++            case GGML_OP_SILU_BACK:
++            case GGML_OP_GELU_BACK: {
+                 split_state = handle_generic(src_ss, /*scalar_only =*/ false);
+             } break;
+             case GGML_OP_NORM:
++            case GGML_OP_NORM_BACK:
+             case GGML_OP_RMS_NORM:
+             case GGML_OP_RMS_NORM_BACK:
+             case GGML_OP_GROUP_NORM:
+diff --git a/src/ggml-cpu/ggml-cpu.c b/src/ggml-cpu/ggml-cpu.c
+index cd5c61a..f2284f3 100644
+--- a/src/ggml-cpu/ggml-cpu.c
++++ b/src/ggml-cpu/ggml-cpu.c
+@@ -1804,10 +1804,18 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
+             {
+                 ggml_compute_forward_silu_back(params, tensor);
+             } break;
++        case GGML_OP_GELU_BACK:
++            {
++                ggml_compute_forward_gelu_back(params, tensor);
++            } break;
+         case GGML_OP_NORM:
+             {
+                 ggml_compute_forward_norm(params, tensor);
+             } break;
++        case GGML_OP_NORM_BACK:
++            {
++                ggml_compute_forward_norm_back(params, tensor);
++            } break;
+         case GGML_OP_RMS_NORM:
+             {
+                 ggml_compute_forward_rms_norm(params, tensor);
+@@ -2287,9 +2295,11 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
+             }
+             break;
+         case GGML_OP_SILU_BACK:
++        case GGML_OP_GELU_BACK:
+         case GGML_OP_MUL:
+         case GGML_OP_DIV:
+         case GGML_OP_NORM:
++        case GGML_OP_NORM_BACK:
+         case GGML_OP_RMS_NORM:
+         case GGML_OP_RMS_NORM_BACK:
+         case GGML_OP_L2_NORM:
+diff --git a/src/ggml-cpu/ops.cpp b/src/ggml-cpu/ops.cpp
+index 7485ba4..0a36422 100644
+--- a/src/ggml-cpu/ops.cpp
++++ b/src/ggml-cpu/ops.cpp
+@@ -2842,6 +2842,70 @@ void ggml_compute_forward_silu_back(
+     }
+ }
+ 
++// ggml_compute_forward_gelu_back
++// toy: backward of the tanh-approx gelu (GPT-2 training). f32-only reference.
++
++static void ggml_compute_forward_gelu_back_f32(
++        const ggml_compute_params * params,
++        ggml_tensor * dst) {
++
++    const ggml_tensor * grad = dst->src[0]; // dy
++    const ggml_tensor * src1 = dst->src[1]; // x
++
++    assert(ggml_is_contiguous_1(grad));
++    assert(ggml_is_contiguous_1(src1));
++    assert(ggml_is_contiguous_1(dst));
++    assert(ggml_are_same_shape(src1, dst));
++    assert(ggml_are_same_shape(src1, grad));
++
++    const int ith = params->ith;
++    const int nth = params->nth;
++
++    const int nc = src1->ne[0];
++    const int nr = ggml_nrows(src1);
++
++    // rows per thread
++    const int dr = (nr + nth - 1)/nth;
++
++    // row range for this thread
++    const int ir0 = dr*ith;
++    const int ir1 = MIN(ir0 + dr, nr);
++
++    for (int i1 = ir0; i1 < ir1; i1++) {
++        ggml_vec_gelu_backward_f32(nc,
++                (float *) ((char *) dst->data  + i1*( dst->nb[1])),
++                (float *) ((char *) src1->data + i1*(src1->nb[1])),
++                (float *) ((char *) grad->data + i1*(grad->nb[1])));
++
++#ifndef NDEBUG
++        for (int k = 0; k < nc; k++) {
++            const float x = ((float *) ((char *) dst->data + i1*( dst->nb[1])))[k];
++            GGML_UNUSED(x);
++            assert(!isnan(x));
++            assert(!isinf(x));
++        }
++#endif // NDEBUG
++    }
++}
++
++void ggml_compute_forward_gelu_back(
++        const ggml_compute_params * params,
++        ggml_tensor * dst) {
++
++    const ggml_tensor * src1 = dst->src[1];
++
++    switch (src1->type) {
++        case GGML_TYPE_F32:
++            {
++                ggml_compute_forward_gelu_back_f32(params, dst);
++            } break;
++        default:
++            {
++                GGML_ABORT("fatal error");
++            }
++    }
++}
++
+ // ggml_compute_forward_reglu
+ 
+ static void ggml_compute_forward_reglu_f32(
+@@ -4003,6 +4067,100 @@ void ggml_compute_forward_rms_norm_back(
+     }
+ }
+ 
++// ggml_compute_forward_norm_back
++// toy: backward of the pure normalize ggml_norm (no affine), GPT-2 training.
++//   y    = (x - mean)/sqrt(var + eps),  xhat = (x - mean)*rstd
++//   dx_i = rstd * ( dy_i - mean(dy) - xhat_i * mean(dy .* xhat) )
++// mean/var convention matches ggml_compute_forward_norm_f32 (mean over ne0,
++// population variance). src[0] = x, src[1] = dy.
++
++static void ggml_compute_forward_norm_back_f32(
++        const ggml_compute_params * params,
++        ggml_tensor * dst) {
++
++    const ggml_tensor * src0 = dst->src[0]; // x  from the forward pass
++    const ggml_tensor * src1 = dst->src[1]; // dy (gradient of the normalize output)
++
++    GGML_ASSERT(ggml_are_same_shape(src0, dst) && ggml_are_same_shape(src0, src1));
++
++    GGML_ASSERT(src0->nb[0] == sizeof(float));
++    GGML_ASSERT(src1->nb[0] == sizeof(float));
++
++    const int ith = params->ith;
++    const int nth = params->nth;
++
++    GGML_TENSOR_BINARY_OP_LOCALS
++
++    float eps;
++    memcpy(&eps, dst->op_params, sizeof(float));
++    GGML_ASSERT(eps >= 0.0f);
++
++    for (int64_t i03 = 0; i03 < ne03; i03++) {
++        for (int64_t i02 = 0; i02 < ne02; i02++) {
++            for (int64_t i01 = ith; i01 < ne01; i01 += nth) {
++                // src1 (dy) is same shape as src0 (x) => same indices
++                const int64_t i11 = i01;
++                const int64_t i12 = i02;
++                const int64_t i13 = i03;
++
++                const float * x  = (float *) ((char *) src0->data + i01*nb01 + i02*nb02 + i03*nb03);
++                const float * dy = (float *) ((char *) src1->data + i11*nb11 + i12*nb12 + i13*nb13);
++                float       * dx = (float *) ((char *) dst->data  + i01*nb1  + i02*nb2  + i03*nb3);
++
++                // mean(x)
++                ggml_float sum_x = 0.0;
++                for (int64_t i00 = 0; i00 < ne00; i00++) {
++                    sum_x += (ggml_float)x[i00];
++                }
++                const float mean = (float)(sum_x/ne00);
++
++                // var(x) (population), then rstd
++                ggml_float sum_v = 0.0;
++                for (int64_t i00 = 0; i00 < ne00; i00++) {
++                    const float xc = x[i00] - mean;
++                    sum_v += (ggml_float)(xc*xc);
++                }
++                const float var  = (float)(sum_v/ne00);
++                const float rstd = 1.0f/sqrtf(var + eps);
++
++                // mean(dy) and mean(dy .* xhat)
++                ggml_float sum_dy   = 0.0;
++                ggml_float sum_dyxh = 0.0;
++                for (int64_t i00 = 0; i00 < ne00; i00++) {
++                    const float xhat = (x[i00] - mean)*rstd;
++                    sum_dy   += (ggml_float)dy[i00];
++                    sum_dyxh += (ggml_float)(dy[i00]*xhat);
++                }
++                const float mean_dy   = (float)(sum_dy/ne00);
++                const float mean_dyxh = (float)(sum_dyxh/ne00);
++
++                for (int64_t i00 = 0; i00 < ne00; i00++) {
++                    const float xhat = (x[i00] - mean)*rstd;
++                    dx[i00] = rstd*(dy[i00] - mean_dy - xhat*mean_dyxh);
++                }
++            }
++        }
++    }
++}
++
++void ggml_compute_forward_norm_back(
++        const ggml_compute_params * params,
++        ggml_tensor * dst) {
++
++    const ggml_tensor * src0 = dst->src[0];
++
++    switch (src0->type) {
++        case GGML_TYPE_F32:
++            {
++                ggml_compute_forward_norm_back_f32(params, dst);
++            } break;
++        default:
++            {
++                GGML_ABORT("fatal error");
++            }
++    }
++}
++
+ // ggml_compute_forward_group_norm
+ 
+ static void ggml_compute_forward_group_norm_f32(
+diff --git a/src/ggml-cpu/ops.h b/src/ggml-cpu/ops.h
+index 7398e56..552280c 100644
+--- a/src/ggml-cpu/ops.h
++++ b/src/ggml-cpu/ops.h
+@@ -42,7 +42,9 @@ void ggml_compute_forward_repeat(const struct ggml_compute_params * params, stru
+ void ggml_compute_forward_repeat_back(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+ void ggml_compute_forward_concat(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+ void ggml_compute_forward_silu_back(const struct ggml_compute_params * params, struct ggml_tensor * dst);
++void ggml_compute_forward_gelu_back(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+ void ggml_compute_forward_norm(const struct ggml_compute_params * params, struct ggml_tensor * dst);
++void ggml_compute_forward_norm_back(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+ void ggml_compute_forward_rms_norm(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+ void ggml_compute_forward_rms_norm_mul_fused(const struct ggml_compute_params * params, struct ggml_tensor * dst_rms_norm, struct ggml_tensor * dst_mul);
+ void ggml_compute_forward_rms_norm_back(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+diff --git a/src/ggml-cpu/vec.h b/src/ggml-cpu/vec.h
+index bcd68da..772dfe3 100644
+--- a/src/ggml-cpu/vec.h
++++ b/src/ggml-cpu/vec.h
+@@ -1416,6 +1416,24 @@ inline static void ggml_vec_silu_backward_f16(const int n, ggml_fp16_t * dx, con
+     }
+ }
+ 
++// derivative of the tanh-approximation gelu used by ggml_gelu_f32:
++//   gelu(x) = 0.5 x (1 + tanh(g)),  g  = SQRT_2_OVER_PI (x + GELU_COEF_A x^3)
++//   gelu'(x) = 0.5 (1 + t) + 0.5 x (1 - t^2) g',  g' = SQRT_2_OVER_PI (1 + 3 GELU_COEF_A x^2)
++inline static float ggml_gelu_backward_f32(float x, float dy) {
++    const float x2 = x*x;
++    const float g  = SQRT_2_OVER_PI*x*(1.0f + GELU_COEF_A*x2);
++    const float t  = tanhf(g);
++    const float dg = SQRT_2_OVER_PI*(1.0f + 3.0f*GELU_COEF_A*x2);
++    const float dgelu = 0.5f*(1.0f + t) + 0.5f*x*(1.0f - t*t)*dg;
++    return dy*dgelu;
++}
++
++inline static void ggml_vec_gelu_backward_f32(const int n, float * dx, const float * x, const float * dy) {
++    for (int i = 0; i < n; ++i) {
++        dx[i] = ggml_gelu_backward_f32(x[i], dy[i]);
++    }
++}
++
+ inline static void ggml_vec_reglu_f32 (const int n, float * y, const float * x, const float * g) {
+     for (int i = 0; i < n; ++i) {
+         y[i] = (x[i] > 0.f) ? x[i] * g[i] : 0.f;
+diff --git a/src/ggml.c b/src/ggml.c
+index df5de39..24714eb 100644
+--- a/src/ggml.c
++++ b/src/ggml.c
+@@ -1078,9 +1078,12 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
+     "OPT_STEP_SGD",
+ 
+     "GLU",
++
++    "GELU_BACK",
++    "NORM_BACK",
+ };
+ 
+-static_assert(GGML_OP_COUNT == 96, "GGML_OP_COUNT != 96");
++static_assert(GGML_OP_COUNT == 98, "GGML_OP_COUNT != 98");
+ 
+ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
+     "none",
+@@ -1188,9 +1191,12 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
+     "sgd(x)",
+ 
+     "glu(x)",
++
++    "gelu_back(x)",
++    "norm_back(x)",
+ };
+ 
+-static_assert(GGML_OP_COUNT == 96, "GGML_OP_COUNT != 96");
++static_assert(GGML_OP_COUNT == 98, "GGML_OP_COUNT != 98");
+ 
+ static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
+ 
+@@ -2832,6 +2838,21 @@ struct ggml_tensor * ggml_silu_back(
+     return result;
+ }
+ 
++// ggml_gelu_back
++
++struct ggml_tensor * ggml_gelu_back(
++        struct ggml_context * ctx,
++        struct ggml_tensor  * a,
++        struct ggml_tensor  * b) {
++    struct ggml_tensor * result = ggml_dup_tensor(ctx, a);
++
++    result->op     = GGML_OP_GELU_BACK;
++    result->src[0] = a; // dy
++    result->src[1] = b; // x
++
++    return result;
++}
++
+ // ggml hardswish
+ 
+ struct ggml_tensor * ggml_hardswish(
+@@ -3161,6 +3182,24 @@ struct ggml_tensor * ggml_rms_norm_back(
+     return result;
+ }
+ 
++// ggml_norm_back
++
++struct ggml_tensor * ggml_norm_back(
++        struct ggml_context * ctx,
++        struct ggml_tensor  * a,
++        struct ggml_tensor  * b,
++        float                 eps) {
++    struct ggml_tensor * result = ggml_dup_tensor(ctx, a);
++
++    ggml_set_op_params(result, &eps, sizeof(eps));
++
++    result->op     = GGML_OP_NORM_BACK;
++    result->src[0] = a; // x
++    result->src[1] = b; // dy
++
++    return result;
++}
++
+ // ggml_group_norm
+ 
+ static struct ggml_tensor * ggml_group_norm_impl(
+@@ -6543,6 +6582,14 @@ static void ggml_compute_backward(
+                 ggml_add_or_set(ctx, cgraph, isrc0, ggml_rms_norm_back(ctx, grad, src0, eps));
+             }
+         } break;
++        case GGML_OP_NORM: {
++            // toy: pure-normalize backward (no affine) for GPT-2 training
++            if (src0_needs_grads) {
++                float eps;
++                memcpy(&eps, tensor->op_params, sizeof(float));
++                ggml_add_or_set(ctx, cgraph, isrc0, ggml_norm_back(ctx, src0, grad, eps));
++            }
++        } break;
+         case GGML_OP_MUL_MAT: {
+             // https://cs231n.github.io/optimization-2/#staged
+             // # forward pass
+@@ -6822,6 +6869,12 @@ static void ggml_compute_backward(
+                         ggml_add_or_set(ctx, cgraph, isrc0, ggml_silu_back(ctx, grad, src0));
+                     }
+                 } break;
++                case GGML_UNARY_OP_GELU: {
++                    // toy: tanh-approx gelu backward (GPT-2 training)
++                    if (src0_needs_grads) {
++                        ggml_add_or_set(ctx, cgraph, isrc0, ggml_gelu_back(ctx, grad, src0));
++                    }
++                } break;
+                 case GGML_UNARY_OP_EXP: {
+                     if (src0_needs_grads) {
+                         ggml_add_or_set(ctx, cgraph, isrc0, ggml_mul(ctx, tensor, grad));

@@ -99,10 +99,41 @@ training uses), not only `compute_with_ctx`.
 
 ## Status
 
-Foundation fully scoped + implementation-ready (this doc): every patch point at
-file:line, the GELU derivative confirmed against ggml's forward, the dedicated-kernel
-decision, and the probe-based validation loop. Implementation = mechanical ggml C
-(2 new ops, copying the silu_back / rms_norm_back templates) + finite-difference
-validation + a ggml rebuild — the next focused pass. NOT started in-tree: invasive
-ggml-core edits + unvalidated numerics should not be rushed; the kernels must pass
-finite-difference on the real compute path before any GPT-2 training is trusted.
+**IMPLEMENTED + VALIDATED (2026-06-04).** Both kernels are vendored and pass a
+finite-difference gradient check on the real backend-sched compute path.
+
+Patch points landed (vendor/ggml):
+- **GGML_OP_GELU_BACK** and **GGML_OP_NORM_BACK** appended to the `ggml_op` enum
+  (`include/ggml.h`) → `GGML_OP_COUNT` 96 → 98; both name + symbol tables and both
+  `static_assert`s updated.
+- `ggml.h` decls `ggml_gelu_back(ctx, a=dy, b=x)` / `ggml_norm_back(ctx, a=x, b=dy, eps)`.
+- `ggml.c` constructors + autograd dispatch: `case GGML_UNARY_OP_GELU` →
+  `ggml_gelu_back(ctx, grad, src0)`; `case GGML_OP_NORM` →
+  `ggml_norm_back(ctx, src0, grad, eps)`.
+- CPU kernels in `ggml-cpu/ops.cpp` (`..._gelu_back_f32`, `..._norm_back_f32`),
+  declared in `ops.h`, dispatched in both `ggml-cpu.c` switches (compute + n_tasks).
+  GELU derivative helper `ggml_vec_gelu_backward_f32` in `ggml-cpu/vec.h`.
+- `ggml-alloc.c` (can-inplace) + `ggml-backend-meta.cpp` (split-state: GELU_BACK
+  generic, NORM_BACK per-row) updated. Other backends' `supports_op` default to
+  false for the two new ops, so they correctly fall back to CPU.
+
+Validation: `tinynn/gpt2_backward_probe.c` builds `loss = sum(op(x) .* r)` with a
+non-trivial upstream grad, runs `ggml_build_backward_expand` + the CPU
+`ggml_backend_sched` compute path (the #1491-sensitive path, NOT
+`compute_with_ctx`), and compares the autograd `grad_x` to a **pure-C** central
+finite difference of the *exact* functions (numpy-allclose, atol 1e-3 / rtol 2e-2).
+Both PASS at the f32 fd rounding floor (gelu max_abs 5.2e-5, norm 2.4e-4).
+NB: ggml's gelu *forward* uses an f16 lookup table (`GGML_GELU_FP16`), so the
+reference must difference the exact tanh gelu — not the graph forward — or the
+f16 buckets dominate. The kernel is the analytic derivative of the exact tanh gelu.
+
+No explicit tinynn binding is needed for training: `build_backward_expand` emits
+the kernels automatically for any graph containing `gelu`/`norm`. (Thin
+`tnn_gelu_back`/`tnn_layer_norm_back` wrappers would only be for manual calls.)
+
+## Then (part b, the arch) — NEXT
+
+A GPT-2 training arch on the engine (learned positional embeddings, GELU FFN,
+LayerNorm = norm + mul γ + add β, tied output embedding) + a
+`prep/gpt2_train_gate.rb` byte-exact gate (record-from-inline-first). CPU gated
+reference; CUDA/Metal mirror after. The two backward kernels above unblock this.

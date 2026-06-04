@@ -755,7 +755,8 @@ GGML_PATCHES := \
 	vendor-patches/0003-cuda-buffer_from_ptr-copy-mode.patch \
 	vendor-patches/0004-cuda-cpy-strided.patch \
 	vendor-patches/0005-concat-backward.patch \
-	vendor-patches/0006-getrows-back-large-vocab.patch
+	vendor-patches/0006-getrows-back-large-vocab.patch \
+	vendor-patches/0007-gpt2-backward-kernels.patch
 
 # Sentinel file marking that all $(GGML_PATCHES) have been applied to
 # the vendored tree. Build targets depend on it through CMakeLists.txt
