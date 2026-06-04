@@ -59,6 +59,12 @@ signals are misleading here:
 
 ## Proposals to spinel-dev (tooling)
 
+**Filed: [OriPekelman/spinel-dev#9](https://github.com/OriPekelman/spinel-dev/issues/9)**
+(2026-06-04) — the 5 below as an actionable checklist. **Resume condition for
+`toy train --arch gpt2`: once #9's provenance/`--explain` (or an authoritative
+pin) lands, re-localize the root and pin it.**
+
+
 1. **Degradation provenance / `--explain <symbol>`.** When a receiver or slot
    degrades to `int`/poly, report the *first cause*: the merge site, the
    operation, and the triggering value/array. "Why is `engine` int here?" is the
