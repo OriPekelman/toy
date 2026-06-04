@@ -82,7 +82,9 @@ is deferred.
 on `main`. Each follows the same shape: a CRuby CLI command
 (`lib/toy/core/cli/<cmd>.rb`) shells a Spinel-compiled runner
 (`lib/toy/run/<cmd>.rb` → `libexec/toy-<cmd>`) with a controlled env.
-All four runners are **CPU-only**. The serve endpoint logic lives in
+The CPU runners are the gated reference; `infer`/`eval`/`train` also
+have `--device cuda` twins (Metal source-wired, Mac-gating). The serve
+endpoint logic lives in
 `lib/toy/serve/openai/{server,handlers,api_json,embeddings_handler}.rb`
 (folded out of the retired `tep_demo` server), gated by
 `prep/serve_gate.rb`.
@@ -99,45 +101,54 @@ Keep re-vendoring in mind whenever upstream tep's net layer moves.
 
 ---
 
+## Shipped post-v0.7 (was deferred)
+
+These landed on `main` after the phase table above was written (the
+post-v0.7 deferred-queue session, `main@507e160` and follow-ups):
+
+- **GPU runners (`--device`).** `--device cuda` is wired for `infer` +
+  `eval` (`acf0d0b`) and `train from-scratch` (`88b8ded`), plus
+  `lora` / `warm-start` CUDA twins (`429c38d`) — all gated CUDA-vs-CPU.
+  Metal twins are source-wired on the `metal-source-wiring` branch
+  (runtime-gating on the Mac; not yet merged).
+- **`train` recipe variants.** `lora` and `warm-start` dispatch by name
+  on `toy train` (`33a5efb`). Only `curriculum` stays deferred (no L4 file).
+- **`eval lmc`** — two-checkpoint linear-mode-connectivity shipped
+  (`dfaeb64`, `libexec/toy-eval-lmc`, `make gate-lmc`).
+- **train→infer round-trip.** From-scratch checkpoints are now loadable
+  by `toy infer` (fuse-on-save), gated by `prep/ckpt_roundtrip_gate.rb`
+  (`fbd0f35`).
+
 ## Live deferred list
 
 Features that are scoped and understood but not built. These don't
 block phases — they land inside the layered structure when picked up.
 
-- **GPU runners (`--device`).** The four `libexec/toy-*` runners are
-  CPU-only. The CUDA/Metal inference paths use hand-written
-  `ToyLMCuda` / `ToyLMMetal` classes with a different constructor arity
-  than the seq-forward runner, so they can't be mechanically mirrored
-  yet. A `--device cuda|metal` flag is the future surface. Until then
-  the `*_metal` / `*_cuda` examples are kept as the GPU path.
-- **`train` recipe variants.** Only `from-scratch` is exposed on the
-  CLI. `lora`, `warm-start`, and `curriculum` recipes exist (or are
-  deferred, for curriculum) but aren't wired to `toy train` yet.
-- **`eval lmc`** — the two-checkpoint linear-mode-connectivity eval
-  (slice 2). Slice 1 (CE / per-token logprobs) shipped.
-- **train→infer checkpoint round-trip.** `toy train` writes
-  `runs/<id>/weights/step_N.gguf`, but the checkpoint uses
-  training-graph tensor naming and is **not loadable by `toy infer`**
-  yet (the same per-head-vs-fused naming theme as the GGUF round-trip
-  gate). The fix is a fuse-on-save / loadable-name pass; until then the
-  train gate asserts checkpoint *existence* only. This matters for
-  "train then run your model" and is a prerequisite for a clean,
-  stable Toy.
 - **ViT / vision in the CLI** — the ViT examples and image-loader
   smokes have no CLI command yet.
 - **GPT-2 arch in `toy train`** — only the Llama arch is exposed.
+  *In progress on the `gpt2-train` branch:* the two ggml backward kernels
+  (`ggml_gelu_back`, `ggml_norm_back` — vendor-patches/0007) are landed and
+  finite-diff validated (2/3 of our ggml#1514); the training arch + gate
+  (`prep/gpt2_train_gate.rb`) is the next step.
 - **Realize residuals** — llama3 `rope_freq_factors` wiring (un-gateable;
   the toy forward is rope-angle-insensitive at the logit level), and
   GQA-divergent on mmap/q8 (no divergent-head GGUF to gate against). The
   `full_finetune` 6th gate is built (`prep/full_finetune_gate.rb`).
-- **MoE.** `ggml_mul_mat_id` produces garbage on K-quant expert weights
-  (Q4_K / Q5_K / Q6_K) — see [`reference/coverage.md`](coverage.md)
-  and ggml-org/ggml#1506. Workaround: **Q8_0 experts** (non-expert
-  tensors can stay K-quant). `realize_for_mmap` warns loud when it sees
-  K-quant experts.
+- **MoE.** OLMoE Q4_K_M decode is incoherent. **2026-06-04 reframe: this
+  is a toy-side loader/graph bug, NOT a ggml op bug** — an op-level
+  `ggml_mul_mat_id` reproducer at OLMoE topology (`tinynn/ggml1506_*`) is
+  clean (within quant noise) while end-to-end still corrupts; there are no
+  CPU `mul_mat_id` changes between our ggml pin and master. Root-cause moves
+  to `realize_for_mmap`'s K-quant expert tensor layout. Workaround: **Q8_0
+  experts**. `realize_for_mmap` warns loud (the warning's "ggml's kernel is
+  wrong" wording is now misattributed — reword). See `docs/notes/mul_mat_id_quants.md`,
+  ggml-org/ggml#1506.
 - **Tep, then Tao, re-adaptation** — deferred until Toy is fully
-  stabilized. Tep is a build-dep only today; the "Tep consumes toy's
-  serve surface" and "Tao consumes the events stream" arcs come after.
+  stabilized. The serve convergence onto tep's `Backend` (#30 / PR #33)
+  is **blocked** by a Spinel monomorphization miscompile in the live
+  serve binary (blank-key JSON via polymorphic `Tep::Handler` dispatch);
+  `main` keeps its hand-rolled handlers. Tep is a build-dep only today.
 
 ---
 
