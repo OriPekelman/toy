@@ -110,10 +110,32 @@ Q4_K_M decode** — if coherent → fixed upstream, re-vendor + close; if it sur
 only at the old pin → close (already fixed); if it survives on master → file a
 minimal C reproducer (`ggml_mul_mat_id` direct, no FFI). Still OPEN.
 
-When upstream lands a fix (or the master re-test is coherent):
-- Remove the runtime warning from realize_for_mmap.
-- Document that all K-quant expert types now work via a smoke that
-  loads OLMoE Q4_K_M and confirms coherent output.
+2026-06-04 (op-level re-test — **bug is almost certainly OURS, not ggml's**):
+There are **zero CPU-backend `mul_mat_id` changes** between our pin `41e7949`
+and master `1e33fed` (85 commits; the `mul_mat_id` commits are all other
+backends). So the CPU op is identical at both pins. A standalone op-level
+reproducer (`/tmp/ggml1506_repro.c`, no FFI/no model: synthesize → quantize →
+`ggml_mul_mat_id` on the CPU sched path at `n_mats=64,n_used=8,k=2048`, scattered
+per-token ids, vs an F32 reference) shows **all quant types within normal quant
+noise**, monotonic in bit-width: Q8_0 3e-5, Q6_K 2e-4, Q4_K 3e-3. No anomaly, no
+gross corruption. **Yet the end-to-end OLMoE Q4_K_M decode STILL corrupts** at the
+same pin (`… 261 | 20065×5 42859×5`). Clean op + corrupt end-to-end ⇒ the defect is
+in **our loader / graph wiring** (realize/mmap of K-quant expert stacks, or a
+Q4_K+Q6_K per-tensor mix our loader mishandles), NOT `ggml_mul_mat_id`. Posted to
+#1506 (likely closeable on the ggml side). **NEXT: root-cause on the toy side** —
+inspect how `realize_for_mmap` lays out the MoE expert tensors vs what the op
+expects (block alignment / per-expert stride / mixed-type stack), and build a
+toy-side op-test that feeds our mmap'd tensors directly.
+
+**The runtime warning is now MISATTRIBUTED.** `realize_for_mmap` says "ggml's
+mul_mat_id kernel produces wrong output for K-quants" — the op-level reproducer
+shows that's false. Reword it to "toy's K-quant MoE expert path produces wrong
+output (cause under investigation; use Q8_0)" until the toy-side root cause lands;
+do NOT remove it (the symptom is still live).
+
+When the toy-side root cause is fixed:
+- Update/remove the runtime warning in realize_for_mmap.
+- Add a smoke that loads OLMoE Q4_K_M and confirms coherent output.
 
 ## Coverage-doc cross-reference
 
