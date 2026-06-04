@@ -316,6 +316,12 @@ gpt2-train-min: libexec/gpt2-train-min
 gate-gpt2-min: libexec/gpt2-train-min
 	./libexec/gpt2-train-min
 .PHONY: gate-gpt2-min
+# Byte-exact GPT-2 train gate: assert the CE loss curve is byte-identical to
+# prep/fixtures/gpt2_train_baseline.txt (record-from-inline reference for the
+# eventual `toy train --arch gpt2`). Re-record with `ruby prep/gpt2_train_gate.rb --record`.
+gate-gpt2: libexec/gpt2-train-min
+	ruby prep/gpt2_train_gate.rb
+.PHONY: gate-gpt2
 
 # Deterministic train→infer ROUND-TRIP gate: train from-scratch --steps 5
 # --seed 0, then infer a fixed numeric prompt greedily from the written
