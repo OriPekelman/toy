@@ -131,9 +131,39 @@ No explicit tinynn binding is needed for training: `build_backward_expand` emits
 the kernels automatically for any graph containing `gelu`/`norm`. (Thin
 `tnn_gelu_back`/`tnn_layer_norm_back` wrappers would only be for manual calls.)
 
-## Then (part b, the arch) — NEXT
+## Part b (the arch) — IN PROGRESS
 
-A GPT-2 training arch on the engine (learned positional embeddings, GELU FFN,
-LayerNorm = norm + mul γ + add β, tied output embedding) + a
-`prep/gpt2_train_gate.rb` byte-exact gate (record-from-inline-first). CPU gated
-reference; CUDA/Metal mirror after. The two backward kernels above unblock this.
+**Step 1 DONE (2026-06-04): minimal inline GPT-2 trainer — kernels train end-to-end.**
+`prep/gpt2_train_min.rb` (`make gate-gpt2-min`) is a self-contained
+forward+CE+backward+AdamW loop over the GPT-2-distinctive structure (wte+wpe
+learned embeddings, composite `tnn_layer_norm` = norm+mul γ+add β, GELU FFN, tied
+output) — attention OMITTED in this first proof. CE drops 3.47 → 0.007 on a
+memorizable synthetic sequence. This is the "record-from-inline-first" reference
+and the proof that `gelu_back` (GELU FFN) + `norm_back` (LayerNorm) train through
+the real ggml/FFI stack, not just the finite-diff probe.
+
+**Key integration finding:** the engine's `build_training_step` is
+**forward-agnostic** — it consumes `@t_seq_logits` + the registered
+`@ft_globals_{weights,m,v}` triples and emits CE + backward + `opt_step_adamw`
+over them. So a GPT-2 forward only needs to (1) register its weights as globals
+and (2) set the logits; the backward (incl. `gelu_back`/`norm_back`) is automatic
+via `tnn_build_backward`. The inline trainer replicates this directly.
+
+**Realize ordering (load-bearing):** alloc all ctx_w weights → `tnn_set_param`
+each → `tnn_finalize_weights` (allocates the weight buffer) → upload weight inits
++ `tnn_zero_tensor` the Adam m/v → build forward+CE+backward+`opt_step_adamw` →
+`tnn_realize_backward` → train loop. Uploading a persistent weight BEFORE
+`tnn_finalize_weights` aborts with "tensor buffer not set".
+
+**Remaining increments:**
+1. **Add causal MHA** to the inline trainer (qkv matmul + bias, reshape to heads,
+   scaled scores, `tnn_diag_mask_inf` + `tnn_soft_max_ext`, weighted V, out-proj
+   + bias, residual; pre-LN block: ln1→attn→res→ln2→FFN→res). All primitives
+   exist (`tnn_matmul/scale/permute/cont_2d/reshape_*/diag_mask_inf/soft_max_ext`).
+2. **`prep/gpt2_train_gate.rb`** — byte-exact loss-curve fixture (record-from-inline,
+   like `full_finetune_gate.rb`); ggml-internal CE is byte-exact on gx10.
+3. **Engine integration** — a `GPT2Arch` (L3) + `realize_for_random_init_gpt2` that
+   registers GPT-2 weights as `ft_globals` and dispatches `build_forward_in_current_ctx`
+   to the GPT-2 forward, reusing `build_training_step` unchanged. Then a
+   `toy train from-scratch --arch gpt2` surface.
+4. **CUDA/Metal mirrors** after the CPU reference is gated.

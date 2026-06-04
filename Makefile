@@ -301,6 +301,22 @@ gate-cuda:
 	TOY_GATE_CUDA=1 ruby prep/infer_gate.rb
 	TOY_GATE_CUDA=1 ruby prep/eval_gate.rb
 
+# GPT-2 minimal inline training proof (toy#12 part-b foundation). Builds a
+# self-contained forward+CE+backward+AdamW loop over the GPT-2-distinctive
+# structure (wte+wpe learned embeddings, composite LayerNorm, GELU FFN, tied
+# output) — exercising the two vendored backward kernels (ggml_gelu_back,
+# ggml_norm_back; vendor-patches/0007) end-to-end. Attention is the next
+# increment; this proves the kernels train. Asserts CE decreases (exit 1 if
+# not). CPU-only. "record-from-inline-first" reference for prep/gpt2_train_gate.
+libexec/gpt2-train-min: prep/gpt2_train_min.rb lib/toy.rb lib/tinynn.rb \
+		lib/toy/models/transformer.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) $< -o $@
+gpt2-train-min: libexec/gpt2-train-min
+.PHONY: gpt2-train-min
+gate-gpt2-min: libexec/gpt2-train-min
+	./libexec/gpt2-train-min
+.PHONY: gate-gpt2-min
+
 # Deterministic train→infer ROUND-TRIP gate: train from-scratch --steps 5
 # --seed 0, then infer a fixed numeric prompt greedily from the written
 # checkpoint and assert the generated ids byte-equal the recorded fixture.
