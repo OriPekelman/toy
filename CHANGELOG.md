@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **The `toy` gem name is ours.** With huge thanks to **Ninoslav Milenović**,
+  who graciously transferred ownership of the [`toy`](https://rubygems.org/gems/toy)
+  gem on RubyGems. See the README acknowledgments. (Not released yet — name
+  secured for the eventual release.)
+- **GPT-2 training foundation.** Two vendored ggml backward kernels
+  (`ggml_gelu_back`, `ggml_norm_back`; `vendor-patches/0007`) — finite-diff
+  validated, 2 of the 3 gaps in our upstream ggml#1514. A minimal inline GPT-2
+  trainer (`make gate-gpt2-min`) proves both kernels train end-to-end
+  (CE 3.47 → 0.007). Attention + the full arch are the next increments.
+
 ## v0.7.0-pre-alpha — 2026-06-02
 
 ### P2-finish + directory tidy (2026-06-03, branches `p2-retire-monolith` / `p2-dir-tidy`)

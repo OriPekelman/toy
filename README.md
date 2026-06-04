@@ -256,3 +256,11 @@ See [`docs/reference/backends.md`](docs/reference/backends.md).
 - `make bench-vs-pytorch` / `make bench-heavy` — ratio-not-ms comparison
   against a reference PyTorch run (see
   [`docs/reference/backends.md`](docs/reference/backends.md)).
+
+## Acknowledgments
+
+A heartfelt thank-you to **Ninoslav Milenović** for graciously handing over
+the [`toy`](https://rubygems.org/gems/toy) gem name on RubyGems. A good name
+is a gift, and giving one up for someone else's project is the kind of quiet
+generosity the Ruby community runs on. We don't take it lightly — thank you,
+Ninoslav. 🙏
