@@ -103,6 +103,11 @@ def run_bench(binary, env)
   prefix = env.map { |k, v| "#{k}=#{v}" }.join(" ")
   cmd = "cd #{ROOT} && #{prefix} #{binary} 2>&1"
   out = `#{cmd}`
+  # A model-gated bench prints "SKIP: …" + exits 0 when its (gitignored) model
+  # is absent — treat that as a skip, not a metric or a failure.
+  if out =~ /^SKIP:/
+    return :skip, out[/^SKIP:.*/]
+  end
   unless $?.success?
     return nil, "run failed (exit #{$?.exitstatus})\n#{out}"
   end
@@ -134,6 +139,9 @@ BENCHES.each do |b|
     puts "FAIL: cannot build #{b[:source]}"; exit 2
   end
   observed, err = run_bench(b[:binary], b[:env])
+  if observed == :skip
+    puts "skip: #{b[:source]} (#{err})"; next
+  end
   if err
     puts "FAIL: #{b[:source]}\n#{err}"; exit 2
   end

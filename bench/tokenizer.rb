@@ -25,9 +25,10 @@ CORPUS = "Once upon a time there was a quick brown fox who jumped over " +
 
 tok = Tokenizer.from_gguf(GGUF)
 if !tok.present
-  puts "BENCH tokenizer_encode_us_per_tok 0"
-  puts "BENCH tokenizer_encode_toks_per_sec 0"
-  exit 1
+  # Model-gated bench: the GGUF (gitignored) is absent or tokenizer-less. SKIP
+  # (not fail) so `make bench` is portable to a fresh clone / a box without it.
+  puts "SKIP: tokenizer bench needs an embedded-tokenizer GGUF (" + GGUF + " absent or tokenizer-less)"
+  exit 0
 end
 
 # Warm-up + roundtrip correctness check.
