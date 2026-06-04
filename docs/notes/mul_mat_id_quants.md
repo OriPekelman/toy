@@ -95,13 +95,22 @@ is intact; on current `main` toy#34 strips spaces, so compare IDs.)
 Reported to ggml-org/ggml:
 <https://github.com/ggml-org/ggml/issues/1506> (filed 2026-05-24).
 
-2026-06-03: a maintainer could not reproduce on M1 Metal + current master.
-Re-confirmed still present on **aarch64 CPU @ ggml 41e7949** (the ID-level repro
-above); replied with the backend/arch specificity (their M1 Metal ≠ our aarch64
-CPU) + version note (post-pin `mul_mat_id` commits are webgpu/zendnn/vulkan/CANN
-only — no generic CPU fix). Still OPEN.
+2026-06-03: a maintainer couldn't reproduce on M1 Metal + current master. We
+re-confirmed it at the ID level on **aarch64 CPU @ ggml `41e7949`** and noted
+the backend/arch difference.
 
-When upstream lands a fix:
+2026-06-04: the maintainer (@devYRPauli) followed up with thorough op-level
+isolation — `test_mul_mat_id` at OLMoE's REAL topology (`n_mats=64, n_used=8`,
+Q2_K–Q6_K + IQ) on **CPU *and* Metal**, all pass on master; opened #1518 adding
+the OLMoE-sized shapes. This supersedes our "no CPU fix landed" note (their CPU
+test passes). Likely either (a) a fix landed between `41e7949` and master, or
+(b) the corruption is in our FFI/graph layer, not the op. **NEXT (fresh session):
+rebuild against current ggml master on aarch64 CPU + re-run the end-to-end OLMoE
+Q4_K_M decode** — if coherent → fixed upstream, re-vendor + close; if it survives
+only at the old pin → close (already fixed); if it survives on master → file a
+minimal C reproducer (`ggml_mul_mat_id` direct, no FFI). Still OPEN.
+
+When upstream lands a fix (or the master re-test is coherent):
 - Remove the runtime warning from realize_for_mmap.
 - Document that all K-quant expert types now work via a smoke that
   loads OLMoE Q4_K_M and confirms coherent output.
