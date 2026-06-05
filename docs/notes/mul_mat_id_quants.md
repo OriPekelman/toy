@@ -1,7 +1,23 @@
-# `mul_mat_id` × K-quantized source weights — known broken
+# `mul_mat_id` × K-quantized source weights — OLMoE Q4_K_M corruption
 
-**Status**: bug in upstream ggml. Workaround: use Q8_0 for MoE
-expert weights.
+**Status (2026-06-05): NOT a ggml bug — it's ours, and narrowed but not yet
+found.** Workaround stands: use Q8_0 for MoE expert weights. ggml#1506 is
+closeable on the ggml side (maintainer agrees).
+
+> **FRESH-SESSION RESUME — start here.** What's verified: the op is clean
+> (`tinynn/ggml1506_mul_mat_id_kquant_repro.c`); our loader reads expert
+> `type`+`offset`+`shape` PER TENSOR (`@d_ff=1024` is OLMoE's expert FFN length),
+> so the per-role-stride bug @devYRPauli flagged does NOT apply to us; the MoE
+> graph is identical between Q4_K_M (corrupt) and Q8_0 (coherent), so it's not a
+> pure graph bug. See the **2026-06-05 section at the bottom** for the full
+> verification + the `tinynn/gguf_expert_dump.c` metadata dump. **THE DECISIVE
+> NEXT TEST:** a ~120-line C reproducer that runs `mul_mat_id` over the REAL q6_K
+> `down_exps` bytes (read from the GGUF at `data_offset+tensor_offset`, attached
+> via `ggml_backend_tensor_alloc` like our loader's mmap path) vs an F32 dequant
+> reference (`ggml_get_type_traits(type).to_float`). Corrupt → real op bug w/
+> specific data → minimal C repro for ggml. Clean → experts fine, hunt the
+> weighted-sum / contiguity / mmap-attach path. Models: `data/OLMoE-1b-7b-0924-
+> Instruct-{Q4_K_M,q8_0}.gguf`. Repro shape: n_mats=64, n_used=8, k=1024 (down).
 
 **Affected**: MoE inference via `tnn_mul_mat_id` (used in OLMoE,
 Mixtral, Qwen-MoE, Granite-MoE, and any other arch with routed
