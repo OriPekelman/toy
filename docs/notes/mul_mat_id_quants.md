@@ -143,3 +143,31 @@ When the toy-side root cause is fixed:
 three backends (CPU/CUDA/Metal). That's accurate at the *binding*
 level. The kernel-quality story is the (op, src_type) axis we
 explicitly noted in the strategic reframe — covered by THIS doc.
+
+## 2026-06-05 — maintainer dump + our verification (NOT the per-role stride)
+
+@devYRPauli dumped the OLMoE-1B-7B Q4_K_M expert metadata and pointed at the
+mixed-quant `ffn_down_exps` as the likely role-stride trap. We confirmed the
+mixed quant with our own metadata dumper (`tinynn/gguf_expert_dump.c`, ggml's
+`gguf_init_from_file(no_alloc=true)`):
+
+- `down_exps`: **8x q4_K (nb2=1,179,648) + 8x q6_K (nb2=1,720,320)** — MIXED across
+  the 16 layers. `gate_exps`/`up_exps`: uniform q4_K. router (`ffn_gate_inp`): f32.
+  Every tensor passes `nb[1]==ggml_row_size(type,ne0)` and `nb[2]==nb[1]*ne[1]`.
+
+**But our loader does NOT make the per-role mistake.** `toy_smollm2_ffi_kv.rb`'s
+MoE path reads `type`+`offset` PER TENSOR (`tnn_gguf_tensor_type`/`_file_offset`
+= direct `gguf_get_tensor_type`/`_offset` on `blk.<li>.ffn_down_exps.weight`) and
+hands `(ne0,ne1,ne2,type,offset)` to `ggml_new_tensor_3d` (ggml derives `nb[]`).
+`@d_ff=1024` is OLMoE's expert FFN length (`olmoe.feed_forward_length`), so the
+shape is right too. So type+offset+shape+nb are all correct per tensor — it's
+not the role-stride bug for us, and our op reproducer + the maintainer's
+`test_mul_mat_id` both run the op clean.
+
+**Remaining suspects (narrowed):** (a) the mmap BYO-pointer path (real data via
+`ggml_backend_tensor_alloc(buf, tensor, external_ptr)` — untested by the op
+reproducers, though for a CPU backend `tensor->data=ptr` shouldn't change the op);
+(b) the MoE GRAPH wiring (router->softmax->top_k->3x mul_mat_id->weighted-sum) or
+an OLMoE-topology interaction. NEXT decisive test: run a `mul_mat_id` over the REAL
+q6_K `down_exps` bytes vs an F32 dequant reference — if clean, the experts are
+definitively fine and the bug is graph-side. ggml side OK to close.
