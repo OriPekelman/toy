@@ -50,6 +50,7 @@ require_relative "../../toy"
 require_relative "../io/toy_json"
 require_relative "../models/toy_smollm2"
 require_relative "../llm/engine/llama_seq_engine"
+require_relative "../llm/adamw"
 require_relative "../train/toy_drift_grad"
 
 LMC_A    = ENV["LMC_A"]      || ""
@@ -271,15 +272,12 @@ while ai < alphas_arr.length
   end
   TinyNN.upload_row_major(fcache.sess, t_labels, m_labels)
 
-  # hp = [lr=0, β1, β2, eps, wd, β1h, β2h]. lr=0 → no weight update.
-  m_hp = Mat.new(1, 7)
-  m_hp.flat[0] = 0.0
-  m_hp.flat[1] = 0.9
-  m_hp.flat[2] = 0.95
-  m_hp.flat[3] = 1.0e-8
-  m_hp.flat[4] = 0.0
-  m_hp.flat[5] = 0.9
-  m_hp.flat[6] = 0.95
+  # NAMED AdamW with lr=0 → no weight update (eval is forward + CE only).
+  # Defaults (β1=0.9, β2=0.95, eps=1e-8, wd=0, bias_correct=false → slots 5/6
+  # = constant betas) match the old hand-filled m_hp slot-for-slot.
+  adamw_eval = Toy::AdamW.new
+  adamw_eval.lr = 0.0
+  m_hp = adamw_eval.hp(0)
   TinyNN.upload_row_major(fcache.sess, t_hp, m_hp)
 
   TinyNN.tnn_compute_backward(fcache.sess)

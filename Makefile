@@ -259,7 +259,7 @@ toy-eval: libexec/toy-eval
 # Deps mirror example_lmc (Makefile:479) NOT toy-eval; order-only | libexec (no
 # $(SPINEL_DEPS)) like the CPU toy-eval runner. CPU-only; NOT in MIRRORABLE (see
 # prep/gen_cuda_mirror.rb); a cuda LMC twin is a later slice.
-libexec/toy-eval-lmc: lib/toy/run/eval_lmc.rb lib/toy/io/toy_json.rb lib/toy/io/toy_events.rb lib/toy/io/toy_git.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy.rb lib/toy/models/transformer.rb lib/toy/train/toy_drift_grad.rb lib/tinynn.rb tinynn/libtinynn_ggml.a | libexec
+libexec/toy-eval-lmc: lib/toy/run/eval_lmc.rb lib/toy/llm/adamw.rb lib/toy/io/toy_json.rb lib/toy/io/toy_events.rb lib/toy/io/toy_git.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy.rb lib/toy/models/transformer.rb lib/toy/train/toy_drift_grad.rb lib/tinynn.rb tinynn/libtinynn_ggml.a | libexec
 	$(SPINEL) $< -o $@
 toy-eval-lmc: libexec/toy-eval-lmc
 
