@@ -51,12 +51,7 @@ def all_digits?(s)
   true
 end
 
-arch = Arch.from_gguf(GGUF)
-if arch == nil
-  puts "toy-infer: could not load " + GGUF +
-       " — set GGUF= to a valid file (see `toy list`)."
-  exit 1
-end
+arch = Arch.load_or_fail(GGUF, "toy-infer")
 puts arch.summary
 
 lm = ToyLMCuda.new(arch)

@@ -138,6 +138,20 @@ class Arch
       ", " + @ffn_kind.to_s + ")"
   end
 
+  # Load an arch from `path` or FAIL LOUD. Every infer/eval runner repeated
+  # the same `from_gguf` + nil-check + exit; this folds it. `cmd` is the
+  # runner's name for the error prefix ("toy-infer" / "toy-eval"). Returns
+  # the Arch (never nil — exits 1 on failure).
+  def self.load_or_fail(path, cmd)
+    a = Arch.from_gguf(path)
+    if a == nil
+      puts cmd + ": could not load " + path +
+           " — set GGUF= to a valid file (see `toy list`)."
+      exit 1
+    end
+    a
+  end
+
   # Detect the architecture family by reading the GGUF and inspecting
   # what's there. The general.architecture key is unreliable (our
   # converter writes "llama" for every model), so we use tensor

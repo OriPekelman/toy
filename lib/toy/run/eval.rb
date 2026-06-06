@@ -42,12 +42,7 @@ require_relative "../models/transformer_lm"
 GGUF  = ENV["GGUF"] || "data/smollm2-135m-f32.gguf"
 TOP_K = (ENV["TOP_K"] || "5").to_i
 
-arch = Arch.from_gguf(GGUF)
-if arch == nil
-  puts "toy-eval: could not load " + GGUF +
-       " — set GGUF= to a valid file (see `toy list`)."
-  exit 1
-end
+arch = Arch.load_or_fail(GGUF, "toy-eval")
 
 lm = ToyLM.new(arch, :cpu)
 lm.load(GGUF)

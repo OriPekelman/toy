@@ -43,12 +43,7 @@ N_NEW  = (ENV["N_NEW"] || "16").to_i
 # caller passes raw ids. Empty when unset.
 PROMPT_IDS = ENV["PROMPT_IDS"] || ""
 
-arch = Arch.from_gguf(GGUF)
-if arch == nil
-  puts "toy-infer: could not load " + GGUF +
-       " — set GGUF= to a valid file (see `toy list`)."
-  exit 1
-end
+arch = Arch.load_or_fail(GGUF, "toy-infer")
 puts arch.summary
 
 lm = ToyLM.new(arch, :cpu)
