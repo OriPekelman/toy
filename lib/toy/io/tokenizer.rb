@@ -100,35 +100,25 @@ class Tokenizer
       btc.push("")
       j = j + 1
     end
-    is_kept = [false]
-    is_kept.pop
-    j = 0
-    while j < 256
-      is_kept.push(false)
-      j = j + 1
-    end
-    b = 0x21
-    while b <= 0x7E
-      is_kept[b] = true
-      btc[b] = b.chr
-      b = b + 1
-    end
-    b = 0xA1
-    while b <= 0xAC
-      is_kept[b] = true
-      btc[b] = Tokenizer.cp_to_utf8(b)
-      b = b + 1
-    end
-    b = 0xAE
-    while b <= 0xFF
-      is_kept[b] = true
-      btc[b] = Tokenizer.cp_to_utf8(b)
-      b = b + 1
-    end
+    # GPT-2 bytes_to_unicode in ONE pass with an inline "kept" boolean.
+    # Bytes in these three ranges map to their own codepoint; every other
+    # byte maps to 256, 257, … in order (so the space 0x20 → U+0120 = Ġ).
+    #
+    # SPINEL LANDMINE (the #34 root cause): the previous version used an
+    # `is_kept[]` Array<bool> seeded with `false` + a separate `if !is_kept[b]`
+    # pass. Under Spinel that else-branch NEVER ran (n_mapped stayed 0), so the
+    # mapped chars — including Ġ for 0x20 — were never built. `@byte_to_char[32]`
+    # came out empty, encode dropped every leading space and selected the
+    # space-less token (`upon`=25705 instead of `Ġupon`=1980), and decode had no
+    # marker to restore. Inline the test as a plain boolean and branch on `k`
+    # (no bool array, no `!`) — verified to produce btc[0x20]=Ġ.
     n_mapped = 0
     b = 0
     while b < 256
-      if !is_kept[b]
+      k = (b >= 0x21 && b <= 0x7E) || (b >= 0xA1 && b <= 0xAC) || (b >= 0xAE && b <= 0xFF)
+      if k
+        btc[b] = Tokenizer.cp_to_utf8(b)
+      else
         btc[b] = Tokenizer.cp_to_utf8(256 + n_mapped)
         n_mapped = n_mapped + 1
       end
