@@ -687,7 +687,7 @@ examples/smoke_recipe_warm_start: examples/smoke_recipe_warm_start.rb lib/toy/ll
 examples/smoke_gguf_roundtrip: examples/smoke_gguf_roundtrip.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/tinynn.rb lib/toy/train/toy_gguf_fuse.rb lib/toy/train/toy_gguf_writer.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
-examples/smoke_full_finetune: examples/smoke_full_finetune.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+examples/smoke_full_finetune: examples/smoke_full_finetune.rb lib/toy/llm/adamw.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
 # P2.6 gate — qkv_bias mmap branch. Loads the real Qwen2.5-0.5B native GGUF

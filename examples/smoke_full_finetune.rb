@@ -16,6 +16,7 @@ require_relative "../lib/toy"
 require_relative "../lib/toy/models/toy_smollm2"
 require_relative "../lib/toy/models/toy_smollm2_loader"
 require_relative "../lib/toy/llm/engine/llama_seq_engine"
+require_relative "../lib/toy/llm/adamw"
 
 GGUF      = ENV["GGUF"]   || "data/smollm2-135m-native.gguf"
 STEPS     = (ENV["STEPS"] || "8").to_i
@@ -43,18 +44,17 @@ while ti < TOKENS.length
   ti = ti + 1
 end
 
-m_hp = Mat.new(1, 7)
-m_hp.flat[0] = LR
-m_hp.flat[1] = 0.9
-m_hp.flat[2] = 0.999
-m_hp.flat[3] = 1.0e-8
-m_hp.flat[4] = 0.0
+# NAMED AdamW (byte-identical to the old hand-filled m_hp Mat). lora-style
+# bias correction: beta2=0.999 and slots 5/6 = 1/(1-beta^t) per step.
+adamw = Toy::AdamW.new
+adamw.lr           = LR
+adamw.beta2        = 0.999
+adamw.bias_correct = true
 
 positions = [0, 1, 2, 3]
 step = 1
 while step <= STEPS
-  m_hp.flat[5] = 1.0 / (1.0 - (0.9   ** step.to_f))
-  m_hp.flat[6] = 1.0 / (1.0 - (0.999 ** step.to_f))
+  m_hp = adamw.hp(step)
   if step == 1
     TinyNN.tnn_graph_reset(seq.sess)
   else
