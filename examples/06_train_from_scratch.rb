@@ -24,7 +24,7 @@
 
 require_relative "../lib/toy"
 require_relative "../lib/toy/io/toy_json"
-require_relative "../lib/toy/io/toy_git"
+require_relative "../lib/toy/io/toy_events"
 require_relative "../lib/toy/models/toy_smollm2"
 require_relative "../lib/toy/llm/engine/llama_seq_engine"
 require_relative "../lib/toy/dev/toy_describe_flow"
@@ -263,9 +263,6 @@ losses = [0.0]; losses.pop
 # the cwd's .git/. If we're run from outside the toy repo, falls back
 # to "unknown" without aborting (the field is for diagnostics, not
 # load-bearing). Tao's acceptance only requires git.sha to be present.
-gp = Toy::Git.read
-git_sha    = gp.gi_sha
-git_branch = gp.gi_branch
 
 # Open the events stream (docs/events-schema.md v1). Emit run_start
 # with full provenance per tao#run-start-provenance: started_at,
@@ -285,18 +282,10 @@ if EVENTS.length > 0
     rs.j_str("started_at", TinyNN.tnn_events_iso8601_now)
     rs.j_str("run_id", rid)
     rs.j_str("phase", "train")
-    host = Toy::Json.new
-    host.j_str("name", TinyNN.tnn_provenance_host_name)
-    host.j_str("os",   TinyNN.tnn_provenance_host_os)
-    host.j_str("arch", TinyNN.tnn_provenance_host_arch)
-    rs.j_obj("host", host)
-    backend = Toy::Json.new
-    backend.j_str("kind", TinyNN.tnn_backend_name(fcache.sess))
-    rs.j_obj("backend", backend)
-    git = Toy::Json.new
-    git.j_str("sha",    git_sha)
-    git.j_str("branch", git_branch)
-    rs.j_obj("git", git)
+    Toy::Events.add_provenance(rs,
+      TinyNN.tnn_provenance_host_name, TinyNN.tnn_provenance_host_os,
+      TinyNN.tnn_provenance_host_arch,
+      TinyNN.tnn_backend_name(fcache.sess))
     model = Toy::Json.new
     model.j_str("arch", "llama")
     model.j_str("name", "from-scratch-tinystories")

@@ -27,7 +27,7 @@
 
 require_relative "../../toy_smollm2_ffi_kv"
 require_relative "../io/toy_json"
-require_relative "../io/toy_git"
+require_relative "../io/toy_events"
 require_relative "../models/toy_smollm2_loader"
 require_relative "../../../vendor/spinel/deps"
 require_relative "../serve/openai/api_json"
@@ -48,9 +48,6 @@ EVENTS      = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/events.jsonl") : ""
 
 # git provenance read pure-Ruby from .git/HEAD (COPIED VERBATIM from
 # train.rb:124-151; resolves ref: → 40-char sha; defaults "unknown").
-gp = Toy::Git.read
-git_sha    = gp.gi_sha
-git_branch = gp.gi_branch
 
 # PORT hoisted ABOVE the run_start emit so config.port is available. No side
 # effects, so the hoist is safe (the Tep.run! call below still binds it).
@@ -71,18 +68,10 @@ if EVENTS.length > 0
     rs.j_str("started_at", TinyNN.tnn_events_iso8601_now)
     rs.j_str("run_id", rid)
     rs.j_str("phase", "serve")
-    host = Toy::Json.new
-    host.j_str("name", TinyNN.tnn_provenance_host_name)
-    host.j_str("os",   TinyNN.tnn_provenance_host_os)
-    host.j_str("arch", TinyNN.tnn_provenance_host_arch)
-    rs.j_obj("host", host)
-    backend = Toy::Json.new
-    backend.j_str("kind", TinyNN.tnn_backend_name(STATE.kv.sess))
-    rs.j_obj("backend", backend)
-    git = Toy::Json.new
-    git.j_str("sha",    git_sha)
-    git.j_str("branch", git_branch)
-    rs.j_obj("git", git)
+    Toy::Events.add_provenance(rs,
+      TinyNN.tnn_provenance_host_name, TinyNN.tnn_provenance_host_os,
+      TinyNN.tnn_provenance_host_arch,
+      TinyNN.tnn_backend_name(STATE.kv.sess))
     model = Toy::Json.new
     model.j_str("arch", "llama")
     model.j_str("name", STATE.model_name)

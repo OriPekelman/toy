@@ -36,7 +36,7 @@
 # inside a conditional arm reads back empty at runtime); no Struct.new.
 
 require_relative "../io/toy_json"
-require_relative "../io/toy_git"
+require_relative "../io/toy_events"
 require_relative "../models/toy_vit"
 require_relative "../llm/engine/vit_tiny_engine"
 require_relative "../io/toy_image_loader"
@@ -124,9 +124,6 @@ if probe_got != record_f
 end
 
 # git provenance read pure-Ruby from .git/HEAD (07:140-167).
-gp = Toy::Git.read
-git_sha    = gp.gi_sha
-git_branch = gp.gi_branch
 
 # --- run_start event (FILE only; arch=vit). ---
 if EVENTS.length > 0
@@ -141,18 +138,10 @@ if EVENTS.length > 0
     rs.j_str("run_id", rid)
     rs.j_str("phase", "train")
     rs.j_str("name", "vit-tiny")
-    host = Toy::Json.new
-    host.j_str("name", TinyNN.tnn_provenance_host_name)
-    host.j_str("os",   TinyNN.tnn_provenance_host_os)
-    host.j_str("arch", TinyNN.tnn_provenance_host_arch)
-    rs.j_obj("host", host)
-    backend = Toy::Json.new
-    backend.j_str("kind", TinyNN.tnn_backend_name(recipe.vt_cache.sess))
-    rs.j_obj("backend", backend)
-    git = Toy::Json.new
-    git.j_str("sha",    git_sha)
-    git.j_str("branch", git_branch)
-    rs.j_obj("git", git)
+    Toy::Events.add_provenance(rs,
+      TinyNN.tnn_provenance_host_name, TinyNN.tnn_provenance_host_os,
+      TinyNN.tnn_provenance_host_arch,
+      TinyNN.tnn_backend_name(recipe.vt_cache.sess))
     model = Toy::Json.new
     model.j_str("arch", "vit")
     model.j_str("name", "vit-tiny")

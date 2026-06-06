@@ -45,7 +45,7 @@
 
 require_relative "../../toy"
 require_relative "../io/toy_json"
-require_relative "../io/toy_git"
+require_relative "../io/toy_events"
 require_relative "../models/toy_smollm2"
 require_relative "../llm/engine/llama_seq_engine"
 require_relative "../llm/recipes/lora"
@@ -104,9 +104,6 @@ positions = [0, 1, 2, 3]
 # --- Events (FILE only when TAO_RUN_DIR set). ---
 EVENTS = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/events.jsonl") : ""
 
-gp = Toy::Git.read
-git_sha    = gp.gi_sha
-git_branch = gp.gi_branch
 
 if EVENTS.length > 0
   rc = TinyNN.tnn_events_open(EVENTS)
@@ -119,18 +116,10 @@ if EVENTS.length > 0
     rs.j_str("started_at", TinyNN.tnn_events_iso8601_now)
     rs.j_str("run_id", rid)
     rs.j_str("phase", "train")
-    host = Toy::Json.new
-    host.j_str("name", TinyNN.tnn_provenance_host_name)
-    host.j_str("os",   TinyNN.tnn_provenance_host_os)
-    host.j_str("arch", TinyNN.tnn_provenance_host_arch)
-    rs.j_obj("host", host)
-    backend = Toy::Json.new
-    backend.j_str("kind", TinyNN.tnn_backend_name(recipe_lora.lora_cache.sess))
-    rs.j_obj("backend", backend)
-    git = Toy::Json.new
-    git.j_str("sha",    git_sha)
-    git.j_str("branch", git_branch)
-    rs.j_obj("git", git)
+    Toy::Events.add_provenance(rs,
+      TinyNN.tnn_provenance_host_name, TinyNN.tnn_provenance_host_os,
+      TinyNN.tnn_provenance_host_arch,
+      TinyNN.tnn_backend_name(recipe_lora.lora_cache.sess))
     model = Toy::Json.new
     model.j_str("arch", "llama")
     model.j_str("name", "smollm2-135m")

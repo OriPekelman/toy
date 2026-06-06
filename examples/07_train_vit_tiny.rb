@@ -15,7 +15,7 @@
 #   STEPS=200 TAO_RUN_DIR=/tmp/vit ./examples/example_train_vit_tiny
 
 require_relative "../lib/toy/io/toy_json"
-require_relative "../lib/toy/io/toy_git"
+require_relative "../lib/toy/io/toy_events"
 require_relative "../lib/toy/models/toy_vit"
 require_relative "../lib/toy/llm/engine/vit_tiny_engine"
 require_relative "../lib/toy/io/toy_image_loader"
@@ -140,9 +140,6 @@ end
 
 # Read git state for run_start.provenance.git — same recipe as
 # 06_train_from_scratch.rb so Tao's parser gets the same fields.
-gp = Toy::Git.read
-git_sha    = gp.gi_sha
-git_branch = gp.gi_branch
 
 # Events stream — full run-start-provenance per tao#run-start-provenance
 # (matches the 06_train_from_scratch.rb contract: schema, host, git,
@@ -162,18 +159,10 @@ if EVENTS.length > 0
     rs.j_str("run_id", rid)
     rs.j_str("phase", "train")
     rs.j_str("name", "vit-tiny")
-    host = Toy::Json.new
-    host.j_str("name", TinyNN.tnn_provenance_host_name)
-    host.j_str("os",   TinyNN.tnn_provenance_host_os)
-    host.j_str("arch", TinyNN.tnn_provenance_host_arch)
-    rs.j_obj("host", host)
-    backend = Toy::Json.new
-    backend.j_str("kind", TinyNN.tnn_backend_name(cache.sess))
-    rs.j_obj("backend", backend)
-    git = Toy::Json.new
-    git.j_str("sha",    git_sha)
-    git.j_str("branch", git_branch)
-    rs.j_obj("git", git)
+    Toy::Events.add_provenance(rs,
+      TinyNN.tnn_provenance_host_name, TinyNN.tnn_provenance_host_os,
+      TinyNN.tnn_provenance_host_arch,
+      TinyNN.tnn_backend_name(cache.sess))
     model = Toy::Json.new
     model.j_str("arch", "vit")
     model.j_str("name", "vit-tiny")

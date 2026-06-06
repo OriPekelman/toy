@@ -41,7 +41,7 @@
 
 require_relative "../../toy"
 require_relative "../io/toy_json"
-require_relative "../io/toy_git"
+require_relative "../io/toy_events"
 require_relative "../models/toy_smollm2"
 require_relative "../io/toy_corpus_loader"
 require_relative "../train/toy_lr_schedule"
@@ -120,9 +120,6 @@ if RECIPE == "warm-start"
   p = 0; while p < CONTEXT; positions.push(p); p = p + 1; end
 
   # --- Events (EVENTS hoisted to top-level; FILE only). ---
-  gp = Toy::Git.read
-  git_sha    = gp.gi_sha
-  git_branch = gp.gi_branch
 
   if EVENTS.length > 0
     rc = TinyNN.tnn_events_open(EVENTS)
@@ -135,18 +132,10 @@ if RECIPE == "warm-start"
       rs.j_str("started_at", TinyNN.tnn_events_iso8601_now)
       rs.j_str("run_id", rid)
       rs.j_str("phase", "train")
-      host = Toy::Json.new
-      host.j_str("name", TinyNN.tnn_provenance_host_name)
-      host.j_str("os",   TinyNN.tnn_provenance_host_os)
-      host.j_str("arch", TinyNN.tnn_provenance_host_arch)
-      rs.j_obj("host", host)
-      backend = Toy::Json.new
-      backend.j_str("kind", TinyNN.tnn_backend_name(recipe_ws.ws_cache.sess))
-      rs.j_obj("backend", backend)
-      git = Toy::Json.new
-      git.j_str("sha",    git_sha)
-      git.j_str("branch", git_branch)
-      rs.j_obj("git", git)
+      Toy::Events.add_provenance(rs,
+        TinyNN.tnn_provenance_host_name, TinyNN.tnn_provenance_host_os,
+        TinyNN.tnn_provenance_host_arch,
+        TinyNN.tnn_backend_name(recipe_ws.ws_cache.sess))
       model = Toy::Json.new
       model.j_str("arch", "llama")
       model.j_str("name", "warm-start-scratch-tinystories")
@@ -279,9 +268,6 @@ m_hp = Toy::AdamW.new.hp(0)
 # --- Events (EVENTS hoisted to top-level; cheap-when-off; FILE only). ---
 
 # git provenance read pure-Ruby from .git/HEAD (06:264-292).
-gp = Toy::Git.read
-git_sha    = gp.gi_sha
-git_branch = gp.gi_branch
 
 if EVENTS.length > 0
   rc = TinyNN.tnn_events_open(EVENTS)
@@ -294,18 +280,10 @@ if EVENTS.length > 0
     rs.j_str("started_at", TinyNN.tnn_events_iso8601_now)
     rs.j_str("run_id", rid)
     rs.j_str("phase", "train")
-    host = Toy::Json.new
-    host.j_str("name", TinyNN.tnn_provenance_host_name)
-    host.j_str("os",   TinyNN.tnn_provenance_host_os)
-    host.j_str("arch", TinyNN.tnn_provenance_host_arch)
-    rs.j_obj("host", host)
-    backend = Toy::Json.new
-    backend.j_str("kind", TinyNN.tnn_backend_name(recipe.fs_cache.sess))
-    rs.j_obj("backend", backend)
-    git = Toy::Json.new
-    git.j_str("sha",    git_sha)
-    git.j_str("branch", git_branch)
-    rs.j_obj("git", git)
+    Toy::Events.add_provenance(rs,
+      TinyNN.tnn_provenance_host_name, TinyNN.tnn_provenance_host_os,
+      TinyNN.tnn_provenance_host_arch,
+      TinyNN.tnn_backend_name(recipe.fs_cache.sess))
     model = Toy::Json.new
     model.j_str("arch", "llama")
     model.j_str("name", "from-scratch-tinystories")
