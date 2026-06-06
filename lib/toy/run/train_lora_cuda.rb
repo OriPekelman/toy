@@ -53,6 +53,7 @@
 # "step N: loss=" line.
 
 require_relative "../../toy"
+require_relative "../io/toy_json"
 require_relative "../models/toy_smollm2"
 require_relative "../llm/engine/llama_seq_engine_cuda"
 require_relative "../llm/recipes/lora_cuda"
@@ -144,35 +145,44 @@ if EVENTS.length > 0
   rc = TinyNNCuda.tnn_events_open(EVENTS)
   if rc == 0
     rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
-    rs  = "{\"kind\":\"run_start\",\"schema\":\"toy/v1\""
-    rs = rs + ",\"t\":" + TinyNNCuda.tnn_events_now_seconds.to_s
-    rs = rs + ",\"started_at\":\"" + TinyNNCuda.tnn_events_iso8601_now + "\""
-    rs = rs + ",\"run_id\":\"" + rid + "\""
-    rs = rs + ",\"phase\":\"train\""
-    rs = rs + ",\"host\":{\"name\":\""   + TinyNNCuda.tnn_provenance_host_name + "\""
-    rs = rs + ",\"os\":\""               + TinyNNCuda.tnn_provenance_host_os   + "\""
-    rs = rs + ",\"arch\":\""             + TinyNNCuda.tnn_provenance_host_arch + "\"}"
-    rs = rs + ",\"backend\":{\"kind\":\"" + TinyNNCuda.tnn_backend_name(recipe_lora.lora_cache.sess) + "\"}"
-    rs = rs + ",\"git\":{\"sha\":\""     + git_sha    + "\""
-    rs = rs + ",\"branch\":\""           + git_branch + "\"}"
-    rs = rs + ",\"model\":{\"arch\":\"llama\""
-    rs = rs + ",\"name\":\"smollm2-135m\""
-    rs = rs + ",\"vocab\":"    + cfg_lora.vocab.to_s
-    rs = rs + ",\"d_model\":"  + cfg_lora.d_model.to_s
-    rs = rs + ",\"n_layers\":" + cfg_lora.n_layers.to_s
-    rs = rs + ",\"n_heads\":"  + cfg_lora.n_heads.to_s
-    rs = rs + ",\"n_kv\":"     + cfg_lora.n_kv.to_s
-    rs = rs + ",\"d_head\":"   + cfg_lora.head_dim.to_s
-    rs = rs + ",\"d_ff\":"     + cfg_lora.d_ff.to_s
-    rs = rs + "}"
-    rs = rs + ",\"config\":{\"rank\":" + RANK_LORA.to_s
-    rs = rs + ",\"steps\":" + STEPS.to_s
-    rs = rs + ",\"lr\":0.001"
-    rs = rs + ",\"seed\":42"
-    rs = rs + ",\"context\":" + TOKENS.length.to_s
-    rs = rs + "}"
-    rs = rs + "}"
-    TinyNNCuda.tnn_events_emit(rs)
+    rs = Toy::Json.new
+    rs.j_str("kind", "run_start")
+    rs.j_str("schema", "toy/v1")
+    rs.j_num("t", TinyNNCuda.tnn_events_now_seconds)
+    rs.j_str("started_at", TinyNNCuda.tnn_events_iso8601_now)
+    rs.j_str("run_id", rid)
+    rs.j_str("phase", "train")
+    host = Toy::Json.new
+    host.j_str("name", TinyNNCuda.tnn_provenance_host_name)
+    host.j_str("os",   TinyNNCuda.tnn_provenance_host_os)
+    host.j_str("arch", TinyNNCuda.tnn_provenance_host_arch)
+    rs.j_obj("host", host)
+    backend = Toy::Json.new
+    backend.j_str("kind", TinyNNCuda.tnn_backend_name(recipe_lora.lora_cache.sess))
+    rs.j_obj("backend", backend)
+    git = Toy::Json.new
+    git.j_str("sha",    git_sha)
+    git.j_str("branch", git_branch)
+    rs.j_obj("git", git)
+    model = Toy::Json.new
+    model.j_str("arch", "llama")
+    model.j_str("name", "smollm2-135m")
+    model.j_num("vocab",    cfg_lora.vocab)
+    model.j_num("d_model",  cfg_lora.d_model)
+    model.j_num("n_layers", cfg_lora.n_layers)
+    model.j_num("n_heads",  cfg_lora.n_heads)
+    model.j_num("n_kv",     cfg_lora.n_kv)
+    model.j_num("d_head",   cfg_lora.head_dim)
+    model.j_num("d_ff",     cfg_lora.d_ff)
+    rs.j_obj("model", model)
+    config = Toy::Json.new
+    config.j_num("rank",    RANK_LORA)
+    config.j_num("steps",   STEPS)
+    config.j_raw("lr",      "0.001")
+    config.j_raw("seed",    "42")
+    config.j_num("context", TOKENS.length)
+    rs.j_obj("config", config)
+    TinyNNCuda.tnn_events_emit(rs.j_dump)
   else
     puts "events_open failed: rc=" + rc.to_s + " (path=" + EVENTS + ")"
   end
@@ -193,15 +203,16 @@ while step <= STEPS
 
   if EVENTS.length > 0
     step_wall_us = ((TinyNNCuda.tnn_events_now_seconds - step_wall_start) * 1.0e6).to_i
-    es  = "{\"kind\":\"step\",\"phase\":\"train\""
-    es = es + ",\"t\":"        + TinyNNCuda.tnn_events_now_seconds.to_s
-    es = es + ",\"step\":"     + step.to_s
-    es = es + ",\"loss\":"     + loss.to_s
-    es = es + ",\"lr\":0.001"
-    es = es + ",\"tokens\":"   + TOKENS.length.to_s
-    es = es + ",\"wall_us\":"  + step_wall_us.to_s
-    es = es + "}"
-    TinyNNCuda.tnn_events_emit(es)
+    es = Toy::Json.new
+    es.j_str("kind",  "step")
+    es.j_str("phase", "train")
+    es.j_num("t",       TinyNNCuda.tnn_events_now_seconds)
+    es.j_num("step",    step)
+    es.j_num("loss",    loss)
+    es.j_raw("lr",      "0.001")
+    es.j_num("tokens",  TOKENS.length)
+    es.j_num("wall_us", step_wall_us)
+    TinyNNCuda.tnn_events_emit(es.j_dump)
   end
   step = step + 1
 end
@@ -218,14 +229,14 @@ if EVENTS.length > 0 && TinyNNCuda.tnn_events_active == 1
     puts "checkpoint write failed: rc=" + rc.to_s
   end
 
-  re  = "{\"kind\":\"run_end\""
-  re = re + ",\"t\":"           + TinyNNCuda.tnn_events_now_seconds.to_s
-  re = re + ",\"ended_at\":\""  + TinyNNCuda.tnn_events_iso8601_now + "\""
-  re = re + ",\"reason\":\"completed\""
-  re = re + ",\"final_step\":"  + STEPS.to_s
-  re = re + ",\"final_loss\":"  + final_loss.to_s
-  re = re + ",\"exit_code\":0"
-  re = re + "}"
-  TinyNNCuda.tnn_events_emit(re)
+  re = Toy::Json.new
+  re.j_str("kind", "run_end")
+  re.j_num("t",          TinyNNCuda.tnn_events_now_seconds)
+  re.j_str("ended_at",   TinyNNCuda.tnn_events_iso8601_now)
+  re.j_str("reason",     "completed")
+  re.j_num("final_step", STEPS)
+  re.j_num("final_loss", final_loss)
+  re.j_raw("exit_code",  "0")
+  TinyNNCuda.tnn_events_emit(re.j_dump)
   TinyNNCuda.tnn_events_close
 end

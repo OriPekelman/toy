@@ -501,7 +501,7 @@ toy-train-vit: libexec/toy-train-vit
 # checkpoint write/fuse/drift seam (dropping them breaks the writer). Links
 # the CUDA ggml backend via -Wl,-u,tnn_cuda_force_link (every cuda target).
 # CPU-only; NOT in MIRRORABLE (hand-written, see prep/gen_cuda_mirror.rb).
-libexec/toy-train-cuda: lib/toy/run/train_cuda.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
+libexec/toy-train-cuda: lib/toy/run/train_cuda.rb lib/toy/io/toy_json.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
 		lib/toy/io/toy_corpus_loader.rb lib/toy/train/toy_lr_schedule.rb \
 		lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/llm/recipes/from_scratch_cuda.rb \
 		lib/toy/llm/recipes/warm_start_cuda.rb \
@@ -524,7 +524,7 @@ toy-train-cuda: libexec/toy-train-cuda
 # (ToyDriftGrad.params downloads via CPU TinyNN). toy_gguf_fuse is NOT a dep
 # (lora uses ToyDriftGrad.params, not the lens-fold path). Links the CUDA
 # ggml backend via -Wl,-u,tnn_cuda_force_link. NOT in MIRRORABLE (hand-written).
-libexec/toy-train-lora-cuda: lib/toy/run/train_lora_cuda.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
+libexec/toy-train-lora-cuda: lib/toy/run/train_lora_cuda.rb lib/toy/io/toy_json.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
 		lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/llm/recipes/lora_cuda.rb \
 		lib/toy/llm/adamw.rb \
 		lib/toy/train/toy_gguf_writer.rb lib/toy/train/toy_drift_grad.rb lib/toy/models/transformer.rb \
@@ -545,7 +545,7 @@ toy-train-lora-cuda: libexec/toy-train-lora-cuda
 # (leading underscore, macOS symbol convention). libtinynn_ggml.a (CPU archive)
 # stays in deps for the write seam + base ggml. NOT in MIRRORABLE (hand-written).
 # gx10 RUNTIME-UNVERIFIED — pin baseline + gate on the Mac.
-libexec/toy-train-metal: lib/toy/run/train_metal.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
+libexec/toy-train-metal: lib/toy/run/train_metal.rb lib/toy/io/toy_json.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
 		lib/toy/llm/engine/llama_seq_engine_metal.rb lib/toy/llm/recipes/from_scratch_metal.rb \
 		lib/toy/llm/adamw.rb lib/toy/llm/labels.rb \
 		lib/toy/train/toy_gguf_writer.rb lib/toy/train/toy_drift_grad.rb lib/toy/train/toy_gguf_fuse.rb lib/toy/models/transformer.rb \
@@ -570,7 +570,7 @@ toy-train-metal: libexec/toy-train-metal
 # on a fresh tree; needs ../tep + ../spinelgems siblings). Deps mirror the
 # tep_demo recipe (Makefile:486) + the KV stack. CPU-only; NOT in
 # MIRRORABLE (see prep/gen_cuda_mirror.rb).
-libexec/toy-serve: lib/toy/run/serve.rb \
+libexec/toy-serve: lib/toy/run/serve.rb lib/toy/io/toy_json.rb \
 		lib/toy/serve/openai/server.rb lib/toy/serve/openai/api_json.rb \
 		lib/toy/serve/openai/handlers.rb lib/toy/serve/openai/embeddings_handler.rb \
 		vendor/spinel/tep/lib/tep.rb \

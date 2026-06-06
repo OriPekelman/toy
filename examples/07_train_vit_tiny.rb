@@ -14,6 +14,7 @@
 #   make example_train_vit_tiny
 #   STEPS=200 TAO_RUN_DIR=/tmp/vit ./examples/example_train_vit_tiny
 
+require_relative "../lib/toy/io/toy_json"
 require_relative "../lib/toy/models/toy_vit"
 require_relative "../lib/toy/llm/engine/vit_tiny_engine"
 require_relative "../lib/toy/io/toy_image_loader"
@@ -176,39 +177,52 @@ if EVENTS.length > 0
   else
     puts "events → " + EVENTS
     rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
-    rs  = "{\"kind\":\"run_start\",\"schema\":\"toy/v1\""
-    rs = rs + ",\"t\":"          + TinyNN.tnn_events_now_seconds.to_s
-    rs = rs + ",\"started_at\":\"" + TinyNN.tnn_events_iso8601_now + "\""
-    rs = rs + ",\"run_id\":\""   + rid + "\""
-    rs = rs + ",\"phase\":\"train\""
-    rs = rs + ",\"name\":\"vit-tiny\""
-    rs = rs + ",\"host\":{\"name\":\"" + TinyNN.tnn_provenance_host_name + "\""
-    rs = rs + ",\"os\":\""             + TinyNN.tnn_provenance_host_os   + "\""
-    rs = rs + ",\"arch\":\""           + TinyNN.tnn_provenance_host_arch + "\"}"
-    rs = rs + ",\"backend\":{\"kind\":\"" + TinyNN.tnn_backend_name(cache.sess) + "\"}"
-    rs = rs + ",\"git\":{\"sha\":\"" + git_sha + "\""
-    rs = rs + ",\"branch\":\""       + git_branch + "\"}"
-    rs = rs + ",\"model\":{\"arch\":\"vit\""
-    rs = rs + ",\"name\":\"vit-tiny\""
-    rs = rs + ",\"image_size\":"  + cfg.image_size.to_s
-    rs = rs + ",\"patch_size\":"  + cfg.patch_size.to_s
-    rs = rs + ",\"d_model\":"     + cfg.d_model.to_s
-    rs = rs + ",\"n_layers\":"    + cfg.n_layers.to_s
-    rs = rs + ",\"n_heads\":"     + cfg.n_heads.to_s
-    rs = rs + ",\"d_ff\":"        + cfg.d_ff.to_s
-    rs = rs + ",\"num_classes\":" + cfg.num_classes.to_s + "}"
-    rs = rs + ",\"config\":{\"image_dir\":\"" + IMG_DIR + "\""
-    rs = rs + ",\"n_images\":" + N_IMAGES.to_s
-    rs = rs + ",\"steps\":"    + STEPS.to_s
-    rs = rs + ",\"seed\":"     + SEED.to_s
-    rs = rs + ",\"init\":\""   + INIT + "\""
-    rs = rs + ",\"donor\":\""  + (INIT == "pure_emb" ? DONOR_GGUF : "") + "\"}"
-    rs = rs + ",\"schedule\":{\"lr_max\":" + LR_MAX.to_s +
-              ",\"lr_min\":" + LR_MIN.to_s +
-              ",\"warmup\":" + WARMUP.to_s +
-              ",\"n_steps\":" + STEPS.to_s + "}"
-    rs = rs + "}"
-    TinyNN.tnn_events_emit(rs)
+    rs = Toy::Json.new
+    rs.j_str("kind", "run_start")
+    rs.j_str("schema", "toy/v1")
+    rs.j_num("t", TinyNN.tnn_events_now_seconds)
+    rs.j_str("started_at", TinyNN.tnn_events_iso8601_now)
+    rs.j_str("run_id", rid)
+    rs.j_str("phase", "train")
+    rs.j_str("name", "vit-tiny")
+    host = Toy::Json.new
+    host.j_str("name", TinyNN.tnn_provenance_host_name)
+    host.j_str("os",   TinyNN.tnn_provenance_host_os)
+    host.j_str("arch", TinyNN.tnn_provenance_host_arch)
+    rs.j_obj("host", host)
+    backend = Toy::Json.new
+    backend.j_str("kind", TinyNN.tnn_backend_name(cache.sess))
+    rs.j_obj("backend", backend)
+    git = Toy::Json.new
+    git.j_str("sha",    git_sha)
+    git.j_str("branch", git_branch)
+    rs.j_obj("git", git)
+    model = Toy::Json.new
+    model.j_str("arch", "vit")
+    model.j_str("name", "vit-tiny")
+    model.j_num("image_size",  cfg.image_size)
+    model.j_num("patch_size",  cfg.patch_size)
+    model.j_num("d_model",     cfg.d_model)
+    model.j_num("n_layers",    cfg.n_layers)
+    model.j_num("n_heads",     cfg.n_heads)
+    model.j_num("d_ff",        cfg.d_ff)
+    model.j_num("num_classes", cfg.num_classes)
+    rs.j_obj("model", model)
+    config = Toy::Json.new
+    config.j_str("image_dir", IMG_DIR)
+    config.j_num("n_images",  N_IMAGES)
+    config.j_num("steps",     STEPS)
+    config.j_num("seed",      SEED)
+    config.j_str("init",      INIT)
+    config.j_str("donor",     (INIT == "pure_emb" ? DONOR_GGUF : ""))
+    rs.j_obj("config", config)
+    schedule = Toy::Json.new
+    schedule.j_num("lr_max",  LR_MAX)
+    schedule.j_num("lr_min",  LR_MIN)
+    schedule.j_num("warmup",  WARMUP)
+    schedule.j_num("n_steps", STEPS)
+    rs.j_obj("schedule", schedule)
+    TinyNN.tnn_events_emit(rs.j_dump)
   end
 end
 
@@ -290,13 +304,14 @@ while step < STEPS
 
   if EVENTS.length > 0
     t_now = TinyNN.tnn_events_now_seconds
-    ev = "{\"kind\":\"step\",\"phase\":\"train\""
-    ev = ev + ",\"t\":"    + t_now.to_s
-    ev = ev + ",\"step\":" + (step + 1).to_s
-    ev = ev + ",\"loss\":" + loss.to_s
-    ev = ev + ",\"lr\":"   + lr.to_s
-    ev = ev + "}"
-    TinyNN.tnn_events_emit(ev)
+    ev = Toy::Json.new
+    ev.j_str("kind",  "step")
+    ev.j_str("phase", "train")
+    ev.j_num("t",    t_now)
+    ev.j_num("step", step + 1)
+    ev.j_num("loss", loss)
+    ev.j_num("lr",   lr)
+    TinyNN.tnn_events_emit(ev.j_dump)
   end
 
   if CHECKPOINT_EVERY > 0 && WEIGHTS_DIR.length > 0 && ((step + 1) % CHECKPOINT_EVERY) == 0
@@ -320,14 +335,17 @@ puts "initial=" + initial_loss.to_s + " final=" + final_loss.to_s +
 
 if EVENTS.length > 0
   t_close = TinyNN.tnn_events_now_seconds
-  re = "{\"kind\":\"run_end\",\"phase\":\"train\""
-  re = re + ",\"t\":"      + t_close.to_s
-  re = re + ",\"reason\":\"completed\""
-  re = re + ",\"quality_gate\":{\"name\":\"loss_ratio\""
-  re = re + ",\"value\":"  + ratio.to_s
-  re = re + ",\"status\":\"" + quality_gate + "\"}"
-  re = re + "}"
-  TinyNN.tnn_events_emit(re)
+  re = Toy::Json.new
+  re.j_str("kind",  "run_end")
+  re.j_str("phase", "train")
+  re.j_num("t",      t_close)
+  re.j_str("reason", "completed")
+  qg = Toy::Json.new
+  qg.j_str("name",   "loss_ratio")
+  qg.j_num("value",  ratio)
+  qg.j_str("status", quality_gate)
+  re.j_obj("quality_gate", qg)
+  TinyNN.tnn_events_emit(re.j_dump)
   TinyNN.tnn_events_close
 end
 
