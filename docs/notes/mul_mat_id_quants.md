@@ -1,23 +1,37 @@
-# `mul_mat_id` × K-quantized source weights — OLMoE Q4_K_M corruption
+# OLMoE Q4_K_M corruption — RESOLVED (was per-head attention stride, NOT mul_mat_id)
 
-**Status (2026-06-05): NOT a ggml bug — it's ours, and narrowed but not yet
-found.** Workaround stands: use Q8_0 for MoE expert weights. ggml#1506 is
-closeable on the ggml side (maintainer agrees).
+**Status (2026-06-05): FIXED.** Root cause was `head_nbytes()` in
+`lib/toy_smollm2_ffi_kv.rb` returning **0** for K-quant attention weights,
+collapsing every attention head onto head 0's weight slice. It had **nothing to
+do with `mul_mat_id` or the experts** — the op was correct for K-quants all
+along. ggml#1506 is a non-bug on the ggml side (closeable). Fix: generalize
+`head_nbytes` via `tnn_row_size` (correct for F32, Q8_0, and all K-quants).
 
-> **FRESH-SESSION RESUME — start here.** What's verified: the op is clean
-> (`tinynn/ggml1506_mul_mat_id_kquant_repro.c`); our loader reads expert
-> `type`+`offset`+`shape` PER TENSOR (`@d_ff=1024` is OLMoE's expert FFN length),
-> so the per-role-stride bug @devYRPauli flagged does NOT apply to us; the MoE
-> graph is identical between Q4_K_M (corrupt) and Q8_0 (coherent), so it's not a
-> pure graph bug. See the **2026-06-05 section at the bottom** for the full
-> verification + the `tinynn/gguf_expert_dump.c` metadata dump. **THE DECISIVE
-> NEXT TEST:** a ~120-line C reproducer that runs `mul_mat_id` over the REAL q6_K
-> `down_exps` bytes (read from the GGUF at `data_offset+tensor_offset`, attached
-> via `ggml_backend_tensor_alloc` like our loader's mmap path) vs an F32 dequant
-> reference (`ggml_get_type_traits(type).to_float`). Corrupt → real op bug w/
-> specific data → minimal C repro for ggml. Clean → experts fine, hunt the
-> weighted-sum / contiguity / mmap-attach path. Models: `data/OLMoE-1b-7b-0924-
-> Instruct-{Q4_K_M,q8_0}.gguf`. Repro shape: n_mats=64, n_used=8, k=1024 (down).
+> **THE ACTUAL BUG.** MoE GGUFs are force-routed through `realize_for_mmap`
+> (`load_cpu`, the `if flags.is_moe → is_native = true` branch). That path slices
+> the fused `attn_q/k/v.weight` into per-head tensors at byte offset
+> `off_base + hq * head_nbytes(type, d_head, d_model)`. `head_nbytes` only had
+> arms for F32 (type 0) and Q8_0 (type 8); **every K-quant fell to the `else → 0`**.
+> Stride 0 ⇒ all heads read head 0's slice ⇒ multi-head attention collapses ⇒
+> degenerate repeating output, compounding across 16 layers. It surfaced only on
+> K-quant **MoE** models because (a) non-MoE legacy K-quant GGUFs take the *copy*
+> loader (`realize_for` + `load_kv_cache_auto`, which never calls `head_nbytes`),
+> and (b) Q8_0 MoE GGUFs hit the working type-8 arm. The smoking gun in the trace:
+> `L0.concat` min/max == `L0.head0` (all heads identical) on Q4_K_M, but wider than
+> `head0` on Q8_0. After the fix, `concat` matches the Q8_0 reference.
+>
+> **How it was localized** (all reproducers kept in `tinynn/`):
+> - `ggml1506_mul_mat_id_kquant_repro.c` — synthetic op: K-quant `mul_mat_id` clean.
+> - `ggml1506_mmap_byo_repro.c` — REAL q6_K/q4_K `down_exps` bytes via the mmap
+>   BYO-pointer attach vs copied vs F32: bit-identical, experts definitively fine.
+> - `ggml1506_broadcast_repro.c` — the broadcast (`b->ne1==1`) gate/up call shape:
+>   also clean for K-quants.
+> - `gguf_all_types.c` — diff of Q4_K_M vs q8_0 tensor dtypes showed **all**
+>   weights differ (attn + embed + output), not just experts → premise was wrong.
+> - `gguf_requant_q4k.c` — built a non-MoE Q4_K tinyllama; it ran coherently
+>   (copy path), proving the defect was MoE-path-specific, not general K-quant.
+> - `trace_olmoe.rb` / `lib/toy/run/infer_trace.rb` (→ `libexec/toy-infer-trace`)
+>   — per-tap min/max/|mean|/nan dump; revealed the `concat == head0` collapse.
 
 **Affected**: MoE inference via `tnn_mul_mat_id` (used in OLMoE,
 Mixtral, Qwen-MoE, Granite-MoE, and any other arch with routed
@@ -62,22 +76,12 @@ This is consistent with:
   scale + per-sub-block offset that requires different per-block
   unpacking.
 
-## Workaround (current)
+## Workaround (HISTORICAL — no longer needed)
 
-1. **Convert MoE models at Q8_0 or higher**. Avoid Q4_K_M, Q5_K_M,
-   Q6_K for MoE expert weights specifically. Non-expert weights
-   (embeddings, attention, norms) can stay at K-quants — only the
-   MoE expert stacks need Q8_0.
-
-2. **Runtime warning**: `realize_for_mmap` emits a warning when
-   it detects MoE expert tensors with type ∈ {Q4_K, Q5_K, Q6_K,
-   ...K_M / K_S / K_XS variants}. The model will still load and
-   run, but output will be wrong. This makes the failure mode
-   loud rather than silent.
-
-3. **Choose your GGUF**: For OLMoE-1B-7B, `Meshwa/OLMoE-1b-7b-0924-
-   Instruct-gguf` ships both Q4_K_M and Q8_0 variants. Use the
-   Q8_0 (~7 GB, ~13 tok/s on gx10 CPU).
+Before the `head_nbytes` fix the workaround was "use Q8_0 for MoE expert
+weights." That is obsolete: K-quant MoE (incl. OLMoE Q4_K_M with its mixed
+q4_K+q6_K `down_exps`) now loads and runs coherently. The sections below are
+kept for the historical record of the (wrong) kernel-gap hypothesis.
 
 ## Reproducing
 
@@ -143,15 +147,21 @@ inspect how `realize_for_mmap` lays out the MoE expert tensors vs what the op
 expects (block alignment / per-expert stride / mixed-type stack), and build a
 toy-side op-test that feeds our mmap'd tensors directly.
 
-**The runtime warning is now MISATTRIBUTED.** `realize_for_mmap` says "ggml's
-mul_mat_id kernel produces wrong output for K-quants" — the op-level reproducer
-shows that's false. Reword it to "toy's K-quant MoE expert path produces wrong
-output (cause under investigation; use Q8_0)" until the toy-side root cause lands;
-do NOT remove it (the symptom is still live).
+**The runtime warning was MISATTRIBUTED and is now REMOVED.** It blamed ggml's
+mul_mat_id kernel; the real cause was `head_nbytes` (per-head ATTENTION stride),
+not the experts. Removed in the same change as the fix.
 
-When the toy-side root cause is fixed:
-- Update/remove the runtime warning in realize_for_mmap.
-- Add a smoke that loads OLMoE Q4_K_M and confirms coherent output.
+DONE (2026-06-05):
+- `head_nbytes` generalized via `tnn_row_size` (handles K-quants); fails loud
+  on a 0/invalid stride instead of silently collapsing heads.
+- Misleading mul_mat_id-K-quant warning removed from `realize_for_mmap`.
+- Verified: OLMoE Q4_K_M decode now coherent and tracks the q8_0 reference
+  (`510 38479 1171 33639 261 …` → varied IDs, no `20065×N` degeneration).
+- Regression-checked: Q8_0 mmap path, legacy-copy K-quant path (tinyllama Q4_K),
+  and F32 path all still coherent.
+
+Remaining nice-to-have: a committed smoke that loads OLMoE Q4_K_M and asserts
+the first generated id ≠ the degenerate token.
 
 ## Coverage-doc cross-reference
 

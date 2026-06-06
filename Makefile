@@ -235,6 +235,13 @@ libexec/toy-infer: lib/toy/run/infer.rb lib/toy/models/arch.rb lib/toy/models/tr
 	$(SPINEL) $< -o $@
 toy-infer: libexec/toy-infer
 
+# Diagnostic sibling of toy-infer: enables the cache trace and dumps per-tap
+# min/max/|mean|/nan for every layer (used to localize ggml#1506 — the K-quant
+# MoE attention head_nbytes collapse). See docs/notes/mul_mat_id_quants.md.
+libexec/toy-infer-trace: lib/toy/run/infer_trace.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a | libexec
+	$(SPINEL) $< -o $@
+toy-infer-trace: libexec/toy-infer-trace
+
 # P4 — `toy eval` COMPUTE runner (CRuby→runner COMPUTE BRIDGE, same shape as
 # toy-infer). Spinel source lib/toy/run/eval.rb; the binary path EQUALS the
 # make target so ToyRoot.ensure_built("libexec/toy-eval") both builds and

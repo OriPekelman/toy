@@ -686,22 +686,14 @@ class SmolLM2KVFFICache
         gate_exps_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_gate_exps.weight")
         up_exps_idx   = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_up_exps.weight")
         down_exps_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_down_exps.weight")
-        # #112: warn loudly when expert weights use a K-family quant.
-        # ggml's mul_mat_id has reliable kernels for F32/F16/Q8_0
-        # source only; K-quants (Q4_K=12, Q5_K=13, Q6_K=14, *_K_S/M/L
-        # variants) produce wrong output via mul_mat_id even though
-        # the dispatch accepts them. See docs/notes/mul_mat_id_quants.md.
-        # Only warn once per realize, on layer 0.
-        if li == 0
-          gate_type = TinyNN.tnn_gguf_tensor_type(gguf_handle, gate_exps_idx)
-          if gate_type >= 10 && gate_type <= 19
-            puts "WARN: MoE expert weights are K-quantized (type=" + gate_type.to_s + ")."
-            puts "WARN: ggml's mul_mat_id kernel produces wrong output for K-quants."
-            puts "WARN: This model WILL run but the output will be incoherent."
-            puts "WARN: Use the Q8_0 variant of this GGUF, or another quant."
-            puts "WARN: See docs/notes/mul_mat_id_quants.md."
-          end
-        end
+        # #112 (RESOLVED): K-quant MoE experts work. The old warning here
+        # blamed ggml's mul_mat_id kernel for the OLMoE-Q4_K_M corruption,
+        # but the op was always correct for K-quants (verified by op-level
+        # and real-bytes reproducers in tinynn/ggml1506_*). The actual bug
+        # was head_nbytes() returning 0 for K-quant ATTENTION weights,
+        # collapsing every head onto head 0 — fixed there. K-quant expert
+        # stacks (gate/up/down, including OLMoE's mixed q4_K+q6_K down_exps)
+        # load and run coherently. See docs/notes/mul_mat_id_quants.md.
         blk.t_w_router    = TinyNN.tnn_input_2d_persistent_mmap(@sess,
                               @n_experts, @d_model,
                               TinyNN.tnn_gguf_tensor_type(gguf_handle, router_idx),
@@ -898,21 +890,31 @@ class SmolLM2KVFFICache
   end
 
   # Per-head byte stride for slicing a full [n_heads*d_head, d_model]
-  # tensor into n_heads contiguous Dh×D blocks. Matches ggml_nbytes()
-  # of a per-head ne=[d_model, d_head] tensor of `ggml_type`.
+  # tensor into n_heads contiguous Dh×D blocks. A per-head slice is
+  # d_head rows of d_model elements, so the stride is d_head row-sizes.
+  #
+  # tnn_row_size delegates to ggml_row_size, which is correct for EVERY
+  # type — F32, Q8_0, and the K-quants (Q4_K/Q5_K/Q6_K). The previous
+  # hand-coded F32/Q8_0-only branches returned 0 for any other type,
+  # which silently made the per-head offset `off_base + hq*0 == off_base`
+  # — i.e. every attention head read head 0's weight slice. That
+  # collapsed multi-head attention on K-quant MoE models (forced down the
+  # realize_for_mmap path), compounding across layers into degenerate
+  # output. This was misdiagnosed as a ggml mul_mat_id K-quant bug
+  # (ggml#1506); it was ours. Block alignment holds because each row is a
+  # whole number of quant blocks (requires d_model % block == 0, which
+  # the per-head tnn_input_2d_persistent_mmap also enforces via ne0).
   def head_nbytes(ggml_type, d_head, d_model)
-    if ggml_type == 0
-      # F32: d_head * d_model * 4
-      d_head * d_model * 4
-    elsif ggml_type == 8
-      # Q8_0: blocks of 32 elements stored as (half + 32 int8) = 34 bytes.
-      # Per-head has d_head rows of d_model elements each.
-      # bytes = d_head * (d_model / 32) * 34
-      d_head * (d_model / 32) * 34
-    else
-      # Unknown: refuse rather than guess.
-      0
+    rs = TinyNN.tnn_row_size(ggml_type, d_model)
+    if rs <= 0
+      # Fail loud per the never-mask rule: a 0 stride would collapse all
+      # heads. tnn_row_size only returns 0 on a bad type/shape.
+      puts "FATAL: head_nbytes got row_size<=0 for ggml_type=" +
+           ggml_type.to_s + " d_model=" + d_model.to_s +
+           " — per-head attention stride would collapse. Aborting."
+      exit 1
     end
+    d_head * rs
   end
 
   # CUDA-MIRROR-SKIP-BEGIN: trace-tap diagnostic ivars are CPU-only;
