@@ -160,8 +160,10 @@ DONE (2026-06-05):
 - Regression-checked: Q8_0 mmap path, legacy-copy K-quant path (tinyllama Q4_K),
   and F32 path all still coherent.
 
-Remaining nice-to-have: a committed smoke that loads OLMoE Q4_K_M and asserts
-the first generated id ≠ the degenerate token.
+- Committed regression gate: `make gate-moe-kquant` (`prep/moe_kquant_gate.rb`)
+  — model-gated (skips loudly when the ~4 GB OLMoE Q4_K_M dev GGUF is absent),
+  asserts a structurally non-degenerate greedy decode (distinct-id count +
+  max single-token run), not the pre-fix `20065×N` collapse. See `docs/gating.md`.
 
 ## Coverage-doc cross-reference
 

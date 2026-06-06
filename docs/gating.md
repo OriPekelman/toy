@@ -77,6 +77,23 @@ ruby prep/infer_gate.rb   # exit 0 on byte-for-byte match, 1 otherwise
 `infer`/`train`/`eval` are tep-free. `serve_gate.rb` covers the
 OpenAI-compatible HTTP path.
 
+### Model-gated regression gates
+
+Some gates exercise a REAL model whose GGUF is a gitignored multi-GB dev
+artifact (present on gx10 / Mac dev boxes, absent from a fixture-only
+checkout). These SKIP loudly (exit 0) when the model is missing rather than
+failing CI:
+
+- `make gate-full-finetune` (`prep/full_finetune_gate.rb`) — needs
+  `data/smollm2-135m-native.gguf`; byte-exact engine full-finetune CE curve.
+- `make gate-moe-kquant` (`prep/moe_kquant_gate.rb`) — needs
+  `data/OLMoE-1b-7b-0924-Instruct-Q4_K_M.gguf` (~4 GB). Regression guard for
+  the K-quant MoE attention head-stride collapse (`head_nbytes` returning 0 for
+  K-quants — the bug long misfiled as ggml#1506; see
+  `docs/notes/mul_mat_id_quants.md`). STRUCTURAL assertion (distinct-id count +
+  max single-token run on a greedy OLMoE Q4_K_M decode), not byte-exact, so it
+  guards "attention didn't collapse" without false-alarming on K-quant drift.
+
 ## Mirror gate
 
 The CPU algorithm file is the single source of truth; the CUDA and Metal

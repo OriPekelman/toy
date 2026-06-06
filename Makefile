@@ -372,6 +372,17 @@ gate-lmc:
 gate-full-finetune:
 	ruby prep/full_finetune_gate.rb
 
+# K-quant MoE attention regression gate (the bug long misfiled as ggml#1506):
+# head_nbytes returned 0 for K-quant attention weights → per-head mmap stride
+# collapsed every head onto head 0 → degenerate repeating decode on OLMoE
+# Q4_K_M. Structural assertion (distinct-count + max single-token run), not
+# byte-exact, so it survives benign K-quant drift. MODEL-GATED: needs the ~4 GB
+# data/OLMoE-1b-7b-0924-Instruct-Q4_K_M.gguf (gitignored); SKIPs loudly when
+# absent. bin/toy auto-builds the infer runner. See docs/notes/mul_mat_id_quants.md.
+.PHONY: gate-moe-kquant
+gate-moe-kquant:
+	ruby prep/moe_kquant_gate.rb
+
 # CUDA from-scratch TRAINING gate (STRONG arm, no epsilon): train
 # from-scratch --device cuda --steps 5 --seed 0, assert the "step N: loss="
 # curve byte-equals prep/fixtures/train_cuda_baseline.txt, loss decreases,
