@@ -15,6 +15,7 @@
 #   STEPS=200 TAO_RUN_DIR=/tmp/vit ./examples/example_train_vit_tiny
 
 require_relative "../lib/toy/io/toy_json"
+require_relative "../lib/toy/llm/adamw"
 require_relative "../lib/toy/io/toy_events"
 require_relative "../lib/toy/models/toy_vit"
 require_relative "../lib/toy/llm/engine/vit_tiny_engine"
@@ -208,10 +209,10 @@ record_f   = patch_flat * n_patches
 m_image  = Mat.new(patch_flat, n_patches)
 m_labels = Mat.new(1, cfg.num_classes)
 cls_idx  = [0]
-m_hp = Mat.new(1, 7)
-m_hp.flat[1] = 0.9; m_hp.flat[2] = 0.95
-m_hp.flat[3] = 1.0e-8; m_hp.flat[4] = 0.0
-m_hp.flat[5] = 0.9; m_hp.flat[6] = 0.95
+# NAMED AdamW (byte-identical to the old hand-filled m_hp): defaults
+# (β1=0.9, β2=0.95, eps=1e-8, wd=0, bias_correct=false → slots 5/6 =
+# constant betas) match; lr is set per-step from the cosine schedule below.
+adamw = Toy::AdamW.new
 
 images_path = IMG_DIR + "/images.bin"
 labels_path = IMG_DIR + "/labels.bin"
@@ -221,7 +222,8 @@ final_loss   = 0.0
 step = 0
 while step < STEPS
   lr = ToyLR.cosine(step, STEPS, LR_MAX, LR_MIN, WARMUP)
-  m_hp.flat[0] = lr
+  adamw.lr = lr
+  m_hp = adamw.hp(0)
 
   # Cycle through the dataset.
   idx = step % N_IMAGES

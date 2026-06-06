@@ -33,6 +33,7 @@
 require_relative "../lib/toy"
 require_relative "../lib/toy/models/toy_smollm2"
 require_relative "../lib/toy/llm/engine/llama_seq_engine"
+require_relative "../lib/toy/llm/adamw"
 require_relative "../lib/toy/train/toy_drift_grad"
 
 STEPS    = (ENV["STEPS"] || "5").to_i
@@ -184,10 +185,10 @@ puts "ASSERT 3 OK: seq_ids/positions length == " + tb.to_s +
 # AdamW hp vector (7 slots). Single opt_step per step, LR unscaled
 # (NO GRAD_ACCUM scaling — this gate is batching-only). Mirrors the
 # smoke_projection_lens / gqa_divergent fixed hp.
-m_hp = Mat.new(1, 7)
-m_hp.flat[0] = 0.001; m_hp.flat[1] = 0.9; m_hp.flat[2] = 0.95
-m_hp.flat[3] = 1.0e-8; m_hp.flat[4] = 0.0
-m_hp.flat[5] = 0.9; m_hp.flat[6] = 0.95
+# NAMED AdamW (byte-identical to the old hand-filled m_hp): all defaults
+# (lr=0.001, β1=0.9, β2=0.95, eps=1e-8, wd=0, bias_correct=false → slots
+# 5/6 = constant betas).
+m_hp = Toy::AdamW.new.hp(0)
 
 losses = [0.0]; losses.pop
 step = 0

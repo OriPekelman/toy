@@ -24,6 +24,7 @@
 
 require_relative "../lib/toy"
 require_relative "../lib/toy/io/toy_json"
+require_relative "../lib/toy/llm/adamw"
 require_relative "../lib/toy/io/toy_events"
 require_relative "../lib/toy/models/toy_smollm2"
 require_relative "../lib/toy/llm/engine/llama_seq_engine"
@@ -236,12 +237,12 @@ end
 # approximates one full-lr opt_step on the mean grad. At GRAD_ACCUM=1
 # this is identity (lr_per_step == LR), preserving pre-GH#8 behaviour.
 lr_per_step = LR / GRAD_ACCUM.to_f
-m_hp = Mat.new(1, 7)
-m_hp.flat[0] = lr_per_step
-m_hp.flat[1] = 0.9
-m_hp.flat[2] = 0.999
-m_hp.flat[3] = 1.0e-8
-m_hp.flat[4] = 0.0
+# NAMED AdamW (byte-identical to the old hand-filled m_hp): per-micro-step
+# 1/(1-beta^t) bias correction with beta2=0.999. m_hp rebuilt per micro below.
+adamw = Toy::AdamW.new
+adamw.lr           = lr_per_step
+adamw.beta2        = 0.999
+adamw.bias_correct = true
 
 # Positions cycle 0..CONTEXT-1 per batch element. RoPE applies the
 # correct per-batch positional encoding because rope_ext reads
@@ -365,8 +366,7 @@ while step <= STEPS
   micro = 1
   while micro <= GRAD_ACCUM
     micro_count = micro_count + 1
-    m_hp.flat[5] = 1.0 / (1.0 - (0.9   ** micro_count.to_f))
-    m_hp.flat[6] = 1.0 / (1.0 - (0.999 ** micro_count.to_f))
+    m_hp = adamw.hp(micro_count)
     if micro_count == 1
       TinyNN.tnn_graph_reset(fcache.sess)
     else

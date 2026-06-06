@@ -25,6 +25,7 @@
 require_relative "../lib/toy"
 require_relative "../lib/tinynn"
 require_relative "../lib/toy/llm/engine/gpt2_seq_engine"
+require_relative "../lib/toy/llm/adamw"
 
 VOCAB   = 64
 D_MODEL = 32
@@ -62,20 +63,18 @@ while lk < CONTEXT
   lk = lk + 1
 end
 
-m_hp = Mat.new(1, 7)
-m_hp.flat[0] = 0.01    # lr
-m_hp.flat[1] = 0.9     # beta1
-m_hp.flat[2] = 0.999   # beta2
-m_hp.flat[3] = 1.0e-8  # eps
-m_hp.flat[4] = 0.0     # weight decay
+# NAMED AdamW (byte-identical to the old hand-filled m_hp): lr=0.01,
+# beta2=0.999, per-step 1/(1-beta^t) bias correction.
+adamw = Toy::AdamW.new
+adamw.lr           = 0.01
+adamw.beta2        = 0.999
+adamw.bias_correct = true
 
 first_loss = 0.0
 last_loss  = 0.0
 step = 1
 while step <= STEPS
-  sp = step.to_f
-  m_hp.flat[5] = 1.0 / (1.0 - (0.9   ** sp))   # AdamW bias correction
-  m_hp.flat[6] = 1.0 / (1.0 - (0.999 ** sp))
+  m_hp = adamw.hp(step)
   loss = engine.step!(seq_ids, positions, m_labels, m_hp, step == 1)
   first_loss = loss if step == 1
   last_loss  = loss

@@ -10,6 +10,7 @@
 
 require_relative "../lib/toy/models/toy_vit"
 require_relative "../lib/toy/llm/engine/vit_tiny_engine"
+require_relative "../lib/toy/llm/adamw"
 
 IMAGE_SIZE  = (ENV["IMAGE_SIZE"]  || "16").to_i
 PATCH_SIZE  = (ENV["PATCH_SIZE"]  || "4").to_i
@@ -70,11 +71,10 @@ end
 
 cls_idx = [0]   # always take cls token at position 0
 
-m_hp = Mat.new(1, 7)
-m_hp.flat[0] = 0.001
-m_hp.flat[1] = 0.9; m_hp.flat[2] = 0.95
-m_hp.flat[3] = 1.0e-8; m_hp.flat[4] = 0.0
-m_hp.flat[5] = 0.9; m_hp.flat[6] = 0.95
+# NAMED AdamW (byte-identical to the old hand-filled m_hp): all defaults
+# (lr=0.001, β1=0.9, β2=0.95, eps=1e-8, wd=0, bias_correct=false → slots
+# 5/6 = constant betas).
+m_hp = Toy::AdamW.new.hp(0)
 
 losses = [0.0]; losses.pop
 step = 0

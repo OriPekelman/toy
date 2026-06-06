@@ -29,6 +29,7 @@
 require_relative "../../toy"
 require_relative "../../tinynn"
 require_relative "../llm/engine/gpt2_seq_engine"
+require_relative "../llm/adamw"
 
 STEPS    = (ENV["STEPS"]    || "5").to_i
 SEED     = (ENV["SEED"]     || "0").to_i
@@ -81,20 +82,16 @@ while lk < CONTEXT
   lk = lk + 1
 end
 
-# AdamW hyper-params (inline). slots 5/6 = 1/(1-beta^t) (bias correction),
-# matching the gated inline GPT-2 trainer's dynamics.
-m_hp = Mat.new(1, 7)
-m_hp.flat[0] = LR
-m_hp.flat[1] = 0.9
-m_hp.flat[2] = 0.999
-m_hp.flat[3] = 1.0e-8
-m_hp.flat[4] = 0.0
+# NAMED AdamW (byte-identical to the old hand-filled m_hp). slots 5/6 =
+# 1/(1-beta^t) bias correction, matching the gated inline GPT-2 trainer.
+adamw = Toy::AdamW.new
+adamw.lr           = LR
+adamw.beta2        = 0.999
+adamw.bias_correct = true
 
 step = 0
 while step < STEPS
-  sp1 = (step + 1).to_f
-  m_hp.flat[5] = 1.0 / (1.0 - (0.9   ** sp1))
-  m_hp.flat[6] = 1.0 / (1.0 - (0.999 ** sp1))
+  m_hp = adamw.hp(step + 1)
   loss = engine.step!(seq_ids, positions, m_labels, m_hp, step == 0)
   puts "step " + (step + 1).to_s + ": loss=" + loss.to_s
   step = step + 1
