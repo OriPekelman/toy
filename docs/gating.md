@@ -94,6 +94,20 @@ failing CI:
   max single-token run on a greedy OLMoE Q4_K_M decode), not byte-exact, so it
   guards "attention didn't collapse" without false-alarming on K-quant drift.
 
+## Poly-degradation gate
+
+`make gate-poly-degrade` (`prep/poly_degrade_gate.rb`) guards the most dangerous
+Spinel failure mode: whole-program inference can't resolve a call's receiver,
+emits `cannot resolve … on poly … (emitting 0)`, and compiles a literal `0` into
+a numerical path — the binary builds clean and exits 0 but the result is silently
+wrong (`compiled != correct`). It compiles the canonical compute entrypoints
+(`train` / `train_gpt2` / `infer` / `eval` / `eval_lmc`) and fails on any **new**
+emit-0 warning vs the frozen baseline (`prep/fixtures/poly_degrade_baseline.txt`,
+the known-benign dead-path set). A missing/colliding `require` or an unconstrained
+param that re-polys a hot path trips it immediately. Re-record the benign set with
+`ruby prep/poly_degrade_gate.rb --record`. (Issue #32; see
+`feedback_spinel_type_inference_landmines` for the landmine catalogue.)
+
 ## Mirror gate
 
 The CPU algorithm file is the single source of truth; the CUDA and Metal

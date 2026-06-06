@@ -383,6 +383,15 @@ gate-full-finetune:
 gate-moe-kquant:
 	ruby prep/moe_kquant_gate.rb
 
+# Silent poly-degradation gate (#32): compiles the canonical compute entrypoints
+# with spinel and fails if a NEW `cannot resolve … on poly … (emitting 0)` warning
+# appears vs the frozen baseline — i.e. a refactor just silently compiled a literal
+# 0 into a numerical path (compiled != correct). Re-record the known-benign set with
+# `ruby prep/poly_degrade_gate.rb --record`. See feedback_spinel_type_inference_landmines.
+.PHONY: gate-poly-degrade
+gate-poly-degrade:
+	ruby prep/poly_degrade_gate.rb
+
 # CUDA from-scratch TRAINING gate (STRONG arm, no epsilon): train
 # from-scratch --device cuda --steps 5 --seed 0, assert the "step N: loss="
 # curve byte-equals prep/fixtures/train_cuda_baseline.txt, loss decreases,
