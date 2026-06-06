@@ -49,15 +49,4 @@ module ToyCorpusLoader
     end
     buf
   end
-
-  # Advance the byte cursor. Wraps when (new_offset + n_tokens) would
-  # land past EOF. Caller passes the corpus byte size (from a one-time
-  # File.size or equivalent).
-  def self.next_offset(byte_offset, n_tokens, corpus_bytes)
-    new_offset = byte_offset + n_tokens * TOKEN_BYTES
-    if new_offset + n_tokens * TOKEN_BYTES > corpus_bytes
-      return 0
-    end
-    new_offset
-  end
 end
