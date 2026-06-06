@@ -47,6 +47,7 @@
 # popped-empty array literal.
 
 require_relative "../../toy"
+require_relative "../io/toy_json"
 require_relative "../models/toy_smollm2"
 require_relative "../llm/engine/llama_seq_engine"
 require_relative "../train/toy_drift_grad"
@@ -117,17 +118,22 @@ while seq_ids.length < SEQ_LEN; seq_ids.push(0); end
 # Emit run_start (FILE only).
 if EVENTS != ""
   t_open = TinyNN.tnn_events_now_seconds
-  rs  = "{\"kind\":\"run_start\",\"phase\":\"eval\""
-  rs  = rs + ",\"t\":"            + t_open.to_s
-  rs  = rs + ",\"started_at\":\"" + TinyNN.tnn_events_iso8601_now + "\""
-  rs  = rs + ",\"run_id\":\""     + RUN_ID + "\""
-  rs  = rs + ",\"name\":\"lmc\""
-  rs  = rs + ",\"host\":{\"name\":\"" + TinyNN.tnn_provenance_host_name + "\""
-  rs  = rs + ",\"os\":\""             + TinyNN.tnn_provenance_host_os   + "\""
-  rs  = rs + ",\"arch\":\""           + TinyNN.tnn_provenance_host_arch + "\"}"
-  rs  = rs + ",\"backend\":{\"kind\":\"cpu\"}"
-  rs  = rs + "}"
-  TinyNN.tnn_events_emit(rs)
+  rs = Toy::Json.new
+  rs.j_str("kind",  "run_start")
+  rs.j_str("phase", "eval")
+  rs.j_num("t",          t_open)
+  rs.j_str("started_at", TinyNN.tnn_events_iso8601_now)
+  rs.j_str("run_id",     RUN_ID)
+  rs.j_str("name",       "lmc")
+  host = Toy::Json.new
+  host.j_str("name", TinyNN.tnn_provenance_host_name)
+  host.j_str("os",   TinyNN.tnn_provenance_host_os)
+  host.j_str("arch", TinyNN.tnn_provenance_host_arch)
+  rs.j_obj("host", host)
+  backend = Toy::Json.new
+  backend.j_str("kind", "cpu")
+  rs.j_obj("backend", backend)
+  TinyNN.tnn_events_emit(rs.j_dump)
 end
 
 # Cache for the FULL fused Q/K/V buffers — read each fused GGUF tensor exactly
@@ -286,13 +292,16 @@ while ai < alphas_arr.length
   # Emit eval event (FILE only).
   if EVENTS != ""
     t_now = TinyNN.tnn_events_now_seconds
-    ev = "{\"kind\":\"eval\",\"phase\":\"eval\""
-    ev = ev + ",\"t\":"     + t_now.to_s
-    ev = ev + ",\"name\":\"lmc\""
-    ev = ev + ",\"loss\":"  + loss.to_s
-    ev = ev + ",\"extra\":{\"alpha\":" + alpha.to_s + "}"
-    ev = ev + "}"
-    TinyNN.tnn_events_emit(ev)
+    ev = Toy::Json.new
+    ev.j_str("kind",  "eval")
+    ev.j_str("phase", "eval")
+    ev.j_num("t",    t_now)
+    ev.j_str("name", "lmc")
+    ev.j_num("loss", loss)
+    extra = Toy::Json.new
+    extra.j_num("alpha", alpha)
+    ev.j_obj("extra", extra)
+    TinyNN.tnn_events_emit(ev.j_dump)
   end
 
   ai = ai + 1
@@ -301,12 +310,13 @@ end
 # Run-end (FILE only).
 if EVENTS != ""
   t_close = TinyNN.tnn_events_now_seconds
-  re = "{\"kind\":\"run_end\",\"phase\":\"eval\""
-  re = re + ",\"t\":"        + t_close.to_s
-  re = re + ",\"reason\":\"completed\""
-  re = re + ",\"n_alphas\":" + alphas_arr.length.to_s
-  re = re + "}"
-  TinyNN.tnn_events_emit(re)
+  re = Toy::Json.new
+  re.j_str("kind",  "run_end")
+  re.j_str("phase", "eval")
+  re.j_num("t",        t_close)
+  re.j_str("reason",   "completed")
+  re.j_num("n_alphas", alphas_arr.length)
+  TinyNN.tnn_events_emit(re.j_dump)
   TinyNN.tnn_events_close
 end
 

@@ -23,6 +23,7 @@
 #     generated tokens.
 
 require_relative "../lib/toy"
+require_relative "../lib/toy/io/toy_json"
 require_relative "../lib/toy/models/toy_smollm2"
 require_relative "../lib/toy/llm/engine/llama_seq_engine"
 require_relative "../lib/toy/dev/toy_describe_flow"
@@ -302,36 +303,45 @@ if EVENTS.length > 0
   else
     puts "events → " + EVENTS
     rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
-    rs  = "{\"kind\":\"run_start\",\"schema\":\"toy/v1\""
-    rs = rs + ",\"t\":" + TinyNN.tnn_events_now_seconds.to_s
-    rs = rs + ",\"started_at\":\"" + TinyNN.tnn_events_iso8601_now + "\""
-    rs = rs + ",\"run_id\":\"" + rid + "\""
-    rs = rs + ",\"phase\":\"train\""
-    rs = rs + ",\"host\":{\"name\":\""   + TinyNN.tnn_provenance_host_name + "\""
-    rs = rs + ",\"os\":\""               + TinyNN.tnn_provenance_host_os   + "\""
-    rs = rs + ",\"arch\":\""             + TinyNN.tnn_provenance_host_arch + "\"}"
-    rs = rs + ",\"backend\":{\"kind\":\"" + TinyNN.tnn_backend_name(fcache.sess) + "\"}"
-    rs = rs + ",\"git\":{\"sha\":\""     + git_sha    + "\""
-    rs = rs + ",\"branch\":\""           + git_branch + "\"}"
-    rs = rs + ",\"model\":{\"arch\":\"llama\""
-    rs = rs + ",\"name\":\"from-scratch-tinystories\""
-    rs = rs + ",\"vocab\":"    + cfg.vocab.to_s
-    rs = rs + ",\"d_model\":"  + cfg.d_model.to_s
-    rs = rs + ",\"n_layers\":" + cfg.n_layers.to_s
-    rs = rs + ",\"n_heads\":"  + cfg.n_heads.to_s
-    rs = rs + ",\"n_kv\":"     + cfg.n_kv.to_s
-    rs = rs + ",\"d_head\":"   + cfg.head_dim.to_s
-    rs = rs + ",\"d_ff\":"     + cfg.d_ff.to_s
-    rs = rs + "}"
-    rs = rs + ",\"config\":{\"context\":" + CONTEXT.to_s
-    rs = rs + ",\"batch\":"      + BATCH.to_s
-    rs = rs + ",\"grad_accum\":" + GRAD_ACCUM.to_s
-    rs = rs + ",\"steps\":" + STEPS.to_s
-    rs = rs + ",\"lr\":"    + LR.to_s
-    rs = rs + ",\"seed\":"  + SEED.to_s
-    rs = rs + "}"
-    rs = rs + "}"
-    TinyNN.tnn_events_emit(rs)
+    rs = Toy::Json.new
+    rs.j_str("kind", "run_start")
+    rs.j_str("schema", "toy/v1")
+    rs.j_num("t", TinyNN.tnn_events_now_seconds)
+    rs.j_str("started_at", TinyNN.tnn_events_iso8601_now)
+    rs.j_str("run_id", rid)
+    rs.j_str("phase", "train")
+    host = Toy::Json.new
+    host.j_str("name", TinyNN.tnn_provenance_host_name)
+    host.j_str("os",   TinyNN.tnn_provenance_host_os)
+    host.j_str("arch", TinyNN.tnn_provenance_host_arch)
+    rs.j_obj("host", host)
+    backend = Toy::Json.new
+    backend.j_str("kind", TinyNN.tnn_backend_name(fcache.sess))
+    rs.j_obj("backend", backend)
+    git = Toy::Json.new
+    git.j_str("sha",    git_sha)
+    git.j_str("branch", git_branch)
+    rs.j_obj("git", git)
+    model = Toy::Json.new
+    model.j_str("arch", "llama")
+    model.j_str("name", "from-scratch-tinystories")
+    model.j_num("vocab",    cfg.vocab)
+    model.j_num("d_model",  cfg.d_model)
+    model.j_num("n_layers", cfg.n_layers)
+    model.j_num("n_heads",  cfg.n_heads)
+    model.j_num("n_kv",     cfg.n_kv)
+    model.j_num("d_head",   cfg.head_dim)
+    model.j_num("d_ff",     cfg.d_ff)
+    rs.j_obj("model", model)
+    config = Toy::Json.new
+    config.j_num("context",    CONTEXT)
+    config.j_num("batch",      BATCH)
+    config.j_num("grad_accum", GRAD_ACCUM)
+    config.j_num("steps",      STEPS)
+    config.j_num("lr",         LR)
+    config.j_num("seed",       SEED)
+    rs.j_obj("config", config)
+    TinyNN.tnn_events_emit(rs.j_dump)
   end
 end
 
@@ -484,15 +494,16 @@ while step <= STEPS
   # feedback_spinel_type_inference_landmines).
   if EVENTS.length > 0
     step_wall_us = ((TinyNN.tnn_events_now_seconds - step_wall_start) * 1.0e6).to_i
-    es  = "{\"kind\":\"step\",\"phase\":\"train\""
-    es = es + ",\"t\":"        + TinyNN.tnn_events_now_seconds.to_s
-    es = es + ",\"step\":"     + step.to_s
-    es = es + ",\"loss\":"     + loss.to_s
-    es = es + ",\"lr\":"       + LR.to_s
-    es = es + ",\"tokens\":"   + (CONTEXT * BATCH * GRAD_ACCUM).to_s
-    es = es + ",\"wall_us\":"  + step_wall_us.to_s
-    es = es + "}"
-    TinyNN.tnn_events_emit(es)
+    es = Toy::Json.new
+    es.j_str("kind",  "step")
+    es.j_str("phase", "train")
+    es.j_num("t",       TinyNN.tnn_events_now_seconds)
+    es.j_num("step",    step)
+    es.j_num("loss",    loss)
+    es.j_num("lr",      LR)
+    es.j_num("tokens",  CONTEXT * BATCH * GRAD_ACCUM)
+    es.j_num("wall_us", step_wall_us)
+    TinyNN.tnn_events_emit(es.j_dump)
   end
 
   step = step + 1
@@ -568,19 +579,21 @@ end
 # Closes toy#run-end-reason-semantics.
 exit_code = not_learning ? 1 : 0
 if EVENTS.length > 0 && TinyNN.tnn_events_active == 1
-  re  = "{\"kind\":\"run_end\""
-  re = re + ",\"t\":"           + TinyNN.tnn_events_now_seconds.to_s
-  re = re + ",\"ended_at\":\""  + TinyNN.tnn_events_iso8601_now + "\""
-  re = re + ",\"reason\":\"completed\""
-  re = re + ",\"final_step\":"  + STEPS.to_s
-  re = re + ",\"final_loss\":"  + final_loss.to_s
-  re = re + ",\"quality_gate\":{\"passed\":" + (not_learning ? "false" : "true") + ""
-  re = re + ",\"metric\":\"loss_ratio\""
-  re = re + ",\"value\":" + ratio.to_s
-  re = re + ",\"threshold\":0.9}"
-  re = re + ",\"exit_code\":"   + exit_code.to_s
-  re = re + "}"
-  TinyNN.tnn_events_emit(re)
+  re = Toy::Json.new
+  re.j_str("kind", "run_end")
+  re.j_num("t",          TinyNN.tnn_events_now_seconds)
+  re.j_str("ended_at",   TinyNN.tnn_events_iso8601_now)
+  re.j_str("reason",     "completed")
+  re.j_num("final_step", STEPS)
+  re.j_num("final_loss", final_loss)
+  qg = Toy::Json.new
+  qg.j_bool("passed", not_learning ? false : true)
+  qg.j_str("metric",     "loss_ratio")
+  qg.j_num("value",      ratio)
+  qg.j_raw("threshold",  "0.9")
+  re.j_obj("quality_gate", qg)
+  re.j_num("exit_code",  exit_code)
+  TinyNN.tnn_events_emit(re.j_dump)
   TinyNN.tnn_events_close
   puts "events closed: " + EVENTS
 end

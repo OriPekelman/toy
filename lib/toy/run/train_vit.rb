@@ -35,6 +35,7 @@
 # interpolation); ENV reads are TOP-LEVEL constants (a constant assigned
 # inside a conditional arm reads back empty at runtime); no Struct.new.
 
+require_relative "../io/toy_json"
 require_relative "../models/toy_vit"
 require_relative "../llm/engine/vit_tiny_engine"
 require_relative "../io/toy_image_loader"
@@ -155,38 +156,51 @@ if EVENTS.length > 0
   rc = TinyNN.tnn_events_open(EVENTS)
   if rc == 0
     rid = TOY_RUN_ID.length > 0 ? TOY_RUN_ID : "anonymous"
-    rs  = "{\"kind\":\"run_start\",\"schema\":\"toy/v1\""
-    rs = rs + ",\"t\":" + TinyNN.tnn_events_now_seconds.to_s
-    rs = rs + ",\"started_at\":\"" + TinyNN.tnn_events_iso8601_now + "\""
-    rs = rs + ",\"run_id\":\"" + rid + "\""
-    rs = rs + ",\"phase\":\"train\""
-    rs = rs + ",\"name\":\"vit-tiny\""
-    rs = rs + ",\"host\":{\"name\":\""   + TinyNN.tnn_provenance_host_name + "\""
-    rs = rs + ",\"os\":\""               + TinyNN.tnn_provenance_host_os   + "\""
-    rs = rs + ",\"arch\":\""             + TinyNN.tnn_provenance_host_arch + "\"}"
-    rs = rs + ",\"backend\":{\"kind\":\"" + TinyNN.tnn_backend_name(recipe.vt_cache.sess) + "\"}"
-    rs = rs + ",\"git\":{\"sha\":\""     + git_sha    + "\""
-    rs = rs + ",\"branch\":\""           + git_branch + "\"}"
-    rs = rs + ",\"model\":{\"arch\":\"vit\""
-    rs = rs + ",\"name\":\"vit-tiny\""
-    rs = rs + ",\"image_size\":"  + cfg.image_size.to_s
-    rs = rs + ",\"patch_size\":"  + cfg.patch_size.to_s
-    rs = rs + ",\"d_model\":"     + cfg.d_model.to_s
-    rs = rs + ",\"n_layers\":"    + cfg.n_layers.to_s
-    rs = rs + ",\"n_heads\":"     + cfg.n_heads.to_s
-    rs = rs + ",\"d_ff\":"        + cfg.d_ff.to_s
-    rs = rs + ",\"num_classes\":" + cfg.num_classes.to_s + "}"
-    rs = rs + ",\"config\":{\"image_dir\":\"" + IMG_DIR + "\""
-    rs = rs + ",\"n_images\":" + N_IMAGES.to_s
-    rs = rs + ",\"steps\":"    + STEPS.to_s
-    rs = rs + ",\"seed\":"     + SEED.to_s
-    rs = rs + ",\"init\":\"scratch\"}"
-    rs = rs + ",\"schedule\":{\"lr_max\":" + LR_MAX.to_s +
-              ",\"lr_min\":" + LR_MIN.to_s +
-              ",\"warmup\":" + WARMUP.to_s +
-              ",\"n_steps\":" + STEPS.to_s + "}"
-    rs = rs + "}"
-    TinyNN.tnn_events_emit(rs)
+    rs = Toy::Json.new
+    rs.j_str("kind", "run_start")
+    rs.j_str("schema", "toy/v1")
+    rs.j_num("t", TinyNN.tnn_events_now_seconds)
+    rs.j_str("started_at", TinyNN.tnn_events_iso8601_now)
+    rs.j_str("run_id", rid)
+    rs.j_str("phase", "train")
+    rs.j_str("name", "vit-tiny")
+    host = Toy::Json.new
+    host.j_str("name", TinyNN.tnn_provenance_host_name)
+    host.j_str("os",   TinyNN.tnn_provenance_host_os)
+    host.j_str("arch", TinyNN.tnn_provenance_host_arch)
+    rs.j_obj("host", host)
+    backend = Toy::Json.new
+    backend.j_str("kind", TinyNN.tnn_backend_name(recipe.vt_cache.sess))
+    rs.j_obj("backend", backend)
+    git = Toy::Json.new
+    git.j_str("sha",    git_sha)
+    git.j_str("branch", git_branch)
+    rs.j_obj("git", git)
+    model = Toy::Json.new
+    model.j_str("arch", "vit")
+    model.j_str("name", "vit-tiny")
+    model.j_num("image_size",  cfg.image_size)
+    model.j_num("patch_size",  cfg.patch_size)
+    model.j_num("d_model",     cfg.d_model)
+    model.j_num("n_layers",    cfg.n_layers)
+    model.j_num("n_heads",     cfg.n_heads)
+    model.j_num("d_ff",        cfg.d_ff)
+    model.j_num("num_classes", cfg.num_classes)
+    rs.j_obj("model", model)
+    config = Toy::Json.new
+    config.j_str("image_dir", IMG_DIR)
+    config.j_num("n_images",  N_IMAGES)
+    config.j_num("steps",     STEPS)
+    config.j_num("seed",      SEED)
+    config.j_str("init",      "scratch")
+    rs.j_obj("config", config)
+    schedule = Toy::Json.new
+    schedule.j_num("lr_max",  LR_MAX)
+    schedule.j_num("lr_min",  LR_MIN)
+    schedule.j_num("warmup",  WARMUP)
+    schedule.j_num("n_steps", STEPS)
+    rs.j_obj("schedule", schedule)
+    TinyNN.tnn_events_emit(rs.j_dump)
   else
     puts "events_open failed: rc=" + rc.to_s + " (path=" + EVENTS + ")"
   end
@@ -231,14 +245,15 @@ while step < STEPS
 
   if EVENTS.length > 0
     step_wall_us = ((TinyNN.tnn_events_now_seconds - step_wall_start) * 1.0e6).to_i
-    es  = "{\"kind\":\"step\",\"phase\":\"train\""
-    es = es + ",\"t\":"       + TinyNN.tnn_events_now_seconds.to_s
-    es = es + ",\"step\":"    + (step + 1).to_s
-    es = es + ",\"loss\":"    + loss.to_s
-    es = es + ",\"lr\":"      + lr.to_s
-    es = es + ",\"wall_us\":" + step_wall_us.to_s
-    es = es + "}"
-    TinyNN.tnn_events_emit(es)
+    es = Toy::Json.new
+    es.j_str("kind",  "step")
+    es.j_str("phase", "train")
+    es.j_num("t",       TinyNN.tnn_events_now_seconds)
+    es.j_num("step",    step + 1)
+    es.j_num("loss",    loss)
+    es.j_num("lr",      lr)
+    es.j_num("wall_us", step_wall_us)
+    TinyNN.tnn_events_emit(es.j_dump)
   end
   step = step + 1
 end
@@ -247,16 +262,16 @@ end
 # writer + ToyGGUFWriter/Fuser poly-collide with ViTTinyConfig (#169
 # follow-up). Document the deferral in a note field (events, NOT stdout). ---
 if EVENTS.length > 0 && TinyNN.tnn_events_active == 1
-  re  = "{\"kind\":\"run_end\""
-  re = re + ",\"t\":"           + TinyNN.tnn_events_now_seconds.to_s
-  re = re + ",\"ended_at\":\""  + TinyNN.tnn_events_iso8601_now + "\""
-  re = re + ",\"reason\":\"completed\""
-  re = re + ",\"final_step\":"  + STEPS.to_s
-  re = re + ",\"final_loss\":"  + final_loss.to_s
-  re = re + ",\"checkpoint\":\"deferred-169\""
-  re = re + ",\"note\":\"ViT cache has no GGUF writer; checkpoint is the #169 follow-up\""
-  re = re + ",\"exit_code\":0"
-  re = re + "}"
-  TinyNN.tnn_events_emit(re)
+  re = Toy::Json.new
+  re.j_str("kind", "run_end")
+  re.j_num("t",          TinyNN.tnn_events_now_seconds)
+  re.j_str("ended_at",   TinyNN.tnn_events_iso8601_now)
+  re.j_str("reason",     "completed")
+  re.j_num("final_step", STEPS)
+  re.j_num("final_loss", final_loss)
+  re.j_str("checkpoint", "deferred-169")
+  re.j_str("note",       "ViT cache has no GGUF writer; checkpoint is the #169 follow-up")
+  re.j_raw("exit_code",  "0")
+  TinyNN.tnn_events_emit(re.j_dump)
   TinyNN.tnn_events_close
 end

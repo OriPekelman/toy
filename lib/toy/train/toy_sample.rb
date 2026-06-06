@@ -13,6 +13,7 @@
 # returned from `detokenize`.
 
 require_relative "../../tinynn"
+require_relative "../io/toy_json"
 
 module ToySample
   # Greedy autoregressive decode using a realized forward graph.
@@ -107,40 +108,18 @@ module ToySample
     out
   end
 
-  # Minimal JSON-escape for the `prompt` / `text` fields. ts_vocab
-  # words are plain ASCII so the common case is identity; the quotes
-  # / backslash / newline branches harden against real-corpus tokens
-  # that may carry punctuation in future use.
-  def self.json_escape(s)
-    out = ""
-    i = 0
-    while i < s.length
-      c = s[i...i + 1]
-      if c == "\""
-        out = out + "\\\""
-      elsif c == "\\"
-        out = out + "\\\\"
-      elsif c == "\n"
-        out = out + "\\n"
-      elsif c == "\t"
-        out = out + "\\t"
-      else
-        out = out + c
-      end
-      i = i + 1
-    end
-    out
-  end
-
   # Emit one toy/v1 sample event. Caller hands in already-detokenized
   # prompt + text strings, the macro step, and the wall-time tick.
+  # Toy::Json.j_str escapes the prompt/text bodies (replacing the old
+  # local json_escape — which missed \r/\b/\f and control bytes).
   def self.emit_event(prompt_text, text, step, t_now)
-    e = "{\"kind\":\"sample\",\"phase\":\"decode\""
-    e = e + ",\"t\":"      + t_now.to_s
-    e = e + ",\"step\":"   + step.to_s
-    e = e + ",\"prompt\":\"" + json_escape(prompt_text) + "\""
-    e = e + ",\"text\":\""   + json_escape(text)         + "\""
-    e = e + "}"
-    TinyNN.tnn_events_emit(e)
+    e = Toy::Json.new
+    e.j_str("kind",  "sample")
+    e.j_str("phase", "decode")
+    e.j_num("t",      t_now)
+    e.j_num("step",   step)
+    e.j_str("prompt", prompt_text)
+    e.j_str("text",   text)
+    TinyNN.tnn_events_emit(e.j_dump)
   end
 end

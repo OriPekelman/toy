@@ -19,6 +19,8 @@
 #     for "whole file as one string" + monomorphic Array<String>
 #     dispatch.
 
+require_relative "../io/toy_json"
+
 module ToyTokenDrift
   # One-time corpus frequency histogram. Returns Array<Int> of
   # length vocab_size where index = token_id, value = occurrence
@@ -102,16 +104,17 @@ module ToyTokenDrift
         freq = freqs[row]
       end
 
-      ev  = "{\"kind\":\"drift\",\"phase\":\"train\""
-      ev = ev + ",\"t\":"            + t_now.to_s
-      ev = ev + ",\"step\":"         + step.to_s
-      ev = ev + ",\"param\":\"token_embd.weight\""
-      ev = ev + ",\"token_id\":"     + row.to_s
-      ev = ev + ",\"cos_to_init\":"  + cos_to_init.to_s
-      ev = ev + ",\"l2_to_init\":"   + l2_to_init.to_s
-      ev = ev + ",\"freq\":"         + freq.to_s
-      ev = ev + "}"
-      TinyNN.tnn_events_emit(ev)
+      ev = Toy::Json.new
+      ev.j_str("kind",  "drift")
+      ev.j_str("phase", "train")
+      ev.j_num("t",           t_now)
+      ev.j_num("step",        step)
+      ev.j_str("param",       "token_embd.weight")
+      ev.j_num("token_id",    row)
+      ev.j_num("cos_to_init", cos_to_init)
+      ev.j_num("l2_to_init",  l2_to_init)
+      ev.j_num("freq",        freq)
+      TinyNN.tnn_events_emit(ev.j_dump)
       row = row + 1
     end
   end
