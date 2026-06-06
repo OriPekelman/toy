@@ -15,6 +15,7 @@
 #   STEPS=200 TAO_RUN_DIR=/tmp/vit ./examples/example_train_vit_tiny
 
 require_relative "../lib/toy/io/toy_json"
+require_relative "../lib/toy/io/toy_git"
 require_relative "../lib/toy/models/toy_vit"
 require_relative "../lib/toy/llm/engine/vit_tiny_engine"
 require_relative "../lib/toy/io/toy_image_loader"
@@ -139,33 +140,9 @@ end
 
 # Read git state for run_start.provenance.git — same recipe as
 # 06_train_from_scratch.rb so Tao's parser gets the same fields.
-git_sha    = "unknown"
-git_branch = "unknown"
-if File.exist?(".git/HEAD")
-  head = File.read(".git/HEAD")
-  if head.length > 0 && head[head.length - 1...head.length] == "\n"
-    head = head[0...head.length - 1]
-  end
-  if head.length > 5 && head[0...5] == "ref: "
-    ref_rel = head[5...head.length]
-    parts   = ref_rel.split("/")
-    if parts.length >= 3
-      git_branch = parts[parts.length - 1]
-    end
-    ref_path = ".git/" + ref_rel
-    if File.exist?(ref_path)
-      sha = File.read(ref_path)
-      if sha.length >= 40
-        git_sha = sha[0...40]
-      end
-    end
-  else
-    if head.length >= 40
-      git_sha    = head[0...40]
-      git_branch = "HEAD"
-    end
-  end
-end
+gp = Toy::Git.read
+git_sha    = gp.gi_sha
+git_branch = gp.gi_branch
 
 # Events stream — full run-start-provenance per tao#run-start-provenance
 # (matches the 06_train_from_scratch.rb contract: schema, host, git,

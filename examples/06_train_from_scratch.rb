@@ -24,6 +24,7 @@
 
 require_relative "../lib/toy"
 require_relative "../lib/toy/io/toy_json"
+require_relative "../lib/toy/io/toy_git"
 require_relative "../lib/toy/models/toy_smollm2"
 require_relative "../lib/toy/llm/engine/llama_seq_engine"
 require_relative "../lib/toy/dev/toy_describe_flow"
@@ -262,35 +263,9 @@ losses = [0.0]; losses.pop
 # the cwd's .git/. If we're run from outside the toy repo, falls back
 # to "unknown" without aborting (the field is for diagnostics, not
 # load-bearing). Tao's acceptance only requires git.sha to be present.
-git_sha    = "unknown"
-git_branch = "unknown"
-if File.exist?(".git/HEAD")
-  head = File.read(".git/HEAD")
-  # Strip trailing newline manually — Spinel-friendly.
-  if head.length > 0 && head[head.length - 1...head.length] == "\n"
-    head = head[0...head.length - 1]
-  end
-  if head.length > 5 && head[0...5] == "ref: "
-    ref_rel = head[5...head.length]              # e.g. "refs/heads/main"
-    parts   = ref_rel.split("/")
-    if parts.length >= 3
-      git_branch = parts[parts.length - 1]
-    end
-    ref_path = ".git/" + ref_rel
-    if File.exist?(ref_path)
-      sha = File.read(ref_path)
-      if sha.length >= 40
-        git_sha = sha[0...40]
-      end
-    end
-  else
-    # Detached HEAD: contents IS the SHA.
-    if head.length >= 40
-      git_sha    = head[0...40]
-      git_branch = "HEAD"
-    end
-  end
-end
+gp = Toy::Git.read
+git_sha    = gp.gi_sha
+git_branch = gp.gi_branch
 
 # Open the events stream (docs/events-schema.md v1). Emit run_start
 # with full provenance per tao#run-start-provenance: started_at,

@@ -45,6 +45,7 @@
 
 require_relative "../../toy"
 require_relative "../io/toy_json"
+require_relative "../io/toy_git"
 require_relative "../models/toy_smollm2"
 require_relative "../llm/engine/llama_seq_engine"
 require_relative "../llm/recipes/lora"
@@ -103,33 +104,9 @@ positions = [0, 1, 2, 3]
 # --- Events (FILE only when TAO_RUN_DIR set). ---
 EVENTS = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/events.jsonl") : ""
 
-git_sha    = "unknown"
-git_branch = "unknown"
-if File.exist?(".git/HEAD")
-  head = File.read(".git/HEAD")
-  if head.length > 0 && head[head.length - 1...head.length] == "\n"
-    head = head[0...head.length - 1]
-  end
-  if head.length > 5 && head[0...5] == "ref: "
-    ref_rel = head[5...head.length]
-    pp = ref_rel.split("/")
-    if pp.length >= 3
-      git_branch = pp[pp.length - 1]
-    end
-    ref_path = ".git/" + ref_rel
-    if File.exist?(ref_path)
-      sha = File.read(ref_path)
-      if sha.length >= 40
-        git_sha = sha[0...40]
-      end
-    end
-  else
-    if head.length >= 40
-      git_sha    = head[0...40]
-      git_branch = "HEAD"
-    end
-  end
-end
+gp = Toy::Git.read
+git_sha    = gp.gi_sha
+git_branch = gp.gi_branch
 
 if EVENTS.length > 0
   rc = TinyNN.tnn_events_open(EVENTS)

@@ -36,6 +36,7 @@
 # inside a conditional arm reads back empty at runtime); no Struct.new.
 
 require_relative "../io/toy_json"
+require_relative "../io/toy_git"
 require_relative "../models/toy_vit"
 require_relative "../llm/engine/vit_tiny_engine"
 require_relative "../io/toy_image_loader"
@@ -123,33 +124,9 @@ if probe_got != record_f
 end
 
 # git provenance read pure-Ruby from .git/HEAD (07:140-167).
-git_sha    = "unknown"
-git_branch = "unknown"
-if File.exist?(".git/HEAD")
-  head = File.read(".git/HEAD")
-  if head.length > 0 && head[head.length - 1...head.length] == "\n"
-    head = head[0...head.length - 1]
-  end
-  if head.length > 5 && head[0...5] == "ref: "
-    ref_rel = head[5...head.length]
-    pp = ref_rel.split("/")
-    if pp.length >= 3
-      git_branch = pp[pp.length - 1]
-    end
-    ref_path = ".git/" + ref_rel
-    if File.exist?(ref_path)
-      sha = File.read(ref_path)
-      if sha.length >= 40
-        git_sha = sha[0...40]
-      end
-    end
-  else
-    if head.length >= 40
-      git_sha    = head[0...40]
-      git_branch = "HEAD"
-    end
-  end
-end
+gp = Toy::Git.read
+git_sha    = gp.gi_sha
+git_branch = gp.gi_branch
 
 # --- run_start event (FILE only; arch=vit). ---
 if EVENTS.length > 0

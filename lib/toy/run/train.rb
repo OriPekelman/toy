@@ -41,6 +41,7 @@
 
 require_relative "../../toy"
 require_relative "../io/toy_json"
+require_relative "../io/toy_git"
 require_relative "../models/toy_smollm2"
 require_relative "../io/toy_corpus_loader"
 require_relative "../train/toy_lr_schedule"
@@ -119,33 +120,9 @@ if RECIPE == "warm-start"
   p = 0; while p < CONTEXT; positions.push(p); p = p + 1; end
 
   # --- Events (EVENTS hoisted to top-level; FILE only). ---
-  git_sha    = "unknown"
-  git_branch = "unknown"
-  if File.exist?(".git/HEAD")
-    head = File.read(".git/HEAD")
-    if head.length > 0 && head[head.length - 1...head.length] == "\n"
-      head = head[0...head.length - 1]
-    end
-    if head.length > 5 && head[0...5] == "ref: "
-      ref_rel = head[5...head.length]
-      pp = ref_rel.split("/")
-      if pp.length >= 3
-        git_branch = pp[pp.length - 1]
-      end
-      ref_path = ".git/" + ref_rel
-      if File.exist?(ref_path)
-        sha = File.read(ref_path)
-        if sha.length >= 40
-          git_sha = sha[0...40]
-        end
-      end
-    else
-      if head.length >= 40
-        git_sha    = head[0...40]
-        git_branch = "HEAD"
-      end
-    end
-  end
+  gp = Toy::Git.read
+  git_sha    = gp.gi_sha
+  git_branch = gp.gi_branch
 
   if EVENTS.length > 0
     rc = TinyNN.tnn_events_open(EVENTS)
@@ -302,33 +279,9 @@ m_hp = Toy::AdamW.new.hp(0)
 # --- Events (EVENTS hoisted to top-level; cheap-when-off; FILE only). ---
 
 # git provenance read pure-Ruby from .git/HEAD (06:264-292).
-git_sha    = "unknown"
-git_branch = "unknown"
-if File.exist?(".git/HEAD")
-  head = File.read(".git/HEAD")
-  if head.length > 0 && head[head.length - 1...head.length] == "\n"
-    head = head[0...head.length - 1]
-  end
-  if head.length > 5 && head[0...5] == "ref: "
-    ref_rel = head[5...head.length]
-    pp = ref_rel.split("/")
-    if pp.length >= 3
-      git_branch = pp[pp.length - 1]
-    end
-    ref_path = ".git/" + ref_rel
-    if File.exist?(ref_path)
-      sha = File.read(ref_path)
-      if sha.length >= 40
-        git_sha = sha[0...40]
-      end
-    end
-  else
-    if head.length >= 40
-      git_sha    = head[0...40]
-      git_branch = "HEAD"
-    end
-  end
-end
+gp = Toy::Git.read
+git_sha    = gp.gi_sha
+git_branch = gp.gi_branch
 
 if EVENTS.length > 0
   rc = TinyNN.tnn_events_open(EVENTS)
