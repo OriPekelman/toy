@@ -22,6 +22,8 @@
 # All stats are scalars; per_head_l2 is built as a JSON array string
 # via concatenation in this module.
 
+require_relative "../io/toy_json"
+
 module ToyTap
   # Single tap event. Pass layer=-1 / head=-1 to omit those fields
   # (null in the JSON). n_heads>0 enables per_head_l2 (n must be
@@ -51,25 +53,27 @@ module ToyTap
       dn = "bf16"
     end
 
-    ev  = "{\"kind\":\"tap\",\"phase\":\"train\""
-    ev = ev + ",\"t\":"          + t_now.to_s
-    ev = ev + ",\"step\":"       + step.to_s
-    ev = ev + ",\"region\":\""   + region + "\""
+    ev = Toy::Json.new
+    ev.j_str("kind",  "tap")
+    ev.j_str("phase", "train")
+    ev.j_num("t",      t_now)
+    ev.j_num("step",   step)
+    ev.j_str("region", region)
     if layer >= 0
-      ev = ev + ",\"layer\":" + layer.to_s
+      ev.j_num("layer", layer)
     else
-      ev = ev + ",\"layer\":null"
+      ev.j_raw("layer", "null")
     end
     if head >= 0
-      ev = ev + ",\"head\":" + head.to_s
+      ev.j_num("head", head)
     else
-      ev = ev + ",\"head\":null"
+      ev.j_raw("head", "null")
     end
-    ev = ev + ",\"shape\":[" + ne0.to_s + "," + ne1.to_s + "]"
-    ev = ev + ",\"dtype\":\""   + dn + "\""
-    ev = ev + ",\"l2\":"        + l2.to_s
-    ev = ev + ",\"abs_mean\":"  + abs_mean.to_s
-    ev = ev + ",\"nan_count\":" + nan_n.to_s
+    ev.j_raw("shape",     "[" + ne0.to_s + "," + ne1.to_s + "]")
+    ev.j_str("dtype",     dn)
+    ev.j_num("l2",        l2)
+    ev.j_num("abs_mean",  abs_mean)
+    ev.j_num("nan_count", nan_n)
 
     # per_head_l2: download to f64 Mat, split into n_heads contiguous
     # chunks, L2 each. Costs n*8 bytes of host traffic + an O(n) loop
@@ -79,7 +83,7 @@ module ToyTap
       per = n / n_heads
       buf = Mat.new(1, n)
       TinyNN.tnn_download_to_f64_array(sess, tensor, buf.flat, n)
-      ev = ev + ",\"per_head_l2\":["
+      phl2 = "["
       h = 0
       while h < n_heads
         sq = 0.0
@@ -90,14 +94,14 @@ module ToyTap
           i = i + 1
         end
         l2h = sq ** 0.5
-        ev = ev + (h == 0 ? "" : ",") + l2h.to_s
+        phl2 = phl2 + (h == 0 ? "" : ",") + l2h.to_s
         h = h + 1
       end
-      ev = ev + "]"
+      phl2 = phl2 + "]"
+      ev.j_raw("per_head_l2", phl2)
     end
 
-    ev = ev + "}"
-    TinyNN.tnn_events_emit(ev)
+    TinyNN.tnn_events_emit(ev.j_dump)
   end
 
   # GH#15 — Activation-Gram tap for linear CKA. For activation A of
@@ -131,30 +135,32 @@ module ToyTap
     buf = Mat.new(1, n)
     TinyNN.tnn_download_to_f64_array(sess, tensor, buf.flat, n)
 
-    ev  = "{\"kind\":\"tap\",\"phase\":\"train\""
-    ev = ev + ",\"t\":"          + t_now.to_s
-    ev = ev + ",\"step\":"       + step.to_s
-    ev = ev + ",\"region\":\""   + region + "\""
+    ev = Toy::Json.new
+    ev.j_str("kind",  "tap")
+    ev.j_str("phase", "train")
+    ev.j_num("t",      t_now)
+    ev.j_num("step",   step)
+    ev.j_str("region", region)
     if layer >= 0
-      ev = ev + ",\"layer\":" + layer.to_s
+      ev.j_num("layer", layer)
     else
-      ev = ev + ",\"layer\":null"
+      ev.j_raw("layer", "null")
     end
     if head >= 0
-      ev = ev + ",\"head\":" + head.to_s
+      ev.j_num("head", head)
     else
-      ev = ev + ",\"head\":null"
+      ev.j_raw("head", "null")
     end
-    ev = ev + ",\"shape\":[" + d.to_s + "," + t.to_s + "]"
-    ev = ev + ",\"dtype\":\"f32\""
-    ev = ev + ",\"l2\":"        + l2.to_s
-    ev = ev + ",\"abs_mean\":"  + abs_mean.to_s
-    ev = ev + ",\"nan_count\":" + nan_n.to_s
+    ev.j_raw("shape",     "[" + d.to_s + "," + t.to_s + "]")
+    ev.j_str("dtype",     "f32")
+    ev.j_num("l2",        l2)
+    ev.j_num("abs_mean",  abs_mean)
+    ev.j_num("nan_count", nan_n)
 
-    ev = ev + ",\"gram\":["
+    gram = "["
     i = 0
     while i < t
-      ev = ev + (i == 0 ? "[" : ",[")
+      gram = gram + (i == 0 ? "[" : ",[")
       j = 0
       while j < t
         s = 0.0
@@ -163,15 +169,15 @@ module ToyTap
           s = s + buf.flat[k + i * d] * buf.flat[k + j * d]
           k = k + 1
         end
-        ev = ev + (j == 0 ? "" : ",") + s.to_s
+        gram = gram + (j == 0 ? "" : ",") + s.to_s
         j = j + 1
       end
-      ev = ev + "]"
+      gram = gram + "]"
       i = i + 1
     end
-    ev = ev + "]"
+    gram = gram + "]"
+    ev.j_raw("gram", gram)
 
-    ev = ev + "}"
-    TinyNN.tnn_events_emit(ev)
+    TinyNN.tnn_events_emit(ev.j_dump)
   end
 end

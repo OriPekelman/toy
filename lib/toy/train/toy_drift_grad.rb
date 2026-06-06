@@ -33,6 +33,8 @@
 #     ToyDescribeFlow.build_index but inlined to avoid cross-module
 #     dependency).
 
+require_relative "../io/toy_json"
+
 module ToyDriftGrad
   # Walk session graph + leaves, return ordered array of (ptr, name)
   # for every PARAM-flagged tensor (flags bit 4 set). The flag is
@@ -131,14 +133,15 @@ module ToyDriftGrad
     l2_to_init = sum_sq_diff ** 0.5
 
     name = TinyNN.tnn_tensor_name(t)
-    ev  = "{\"kind\":\"drift\",\"phase\":\"train\""
-    ev = ev + ",\"t\":"            + t_now.to_s
-    ev = ev + ",\"step\":"         + step.to_s
-    ev = ev + ",\"param\":\""      + name + "\""
-    ev = ev + ",\"cos_to_init\":"  + cos_to_init.to_s
-    ev = ev + ",\"l2_to_init\":"   + l2_to_init.to_s
-    ev = ev + "}"
-    TinyNN.tnn_events_emit(ev)
+    ev = Toy::Json.new
+    ev.j_str("kind",  "drift")
+    ev.j_str("phase", "train")
+    ev.j_num("t",           t_now)
+    ev.j_num("step",        step)
+    ev.j_str("param",       name)
+    ev.j_num("cos_to_init", cos_to_init)
+    ev.j_num("l2_to_init",  l2_to_init)
+    TinyNN.tnn_events_emit(ev.j_dump)
   end
 
   # Emit one `grad` event for tensor t. Call after tnn_compute_backward
@@ -158,15 +161,16 @@ module ToyDriftGrad
     ne0 = TinyNN.tnn_tensor_ne0(g)
     ne1 = TinyNN.tnn_tensor_ne1(g)
     name = TinyNN.tnn_tensor_name(t)
-    ev  = "{\"kind\":\"grad\",\"phase\":\"train\""
-    ev = ev + ",\"t\":"          + t_now.to_s
-    ev = ev + ",\"step\":"       + step.to_s
-    ev = ev + ",\"param\":\""    + name + "\""
-    ev = ev + ",\"shape\":[" + ne0.to_s + "," + ne1.to_s + "]"
-    ev = ev + ",\"l2\":"         + l2.to_s
-    ev = ev + ",\"abs_mean\":"   + abs_mean.to_s
-    ev = ev + ",\"nan_count\":"  + nan.to_s
-    ev = ev + "}"
-    TinyNN.tnn_events_emit(ev)
+    ev = Toy::Json.new
+    ev.j_str("kind",  "grad")
+    ev.j_str("phase", "train")
+    ev.j_num("t",         t_now)
+    ev.j_num("step",      step)
+    ev.j_str("param",     name)
+    ev.j_raw("shape",     "[" + ne0.to_s + "," + ne1.to_s + "]")
+    ev.j_num("l2",        l2)
+    ev.j_num("abs_mean",  abs_mean)
+    ev.j_num("nan_count", nan)
+    TinyNN.tnn_events_emit(ev.j_dump)
   end
 end
