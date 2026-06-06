@@ -415,6 +415,7 @@ gate-serve:
 # tinynn + the L1-L3 primitives/blocks/archs; plus gguf_writer + drift_grad
 # for the checkpoint). CPU-only; NOT in MIRRORABLE (see prep/gen_cuda_mirror.rb).
 libexec/toy-train: lib/toy/run/train.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
+		lib/toy/io/toy_json.rb \
 		lib/toy/io/toy_corpus_loader.rb lib/toy/train/toy_lr_schedule.rb \
 		lib/toy/llm/engine/llama_seq_engine.rb lib/toy/llm/recipes/from_scratch.rb \
 		lib/toy/llm/recipes/warm_start.rb \
