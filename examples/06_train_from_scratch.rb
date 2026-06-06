@@ -178,12 +178,7 @@ end
 # Cheap: one graph walk at startup; Tao's report/describe pipeline
 # reads `<run_dir>/flow.json` directly. Removes the need for a
 # separate TOY_DESCRIBE pre-pass.
-if TAO_RUN_DIR.length > 0
-  flow_path = TAO_RUN_DIR + "/flow.json"
-  File.open(flow_path, "w") do |f|
-    f.write(ToyDescribeFlow.json(fcache.sess))
-  end
-end
+ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, fcache.sess)
 
 # Read BATCH TinyStories sequences (flat Array<Integer> of length
 # CONTEXT*BATCH). BATCH=1 is the legacy single-line path; BATCH>1

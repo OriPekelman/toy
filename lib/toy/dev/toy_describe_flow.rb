@@ -175,6 +175,20 @@ module ToyDescribeFlow
     j
   end
 
+  # tao#flow-json-emit (issue #25): write the realized graph's flow.json into
+  # `run_dir` (a no-op when run_dir is ""). Called by every training runner right
+  # after realize! so the run bundle is self-describing — parallel to events.jsonl
+  # — and Tao no longer needs a separate TOY_DESCRIBE realize-only pre-pass. One
+  # graph walk, once. Backend-agnostic: ToyDescribeFlow reads the ggml graph
+  # structure via CPU TinyNN (same seam the CUDA/Metal checkpoint writer uses).
+  def self.emit_flow_json(run_dir, sess)
+    if run_dir.length > 0
+      File.open(run_dir + "/flow.json", "w") do |ff|
+        ff.write(ToyDescribeFlow.json(sess))
+      end
+    end
+  end
+
   def self.json(sess)
     pair    = build_index(sess)
     ptrs    = pair[0]

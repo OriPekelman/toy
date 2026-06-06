@@ -47,6 +47,7 @@
 
 require_relative "../../toy"
 require_relative "../io/toy_json"
+require_relative "../dev/toy_describe_flow"
 require_relative "../io/toy_events"
 require_relative "../models/toy_smollm2"
 require_relative "../llm/engine/llama_seq_engine_metal"
@@ -87,6 +88,7 @@ cfg.donor_d_in = DONOR_D
 # train_embeddings, so no extra enable_* call.
 recipe = Toy::LLM::Recipes::FromScratchMetal.new
 recipe.realize!(cfg, CONTEXT, 1, 0, true, false, SEED, 1.0)
+ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe.fs_cache.sess)
 
 # Per-step inputs built IN THE RUNNER, byte-identical to the CPU runner.
 raw        = File.read("data/ts_seqs.txt")

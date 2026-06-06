@@ -441,7 +441,7 @@ gate-serve:
 # pulls (the recipe → llama_seq_engine → transformer + toy + smollm2 +
 # tinynn + the L1-L3 primitives/blocks/archs; plus gguf_writer + drift_grad
 # for the checkpoint). CPU-only; NOT in MIRRORABLE (see prep/gen_cuda_mirror.rb).
-libexec/toy-train: lib/toy/run/train.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
+libexec/toy-train: lib/toy/run/train.rb lib/toy/dev/toy_describe_flow.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
 		lib/toy/io/toy_json.rb lib/toy/io/toy_events.rb lib/toy/io/toy_git.rb \
 		lib/toy/io/toy_corpus_loader.rb lib/toy/train/toy_lr_schedule.rb \
 		lib/toy/llm/engine/llama_seq_engine.rb lib/toy/llm/recipes/from_scratch.rb \
@@ -459,7 +459,7 @@ toy-train: libexec/toy-train
 # LoRA realize_for_mmap path cannot share a Spinel compilation unit with the
 # random-init path (cfg type-merge miscompile; see lib/toy/run/train_lora.rb
 # header). CPU-only; NOT in MIRRORABLE.
-libexec/toy-train-lora: lib/toy/run/train_lora.rb lib/toy/io/toy_json.rb lib/toy/io/toy_events.rb lib/toy/io/toy_git.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
+libexec/toy-train-lora: lib/toy/run/train_lora.rb lib/toy/dev/toy_describe_flow.rb lib/toy/io/toy_json.rb lib/toy/io/toy_events.rb lib/toy/io/toy_git.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
 		lib/toy/llm/engine/llama_seq_engine.rb lib/toy/llm/recipes/lora.rb \
 		lib/toy/llm/adamw.rb \
 		lib/toy/train/toy_gguf_writer.rb lib/toy/train/toy_drift_grad.rb lib/toy/models/transformer.rb \
@@ -513,7 +513,7 @@ toy-train-gpt2-metal: libexec/toy-train-gpt2-metal
 # trains random-init on the COMMITTED data/vit_smoke corpus. NO toy_gguf_writer
 # dep (cfg.vocab/d_ff poly-collide with ViTTinyConfig — #169 checkpoint
 # follow-up). CPU-only; absent from MIRRORABLE (no CUDA/Metal twin this slice).
-libexec/toy-train-vit: lib/toy/run/train_vit.rb lib/toy/io/toy_json.rb lib/toy/io/toy_events.rb lib/toy/io/toy_git.rb lib/toy/llm/recipes/vit_tiny.rb \
+libexec/toy-train-vit: lib/toy/run/train_vit.rb lib/toy/dev/toy_describe_flow.rb lib/toy/io/toy_json.rb lib/toy/io/toy_events.rb lib/toy/io/toy_git.rb lib/toy/llm/recipes/vit_tiny.rb \
 		lib/toy/llm/engine/vit_tiny_engine.rb lib/toy/models/toy_vit.rb lib/toy/models/toy_smollm2.rb \
 		lib/toy/io/toy_image_loader.rb lib/toy/train/toy_lr_schedule.rb lib/toy/train/toy_drift_grad.rb \
 		lib/toy/llm/adamw.rb \
@@ -528,7 +528,7 @@ toy-train-vit: libexec/toy-train-vit
 # checkpoint write/fuse/drift seam (dropping them breaks the writer). Links
 # the CUDA ggml backend via -Wl,-u,tnn_cuda_force_link (every cuda target).
 # CPU-only; NOT in MIRRORABLE (hand-written, see prep/gen_cuda_mirror.rb).
-libexec/toy-train-cuda: lib/toy/run/train_cuda.rb lib/toy/io/toy_json.rb lib/toy/io/toy_events.rb lib/toy/io/toy_git.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
+libexec/toy-train-cuda: lib/toy/run/train_cuda.rb lib/toy/dev/toy_describe_flow.rb lib/toy/io/toy_json.rb lib/toy/io/toy_events.rb lib/toy/io/toy_git.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
 		lib/toy/io/toy_corpus_loader.rb lib/toy/train/toy_lr_schedule.rb \
 		lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/llm/recipes/from_scratch_cuda.rb \
 		lib/toy/llm/recipes/warm_start_cuda.rb \
@@ -551,7 +551,7 @@ toy-train-cuda: libexec/toy-train-cuda
 # (ToyDriftGrad.params downloads via CPU TinyNN). toy_gguf_fuse is NOT a dep
 # (lora uses ToyDriftGrad.params, not the lens-fold path). Links the CUDA
 # ggml backend via -Wl,-u,tnn_cuda_force_link. NOT in MIRRORABLE (hand-written).
-libexec/toy-train-lora-cuda: lib/toy/run/train_lora_cuda.rb lib/toy/io/toy_json.rb lib/toy/io/toy_events.rb lib/toy/io/toy_git.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
+libexec/toy-train-lora-cuda: lib/toy/run/train_lora_cuda.rb lib/toy/dev/toy_describe_flow.rb lib/toy/io/toy_json.rb lib/toy/io/toy_events.rb lib/toy/io/toy_git.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
 		lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/llm/recipes/lora_cuda.rb \
 		lib/toy/llm/adamw.rb \
 		lib/toy/train/toy_gguf_writer.rb lib/toy/train/toy_drift_grad.rb lib/toy/models/transformer.rb \
@@ -572,7 +572,7 @@ toy-train-lora-cuda: libexec/toy-train-lora-cuda
 # (leading underscore, macOS symbol convention). libtinynn_ggml.a (CPU archive)
 # stays in deps for the write seam + base ggml. NOT in MIRRORABLE (hand-written).
 # gx10 RUNTIME-UNVERIFIED — pin baseline + gate on the Mac.
-libexec/toy-train-metal: lib/toy/run/train_metal.rb lib/toy/io/toy_json.rb lib/toy/io/toy_events.rb lib/toy/io/toy_git.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
+libexec/toy-train-metal: lib/toy/run/train_metal.rb lib/toy/dev/toy_describe_flow.rb lib/toy/io/toy_json.rb lib/toy/io/toy_events.rb lib/toy/io/toy_git.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
 		lib/toy/llm/engine/llama_seq_engine_metal.rb lib/toy/llm/recipes/from_scratch_metal.rb \
 		lib/toy/llm/adamw.rb lib/toy/llm/labels.rb \
 		lib/toy/train/toy_gguf_writer.rb lib/toy/train/toy_drift_grad.rb lib/toy/train/toy_gguf_fuse.rb lib/toy/models/transformer.rb \

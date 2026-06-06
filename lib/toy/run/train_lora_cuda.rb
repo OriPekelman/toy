@@ -54,6 +54,7 @@
 
 require_relative "../../toy"
 require_relative "../io/toy_json"
+require_relative "../dev/toy_describe_flow"
 require_relative "../io/toy_events"
 require_relative "../models/toy_smollm2"
 require_relative "../llm/engine/llama_seq_engine_cuda"
@@ -88,6 +89,7 @@ gguf_h      = TinyNNCuda.tnn_gguf_load(GGUF)
 recipe_lora = Toy::LLM::Recipes::LoRACuda.new
 recipe_lora.realize!(gguf_h, cfg_lora, TOKENS.length, lora_untied,
                      lora_qkv_bias, RANK_LORA, 42, 0.01)
+ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe_lora.lora_cache.sess)
 
 # Vocab × T one-hot labels: every position targets TARGET_ID.
 m_labels = Mat.new(TOKENS.length, cfg_lora.vocab)

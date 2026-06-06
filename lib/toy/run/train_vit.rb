@@ -36,6 +36,7 @@
 # inside a conditional arm reads back empty at runtime); no Struct.new.
 
 require_relative "../io/toy_json"
+require_relative "../dev/toy_describe_flow"
 require_relative "../io/toy_events"
 require_relative "../models/toy_vit"
 require_relative "../llm/engine/vit_tiny_engine"
@@ -80,6 +81,8 @@ cfg = ViTTinyConfig.new(IMAGE_SIZE, PATCH_SIZE, NUM_CHAN, D_MODEL,
 
 recipe = Toy::LLM::Recipes::VitTiny.new
 recipe.realize!(cfg, SEED, 1.0)
+# tao#flow-json-emit (#25): self-describing run bundle, parallel to events.jsonl.
+ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe.vt_cache.sess)
 
 # Pre-allocate buffers used every step (07_train_vit_tiny.rb:223-237).
 n_patches  = (IMAGE_SIZE / PATCH_SIZE) * (IMAGE_SIZE / PATCH_SIZE)  # 196

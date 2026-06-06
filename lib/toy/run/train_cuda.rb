@@ -47,6 +47,7 @@
 
 require_relative "../../toy"
 require_relative "../io/toy_json"
+require_relative "../dev/toy_describe_flow"
 require_relative "../io/toy_events"
 require_relative "../models/toy_smollm2"
 require_relative "../llm/engine/llama_seq_engine_cuda"
@@ -112,6 +113,7 @@ if RECIPE == "warm-start"
   recipe_ws.realize_scratch!(cfg_ws, CONTEXT, 1, 0, true, false, SEED, 1.0)
   # INIT=scratch: skip realize_warm! (no donor GGUF, train from random init).
   recipe_ws.build!
+  ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe_ws.ws_cache.sess)
 
   # NAMED AdamW hp (byte-identical twin of the CPU runner). Defaults
   # (beta2=0.95, bias_correct=false) → slots5/6=constant betas. lr
@@ -240,6 +242,7 @@ cfg.donor_d_in = DONOR_D
 # train_embeddings, so no extra enable_* call.
 recipe = Toy::LLM::Recipes::FromScratchCuda.new
 recipe.realize!(cfg, CONTEXT, 1, 0, true, false, SEED, 1.0)
+ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe.fs_cache.sess)
 
 # Per-step inputs built IN THE RUNNER, byte-identical to the CPU runner.
 raw        = File.read("data/ts_seqs.txt")
