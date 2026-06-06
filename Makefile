@@ -72,8 +72,9 @@ GGML_CUDA_ARCH ?= 121
 CUDA_DIR    ?= /usr/local/cuda
 
 # --- Tep dependency (spinelgems convention) ---------------------------------
-# Tep is consumed as a gem from its `main` branch (Gemfile: `gem "tep",
-# git: ...`) via the bundler-spinel / spinelgems convention. Two steps:
+# Tep is consumed as a RELEASED gem from RubyGems (Gemfile: `gem "tep",
+# "~> 0.11"`; published at https://rubygems.org/gems/tep) via the
+# bundler-spinel / spinelgems convention. Two steps:
 #
 #   1. `bundle lock`                              (Gemfile → Gemfile.lock)
 #   2. `../spinelgems/exe/spinel-compat vendor`   (lock → vendor/spinel/:
@@ -88,7 +89,7 @@ CUDA_DIR    ?= /usr/local/cuda
 # entrypoints do `require_relative "vendor/spinel/deps"`.
 #
 # Precheck: ../spinelgems (the vendor tool) must be present. tep itself
-# comes via git: from GitHub (bundler clones it), so ../tep is NOT
+# comes from RubyGems (bundler fetches the released gem), so ../tep is NOT
 # required for the vendor flow.
 #
 # `bundle` env note: use a user-managed Ruby (rbenv / rv / ruby-install
