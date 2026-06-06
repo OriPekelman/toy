@@ -28,6 +28,9 @@ require_relative "../dev/toy_logprobs"
 
 class ToyLM
   attr_reader :arch, :backend, :tokenizer, :max_T
+  # ggml#1506 trace localization: expose the CPU cache so a trace runner can
+  # call enable_trace! before decoding. Read-only; harmless when unused.
+  attr_reader :kv_cpu
 
   def initialize(arch, backend)
     @arch    = arch
