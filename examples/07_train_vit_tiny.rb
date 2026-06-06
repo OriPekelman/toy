@@ -308,10 +308,13 @@ if EVENTS.length > 0
   re.j_str("phase", "train")
   re.j_num("t",      t_close)
   re.j_str("reason", "completed")
+  # quality_gate conforms to the events.md contract:
+  # {passed:bool, metric:str, value:float, threshold:float} (issue #24).
   qg = Toy::Json.new
-  qg.j_str("name",   "loss_ratio")
-  qg.j_num("value",  ratio)
-  qg.j_str("status", quality_gate)
+  qg.j_bool("passed",   ratio < 0.95 ? true : false)
+  qg.j_str("metric",    "loss_ratio")
+  qg.j_num("value",     ratio)
+  qg.j_raw("threshold", "0.95")
   re.j_obj("quality_gate", qg)
   TinyNN.tnn_events_emit(re.j_dump)
   TinyNN.tnn_events_close

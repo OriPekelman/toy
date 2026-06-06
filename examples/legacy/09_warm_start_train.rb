@@ -386,9 +386,12 @@ if EVENTS.length > 0
   re = "{\"kind\":\"run_end\",\"phase\":\"train\""
   re = re + ",\"t\":"      + t_close.to_s
   re = re + ",\"reason\":\"" + reason + "\""
-  re = re + ",\"quality_gate\":{\"name\":\"loss_ratio\""
+  # quality_gate conforms to the events.md contract (issue #24):
+  # {passed:bool, metric:str, value:float, threshold:float}.
+  re = re + ",\"quality_gate\":{\"passed\":" + (ratio < 0.95 ? "true" : "false")
+  re = re + ",\"metric\":\"loss_ratio\""
   re = re + ",\"value\":"  + ratio.to_s
-  re = re + ",\"status\":\"" + quality_gate + "\"}"
+  re = re + ",\"threshold\":0.95}"
   re = re + "}"
   TinyNN.tnn_events_emit(re)
   TinyNN.tnn_events_close

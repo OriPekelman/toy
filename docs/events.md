@@ -277,6 +277,8 @@ Free-form human or AI annotation.
 ```json
 { "kind": "run_end", "t": 1234.5, "ended_at": "2026-05-31T09:50:34Z",
   "reason": "completed", "final_step": 1000, "final_loss": 2.31,
+  "quality_gate": { "passed": true, "metric": "loss_ratio",
+                    "value": 0.71, "threshold": 0.9 },
   "exit_code": 0 }
 ```
 
