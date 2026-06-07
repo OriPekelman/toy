@@ -27,8 +27,14 @@ A run lives under `runs/<run_id>/` in the project (the directory holding
 runs/
   <run_id>/
     events.jsonl        # the structured event stream (this doc)
+    flow.json           # the realized compute-graph DAG (toy/v1, ToyDescribeFlow)
     weights/            # checkpoint snapshot(s), GGUF
 ```
+
+`flow.json` is written once at startup (right after `realize!`) by every training
+runner, so the run bundle is self-describing — a consumer reads the arch DAG
+without a separate `TOY_DESCRIBE` pre-pass. Emitted via
+`ToyDescribeFlow.emit_flow_json(run_dir, sess)`.
 
 `run_id` is generated from `run_id_template` in `toy.yml`
 (`lib/toy/core/config.rb`; default `{arch}-{date}-{seq}`, e.g.
@@ -319,6 +325,18 @@ with `phase:"serve"` and `name:"request"`:
 (held-out evaluation during training). The `extra` open-bag carries
 caller-specific fields without bloating the schema; consumers route on
 `extra.request_id` for request-keyed aggregation.
+
+## Emitting events (producer side)
+
+Runners build event JSON with the tep-free `Toy::Json` ordered-object builder
+(`lib/toy/io/toy_json.rb`) and emit it via `TinyNN.tnn_events_emit(j.j_dump)` —
+**not** hand-concatenated strings (which were unescaped and comma-fragile). The
+shared `run_start` provenance — `host{}` + `backend{}` + `git{}` — is one call,
+`Toy::Events.add_provenance(rs, host_name, host_os, host_arch, backend_kind)`
+(`lib/toy/io/toy_events.rb`), which reads git via `Toy::Git`
+(`lib/toy/io/toy_git.rb`). Hyper-parameter vectors use the `Toy::AdamW` value
+object (`adamw.hp(step)`), not a hand-filled `Mat(1,7)`. All four are pure-Ruby
+(no FFI), Spinel-compiled, and shared across the CPU/CUDA/Metal runners.
 
 ## Producer guarantees
 

@@ -72,7 +72,9 @@ module Toy
           summary: "Generate text from a GGUF model (greedy decode)",
           args:  [{ name: "model", required: true, desc: "path to a .gguf file" }],
           flags: [{ name: "--prompt", desc: "prompt text (default \"Once upon a time\")" },
+                  { name: "--prompt-ids", desc: "space-separated token IDs (tokenizer-less models; overrides --prompt)" },
                   { name: "--n", desc: "tokens to generate (default 16)" },
+                  { name: "--device", desc: "cpu (default) | cuda | metal (macOS)" },
                   { name: "--json", desc: "machine output" }]
         },
         "train" => {
@@ -82,14 +84,16 @@ module Toy
           flags: [{ name: "--steps", desc: "training steps (default 5)" },
                   { name: "--seed", desc: "random-init seed (default 0)" },
                   { name: "--arch", desc: "llama (default) | gpt2 (from-scratch, CPU)" },
+                  { name: "--device", desc: "cpu (default) | cuda | metal (macOS)" },
                   { name: "--out", desc: "run dir override (default runs/<id>)" },
                   { name: "--json", desc: "machine output" }]
         },
         "eval" => {
           class: Eval,
-          summary: "Score a GGUF model (per-token logprobs)",
+          summary: "Score a GGUF model (per-token logprobs; `eval lmc` for two-checkpoint LMC)",
           args:  [{ name: "model", required: true, desc: "path to a .gguf file" }],
           flags: [{ name: "--top-k", desc: "top-K logprobs to report (default 5)" },
+                  { name: "--device", desc: "cpu (default) | cuda | metal (macOS)" },
                   { name: "--json", desc: "machine output" }]
         },
         "serve" => {

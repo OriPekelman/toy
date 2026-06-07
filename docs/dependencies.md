@@ -6,7 +6,7 @@ vendored-ggml C divergences that live in `vendor/`.
 
 ---
 
-## tep — consumed as a gem from `main` via spinelgems
+## tep — consumed as a released RubyGems gem via spinelgems
 
 `tep` is the **only** external Ruby dependency, and it is a
 **build-dep, used by `serve` alone**. `infer`, `train`, and `eval`
@@ -20,11 +20,17 @@ are tep-free. tep is consumed through the
 source "https://rubygems.org"
 ruby "3.2.3", engine: "spinel", engine_version: "0.0.0"
 
-gem "tep", git: "https://github.com/OriPekelman/tep.git", branch: "main"
+gem "tep", "~> 0.11.2"
 ```
 
-`git:` (not `path:`) is deliberate — it gives a reproducible
-cross-machine lock.
+The **released gem** (https://rubygems.org/gems/tep) is the reproducible
+cross-machine path — `Gemfile.lock` pins the version with a RubyGems sha256.
+(The pre-publish `git: …branch: "main"` pin is retired.) tep ships a
+`spinel-ext.json` so `spinel-compat vendor` natively compiles + wires its C
+extensions; no `@TEP_*@` post-vendor substitution.
+
+> serve is currently blocked tep-side (a Spinel codegen bug in tep's scheduler,
+> OriPekelman/tep#198); see `cli.md`.
 
 ### The flow (`make vendor-tep`)
 

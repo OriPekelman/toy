@@ -138,8 +138,14 @@ The shipped recipes are `from_scratch.rb`, `lora.rb`, `warm_start.rb`
 ```ruby
 r = Toy::LLM::Recipes::FromScratch.new
 r.realize!(cfg, t_seq, t_batch, weight_dtype, untied, qkv_bias, seed, init_scale)
-loss = r.step!(seq_ids, positions, m_labels, m_hp, is_first)  # one step
+adamw = Toy::AdamW.new                          # named hyper-params, not a raw Mat
+loss = r.step!(seq_ids, positions, m_labels, adamw.hp(step), is_first)  # one step
 ```
+
+`m_hp` is the AdamW hyper-parameter vector `Mat(1,7)`. Build it with the
+`Toy::AdamW` value object (`lib/toy/llm/adamw.rb`) — `adamw.hp(step)` — rather
+than hand-filling `m_hp.flat[0..6]` with magic slot indices (slots 5/6 carry a
+recipe-dependent dual meaning; AdamW models both via `bias_correct`).
 
 `realize!` delegates to the cache (`realize_for_random_init` then
 `build_training_step`); `step!` runs one step (reset, four ordered

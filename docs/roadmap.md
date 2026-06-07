@@ -135,20 +135,22 @@ block phases — they land inside the layered structure when picked up.
   the toy forward is rope-angle-insensitive at the logit level), and
   GQA-divergent on mmap/q8 (no divergent-head GGUF to gate against). The
   `full_finetune` 6th gate is built (`prep/full_finetune_gate.rb`).
-- **MoE.** OLMoE Q4_K_M decode is incoherent. **2026-06-04 reframe: this
-  is a toy-side loader/graph bug, NOT a ggml op bug** — an op-level
-  `ggml_mul_mat_id` reproducer at OLMoE topology (`tinynn/ggml1506_*`) is
-  clean (within quant noise) while end-to-end still corrupts; there are no
-  CPU `mul_mat_id` changes between our ggml pin and master. Root-cause moves
-  to `realize_for_mmap`'s K-quant expert tensor layout. Workaround: **Q8_0
-  experts**. `realize_for_mmap` warns loud (the warning's "ggml's kernel is
-  wrong" wording is now misattributed — reword). See `docs/notes/mul_mat_id_quants.md`,
-  ggml-org/ggml#1506.
+- **MoE — RESOLVED (2026-06-05).** OLMoE Q4_K_M decode was incoherent and was
+  long misfiled as a ggml `mul_mat_id` K-quant kernel bug (ggml#1506). The op is
+  correct for K-quants (op-level + real-bytes reproducers in `tinynn/ggml1506_*`
+  all clean); the real cause was `head_nbytes` returning 0 for K-quant ATTENTION
+  weights, collapsing every attention head onto head 0. Fixed. K-quant MoE
+  experts (incl. OLMoE's mixed q4_K+q6_K `down_exps`) now decode coherently; the
+  misleading runtime warning was removed and `make gate-moe-kquant` guards it.
+  ggml#1506 is closeable upstream as a non-bug. See `docs/notes/mul_mat_id_quants.md`.
 - **Tep, then Tao, re-adaptation** — deferred until Toy is fully
-  stabilized. The serve convergence onto tep's `Backend` (#30 / PR #33)
-  is **blocked** by a Spinel monomorphization miscompile in the live
-  serve binary (blank-key JSON via polymorphic `Tep::Handler` dispatch);
-  `main` keeps its hand-rolled handlers. Tep is a build-dep only today.
+  stabilized. The serve convergence onto tep's `Backend` (#30) is
+  **blocked** tep-side: `libexec/toy-serve` won't even compile —
+  `Tep::Scheduler.spawn_fiber` → `FiberSlot.new` incompatible-pointer under
+  Spinel (filed as OriPekelman/tep#198), and 0.11.3 additionally blank-keys
+  JSON via a polymorphic-dispatch monomorphization. `main` keeps its
+  hand-rolled handlers until a tep release builds + serves correctly. tep is
+  consumed as the released RubyGems gem (#31 done).
 
 ---
 
@@ -162,8 +164,8 @@ touching kernels.
 1. **Bind `MUL_MAT_ID` + `ADD_ID` + `TOP_K` + `ARGSORT`** (sparse MoE
    expert dispatch + router). All exist in ggml; we have zero bindings.
    Unblocks **five families**: Mixtral, Qwen3-MoE, DeepSeek-V3 FFN,
-   Llama-4-MoE, GLM-MoE. (Carries the K-quant-expert caveat above —
-   ship with Q8_0 experts until ggml#1506 lands.)
+   Llama-4-MoE, GLM-MoE. (K-quant experts work — the OLMoE corruption was
+   the `head_nbytes` attention-stride bug above, now fixed.)
 
 2. **Apply the widened RoPE.** The C and Ruby `tnn_rope_ext` binding
    *already* exposes `freq_scale`, `ext_factor`, `attn_factor`,

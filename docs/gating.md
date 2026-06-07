@@ -170,5 +170,7 @@ the work stabilises.
   Q8_0 through the graph.
 
 For known numerical-divergence issues currently masked rather than fixed
-(CPU/CUDA LoRA-train grad aliasing, MoE K-quant `mul_mat_id`), see the
-"Known issues" notes in `docs/roadmap.md`.
+(CPU/CUDA LoRA-train grad aliasing), see the "Known issues" notes in
+`docs/roadmap.md`. (The MoE K-quant `mul_mat_id` "bug" was resolved — it was
+`head_nbytes` collapsing K-quant attention heads, not the op; guarded by
+`make gate-moe-kquant`.)

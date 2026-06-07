@@ -59,20 +59,27 @@ graph-walk that infers the model's shape and capabilities).
 Download a GGUF from a HuggingFace repo into the cache and add a `data/`
 symlink. The second positional selects a specific `.gguf` file within the repo.
 
-### `infer <model> [--prompt TEXT] [--n N] [--json]`
-Greedy decode from a GGUF model.
-Defaults: `--prompt "Once upon a time"`, `--n 16`.
+### `infer <model> [--prompt TEXT] [--prompt-ids "ID ID …"] [--n N] [--device cpu|cuda|metal] [--json]`
+Greedy decode from a GGUF model. `--prompt-ids` drives tokenizer-less models with
+explicit numeric token IDs (overrides `--prompt`; the runners fail loud on a
+tokenizer-less model with neither). `--device cuda|metal` selects the per-device
+runner (`metal` is macOS-only). Defaults: `--prompt "Once upon a time"`, `--n 16`,
+`--device cpu`.
 
-### `train <recipe> [--steps N] [--seed S] [--out DIR] [--json]`
+### `train <recipe> [--steps N] [--seed S] [--arch llama|gpt2] [--device cpu|cuda|metal] [--out DIR] [--json]`
 Train a model from scratch and record a run bundle.
-`<recipe>` is required; only `from-scratch` is accepted in this slice (other
-recipes are rejected with a bad-input error).
-Defaults: `--steps 5`, `--seed 0`, `--out runs/<id>`.
+`<recipe>` is required; `from-scratch` is the accepted recipe (other recipes are
+rejected with a bad-input error). `--arch gpt2` trains the from-scratch GPT-2
+arch (CPU); `--device cuda|metal` selects the per-device runner (`metal` is
+macOS-only; GPT-2 is CPU-only).
+Defaults: `--steps 5`, `--seed 0`, `--arch llama`, `--device cpu`, `--out runs/<id>`.
 Writes the run bundle (see [Run bundle layout](#run-bundle-layout)) and echoes
 the byte-deterministic loss curve to stdout.
 
-### `eval <model> [--top-k K] [--json]`
-Score a GGUF model: per-token logprobs. Default `--top-k 5`.
+### `eval <model> [--top-k K] [--device cpu|cuda|metal] [--json]`
+Score a GGUF model: per-token logprobs. Default `--top-k 5`, `--device cpu`.
+Two-checkpoint Linear Mode Connectivity is a subcommand:
+`eval lmc --ckpt A --other B [--alphas "0,0.25,…"]`.
 
 ### `serve <model> [--port PORT] [--name NAME]`
 Serve a GGUF model over an OpenAI-compatible HTTP API (CPU). Default
@@ -80,9 +87,11 @@ Serve a GGUF model over an OpenAI-compatible HTTP API (CPU). Default
 basename). The serve stack lives at `lib/toy/serve/openai/` and is driven by
 `lib/toy/run/serve.rb` → `libexec/toy-serve`.
 
-> Known issue: serving currently hits a TLS-symbol blocker from a stale
-> vendored `tep/net.rb`; the fix is a tep re-vendor. `infer`/`train`/`eval` are
-> tep-free and unaffected. See [reference/coverage.md](coverage.md).
+> Known issue: `libexec/toy-serve` currently fails to compile in tep's scheduler
+> (`Tep::Scheduler.spawn_fiber` → `FiberSlot.new` incompatible-pointer under
+> Spinel) — a tep-side codegen bug, tracked as
+> [OriPekelman/tep#198](https://github.com/OriPekelman/tep/issues/198) (gates
+> toy#30). `infer`/`train`/`eval` are tep-free and unaffected.
 
 ## Project config — `toy.yml`
 
@@ -108,13 +117,15 @@ the project cwd, and shells the runner with a controlled env. The bundle:
 ```
 runs/<id>/
   events.jsonl            # toy/v1 event stream (see events.md)
+  flow.json               # the realized compute-graph DAG (toy/v1) — written
+                          #   once at startup so the bundle is self-describing
   weights/
     step_<N>.gguf         # checkpoints
     latest                # symlink to the most recent checkpoint
 ```
 
-Events and weights are written file-side only — never to stdout. For the
-event schema see [events.md](events.md).
+Events, `flow.json`, and weights are written file-side only — never to stdout.
+For the event schema see [events.md](events.md).
 
 ## Build path
 
@@ -134,8 +145,10 @@ Runners read config from a controlled env hash (e.g. `STEPS`, `SEED`,
 `TAO_RUN_DIR`, `TOY_RUN_ID`) passed via `Open3`, so a stale caller environment
 cannot leak in.
 
-Runners are **CPU-only**. GPU runners (a `--device` flag) are deferred — see
-[roadmap.md](roadmap.md).
+`infer` / `train` / `eval` accept `--device cuda|metal`, which selects a separate
+per-device runner binary (e.g. `libexec/toy-infer-cuda`, `libexec/toy-train-cuda`;
+`metal` is macOS-only). They are single-type binaries by Spinel necessity (one
+backend module per binary), built on demand the same way. `serve` is CPU-only.
 
 ## Examples
 
