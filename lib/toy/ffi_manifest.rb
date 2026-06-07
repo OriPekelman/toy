@@ -66,16 +66,8 @@ module Toy
         tail: "-Wno-int-conversion -framework Foundation -framework Metal -framework MetalKit",
       },
     }.freeze
-
-    # The string literally in tinynn.rb today. Post-vendor readers
-    # gsub this exact line; if toy's source changes the literal, bump
-    # this constant in lockstep (committed as part of the toy PR
-    # that touches tinynn.rb).
-    CURRENT_FFI_CFLAGS = {
-      cpu:   '-L. -Ltinynn -Lvendor/ggml/build/src -Lvendor/ggml/build/src/ggml-cpu -Wno-int-conversion',
-      cuda:  '-L. -Ltinynn -Lvendor/ggml/build-cuda/src -Lvendor/ggml/build-cuda/src/ggml-cpu -Lvendor/ggml/build-cuda/src/ggml-cuda -L/usr/local/cuda/lib64 -Wno-int-conversion',
-      metal: '-L. -Ltinynn -Lvendor/ggml/build-metal/src -Lvendor/ggml/build-metal/src/ggml-cpu -Lvendor/ggml/build-metal/src/ggml-metal -Wno-int-conversion -framework Foundation -framework Metal -framework MetalKit',
-    }.freeze
+    # (CURRENT_FFI_CFLAGS canary retired by toy#45 — drift is now caught
+    # systemically by spinel-compat vendor's zero-substitution warning.)
 
     # Build the absolute ffi_cflags string for `backend_key` against a
     # caller-supplied TOY_SRC directory. Honors any per-backend env

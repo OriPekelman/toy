@@ -69,8 +69,8 @@ SPINEL_DIR=~/sites/spinel ~/sites/spinelgems/exe/spinel-compat vendor
 # 4. (THE CONTRIVED STEP — tracked for removal, toy#42) Rewrite link paths:
 #    turns toy's relative -L flags into absolute paths anchored at TOY_SRC.
 #    Copy the hook template from toy's prep/ into your own prep/:
-mkdir -p prep && cp ../toy/prep/post_vendor_toy.rb prep/
-./prep/post_vendor_toy.rb                 # uses TOY_SRC=~/sites/toy
+# (nothing else — spinel-ext.json build-units build ggml + the tinynn
+# archive inside vendor/spinel/toy/ during `spinel-compat vendor`; toy#45)
 
 # 5. Compile.
 spinel experiment.rb -o experiment

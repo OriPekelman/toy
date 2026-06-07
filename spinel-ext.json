@@ -1,0 +1,25 @@
+[
+  {
+    "name": "ggml",
+    "build": {
+      "tool": "cmake",
+      "dir": "vendor/ggml",
+      "patches": ["vendor-patches/*.patch"],
+      "args": ["-DBUILD_SHARED_LIBS=OFF", "-DGGML_STATIC=ON",
+               "-DGGML_CUDA=OFF", "-DGGML_METAL=OFF", "-DGGML_VULKAN=OFF",
+               "-DGGML_OPENCL=OFF", "-DGGML_BLAS=OFF", "-DGGML_OPENMP=OFF",
+               "-DGGML_ACCELERATE=OFF", "-DGGML_BUILD_EXAMPLES=OFF",
+               "-DGGML_BUILD_TESTS=OFF", "-DCMAKE_BUILD_TYPE=Release",
+               "-DCMAKE_POSITION_INDEPENDENT_CODE=ON"],
+      "artifacts": ["build/src/libggml.a",
+                    "build/src/libggml-base.a",
+                    "build/src/libggml-cpu.a"]
+    }
+  },
+  {
+    "name": "tinynn",
+    "build": { "tool": "make", "dir": "tinynn", "artifacts": ["libtinynn_ggml.a"] },
+    "placeholder": "-L. -Ltinynn -Lvendor/ggml/build/src -Lvendor/ggml/build/src/ggml-cpu -Wno-int-conversion",
+    "link": ["-L{dir}", "-L{dir:ggml}/build/src", "-Wno-int-conversion"]
+  }
+]

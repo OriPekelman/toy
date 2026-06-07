@@ -68,8 +68,19 @@ Gem::Specification.new do |s|
     "tinynn/tinynn_events.h", "tinynn/tinynn_events.c",
     "tinynn/tinynn_backend_metal.m",
     "tinynn/tinynn_backend_cuda.c",
-  ].reject { |f| File.directory?(f) || f =~ /\.(o|so|a|dylib|bundle)$/ }
-   .select { |f| tracked.empty? || tracked.include?(f) }
+    # spinel-ext.json build-units (toy#45): consumers' `spinel-compat vendor`
+    # builds ggml + the tinynn archive INSIDE their vendor tree.
+    "spinel-ext.json",
+    "tinynn/Makefile",
+    # Pristine pinned ggml source (GGML_REV), shipped IN the gem so vendoring
+    # is hermetic (nokogiri-vendoring-libxml2 precedent). It is NOT in toy's
+    # git — `make gem-prep` clones/pins/resets it before `gem build`; hence
+    # the tracked-filter exemption below. Patches ship separately
+    # (vendor-patches/) and apply at the consumer's vendor step.
+    "vendor/ggml/**/*",
+  ].reject { |f| File.directory?(f) || f =~ /\.(o|so|a|dylib|bundle)$/ ||
+                 f =~ %r{\Avendor/ggml/(build|\.git|\.patched)} }
+   .select { |f| tracked.empty? || tracked.include?(f) || f.start_with?("vendor/ggml/") }
 
   # bin/toy is a plain-MRI binstub (the CRuby CLI shell under
   # lib/toy/core/). RubyGems ships it from bin/. (Was a stale exe/[]

@@ -68,6 +68,9 @@ endif
 # --- vendored ggml ----------------------------------------------------------
 GGML_DIR    := vendor/ggml
 GGML_REPO   := https://github.com/ggml-org/ggml.git
+# Pinned upstream rev: what the vendor-patches/ set is proven against, and
+# what ships inside the gem (toy#45). Bump deliberately, re-proving patches.
+GGML_REV    := 41e7949
 GGML_CUDA_ARCH ?= 121
 CUDA_DIR    ?= /usr/local/cuda
 
@@ -886,7 +889,10 @@ $(GGML_DIR)/.patched: $(GGML_DIR)/CMakeLists.txt $(GGML_PATCHES)
 
 $(GGML_DIR)/CMakeLists.txt:
 	mkdir -p vendor
-	git clone --depth 1 $(GGML_REPO) $(GGML_DIR)
+	git init -q $(GGML_DIR)
+	cd $(GGML_DIR) && git remote add origin $(GGML_REPO) \
+	  && git fetch -q --depth 1 origin $(GGML_REV) \
+	  && git checkout -q FETCH_HEAD
 
 # GGML_OPENMP=OFF: avoid the libgomp link dependency. On macOS clang
 # ships libomp (LLVM), not libgomp (GNU); ggml's own thread pool covers
@@ -1009,6 +1015,16 @@ tinynn/libtinynn_ggml.a: tinynn/tinynn_ggml.o tinynn/tinynn_gguf.o tinynn/tinynn
 # --- smoke test -------------------------------------------------------------
 # Builds tinynn/smoke.rb against the CPU shim. Requires `setup-ggml` to have
 # been run once first.
+# --- gem release prep (toy#45) ----------------------------------------------
+# The gem ships PRISTINE pinned ggml (patches apply at the consumer's vendor
+# step), so reset the working tree's ggml before `gem build`. Re-run setup-ggml
+# afterwards to restore the dev build.
+gem-prep: $(GGML_DIR)/CMakeLists.txt
+	cd $(GGML_DIR) && git reset --hard FETCH_HEAD >/dev/null 2>&1 || git reset --hard HEAD >/dev/null
+	rm -f $(GGML_DIR)/.patched
+	@echo "ggml pristine at $$(cd $(GGML_DIR) && git rev-parse --short HEAD); now: gem build toy.gemspec"
+.PHONY: gem-prep
+
 smoke: tinynn/smoke
 	./tinynn/smoke
 

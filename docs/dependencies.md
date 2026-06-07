@@ -101,7 +101,7 @@ hook:
 # Gemfile:  gem "toy", path: "../toy"
 bundle lock
 SPINEL_DIR=~/sites/spinel ~/sites/spinelgems/exe/spinel-compat vendor
-./prep/post_vendor_toy.rb          # rewrite link paths
+# (post-vendor hook retired by toy#45 — build-units are self-contained)
 spinel experiment.rb -o experiment
 ```
 
