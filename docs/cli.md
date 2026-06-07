@@ -87,11 +87,14 @@ Serve a GGUF model over an OpenAI-compatible HTTP API (CPU). Default
 basename). The serve stack lives at `lib/toy/serve/openai/` and is driven by
 `lib/toy/run/serve.rb` → `libexec/toy-serve`.
 
-> Known issue: `libexec/toy-serve` currently fails to compile in tep's scheduler
-> (`Tep::Scheduler.spawn_fiber` → `FiberSlot.new` incompatible-pointer under
-> Spinel) — a tep-side codegen bug, tracked as
-> [OriPekelman/tep#198](https://github.com/OriPekelman/tep/issues/198) (gates
-> toy#30). `infer`/`train`/`eval` are tep-free and unaffected.
+> Known issue: `libexec/toy-serve` fails to compile at toy's current Spinel pin
+> (`Tep::Scheduler.spawn_fiber` → `FiberSlot.new` incompatible-pointer; plus a
+> JSON-key monomorphization). This is a **Spinel regression**, not a tep bug —
+> both are clean at tep's Spinel pin `f6d5eef`. The fix is to align toy's Spinel
+> build to that pin (no tep release needed); tracked as
+> [OriPekelman/tep#198](https://github.com/OriPekelman/tep/issues/198) (the
+> pin-bump tracker; gates toy#30). `infer`/`train`/`eval` don't link tep and are
+> unaffected.
 
 ## Project config — `toy.yml`
 

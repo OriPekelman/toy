@@ -29,8 +29,10 @@ cross-machine path — `Gemfile.lock` pins the version with a RubyGems sha256.
 `spinel-ext.json` so `spinel-compat vendor` natively compiles + wires its C
 extensions; no `@TEP_*@` post-vendor substitution.
 
-> serve is currently blocked tep-side (a Spinel codegen bug in tep's scheduler,
-> OriPekelman/tep#198); see `cli.md`.
+> serve is currently gated on a Spinel **pin-bump**: it won't compile at toy's
+> current Spinel but is clean at tep's Spinel pin `f6d5eef` (a Spinel regression,
+> not a tep bug — no tep release needed). Tracked as OriPekelman/tep#198; see
+> `cli.md`.
 
 ### The flow (`make vendor-tep`)
 

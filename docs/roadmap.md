@@ -144,12 +144,14 @@ block phases — they land inside the layered structure when picked up.
   misleading runtime warning was removed and `make gate-moe-kquant` guards it.
   ggml#1506 is closeable upstream as a non-bug. See `docs/notes/mul_mat_id_quants.md`.
 - **Tep, then Tao, re-adaptation** — deferred until Toy is fully
-  stabilized. The serve convergence onto tep's `Backend` (#30) is
-  **blocked** tep-side: `libexec/toy-serve` won't even compile —
-  `Tep::Scheduler.spawn_fiber` → `FiberSlot.new` incompatible-pointer under
-  Spinel (filed as OriPekelman/tep#198), and 0.11.3 additionally blank-keys
-  JSON via a polymorphic-dispatch monomorphization. `main` keeps its
-  hand-rolled handlers until a tep release builds + serves correctly. tep is
+  stabilized. The serve convergence onto tep's `Backend` (#30) is gated on a
+  **Spinel pin-bump**: `libexec/toy-serve` won't compile at toy's current
+  Spinel (`Tep::Scheduler.spawn_fiber` → `FiberSlot.new` incompatible-pointer +
+  a JSON-key monomorphization), but **both are clean at tep's Spinel pin
+  `f6d5eef`** — it's a Spinel regression toy hit by running newer Spinel than
+  tep, NOT a tep bug and NOT needing a tep release. Aligning toy's Spinel build
+  to `f6d5eef` unblocks it (tracked as OriPekelman/tep#198, the pin-bump
+  tracker). `main` keeps its hand-rolled handlers until the bump lands. tep is
   consumed as the released RubyGems gem (#31 done).
 
 ---
