@@ -19,7 +19,7 @@
 #     for "whole file as one string" + monomorphic Array<String>
 #     dispatch.
 
-require_relative "../io/toy_json"
+require_relative "../../../vendor/spinel/spinel_kit/lib/spinel_kit/json_builder"
 
 module ToyTokenDrift
   # One-time corpus frequency histogram. Returns Array<Int> of
@@ -104,17 +104,17 @@ module ToyTokenDrift
         freq = freqs[row]
       end
 
-      ev = Toy::Json.new
-      ev.j_str("kind",  "drift")
-      ev.j_str("phase", "train")
-      ev.j_num("t",           t_now)
-      ev.j_num("step",        step)
-      ev.j_str("param",       "token_embd.weight")
-      ev.j_num("token_id",    row)
-      ev.j_num("cos_to_init", cos_to_init)
-      ev.j_num("l2_to_init",  l2_to_init)
-      ev.j_num("freq",        freq)
-      TinyNN.tnn_events_emit(ev.j_dump)
+      ev = SpinelKit::Json::Builder.new
+      ev.add_str("kind",  "drift")
+      ev.add_str("phase", "train")
+      ev.add_num("t",           t_now)
+      ev.add_num("step",        step)
+      ev.add_str("param",       "token_embd.weight")
+      ev.add_num("token_id",    row)
+      ev.add_num("cos_to_init", cos_to_init)
+      ev.add_num("l2_to_init",  l2_to_init)
+      ev.add_num("freq",        freq)
+      TinyNN.tnn_events_emit(ev.dump)
       row = row + 1
     end
   end

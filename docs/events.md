@@ -340,8 +340,9 @@ Runners build event JSON with the tep-free `Toy::Json` ordered-object builder
 **not** hand-concatenated strings (which were unescaped and comma-fragile). The
 shared `run_start` provenance — `host{}` + `backend{}` + `git{}` — is one call,
 `Toy::Events.add_provenance(rs, host_name, host_os, host_arch, backend_kind)`
-(`lib/toy/io/toy_events.rb`), which reads git via `Toy::Git`
-(`lib/toy/io/toy_git.rb`). Hyper-parameter vectors use the `Toy::AdamW` value
+(`lib/toy/io/toy_events.rb`), which reads git via `SpinelKit::Git`
+(the shared Spinel stdlib-surface gem, toy#44; was the now-retired
+`lib/toy/io/toy_git.rb`). Hyper-parameter vectors use the `Toy::AdamW` value
 object (`adamw.hp(step)`), not a hand-filled `Mat(1,7)`. All four are pure-Ruby
 (no FFI), Spinel-compiled, and shared across the CPU/CUDA/Metal runners.
 

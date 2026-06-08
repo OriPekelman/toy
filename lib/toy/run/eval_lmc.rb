@@ -47,7 +47,7 @@
 # popped-empty array literal.
 
 require_relative "../../toy"
-require_relative "../io/toy_json"
+require_relative "../../../vendor/spinel/spinel_kit/lib/spinel_kit/json_builder"
 require_relative "../models/toy_smollm2"
 require_relative "../llm/engine/llama_seq_engine"
 require_relative "../llm/adamw"
@@ -119,22 +119,22 @@ while seq_ids.length < SEQ_LEN; seq_ids.push(0); end
 # Emit run_start (FILE only).
 if EVENTS != ""
   t_open = TinyNN.tnn_events_now_seconds
-  rs = Toy::Json.new
-  rs.j_str("kind",  "run_start")
-  rs.j_str("phase", "eval")
-  rs.j_num("t",          t_open)
-  rs.j_str("started_at", TinyNN.tnn_events_iso8601_now)
-  rs.j_str("run_id",     RUN_ID)
-  rs.j_str("name",       "lmc")
-  host = Toy::Json.new
-  host.j_str("name", TinyNN.tnn_provenance_host_name)
-  host.j_str("os",   TinyNN.tnn_provenance_host_os)
-  host.j_str("arch", TinyNN.tnn_provenance_host_arch)
-  rs.j_obj("host", host)
-  backend = Toy::Json.new
-  backend.j_str("kind", "cpu")
-  rs.j_obj("backend", backend)
-  TinyNN.tnn_events_emit(rs.j_dump)
+  rs = SpinelKit::Json::Builder.new
+  rs.add_str("kind",  "run_start")
+  rs.add_str("phase", "eval")
+  rs.add_num("t",          t_open)
+  rs.add_str("started_at", TinyNN.tnn_events_iso8601_now)
+  rs.add_str("run_id",     RUN_ID)
+  rs.add_str("name",       "lmc")
+  host = SpinelKit::Json::Builder.new
+  host.add_str("name", TinyNN.tnn_provenance_host_name)
+  host.add_str("os",   TinyNN.tnn_provenance_host_os)
+  host.add_str("arch", TinyNN.tnn_provenance_host_arch)
+  rs.add_obj("host", host)
+  backend = SpinelKit::Json::Builder.new
+  backend.add_str("kind", "cpu")
+  rs.add_obj("backend", backend)
+  TinyNN.tnn_events_emit(rs.dump)
 end
 
 # Cache for the FULL fused Q/K/V buffers — read each fused GGUF tensor exactly
@@ -290,16 +290,16 @@ while ai < alphas_arr.length
   # Emit eval event (FILE only).
   if EVENTS != ""
     t_now = TinyNN.tnn_events_now_seconds
-    ev = Toy::Json.new
-    ev.j_str("kind",  "eval")
-    ev.j_str("phase", "eval")
-    ev.j_num("t",    t_now)
-    ev.j_str("name", "lmc")
-    ev.j_num("loss", loss)
-    extra = Toy::Json.new
-    extra.j_num("alpha", alpha)
-    ev.j_obj("extra", extra)
-    TinyNN.tnn_events_emit(ev.j_dump)
+    ev = SpinelKit::Json::Builder.new
+    ev.add_str("kind",  "eval")
+    ev.add_str("phase", "eval")
+    ev.add_num("t",    t_now)
+    ev.add_str("name", "lmc")
+    ev.add_num("loss", loss)
+    extra = SpinelKit::Json::Builder.new
+    extra.add_num("alpha", alpha)
+    ev.add_obj("extra", extra)
+    TinyNN.tnn_events_emit(ev.dump)
   end
 
   ai = ai + 1
@@ -308,13 +308,13 @@ end
 # Run-end (FILE only).
 if EVENTS != ""
   t_close = TinyNN.tnn_events_now_seconds
-  re = Toy::Json.new
-  re.j_str("kind",  "run_end")
-  re.j_str("phase", "eval")
-  re.j_num("t",        t_close)
-  re.j_str("reason",   "completed")
-  re.j_num("n_alphas", alphas_arr.length)
-  TinyNN.tnn_events_emit(re.j_dump)
+  re = SpinelKit::Json::Builder.new
+  re.add_str("kind",  "run_end")
+  re.add_str("phase", "eval")
+  re.add_num("t",        t_close)
+  re.add_str("reason",   "completed")
+  re.add_num("n_alphas", alphas_arr.length)
+  TinyNN.tnn_events_emit(re.dump)
   TinyNN.tnn_events_close
 end
 

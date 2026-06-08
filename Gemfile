@@ -13,3 +13,11 @@ ruby "3.2.3", engine: "spinel", engine_version: "0.0.0"
 # the gem root, so it resolves + vendors cleanly. `~> 0.11.2` = the current
 # release (0.11.2) — allows 0.11.x patches, holds the minor.
 gem "tep", "~> 0.11.2"
+
+# SpinelKit — the shared Spinel stdlib-surface gem (toy#44): JSON
+# builder/encoder/decoder + .git/HEAD provenance, consolidated out of toy's
+# (and tep's) hand-rolled Toy::Json / Toy::Git shims. Pure Ruby, spinel-ext.json
+# is [] (no native ext), so it vendors as plain lib/ copies under
+# vendor/spinel/spinel_kit/. Consumed as the RELEASED RubyGems gem (like tep);
+# `~> 0.1` allows 0.1.x patches, holds the minor.
+gem "spinel_kit", "~> 0.1"

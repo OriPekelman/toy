@@ -13,7 +13,7 @@
 # returned from `detokenize`.
 
 require_relative "../../tinynn"
-require_relative "../io/toy_json"
+require_relative "../../../vendor/spinel/spinel_kit/lib/spinel_kit/json_builder"
 
 module ToySample
   # Greedy autoregressive decode using a realized forward graph.
@@ -110,16 +110,16 @@ module ToySample
 
   # Emit one toy/v1 sample event. Caller hands in already-detokenized
   # prompt + text strings, the macro step, and the wall-time tick.
-  # Toy::Json.j_str escapes the prompt/text bodies (replacing the old
+  # SpinelKit::Json::Builder.j_str escapes the prompt/text bodies (replacing the old
   # local json_escape — which missed \r/\b/\f and control bytes).
   def self.emit_event(prompt_text, text, step, t_now)
-    e = Toy::Json.new
-    e.j_str("kind",  "sample")
-    e.j_str("phase", "decode")
-    e.j_num("t",      t_now)
-    e.j_num("step",   step)
-    e.j_str("prompt", prompt_text)
-    e.j_str("text",   text)
-    TinyNN.tnn_events_emit(e.j_dump)
+    e = SpinelKit::Json::Builder.new
+    e.add_str("kind",  "sample")
+    e.add_str("phase", "decode")
+    e.add_num("t",      t_now)
+    e.add_num("step",   step)
+    e.add_str("prompt", prompt_text)
+    e.add_str("text",   text)
+    TinyNN.tnn_events_emit(e.dump)
   end
 end

@@ -125,6 +125,20 @@ vendor-tep:
 vendor/spinel/tep/lib/tep.rb:
 	@$(MAKE) vendor-tep
 
+# SpinelKit (toy#44) is vendored by the SAME `vendor-tep` step (both gems are in
+# the Gemfile/lock; `spinel-compat vendor` copies all of them). This rule lets
+# any runner/example list the vendored spinel_kit/git.rb (toy_events' git
+# provenance) as a build prereq and have it produced on demand. Pure Ruby, no
+# C-ext — the vendor copy is just lib/ files.
+vendor/spinel/spinel_kit/lib/spinel_kit/git.rb:
+	@$(MAKE) vendor-tep
+
+# SpinelKit JSON builder (toy#44) — the run_start/events JSON emitter, vendored
+# by the same `vendor-tep` step. Replaces the retired lib/toy/io/toy_json.rb
+# (Toy::Json → SpinelKit::Json::Builder; byte-identical output).
+vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb:
+	@$(MAKE) vendor-tep
+
 # --- pure-Spinel drivers ----------------------------------------------------
 # Source lives in demos/. We expose short top-level target names
 # (`make train_minimal`, `make distilgpt2_demo_text`) that build into
@@ -263,7 +277,7 @@ toy-eval: libexec/toy-eval
 # Deps mirror example_lmc (Makefile:479) NOT toy-eval; order-only | libexec (no
 # $(SPINEL_DEPS)) like the CPU toy-eval runner. CPU-only; NOT in MIRRORABLE (see
 # prep/gen_cuda_mirror.rb); a cuda LMC twin is a later slice.
-libexec/toy-eval-lmc: lib/toy/run/eval_lmc.rb lib/toy/llm/adamw.rb lib/toy/io/toy_json.rb lib/toy/io/toy_events.rb lib/toy/io/toy_git.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy.rb lib/toy/models/transformer.rb lib/toy/train/toy_drift_grad.rb lib/tinynn.rb tinynn/libtinynn_ggml.a | libexec
+libexec/toy-eval-lmc: lib/toy/run/eval_lmc.rb lib/toy/llm/adamw.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy.rb lib/toy/models/transformer.rb lib/toy/train/toy_drift_grad.rb lib/tinynn.rb tinynn/libtinynn_ggml.a | libexec
 	$(SPINEL) $< -o $@
 toy-eval-lmc: libexec/toy-eval-lmc
 
@@ -456,7 +470,7 @@ gate-serve:
 # tinynn + the L1-L3 primitives/blocks/archs; plus gguf_writer + drift_grad
 # for the checkpoint). CPU-only; NOT in MIRRORABLE (see prep/gen_cuda_mirror.rb).
 libexec/toy-train: lib/toy/run/train.rb lib/toy/dev/toy_describe_flow.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
-		lib/toy/io/toy_json.rb lib/toy/io/toy_events.rb lib/toy/io/toy_git.rb \
+		vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
 		lib/toy/io/toy_corpus_loader.rb lib/toy/train/toy_lr_schedule.rb \
 		lib/toy/llm/engine/llama_seq_engine.rb lib/toy/llm/recipes/from_scratch.rb \
 		lib/toy/llm/recipes/warm_start.rb \
@@ -473,7 +487,7 @@ toy-train: libexec/toy-train
 # LoRA realize_for_mmap path cannot share a Spinel compilation unit with the
 # random-init path (cfg type-merge miscompile; see lib/toy/run/train_lora.rb
 # header). CPU-only; NOT in MIRRORABLE.
-libexec/toy-train-lora: lib/toy/run/train_lora.rb lib/toy/dev/toy_describe_flow.rb lib/toy/io/toy_json.rb lib/toy/io/toy_events.rb lib/toy/io/toy_git.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
+libexec/toy-train-lora: lib/toy/run/train_lora.rb lib/toy/dev/toy_describe_flow.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
 		lib/toy/llm/engine/llama_seq_engine.rb lib/toy/llm/recipes/lora.rb \
 		lib/toy/llm/adamw.rb \
 		lib/toy/train/toy_gguf_writer.rb lib/toy/train/toy_drift_grad.rb lib/toy/models/transformer.rb \
@@ -527,7 +541,7 @@ toy-train-gpt2-metal: libexec/toy-train-gpt2-metal
 # trains random-init on the COMMITTED data/vit_smoke corpus. NO toy_gguf_writer
 # dep (cfg.vocab/d_ff poly-collide with ViTTinyConfig — #169 checkpoint
 # follow-up). CPU-only; absent from MIRRORABLE (no CUDA/Metal twin this slice).
-libexec/toy-train-vit: lib/toy/run/train_vit.rb lib/toy/dev/toy_describe_flow.rb lib/toy/io/toy_json.rb lib/toy/io/toy_events.rb lib/toy/io/toy_git.rb lib/toy/llm/recipes/vit_tiny.rb \
+libexec/toy-train-vit: lib/toy/run/train_vit.rb lib/toy/dev/toy_describe_flow.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb lib/toy/llm/recipes/vit_tiny.rb \
 		lib/toy/llm/engine/vit_tiny_engine.rb lib/toy/models/toy_vit.rb lib/toy/models/toy_smollm2.rb \
 		lib/toy/io/toy_image_loader.rb lib/toy/train/toy_lr_schedule.rb lib/toy/train/toy_drift_grad.rb \
 		lib/toy/llm/adamw.rb \
@@ -542,7 +556,7 @@ toy-train-vit: libexec/toy-train-vit
 # checkpoint write/fuse/drift seam (dropping them breaks the writer). Links
 # the CUDA ggml backend via -Wl,-u,tnn_cuda_force_link (every cuda target).
 # CPU-only; NOT in MIRRORABLE (hand-written, see prep/gen_cuda_mirror.rb).
-libexec/toy-train-cuda: lib/toy/run/train_cuda.rb lib/toy/dev/toy_describe_flow.rb lib/toy/io/toy_json.rb lib/toy/io/toy_events.rb lib/toy/io/toy_git.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
+libexec/toy-train-cuda: lib/toy/run/train_cuda.rb lib/toy/dev/toy_describe_flow.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
 		lib/toy/io/toy_corpus_loader.rb lib/toy/train/toy_lr_schedule.rb \
 		lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/llm/recipes/from_scratch_cuda.rb \
 		lib/toy/llm/recipes/warm_start_cuda.rb \
@@ -565,7 +579,7 @@ toy-train-cuda: libexec/toy-train-cuda
 # (ToyDriftGrad.params downloads via CPU TinyNN). toy_gguf_fuse is NOT a dep
 # (lora uses ToyDriftGrad.params, not the lens-fold path). Links the CUDA
 # ggml backend via -Wl,-u,tnn_cuda_force_link. NOT in MIRRORABLE (hand-written).
-libexec/toy-train-lora-cuda: lib/toy/run/train_lora_cuda.rb lib/toy/dev/toy_describe_flow.rb lib/toy/io/toy_json.rb lib/toy/io/toy_events.rb lib/toy/io/toy_git.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
+libexec/toy-train-lora-cuda: lib/toy/run/train_lora_cuda.rb lib/toy/dev/toy_describe_flow.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
 		lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/llm/recipes/lora_cuda.rb \
 		lib/toy/llm/adamw.rb \
 		lib/toy/train/toy_gguf_writer.rb lib/toy/train/toy_drift_grad.rb lib/toy/models/transformer.rb \
@@ -586,7 +600,7 @@ toy-train-lora-cuda: libexec/toy-train-lora-cuda
 # (leading underscore, macOS symbol convention). libtinynn_ggml.a (CPU archive)
 # stays in deps for the write seam + base ggml. NOT in MIRRORABLE (hand-written).
 # gx10 RUNTIME-UNVERIFIED — pin baseline + gate on the Mac.
-libexec/toy-train-metal: lib/toy/run/train_metal.rb lib/toy/dev/toy_describe_flow.rb lib/toy/io/toy_json.rb lib/toy/io/toy_events.rb lib/toy/io/toy_git.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
+libexec/toy-train-metal: lib/toy/run/train_metal.rb lib/toy/dev/toy_describe_flow.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
 		lib/toy/llm/engine/llama_seq_engine_metal.rb lib/toy/llm/recipes/from_scratch_metal.rb \
 		lib/toy/llm/adamw.rb lib/toy/llm/labels.rb \
 		lib/toy/train/toy_gguf_writer.rb lib/toy/train/toy_drift_grad.rb lib/toy/train/toy_gguf_fuse.rb lib/toy/models/transformer.rb \
@@ -605,14 +619,14 @@ toy-train-metal: libexec/toy-train-metal
 # Spinel source lib/toy/run/serve.rb; the binary path EQUALS the make
 # target so ToyRoot.ensure_built("libexec/toy-serve") both builds and
 # locates it. The endpoint logic moved out of tep_demo/openai_api_llama.rb
-# into lib/toy/serve/openai/* (Server/State + handlers + ApiJson + the
-# embeddings handler). vendor/spinel/tep/lib/tep.rb is the TEP BUILD-DEP
+# into lib/toy/serve/openai/* (Server/State + handlers + the embeddings
+# handler; JSON via SpinelKit::Json, toy#44). vendor/spinel/tep/lib/tep.rb is the TEP BUILD-DEP
 # edge — Tep is consumed purely as transport (built by `make vendor-tep`
 # on a fresh tree; needs ../tep + ../spinelgems siblings). Deps mirror the
 # tep_demo recipe (Makefile:486) + the KV stack. CPU-only; NOT in
 # MIRRORABLE (see prep/gen_cuda_mirror.rb).
-libexec/toy-serve: lib/toy/run/serve.rb lib/toy/io/toy_json.rb lib/toy/io/toy_events.rb lib/toy/io/toy_git.rb \
-		lib/toy/serve/openai/server.rb lib/toy/serve/openai/api_json.rb \
+libexec/toy-serve: lib/toy/run/serve.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
+		lib/toy/serve/openai/server.rb \
 		lib/toy/serve/openai/handlers.rb lib/toy/serve/openai/embeddings_handler.rb \
 		vendor/spinel/tep/lib/tep.rb \
 		lib/toy_smollm2_ffi_kv.rb lib/toy/models/toy_smollm2_loader.rb \
@@ -800,9 +814,9 @@ example_inference_metal: examples/example_inference_metal
 # toy#train-device-select-cuda follow-up. The dispatcher errors
 # cleanly on DEVICE=cuda so Tao's `run_start.backend.kind=="cuda"`
 # acceptance fails honestly rather than silently emitting cpu data.
-examples/example_train_from_scratch_cpu: examples/06_train_from_scratch.rb lib/toy/io/toy_json.rb lib/toy/io/toy_events.rb lib/toy/io/toy_git.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/tinynn.rb lib/toy/dev/toy_describe_flow.rb lib/toy/train/toy_drift_grad.rb lib/toy/train/toy_gguf_writer.rb lib/toy/dev/toy_tap.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+examples/example_train_from_scratch_cpu: examples/06_train_from_scratch.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/tinynn.rb lib/toy/dev/toy_describe_flow.rb lib/toy/train/toy_drift_grad.rb lib/toy/train/toy_gguf_writer.rb lib/toy/dev/toy_tap.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
-examples/example_train_from_scratch_cuda: examples/06_train_from_scratch_cuda.rb lib/toy/io/toy_json.rb lib/toy/io/toy_events.rb lib/toy/io/toy_git.rb lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/tinynn_cuda.rb lib/toy/dev/toy_describe_flow.rb lib/toy/train/toy_drift_grad.rb lib/toy/train/toy_gguf_writer.rb lib/toy/dev/toy_tap.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS)
+examples/example_train_from_scratch_cuda: examples/06_train_from_scratch_cuda.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/tinynn_cuda.rb lib/toy/dev/toy_describe_flow.rb lib/toy/train/toy_drift_grad.rb lib/toy/train/toy_gguf_writer.rb lib/toy/dev/toy_tap.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS)
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 examples/example_train_from_scratch: examples/example_train_from_scratch_cpu
 	@printf '#!/bin/sh\n# Auto-generated by Makefile. DEVICE selects the backend binary.\n# Edit examples/06_train_from_scratch.rb (cpu) for behaviour; CUDA mirror is auto-generated by prep/gen_cuda_mirror.rb.\ncase "$${DEVICE:-cpu}" in\n  cpu|"") exec "$$(dirname "$$0")/example_train_from_scratch_cpu" "$$@" ;;\n  cuda)   exec "$$(dirname "$$0")/example_train_from_scratch_cuda" "$$@" ;;\n  metal)  echo "DEVICE=metal not yet supported for training (inference only)" >&2; exit 2 ;;\n  *)      echo "DEVICE=$${DEVICE} not recognised (want cpu|cuda)" >&2; exit 2 ;;\nesac\n' > $@
