@@ -400,6 +400,18 @@ gate-full-finetune:
 gate-mixed-precision:
 	ruby prep/mixed_precision_gate.rb
 
+# toy#42 full-API require gate. Builds examples/smoke_compute_surface (which
+# requires ONLY lib/toy/compute.rb) and asserts it realizes a live engine —
+# proving the one-require compute surface co-compiles + works for a library
+# consumer. Builds the smoke itself.
+.PHONY: gate-compute-surface
+gate-compute-surface: examples/smoke_compute_surface
+	@out="$$(./examples/smoke_compute_surface 2>&1)"; \
+	echo "$$out" | tail -2; \
+	echo "$$out" | grep -q "compute-surface: ok" \
+	  && echo "GATE PASS [compute-surface]: lib/toy/compute.rb one-require surface is live" \
+	  || { echo "GATE FAIL [compute-surface]"; exit 1; }
+
 # K-quant MoE attention regression gate (the bug long misfiled as ggml#1506):
 # head_nbytes returned 0 for K-quant attention weights → per-head mmap stride
 # collapsed every head onto head 0 → degenerate repeating decode on OLMoE
@@ -660,6 +672,14 @@ example_lmc: examples/example_lmc
 
 # E2.3 (towards GH#14) — projection-lens smoke.
 examples/smoke_projection_lens: examples/smoke_projection_lens.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/tinynn.rb lib/toy/train/toy_drift_grad.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+
+# toy#42 full-API require gate. Compiling this proves lib/toy/compute.rb's whole
+# surface (all three engines + recipes + loaders) co-compiles in one program;
+# running it realizes a LlamaSeqEngine to prove the surface is live. The prereq
+# is just lib/toy/compute.rb — it pulls everything else transitively, and
+# $(SPINEL) follows the require graph.
+examples/smoke_compute_surface: examples/smoke_compute_surface.rb lib/toy/compute.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
 # P2.6 — GQA-divergent (w_o) gate. Realizes a config with head_dim=24 so

@@ -77,26 +77,32 @@ spinel experiment.rb -o experiment
 ./experiment
 ```
 
-A typical `experiment.rb`. **Note the explicit `require_relative`s** for the
-primitives you compose — `vendor/spinel/deps.rb` only pulls `toy.rb` (the
-top-level), so you pick the rest yourself (also tracked for removal, toy#42):
+A typical `experiment.rb`. One require — `toy/compute` (toy#42) — pulls the
+whole composition surface (all three engines + recipes + GGUF/tokenizer
+loaders), so you no longer hand-`require_relative` each primitive:
 
 ```ruby
-require_relative "vendor/spinel/deps"
-require_relative "vendor/spinel/toy/lib/toy/models/toy_smollm2"
-require_relative "vendor/spinel/toy/lib/toy/llm/engine/llama_seq_engine"
+require_relative "vendor/spinel/toy/lib/toy/compute"   # the full compute API
 
-cfg = Toy::SmolLM2Config.new(627, 64, 4, 4, 128, 2, 32, 10000.0, 1.0e-5)
-fcache = Toy::LLM::Engine::LlamaSeqEngine.new
-fcache.realize_for_random_init(cfg, 32, false, false, 0, 1.0)
+cfg    = Toy::SmolLM2Config.new(627, 64, 4, 4, 128, 2, 32, 10000.0, 1.0e-5)
+engine = Toy::LLM::Engine::LlamaSeqEngine.new
+engine.realize_for_random_init(cfg, 32, 1, 0, false, false, 0, 1.0)
 # … build_training_step, upload, compute, …
 ```
+
+`toy/compute` is the **Spinel-only** entry — it pulls `tinynn` (FFI) and the
+engines. The top-level `toy.rb` stays MRI-safe (Mat + Card + version, no FFI)
+so `bin/toy` can require it; don't use `toy.rb` for the compute surface. If you
+build only one engine and want to compile less (Spinel has no tree-shaking),
+require that engine's file directly instead of `toy/compute`. The
+`gate-compute-surface` make target proves the one-require surface co-compiles +
+runs (`examples/smoke_compute_surface`).
 
 From here you write your experiment loop against
 `Toy::LLM::Engine::LlamaSeqEngine` / `Toy::LLM::Engine::ViTTinyEngine` /
 `SmolLM2KVFFICache` / the GGUF loaders. `~/sites/tao_transfer` is the canonical
 worked example. To emit Tao-consumable telemetry, see [`events.md`](events.md)
-(and `Toy::Json` / `Toy::Events.add_provenance` for building it).
+(and `SpinelKit::Json::Builder` / `Toy::Events.add_provenance` for building it).
 
 ### Env knobs (`prep/post_vendor_toy.rb`)
 | Env | Purpose |
