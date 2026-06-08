@@ -139,10 +139,110 @@ module Toy
 
         ALGO_SUBDIRS = %w[primitives blocks archs recipes].freeze
 
+        # ---- `toy new --lib` : a library-COMPOSITION project ----
+        # Unlike the app scaffold (algos/ + toy.yml + the toy CLI), the --lib
+        # scaffold is a plain Spinel program that CONSUMES toy as a gem: a
+        # Gemfile pulls `toy` (+ `spinel_kit`), `spinel-compat vendor` builds it
+        # into vendor/, and experiment.rb requires the one-shot compute surface
+        # (toy#42). No toy.yml, no binstub — this is "compose models against
+        # toy's engines", the tao_transfer shape.
+
+        LIB_GEMFILE = <<~RUBY
+          source "https://rubygems.org"
+          ruby "3.2.3", engine: "spinel", engine_version: "0.0.0"
+
+          # toy ships its compute surface + native (ggml) build inputs; spinel_kit
+          # is toy's stdlib-surface dep (JSON/Git shims). `spinel-compat vendor`
+          # copies both into vendor/spinel/ and builds toy's archive there.
+          gem "toy"
+          gem "spinel_kit", "~> 0.1"
+        RUBY
+
+        # The starter program. Requires ONLY toy/compute (toy#42 full-API
+        # require) and trains a tiny Llama-shape model from scratch. Mirrors
+        # examples/smoke_compute_surface.rb's proven API. Spinel-clean: literal
+        # require_relative, no #{} interpolation, no kwargs.
+        LIB_EXPERIMENT = <<~'RUBY'
+          # experiment.rb — compose a model against toy's engines.
+          #
+          # ONE require pulls toy's whole compute surface (engines + recipes +
+          # loaders): vendor/spinel/toy/lib/toy/compute (toy#42). It resolves
+          # after `bundle lock && spinel-compat vendor`.
+          #
+          #   spinel experiment.rb -o experiment && ./experiment
+          require_relative "vendor/spinel/toy/lib/toy/compute"
+
+          VOCAB   = 627
+          D_MODEL = 64
+          HEADS   = 4
+          LAYERS  = 2
+          CONTEXT = 16
+          STEPS   = 20
+
+          cfg = Toy::SmolLM2Config.new(VOCAB, D_MODEL, HEADS, HEADS, 128,
+                                       LAYERS, CONTEXT, 10000.0, 1.0e-5)
+
+          # The L4 recipe drives the engine. weight_dtype=0 (f32), B=1, seed=0.
+          recipe = Toy::LLM::Recipes::FromScratch.new
+          recipe.realize!(cfg, CONTEXT, 1, 0, false, false, 0, 1.0)
+
+          seq_ids = [0]
+          seq_ids.pop
+          positions = [0]
+          positions.pop
+          i = 0
+          while i < CONTEXT
+            seq_ids.push(i % VOCAB)
+            positions.push(i)
+            i = i + 1
+          end
+
+          m_labels = Toy::Labels.next_token(seq_ids, VOCAB, CONTEXT, 1)
+          m_hp     = Toy::AdamW.new.hp(0)
+
+          step = 0
+          while step < STEPS
+            loss = recipe.step!(seq_ids, positions, m_labels, m_hp, step == 0)
+            puts "step " + (step + 1).to_s + ": loss=" + loss.to_s
+            step = step + 1
+          end
+          puts "experiment: ok"
+        RUBY
+
+        LIB_README = <<~MARKDOWN
+          # toy library-composition project
+
+          A Spinel program that composes a model against toy's engines.
+
+          ## Build & run
+          ```sh
+          bundle lock              # resolve toy + spinel_kit
+          spinel-compat vendor     # copy + build toy into vendor/spinel/
+          spinel experiment.rb -o experiment && ./experiment
+          ```
+
+          > Until `toy` is published to RubyGems, point the Gemfile at a
+          > checkout: `gem "toy", path: "../toy"` (or `git:`), then `bundle lock`.
+
+          `experiment.rb` requires `vendor/spinel/toy/lib/toy/compute` — toy's
+          one-shot compute surface (all engines + recipes + loaders). Write your
+          experiment loop against `Toy::LLM::Engine::LlamaSeqEngine` /
+          `ViTTinyEngine` / `GPT2SeqEngine` and the L4 recipes. See toy's
+          `docs/consuming-toy.md`.
+        MARKDOWN
+
+        LIB_GITIGNORE = <<~GITIGNORE
+          /vendor/
+          /experiment
+          *.o
+          *.a
+        GITIGNORE
+
         def initialize(argv)
           @argv = argv
           @json = false
           @force = false
+          @lib = false
           @path = nil
         end
 
@@ -154,14 +254,22 @@ module Toy
             return fail_out("target #{target.inspect} exists and is not empty (use --force)")
           end
 
-          created = scaffold(target)
+          created = @lib ? scaffold_lib(target) : scaffold(target)
 
           if @json
             puts JSON.pretty_generate(
               "format" => "toy/new-v1",
+              "kind" => @lib ? "lib" : "app",
               "path" => target,
               "created" => created
             )
+          elsif @lib
+            puts "Created toy library-composition project at #{target}"
+            created.each { |rel| puts "  #{rel}" }
+            puts ""
+            puts "Next: cd #{@path}"
+            puts "      bundle lock && spinel-compat vendor   # fetch + build toy into vendor/"
+            puts "      spinel experiment.rb -o experiment && ./experiment"
           else
             puts "Created toy project at #{target}"
             created.each { |rel| puts "  #{rel}" }
@@ -183,6 +291,7 @@ module Toy
             case tok
             when "--json"  then @json = true
             when "--force" then @force = true
+            when "--lib"   then @lib = true
             when /\A-/
               $stderr.puts "toy new: unknown flag #{tok.inspect}"
               return false
@@ -238,6 +347,24 @@ module Toy
           write_file(binstub, BINSTUB)
           File.chmod(0o755, binstub)
           created << "bin/toy"
+
+          created
+        end
+
+        # `toy new --lib <path>` — a library-composition project (Gemfile +
+        # starter experiment.rb against toy/compute). Returns created paths.
+        def scaffold_lib(target)
+          created = []
+          FileUtils.mkdir_p(target)
+
+          write_file(File.join(target, "Gemfile"), LIB_GEMFILE)
+          created << "Gemfile"
+          write_file(File.join(target, "experiment.rb"), LIB_EXPERIMENT)
+          created << "experiment.rb"
+          write_file(File.join(target, "README.md"), LIB_README)
+          created << "README.md"
+          write_file(File.join(target, ".gitignore"), LIB_GITIGNORE)
+          created << ".gitignore"
 
           created
         end
