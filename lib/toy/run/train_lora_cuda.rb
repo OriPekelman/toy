@@ -53,7 +53,7 @@
 # "step N: loss=" line.
 
 require_relative "../../toy"
-require_relative "../io/toy_json"
+require_relative "../../../vendor/spinel/spinel_kit/lib/spinel_kit/json_builder"
 require_relative "../dev/toy_describe_flow"
 require_relative "../io/toy_events"
 require_relative "../models/toy_smollm2"
@@ -121,36 +121,36 @@ if EVENTS.length > 0
   rc = TinyNNCuda.tnn_events_open(EVENTS)
   if rc == 0
     rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
-    rs = Toy::Json.new
-    rs.j_str("kind", "run_start")
-    rs.j_str("schema", "toy/v1")
-    rs.j_num("t", TinyNNCuda.tnn_events_now_seconds)
-    rs.j_str("started_at", TinyNNCuda.tnn_events_iso8601_now)
-    rs.j_str("run_id", rid)
-    rs.j_str("phase", "train")
+    rs = SpinelKit::Json::Builder.new
+    rs.add_str("kind", "run_start")
+    rs.add_str("schema", "toy/v1")
+    rs.add_num("t", TinyNNCuda.tnn_events_now_seconds)
+    rs.add_str("started_at", TinyNNCuda.tnn_events_iso8601_now)
+    rs.add_str("run_id", rid)
+    rs.add_str("phase", "train")
     Toy::Events.add_provenance(rs,
       TinyNNCuda.tnn_provenance_host_name, TinyNNCuda.tnn_provenance_host_os,
       TinyNNCuda.tnn_provenance_host_arch,
       TinyNNCuda.tnn_backend_name(recipe_lora.lora_cache.sess))
-    model = Toy::Json.new
-    model.j_str("arch", "llama")
-    model.j_str("name", "smollm2-135m")
-    model.j_num("vocab",    cfg_lora.vocab)
-    model.j_num("d_model",  cfg_lora.d_model)
-    model.j_num("n_layers", cfg_lora.n_layers)
-    model.j_num("n_heads",  cfg_lora.n_heads)
-    model.j_num("n_kv",     cfg_lora.n_kv)
-    model.j_num("d_head",   cfg_lora.head_dim)
-    model.j_num("d_ff",     cfg_lora.d_ff)
-    rs.j_obj("model", model)
-    config = Toy::Json.new
-    config.j_num("rank",    RANK_LORA)
-    config.j_num("steps",   STEPS)
-    config.j_raw("lr",      "0.001")
-    config.j_raw("seed",    "42")
-    config.j_num("context", TOKENS.length)
-    rs.j_obj("config", config)
-    TinyNNCuda.tnn_events_emit(rs.j_dump)
+    model = SpinelKit::Json::Builder.new
+    model.add_str("arch", "llama")
+    model.add_str("name", "smollm2-135m")
+    model.add_num("vocab",    cfg_lora.vocab)
+    model.add_num("d_model",  cfg_lora.d_model)
+    model.add_num("n_layers", cfg_lora.n_layers)
+    model.add_num("n_heads",  cfg_lora.n_heads)
+    model.add_num("n_kv",     cfg_lora.n_kv)
+    model.add_num("d_head",   cfg_lora.head_dim)
+    model.add_num("d_ff",     cfg_lora.d_ff)
+    rs.add_obj("model", model)
+    config = SpinelKit::Json::Builder.new
+    config.add_num("rank",    RANK_LORA)
+    config.add_num("steps",   STEPS)
+    config.add_raw("lr",      "0.001")
+    config.add_raw("seed",    "42")
+    config.add_num("context", TOKENS.length)
+    rs.add_obj("config", config)
+    TinyNNCuda.tnn_events_emit(rs.dump)
   else
     puts "events_open failed: rc=" + rc.to_s + " (path=" + EVENTS + ")"
   end
@@ -171,16 +171,16 @@ while step <= STEPS
 
   if EVENTS.length > 0
     step_wall_us = ((TinyNNCuda.tnn_events_now_seconds - step_wall_start) * 1.0e6).to_i
-    es = Toy::Json.new
-    es.j_str("kind",  "step")
-    es.j_str("phase", "train")
-    es.j_num("t",       TinyNNCuda.tnn_events_now_seconds)
-    es.j_num("step",    step)
-    es.j_num("loss",    loss)
-    es.j_raw("lr",      "0.001")
-    es.j_num("tokens",  TOKENS.length)
-    es.j_num("wall_us", step_wall_us)
-    TinyNNCuda.tnn_events_emit(es.j_dump)
+    es = SpinelKit::Json::Builder.new
+    es.add_str("kind",  "step")
+    es.add_str("phase", "train")
+    es.add_num("t",       TinyNNCuda.tnn_events_now_seconds)
+    es.add_num("step",    step)
+    es.add_num("loss",    loss)
+    es.add_raw("lr",      "0.001")
+    es.add_num("tokens",  TOKENS.length)
+    es.add_num("wall_us", step_wall_us)
+    TinyNNCuda.tnn_events_emit(es.dump)
   end
   step = step + 1
 end
@@ -197,14 +197,14 @@ if EVENTS.length > 0 && TinyNNCuda.tnn_events_active == 1
     puts "checkpoint write failed: rc=" + rc.to_s
   end
 
-  re = Toy::Json.new
-  re.j_str("kind", "run_end")
-  re.j_num("t",          TinyNNCuda.tnn_events_now_seconds)
-  re.j_str("ended_at",   TinyNNCuda.tnn_events_iso8601_now)
-  re.j_str("reason",     "completed")
-  re.j_num("final_step", STEPS)
-  re.j_num("final_loss", final_loss)
-  re.j_raw("exit_code",  "0")
-  TinyNNCuda.tnn_events_emit(re.j_dump)
+  re = SpinelKit::Json::Builder.new
+  re.add_str("kind", "run_end")
+  re.add_num("t",          TinyNNCuda.tnn_events_now_seconds)
+  re.add_str("ended_at",   TinyNNCuda.tnn_events_iso8601_now)
+  re.add_str("reason",     "completed")
+  re.add_num("final_step", STEPS)
+  re.add_num("final_loss", final_loss)
+  re.add_raw("exit_code",  "0")
+  TinyNNCuda.tnn_events_emit(re.dump)
   TinyNNCuda.tnn_events_close
 end

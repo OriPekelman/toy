@@ -22,7 +22,7 @@
 # All stats are scalars; per_head_l2 is built as a JSON array string
 # via concatenation in this module.
 
-require_relative "../io/toy_json"
+require_relative "../../../vendor/spinel/spinel_kit/lib/spinel_kit/json_builder"
 
 module ToyTap
   # Single tap event. Pass layer=-1 / head=-1 to omit those fields
@@ -53,27 +53,27 @@ module ToyTap
       dn = "bf16"
     end
 
-    ev = Toy::Json.new
-    ev.j_str("kind",  "tap")
-    ev.j_str("phase", "train")
-    ev.j_num("t",      t_now)
-    ev.j_num("step",   step)
-    ev.j_str("region", region)
+    ev = SpinelKit::Json::Builder.new
+    ev.add_str("kind",  "tap")
+    ev.add_str("phase", "train")
+    ev.add_num("t",      t_now)
+    ev.add_num("step",   step)
+    ev.add_str("region", region)
     if layer >= 0
-      ev.j_num("layer", layer)
+      ev.add_num("layer", layer)
     else
-      ev.j_raw("layer", "null")
+      ev.add_raw("layer", "null")
     end
     if head >= 0
-      ev.j_num("head", head)
+      ev.add_num("head", head)
     else
-      ev.j_raw("head", "null")
+      ev.add_raw("head", "null")
     end
-    ev.j_raw("shape",     "[" + ne0.to_s + "," + ne1.to_s + "]")
-    ev.j_str("dtype",     dn)
-    ev.j_num("l2",        l2)
-    ev.j_num("abs_mean",  abs_mean)
-    ev.j_num("nan_count", nan_n)
+    ev.add_raw("shape",     "[" + ne0.to_s + "," + ne1.to_s + "]")
+    ev.add_str("dtype",     dn)
+    ev.add_num("l2",        l2)
+    ev.add_num("abs_mean",  abs_mean)
+    ev.add_num("nan_count", nan_n)
 
     # per_head_l2: download to f64 Mat, split into n_heads contiguous
     # chunks, L2 each. Costs n*8 bytes of host traffic + an O(n) loop
@@ -98,10 +98,10 @@ module ToyTap
         h = h + 1
       end
       phl2 = phl2 + "]"
-      ev.j_raw("per_head_l2", phl2)
+      ev.add_raw("per_head_l2", phl2)
     end
 
-    TinyNN.tnn_events_emit(ev.j_dump)
+    TinyNN.tnn_events_emit(ev.dump)
   end
 
   # GH#15 — Activation-Gram tap for linear CKA. For activation A of
@@ -135,27 +135,27 @@ module ToyTap
     buf = Mat.new(1, n)
     TinyNN.tnn_download_to_f64_array(sess, tensor, buf.flat, n)
 
-    ev = Toy::Json.new
-    ev.j_str("kind",  "tap")
-    ev.j_str("phase", "train")
-    ev.j_num("t",      t_now)
-    ev.j_num("step",   step)
-    ev.j_str("region", region)
+    ev = SpinelKit::Json::Builder.new
+    ev.add_str("kind",  "tap")
+    ev.add_str("phase", "train")
+    ev.add_num("t",      t_now)
+    ev.add_num("step",   step)
+    ev.add_str("region", region)
     if layer >= 0
-      ev.j_num("layer", layer)
+      ev.add_num("layer", layer)
     else
-      ev.j_raw("layer", "null")
+      ev.add_raw("layer", "null")
     end
     if head >= 0
-      ev.j_num("head", head)
+      ev.add_num("head", head)
     else
-      ev.j_raw("head", "null")
+      ev.add_raw("head", "null")
     end
-    ev.j_raw("shape",     "[" + d.to_s + "," + t.to_s + "]")
-    ev.j_str("dtype",     "f32")
-    ev.j_num("l2",        l2)
-    ev.j_num("abs_mean",  abs_mean)
-    ev.j_num("nan_count", nan_n)
+    ev.add_raw("shape",     "[" + d.to_s + "," + t.to_s + "]")
+    ev.add_str("dtype",     "f32")
+    ev.add_num("l2",        l2)
+    ev.add_num("abs_mean",  abs_mean)
+    ev.add_num("nan_count", nan_n)
 
     gram = "["
     i = 0
@@ -176,8 +176,8 @@ module ToyTap
       i = i + 1
     end
     gram = gram + "]"
-    ev.j_raw("gram", gram)
+    ev.add_raw("gram", gram)
 
-    TinyNN.tnn_events_emit(ev.j_dump)
+    TinyNN.tnn_events_emit(ev.dump)
   end
 end

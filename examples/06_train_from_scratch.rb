@@ -23,7 +23,7 @@
 #     generated tokens.
 
 require_relative "../lib/toy"
-require_relative "../lib/toy/io/toy_json"
+require_relative "../vendor/spinel/spinel_kit/lib/spinel_kit/json_builder"
 require_relative "../lib/toy/llm/adamw"
 require_relative "../lib/toy/io/toy_events"
 require_relative "../lib/toy/models/toy_smollm2"
@@ -271,41 +271,41 @@ if EVENTS.length > 0
   else
     puts "events → " + EVENTS
     rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
-    rs = Toy::Json.new
-    rs.j_str("kind", "run_start")
-    rs.j_str("schema", "toy/v1")
-    rs.j_num("t", TinyNN.tnn_events_now_seconds)
-    rs.j_str("started_at", TinyNN.tnn_events_iso8601_now)
-    rs.j_str("run_id", rid)
-    rs.j_str("phase", "train")
+    rs = SpinelKit::Json::Builder.new
+    rs.add_str("kind", "run_start")
+    rs.add_str("schema", "toy/v1")
+    rs.add_num("t", TinyNN.tnn_events_now_seconds)
+    rs.add_str("started_at", TinyNN.tnn_events_iso8601_now)
+    rs.add_str("run_id", rid)
+    rs.add_str("phase", "train")
     Toy::Events.add_provenance(rs,
       TinyNN.tnn_provenance_host_name, TinyNN.tnn_provenance_host_os,
       TinyNN.tnn_provenance_host_arch,
       TinyNN.tnn_backend_name(fcache.sess))
-    model = Toy::Json.new
-    model.j_str("arch", "llama")
-    model.j_str("name", "from-scratch-tinystories")
-    model.j_num("vocab",    cfg.vocab)
-    model.j_num("d_model",  cfg.d_model)
-    model.j_num("n_layers", cfg.n_layers)
-    model.j_num("n_heads",  cfg.n_heads)
-    model.j_num("n_kv",     cfg.n_kv)
-    model.j_num("d_head",   cfg.head_dim)
-    model.j_num("d_ff",     cfg.d_ff)
+    model = SpinelKit::Json::Builder.new
+    model.add_str("arch", "llama")
+    model.add_str("name", "from-scratch-tinystories")
+    model.add_num("vocab",    cfg.vocab)
+    model.add_num("d_model",  cfg.d_model)
+    model.add_num("n_layers", cfg.n_layers)
+    model.add_num("n_heads",  cfg.n_heads)
+    model.add_num("n_kv",     cfg.n_kv)
+    model.add_num("d_head",   cfg.head_dim)
+    model.add_num("d_ff",     cfg.d_ff)
     # GH#9 mixed-precision: surface the weight storage/compute dtype so the
     # gate (and run consumers) can assert it. WEIGHT_DTYPE is a ggml type enum
     # (0=f32, 1=f16, 30=bf16); reuse the canonical name map.
-    model.j_str("weight_type", ToyDescribeFlow.dtype_name(WEIGHT_DTYPE))
-    rs.j_obj("model", model)
-    config = Toy::Json.new
-    config.j_num("context",    CONTEXT)
-    config.j_num("batch",      BATCH)
-    config.j_num("grad_accum", GRAD_ACCUM)
-    config.j_num("steps",      STEPS)
-    config.j_num("lr",         LR)
-    config.j_num("seed",       SEED)
-    rs.j_obj("config", config)
-    TinyNN.tnn_events_emit(rs.j_dump)
+    model.add_str("weight_type", ToyDescribeFlow.dtype_name(WEIGHT_DTYPE))
+    rs.add_obj("model", model)
+    config = SpinelKit::Json::Builder.new
+    config.add_num("context",    CONTEXT)
+    config.add_num("batch",      BATCH)
+    config.add_num("grad_accum", GRAD_ACCUM)
+    config.add_num("steps",      STEPS)
+    config.add_num("lr",         LR)
+    config.add_num("seed",       SEED)
+    rs.add_obj("config", config)
+    TinyNN.tnn_events_emit(rs.dump)
   end
 end
 
@@ -457,16 +457,16 @@ while step <= STEPS
   # feedback_spinel_type_inference_landmines).
   if EVENTS.length > 0
     step_wall_us = ((TinyNN.tnn_events_now_seconds - step_wall_start) * 1.0e6).to_i
-    es = Toy::Json.new
-    es.j_str("kind",  "step")
-    es.j_str("phase", "train")
-    es.j_num("t",       TinyNN.tnn_events_now_seconds)
-    es.j_num("step",    step)
-    es.j_num("loss",    loss)
-    es.j_num("lr",      LR)
-    es.j_num("tokens",  CONTEXT * BATCH * GRAD_ACCUM)
-    es.j_num("wall_us", step_wall_us)
-    TinyNN.tnn_events_emit(es.j_dump)
+    es = SpinelKit::Json::Builder.new
+    es.add_str("kind",  "step")
+    es.add_str("phase", "train")
+    es.add_num("t",       TinyNN.tnn_events_now_seconds)
+    es.add_num("step",    step)
+    es.add_num("loss",    loss)
+    es.add_num("lr",      LR)
+    es.add_num("tokens",  CONTEXT * BATCH * GRAD_ACCUM)
+    es.add_num("wall_us", step_wall_us)
+    TinyNN.tnn_events_emit(es.dump)
   end
 
   step = step + 1
@@ -542,21 +542,21 @@ end
 # Closes toy#run-end-reason-semantics.
 exit_code = not_learning ? 1 : 0
 if EVENTS.length > 0 && TinyNN.tnn_events_active == 1
-  re = Toy::Json.new
-  re.j_str("kind", "run_end")
-  re.j_num("t",          TinyNN.tnn_events_now_seconds)
-  re.j_str("ended_at",   TinyNN.tnn_events_iso8601_now)
-  re.j_str("reason",     "completed")
-  re.j_num("final_step", STEPS)
-  re.j_num("final_loss", final_loss)
-  qg = Toy::Json.new
-  qg.j_bool("passed", not_learning ? false : true)
-  qg.j_str("metric",     "loss_ratio")
-  qg.j_num("value",      ratio)
-  qg.j_raw("threshold",  "0.9")
-  re.j_obj("quality_gate", qg)
-  re.j_num("exit_code",  exit_code)
-  TinyNN.tnn_events_emit(re.j_dump)
+  re = SpinelKit::Json::Builder.new
+  re.add_str("kind", "run_end")
+  re.add_num("t",          TinyNN.tnn_events_now_seconds)
+  re.add_str("ended_at",   TinyNN.tnn_events_iso8601_now)
+  re.add_str("reason",     "completed")
+  re.add_num("final_step", STEPS)
+  re.add_num("final_loss", final_loss)
+  qg = SpinelKit::Json::Builder.new
+  qg.add_bool("passed", not_learning ? false : true)
+  qg.add_str("metric",     "loss_ratio")
+  qg.add_num("value",      ratio)
+  qg.add_raw("threshold",  "0.9")
+  re.add_obj("quality_gate", qg)
+  re.add_num("exit_code",  exit_code)
+  TinyNN.tnn_events_emit(re.dump)
   TinyNN.tnn_events_close
   puts "events closed: " + EVENTS
 end

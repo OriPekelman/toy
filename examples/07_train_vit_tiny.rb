@@ -14,7 +14,7 @@
 #   make example_train_vit_tiny
 #   STEPS=200 TAO_RUN_DIR=/tmp/vit ./examples/example_train_vit_tiny
 
-require_relative "../lib/toy/io/toy_json"
+require_relative "../vendor/spinel/spinel_kit/lib/spinel_kit/json_builder"
 require_relative "../lib/toy/llm/adamw"
 require_relative "../lib/toy/io/toy_events"
 require_relative "../lib/toy/models/toy_vit"
@@ -152,44 +152,44 @@ if EVENTS.length > 0
   else
     puts "events → " + EVENTS
     rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
-    rs = Toy::Json.new
-    rs.j_str("kind", "run_start")
-    rs.j_str("schema", "toy/v1")
-    rs.j_num("t", TinyNN.tnn_events_now_seconds)
-    rs.j_str("started_at", TinyNN.tnn_events_iso8601_now)
-    rs.j_str("run_id", rid)
-    rs.j_str("phase", "train")
-    rs.j_str("name", "vit-tiny")
+    rs = SpinelKit::Json::Builder.new
+    rs.add_str("kind", "run_start")
+    rs.add_str("schema", "toy/v1")
+    rs.add_num("t", TinyNN.tnn_events_now_seconds)
+    rs.add_str("started_at", TinyNN.tnn_events_iso8601_now)
+    rs.add_str("run_id", rid)
+    rs.add_str("phase", "train")
+    rs.add_str("name", "vit-tiny")
     Toy::Events.add_provenance(rs,
       TinyNN.tnn_provenance_host_name, TinyNN.tnn_provenance_host_os,
       TinyNN.tnn_provenance_host_arch,
       TinyNN.tnn_backend_name(cache.sess))
-    model = Toy::Json.new
-    model.j_str("arch", "vit")
-    model.j_str("name", "vit-tiny")
-    model.j_num("image_size",  cfg.image_size)
-    model.j_num("patch_size",  cfg.patch_size)
-    model.j_num("d_model",     cfg.d_model)
-    model.j_num("n_layers",    cfg.n_layers)
-    model.j_num("n_heads",     cfg.n_heads)
-    model.j_num("d_ff",        cfg.d_ff)
-    model.j_num("num_classes", cfg.num_classes)
-    rs.j_obj("model", model)
-    config = Toy::Json.new
-    config.j_str("image_dir", IMG_DIR)
-    config.j_num("n_images",  N_IMAGES)
-    config.j_num("steps",     STEPS)
-    config.j_num("seed",      SEED)
-    config.j_str("init",      INIT)
-    config.j_str("donor",     (INIT == "pure_emb" ? DONOR_GGUF : ""))
-    rs.j_obj("config", config)
-    schedule = Toy::Json.new
-    schedule.j_num("lr_max",  LR_MAX)
-    schedule.j_num("lr_min",  LR_MIN)
-    schedule.j_num("warmup",  WARMUP)
-    schedule.j_num("n_steps", STEPS)
-    rs.j_obj("schedule", schedule)
-    TinyNN.tnn_events_emit(rs.j_dump)
+    model = SpinelKit::Json::Builder.new
+    model.add_str("arch", "vit")
+    model.add_str("name", "vit-tiny")
+    model.add_num("image_size",  cfg.image_size)
+    model.add_num("patch_size",  cfg.patch_size)
+    model.add_num("d_model",     cfg.d_model)
+    model.add_num("n_layers",    cfg.n_layers)
+    model.add_num("n_heads",     cfg.n_heads)
+    model.add_num("d_ff",        cfg.d_ff)
+    model.add_num("num_classes", cfg.num_classes)
+    rs.add_obj("model", model)
+    config = SpinelKit::Json::Builder.new
+    config.add_str("image_dir", IMG_DIR)
+    config.add_num("n_images",  N_IMAGES)
+    config.add_num("steps",     STEPS)
+    config.add_num("seed",      SEED)
+    config.add_str("init",      INIT)
+    config.add_str("donor",     (INIT == "pure_emb" ? DONOR_GGUF : ""))
+    rs.add_obj("config", config)
+    schedule = SpinelKit::Json::Builder.new
+    schedule.add_num("lr_max",  LR_MAX)
+    schedule.add_num("lr_min",  LR_MIN)
+    schedule.add_num("warmup",  WARMUP)
+    schedule.add_num("n_steps", STEPS)
+    rs.add_obj("schedule", schedule)
+    TinyNN.tnn_events_emit(rs.dump)
   end
 end
 
@@ -272,14 +272,14 @@ while step < STEPS
 
   if EVENTS.length > 0
     t_now = TinyNN.tnn_events_now_seconds
-    ev = Toy::Json.new
-    ev.j_str("kind",  "step")
-    ev.j_str("phase", "train")
-    ev.j_num("t",    t_now)
-    ev.j_num("step", step + 1)
-    ev.j_num("loss", loss)
-    ev.j_num("lr",   lr)
-    TinyNN.tnn_events_emit(ev.j_dump)
+    ev = SpinelKit::Json::Builder.new
+    ev.add_str("kind",  "step")
+    ev.add_str("phase", "train")
+    ev.add_num("t",    t_now)
+    ev.add_num("step", step + 1)
+    ev.add_num("loss", loss)
+    ev.add_num("lr",   lr)
+    TinyNN.tnn_events_emit(ev.dump)
   end
 
   if CHECKPOINT_EVERY > 0 && WEIGHTS_DIR.length > 0 && ((step + 1) % CHECKPOINT_EVERY) == 0
@@ -303,20 +303,20 @@ puts "initial=" + initial_loss.to_s + " final=" + final_loss.to_s +
 
 if EVENTS.length > 0
   t_close = TinyNN.tnn_events_now_seconds
-  re = Toy::Json.new
-  re.j_str("kind",  "run_end")
-  re.j_str("phase", "train")
-  re.j_num("t",      t_close)
-  re.j_str("reason", "completed")
+  re = SpinelKit::Json::Builder.new
+  re.add_str("kind",  "run_end")
+  re.add_str("phase", "train")
+  re.add_num("t",      t_close)
+  re.add_str("reason", "completed")
   # quality_gate conforms to the events.md contract:
   # {passed:bool, metric:str, value:float, threshold:float} (issue #24).
-  qg = Toy::Json.new
-  qg.j_bool("passed",   ratio < 0.95 ? true : false)
-  qg.j_str("metric",    "loss_ratio")
-  qg.j_num("value",     ratio)
-  qg.j_raw("threshold", "0.95")
-  re.j_obj("quality_gate", qg)
-  TinyNN.tnn_events_emit(re.j_dump)
+  qg = SpinelKit::Json::Builder.new
+  qg.add_bool("passed",   ratio < 0.95 ? true : false)
+  qg.add_str("metric",    "loss_ratio")
+  qg.add_num("value",     ratio)
+  qg.add_raw("threshold", "0.95")
+  re.add_obj("quality_gate", qg)
+  TinyNN.tnn_events_emit(re.dump)
   TinyNN.tnn_events_close
 end
 
