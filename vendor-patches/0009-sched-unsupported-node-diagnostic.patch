@@ -1,0 +1,26 @@
+diff --git a/src/ggml-backend.cpp b/src/ggml-backend.cpp
+index 4e36909..98fdf95 100644
+--- a/src/ggml-backend.cpp
++++ b/src/ggml-backend.cpp
+@@ -1239,6 +1239,21 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
+         for (int b = 0; b < sched->n_backends && *cur_backend_id == -1; b++) {
+             ggml_backend_sched_set_if_supported(sched, node, b, cur_backend_id);
+         }
++        if (*cur_backend_id == -1) {
++            // toy: fail loud, not bare-assert. No backend's supports_op() accepts
++            // this node — usually a dtype the op's kernel doesn't implement (e.g.
++            // a backward OUT_PROD/MUL_MAT on an f16/bf16 weight). Dump the node and
++            // its sources so the offending op+dtype is visible without a rebuild.
++            fprintf(stderr, "ggml_backend_sched: no backend supports node '%s' op=%s type=%s\n",
++                    node->name, ggml_op_name(node->op), ggml_type_name(node->type));
++            for (int j = 0; j < GGML_MAX_SRC; j++) {
++                if (node->src[j]) {
++                    fprintf(stderr, "  src[%d]: '%s' op=%s type=%s\n", j,
++                            node->src[j]->name, ggml_op_name(node->src[j]->op),
++                            ggml_type_name(node->src[j]->type));
++                }
++            }
++        }
+         GGML_ASSERT(*cur_backend_id != -1);
+     }
+ 

@@ -105,7 +105,8 @@ block (`arch`, `name`, `vocab`, `d_model`, `n_layers`, `n_heads`, `n_kv`,
   "model": {
     "arch": "llama", "name": "from-scratch-tinystories",
     "vocab": 49152, "d_model": 576, "n_layers": 30,
-    "n_heads": 9, "n_kv": 3, "d_head": 64, "d_ff": 1536
+    "n_heads": 9, "n_kv": 3, "d_head": 64, "d_ff": 1536,
+    "weight_type": "f32"
   },
   "config": { "context": 32, "steps": 5, "lr": 0.001, "seed": 0 }
 }
@@ -114,6 +115,12 @@ block (`arch`, `name`, `vocab`, `d_model`, `n_layers`, `n_heads`, `n_kv`,
 `config` is an open dictionary of experiment key/values. A `compare_to`
 field (a baseline `run_id`) is optional; if set, consumers should expect
 `compare` events later in the stream.
+
+`model.weight_type` (optional) is the weight storage/compute dtype —
+`"f32"` (default), `"f16"`, or `"bf16"` — surfaced by the from-scratch
+trainer for the mixed-precision path (GH#9). Consumers asserting numerical
+parity should branch on it (f16/bf16 runs are tolerance-compared, not
+byte-exact, against the f32 baseline).
 
 ### `step`
 

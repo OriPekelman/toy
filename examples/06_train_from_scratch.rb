@@ -292,6 +292,10 @@ if EVENTS.length > 0
     model.j_num("n_kv",     cfg.n_kv)
     model.j_num("d_head",   cfg.head_dim)
     model.j_num("d_ff",     cfg.d_ff)
+    # GH#9 mixed-precision: surface the weight storage/compute dtype so the
+    # gate (and run consumers) can assert it. WEIGHT_DTYPE is a ggml type enum
+    # (0=f32, 1=f16, 30=bf16); reuse the canonical name map.
+    model.j_str("weight_type", ToyDescribeFlow.dtype_name(WEIGHT_DTYPE))
     rs.j_obj("model", model)
     config = Toy::Json.new
     config.j_num("context",    CONTEXT)
