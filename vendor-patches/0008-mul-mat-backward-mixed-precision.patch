@@ -1,0 +1,50 @@
+diff --git a/src/ggml.c b/src/ggml.c
+index 476c307..1fc8886 100644
+--- a/src/ggml.c
++++ b/src/ggml.c
+@@ -6556,19 +6628,32 @@ static void ggml_compute_backward(
+                 ggml_add_or_set(ctx, cgraph, isrc0, tmp);
+             }
+             if (src1_needs_grads) {
+-                ggml_add_or_set(ctx, cgraph, isrc1,
+-                        // ggml_mul_mat(ctx,                   // [n,p,qq,rr]
+-                        //     ggml_cont(ctx,                  // [m,n,q1,r1]
+-                        //         ggml_transpose(ctx, src0)), // [m,n,q1,r1]
+-                        //     grad),                          // [m,p,qq,rr]
+-
+-                        // when src0 is bigger than tensor->grad (this is mostly the case in llama),
+-                        // avoid transpose of src0, rather transpose smaller tensor->grad
+-                        // and then use ggml_out_prod
+-                        ggml_out_prod(ctx,      // [n,p,qq,rr]
+-                            src0,               // [n,m,q1,r1]
+-                            ggml_transpose(ctx, // [p,m,qq,rr]
+-                                grad)));        // [m,p,qq,rr]
++                // toy (GH#9, mixed-precision training): the fast path below uses
++                // ggml_out_prod(src0, ...) for the src1 (activation) gradient, but
++                // OUT_PROD only implements an f32 src0 (CPU: ggml-cpu.cpp supports_op;
++                // CUDA: out_prod is f32-only). With f16/bf16 weight storage src0 is
++                // low-precision, so fall back to the algebraically-equivalent
++                // mul_mat(cont(transpose(src0)), grad) form, which MUL_MAT supports
++                // for f16/bf16 src0 + f32 src1 on every backend (and runs on tensor
++                // cores on CUDA). f32 weights keep the original out_prod fast path.
++                if (src0->type != GGML_TYPE_F32) {
++                    // MUL_MAT requires a contiguous src1 (out_prod tolerated a
++                    // transposed/strided grad; mul_mat does not), so cont() grad.
++                    ggml_add_or_set(ctx, cgraph, isrc1,
++                            ggml_mul_mat(ctx,                       // [n,p,qq,rr]
++                                ggml_cont(ctx,                      // [m,n,q1,r1]
++                                    ggml_transpose(ctx, src0)),     // [m,n,q1,r1]
++                                ggml_cont(ctx, grad)));             // [m,p,qq,rr]
++                } else {
++                    ggml_add_or_set(ctx, cgraph, isrc1,
++                            // when src0 is bigger than tensor->grad (this is mostly the case in llama),
++                            // avoid transpose of src0, rather transpose smaller tensor->grad
++                            // and then use ggml_out_prod
++                            ggml_out_prod(ctx,      // [n,p,qq,rr]
++                                src0,               // [n,m,q1,r1]
++                                ggml_transpose(ctx, // [p,m,qq,rr]
++                                    grad)));        // [m,p,qq,rr]
++                }
+             }
+         } break;
+         case GGML_OP_SCALE: {

@@ -77,6 +77,21 @@ ruby prep/infer_gate.rb   # exit 0 on byte-for-byte match, 1 otherwise
 `infer`/`train`/`eval` are tep-free. `serve_gate.rb` covers the
 OpenAI-compatible HTTP path.
 
+### Tolerance gates (numerics-varying)
+
+Most gates are byte-exact. A few exercise a path where the numerics legitimately
+change, so they assert a relative tolerance plus the discrete/structural
+invariants (per the cross-platform-gate rule: discrete strict, numerical
+tolerance):
+
+- `make gate-mixed-precision` (`prep/mixed_precision_gate.rb`) — GH#9 f16
+  train-from-scratch on CPU. Drives the from-scratch example at `WEIGHT_DTYPE=1`
+  vs `=0` and asserts f16 runs to completion (depends on the `0008`
+  mul_mat-backward ggml patch — without it backward aborts in sched-alloc),
+  `run_start.model.weight_type` surfaces the dtype, and the f16 final loss is
+  within 5% of the f32 baseline (~0.2% observed). bf16 is the CUDA/GB10
+  follow-up (bf16 backward needs more than f16).
+
 ### Model-gated regression gates
 
 Some gates exercise a REAL model whose GGUF is a gitignored multi-GB dev

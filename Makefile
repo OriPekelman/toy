@@ -376,6 +376,16 @@ gate-lmc:
 gate-full-finetune:
 	ruby prep/full_finetune_gate.rb
 
+# Mixed-precision training gate (GH#9, f16, CPU). Drives the from-scratch
+# example at WEIGHT_DTYPE=1 vs =0 and asserts: f16 runs to completion (needs the
+# 0008 mul_mat-backward-mixed-precision ggml patch — without it backward aborts),
+# run_start.model.weight_type surfaces the dtype, and the f16 final loss lands
+# within tolerance of the f32 baseline. TOLERANCE arm (dtype changes numerics),
+# not byte-exact. bf16 is the CUDA/GB10 follow-up. Builds the example itself.
+.PHONY: gate-mixed-precision
+gate-mixed-precision:
+	ruby prep/mixed_precision_gate.rb
+
 # K-quant MoE attention regression gate (the bug long misfiled as ggml#1506):
 # head_nbytes returned 0 for K-quant attention weights → per-head mmap stride
 # collapsed every head onto head 0 → degenerate repeating decode on OLMoE
@@ -871,7 +881,9 @@ GGML_PATCHES := \
 	vendor-patches/0004-cuda-cpy-strided.patch \
 	vendor-patches/0005-concat-backward.patch \
 	vendor-patches/0006-getrows-back-large-vocab.patch \
-	vendor-patches/0007-gpt2-backward-kernels.patch
+	vendor-patches/0007-gpt2-backward-kernels.patch \
+	vendor-patches/0008-mul-mat-backward-mixed-precision.patch \
+	vendor-patches/0009-sched-unsupported-node-diagnostic.patch
 
 # Sentinel file marking that all $(GGML_PATCHES) have been applied to
 # the vendored tree. Build targets depend on it through CMakeLists.txt
