@@ -1,3 +1,8 @@
+PATH
+  remote: ../spinelkit
+  specs:
+    spinel_kit (0.1.0)
+
 GEM
   remote: https://rubygems.org/
   specs:
@@ -8,10 +13,12 @@ PLATFORMS
   ruby
 
 DEPENDENCIES
+  spinel_kit!
   tep (~> 0.11.2)
 
 CHECKSUMS
   bundler (4.0.12) sha256=7f8b757d28dfb636e7b24fba2344ac6dd13b5b24f4b46d62573d483f211825ac
+  spinel_kit (0.1.0)
   tep (0.11.2) sha256=e0b5fd7a884c45890932841aee80a0d69091cd88fc72a73e2d7a82b59b0cc244
 
 RUBY VERSION

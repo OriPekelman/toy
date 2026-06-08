@@ -10,6 +10,7 @@
 #   rs.j_num("t", now); rs.j_str("started_at", iso); rs.j_str("run_id", rid)
 #   rs.j_str("phase", "train")
 #   Toy::Events.add_provenance(rs, host_name, host_os, host_arch, backend_kind)
+# (git{} comes from SpinelKit::Git.read — toy#44.)
 #   # ... caller appends model{} / config{} / schedule{} ...
 #   TinyNN.tnn_events_emit(rs.j_dump)
 #
@@ -22,7 +23,15 @@
 # the module method's params carry an `ev_` prefix so they can't widen an
 # unrelated host_name/backend_kind elsewhere (landmines #12/#16).
 require_relative "toy_json"
-require_relative "toy_git"
+# SpinelKit::Git (toy#44) — git provenance, consolidated out of the former
+# lib/toy/io/toy_git.rb (identical .git/HEAD reader; plain sha/branch accessors
+# now that the Spinel gi_-prefix inference bug is fixed upstream). Vendored at
+# build time via `make vendor-tep` (spinel-compat). Required by-path (NOT via
+# vendor/spinel/deps) so the tep-free runners stay tep-free — deps.rb pulls tep
+# too. toy_events is a runner/example dep, never part of toy.rb's compute
+# surface, so this relative reach into vendor/spinel is build-local (same as
+# serve.rb's vendor/spinel/deps require).
+require_relative "../../../vendor/spinel/spinel_kit/lib/spinel_kit/git"
 
 module Toy
   module Events
@@ -37,10 +46,10 @@ module Toy
       ev_backend = Toy::Json.new
       ev_backend.j_str("kind", ev_backend_kind)
       ev_rs.j_obj("backend", ev_backend)
-      ev_gp = Toy::Git.read
+      ev_gp = SpinelKit::Git.read
       ev_git = Toy::Json.new
-      ev_git.j_str("sha",    ev_gp.gi_sha)
-      ev_git.j_str("branch", ev_gp.gi_branch)
+      ev_git.j_str("sha",    ev_gp.sha)
+      ev_git.j_str("branch", ev_gp.branch)
       ev_rs.j_obj("git", ev_git)
     end
   end
