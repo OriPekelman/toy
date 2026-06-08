@@ -43,10 +43,19 @@ require_relative "llm/engine/gpt2_seq_engine"
 # KV-cache decode engine (inference).
 require_relative "../toy_smollm2_ffi_kv"
 
-# Recipes — the named training/init compositions (from-scratch, LoRA,
-# warm-start, ViT). Realize-path orchestration over the engines.
+# Recipes — the named training/init compositions. Realize-path orchestration
+# over the engines.
+#
+# NOTE: `recipes/lora` is deliberately NOT required here. It triggers a Spinel
+# analyzer bug (OriPekelman/spinel-dev#11): LoRA#realize! is loaded but, for a
+# consumer using a different recipe, never called — so its unconstrained `cfg`
+# param widens to poly and poisons the SHARED LlamaSeqEngine#realize_for_mmap,
+# which cascades to SmolLM2Config accessors program-wide and fails the C
+# compile for any recipe-path consumer. RBS can't seed it (its FFI-pointer
+# params are `untyped`, which drops the whole sig). Every OTHER surface here is
+# clean. A consumer that actually trains LoRA requires `toy/llm/recipes/lora`
+# itself (and calls it, which pins cfg). Re-add this require once #11 lands.
 require_relative "llm/recipes/from_scratch"
-require_relative "llm/recipes/lora"
 require_relative "llm/recipes/warm_start"
 require_relative "llm/recipes/vit_tiny"
 

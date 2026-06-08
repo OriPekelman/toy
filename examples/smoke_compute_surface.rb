@@ -1,12 +1,15 @@
 # examples/smoke_compute_surface.rb — proves the toy#42 full-API require
 # (lib/toy/compute.rb) compiles under Spinel and yields a working compute
-# surface from ONE require.
+# surface from ONE require, via the RECIPE path.
 #
-# The BUILD step is itself the combined-surface gate: Spinel compiles every
-# file lib/toy/compute.rb pulls, so a clean build proves all three engines +
-# recipes + loaders co-compile in one program (the runners each load only one
-# engine — this is the only place the full surface is compiled together). The
-# RUN then realizes a tiny LlamaSeqEngine to prove the surface is live.
+# WHY THE RECIPE PATH (not just an engine). An earlier version drove the engine
+# directly (realize_for_random_init) and compiled even while a recipe-path
+# consumer did NOT — Spinel poly-degradation (OriPekelman/spinel-dev#11) only
+# bites once a recipe co-loads with the full surface. So this gate trains via
+# Toy::LLM::Recipes::FromScratch (realize! + step!), the exact shape the
+# `toy new --lib` scaffold and a real consumer use. The BUILD is the
+# combined-surface gate (every file compute.rb pulls co-compiles); the RUN
+# proves the surface is live.
 #
 #   make examples/smoke_compute_surface && ./examples/smoke_compute_surface
 #
@@ -14,21 +17,45 @@
 
 require_relative "../lib/toy/compute"
 
-cfg = Toy::SmolLM2Config.new(627, 64, 4, 4, 128, 2, 16, 10000.0, 1.0e-5)
+VOCAB   = 627
+CONTEXT = 16
+STEPS   = 5
 
-# One require gave us the whole composition API. Instantiate each engine class
-# (proves all three co-compiled + are addressable) and realize the Llama one
-# (proves the L1 primitives / L2 block / L3 arch the engine pulls are live).
+cfg = Toy::SmolLM2Config.new(VOCAB, 64, 4, 4, 128, 2, CONTEXT, 10000.0, 1.0e-5)
+
+# Engines co-compiled (instantiate all three — proves they're addressable from
+# the one require), then train via the L4 recipe.
 llama = Toy::LLM::Engine::LlamaSeqEngine.new
 vit   = Toy::LLM::Engine::ViTTinyEngine.new
 gpt2  = Toy::LLM::Engine::GPT2SeqEngine.new
 
-llama.realize_for_random_init(cfg, 16, 1, 0, false, false, 0, 1.0)
-ok = llama.sess != TinyNN.tnn_null_ptr
+recipe = Toy::LLM::Recipes::FromScratch.new
+recipe.realize!(cfg, CONTEXT, 1, 0, false, false, 0, 1.0)
 
-puts "compute-surface: engines=[llama,vit,gpt2] realized, sess_present=" + ok.to_s
-if ok
+seq_ids = [0]
+seq_ids.pop
+positions = [0]
+positions.pop
+i = 0
+while i < CONTEXT
+  seq_ids.push(i % VOCAB)
+  positions.push(i)
+  i = i + 1
+end
+
+m_labels = Toy::Labels.next_token(seq_ids, VOCAB, CONTEXT, 1)
+m_hp     = Toy::AdamW.new.hp(0)
+
+loss = 0.0
+step = 0
+while step < STEPS
+  loss = recipe.step!(seq_ids, positions, m_labels, m_hp, step == 0)
+  step = step + 1
+end
+
+puts "compute-surface: engines=[llama,vit,gpt2] + FromScratch recipe trained, final_loss=" + loss.to_s
+if loss.finite?
   puts "compute-surface: ok"
 else
-  puts "compute-surface: FAIL (realize produced null session)"
+  puts "compute-surface: FAIL (non-finite loss)"
 end

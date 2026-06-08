@@ -39,7 +39,8 @@ module Toy
           class: New,
           summary: "Scaffold a conventional toy project tree",
           args:  [{ name: "path", required: true, desc: "target dir" }],
-          flags: [{ name: "--force", desc: "overwrite a non-empty dir" },
+          flags: [{ name: "--lib", desc: "scaffold a library-composition project (Gemfile + experiment.rb) instead of an app" },
+                  { name: "--force", desc: "overwrite a non-empty dir" },
                   { name: "--json", desc: "machine output" }]
         },
         "list" => {
