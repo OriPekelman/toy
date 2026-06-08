@@ -18,6 +18,6 @@ gem "tep", "~> 0.11.2"
 # builder/encoder/decoder + .git/HEAD provenance, consolidated out of toy's
 # (and tep's) hand-rolled Toy::Json / Toy::Git shims. Pure Ruby, spinel-ext.json
 # is [] (no native ext), so it vendors as plain lib/ copies under
-# vendor/spinel/spinel_kit/. PATH dep until spinel_kit publishes to RubyGems
-# (then this becomes `gem "spinel_kit"`, like tep).
-gem "spinel_kit", path: "../spinelkit"
+# vendor/spinel/spinel_kit/. Consumed as the RELEASED RubyGems gem (like tep);
+# `~> 0.1` allows 0.1.x patches, holds the minor.
+gem "spinel_kit", "~> 0.1"
