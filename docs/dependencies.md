@@ -1,18 +1,23 @@
 # Dependencies & vendoring
 
-How toy pulls in its one external Ruby dependency (`tep`), the
-Spinel-codegen constraints toy permanently codes around, and the
-vendored-ggml C divergences that live in `vendor/`.
+How toy pulls in its two external Ruby dependencies (`tep` and
+`spinel_kit`), the Spinel-codegen constraints toy permanently codes
+around, and the vendored-ggml C divergences that live in `vendor/`.
+
+Both are consumed identically — released RubyGems gems vendored via the
+[spinelgems](https://github.com/OriPekelman/spinelgems) convention
+(`bundler-spinel`), not hand-rolled vendoring — and both land under
+`vendor/spinel/` with `vendor/spinel/deps.rb` requiring them in lock order
+(`spinel_kit`, then `tep`).
 
 ---
 
 ## tep — consumed as a released RubyGems gem via spinelgems
 
-`tep` is the **only** external Ruby dependency, and it is a
-**build-dep, used by `serve` alone**. `infer`, `train`, and `eval`
-are tep-free. tep is consumed through the
-[spinelgems](https://github.com/OriPekelman/spinelgems) convention
-(`bundler-spinel`), not hand-rolled vendoring.
+`tep` is a **build-dep, used by `serve` alone**. `infer`, `train`, and
+`eval` are tep-free. Since the SpinelKit consolidation (toy#44) serve uses
+tep purely as the **HTTP transport** (`Tep::Handler` / `Tep.run!`); its JSON
+encode/decode is `SpinelKit::Json`, not `Tep::Json`.
 
 `Gemfile`:
 
@@ -21,7 +26,33 @@ source "https://rubygems.org"
 ruby "3.2.3", engine: "spinel", engine_version: "0.0.0"
 
 gem "tep", "~> 0.11.2"
+gem "spinel_kit", "~> 0.1"
 ```
+
+## spinel_kit — the shared Spinel stdlib-surface gem (toy#44)
+
+`spinel_kit` ([RubyGems](https://rubygems.org/gems/spinel_kit),
+[repo](https://github.com/OriPekelman/spinelkit)) holds the pure-Ruby
+"stdlib substitute" shims that Spinel-compiled projects can't get from CRuby
+stdlib (the `json` gem is a C-ext, `Logger` won't lower, git gems are C). toy
+and tep each grew these independently — the JSON escape/encode code came out
+byte-identical — so they were consolidated into one gem.
+
+toy uses three of its surfaces, all formerly hand-rolled in `lib/toy/io/`:
+
+- **`SpinelKit::Json::Builder`** — the run_start/events JSON emitter (was
+  `Toy::Json`; 15 consumers across the runners + examples).
+- **`SpinelKit::Json`** — flat-key JSON encode (`encode_pair_*`/`from_*`) +
+  decode (`get_int`/`get_int_array`/`has_key?`) for the serve handlers (was
+  `Tep::Json` + a local `ApiJson` shim).
+- **`SpinelKit::Git`** — `.git/HEAD` provenance for run_start (was `Toy::Git`).
+
+Pure Ruby (`spinel-ext.json` is `[]`, no native ext), so the vendor is just
+`lib/` copies under `vendor/spinel/spinel_kit/`. Runner/example sources require
+the specific surface **by path** (e.g.
+`vendor/spinel/spinel_kit/lib/spinel_kit/json_builder`) rather than via
+`vendor/spinel/deps` — `deps.rb` pulls `tep` too, and the train/eval runners
+must stay tep-free.
 
 The **released gem** (https://rubygems.org/gems/tep) is the reproducible
 cross-machine path — `Gemfile.lock` pins the version with a RubyGems sha256.
