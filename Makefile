@@ -619,14 +619,14 @@ toy-train-metal: libexec/toy-train-metal
 # Spinel source lib/toy/run/serve.rb; the binary path EQUALS the make
 # target so ToyRoot.ensure_built("libexec/toy-serve") both builds and
 # locates it. The endpoint logic moved out of tep_demo/openai_api_llama.rb
-# into lib/toy/serve/openai/* (Server/State + handlers + ApiJson + the
-# embeddings handler). vendor/spinel/tep/lib/tep.rb is the TEP BUILD-DEP
+# into lib/toy/serve/openai/* (Server/State + handlers + the embeddings
+# handler; JSON via SpinelKit::Json, toy#44). vendor/spinel/tep/lib/tep.rb is the TEP BUILD-DEP
 # edge — Tep is consumed purely as transport (built by `make vendor-tep`
 # on a fresh tree; needs ../tep + ../spinelgems siblings). Deps mirror the
 # tep_demo recipe (Makefile:486) + the KV stack. CPU-only; NOT in
 # MIRRORABLE (see prep/gen_cuda_mirror.rb).
 libexec/toy-serve: lib/toy/run/serve.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
-		lib/toy/serve/openai/server.rb lib/toy/serve/openai/api_json.rb \
+		lib/toy/serve/openai/server.rb \
 		lib/toy/serve/openai/handlers.rb lib/toy/serve/openai/embeddings_handler.rb \
 		vendor/spinel/tep/lib/tep.rb \
 		lib/toy_smollm2_ffi_kv.rb lib/toy/models/toy_smollm2_loader.rb \
