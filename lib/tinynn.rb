@@ -351,7 +351,11 @@ module TinyNN
   # which this CPU bridge can't add. `make setup` on macOS now
   # builds BOTH build/ (CPU) and build-metal/ (Metal), so CPU
   # examples find what they need without a fallback.
-  ffi_cflags "-L. -Ltinynn -Lvendor/ggml/build/src -Lvendor/ggml/build/src/ggml-cpu -Wno-int-conversion"
+  # NOTE: this literal line doubles as the spinel-ext.json "tinynn"
+  # placeholder (toy#45) — change them in lockstep, or the vendor step's
+  # zero-substitution warning fires. Fresh ggml (GGML_REV 41e7949) puts
+  # all three archives at build/src/ — no ggml-cpu/ subdir -L needed.
+  ffi_cflags "-L. -Ltinynn -Lvendor/ggml/build/src -Wno-int-conversion"
 
   ffi_func :tnn_session_new,      [:int],                   :ptr
   # GH#3 — multi-GPU mode 1. tnn_session_new_on(kind, device) pins
