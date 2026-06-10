@@ -147,6 +147,18 @@ static tnn_engine *tnn_engine_get_on(int backend_kind, int device)
         if (e->backend) e->backend_name = "metal";
     }
     if (!e->backend) {
+        /* Fail loud on the GPU→CPU fallback: a consumer that asked for
+         * CUDA/Metal but didn't link the backend archive (e.g. missing
+         * -Wl,-u,tnn_cuda_force_link) would otherwise silently compute
+         * on CPU — the loss curve flips with no other symptom. */
+        if (backend_kind == 1 || backend_kind == 2) {
+            fprintf(stderr,
+                    "[tnn] WARNING: %s backend requested but not linked into "
+                    "this binary (init returned NULL) — falling back to CPU. "
+                    "CUDA consumers must link with "
+                    "-Wl,-u,tnn_cuda_force_link; see docs/consuming-toy.md.\n",
+                    backend_kind == 1 ? "CUDA" : "Metal");
+        }
         e->backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, NULL);
         e->backend_name = "cpu";
     }
