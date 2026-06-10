@@ -46,15 +46,27 @@ require_relative "../toy_smollm2_ffi_kv"
 # Recipes — the named training/init compositions. Realize-path orchestration
 # over the engines.
 #
-# NOTE: `recipes/lora` is deliberately NOT required here. It triggers a Spinel
-# analyzer bug (OriPekelman/spinel-dev#11): LoRA#realize! is loaded but, for a
-# consumer using a different recipe, never called — so its unconstrained `cfg`
-# param widens to poly and poisons the SHARED LlamaSeqEngine#realize_for_mmap,
-# which cascades to SmolLM2Config accessors program-wide and fails the C
-# compile for any recipe-path consumer. RBS can't seed it (its FFI-pointer
-# params are `untyped`, which drops the whole sig). Every OTHER surface here is
-# clean. A consumer that actually trains LoRA requires `toy/llm/recipes/lora`
-# itself (and calls it, which pins cfg). Re-add this require once #11 lands.
+# NOTE: `recipes/lora` is deliberately NOT required here — a SECOND Spinel facet,
+# distinct from spinel-dev#11 (which matz/spinel#1385 fixed + landed). Re-adding
+# the require and rebuilding against the #11-fixed Spinel STILL fails the C
+# compile (verified 2026-06-09): `@cfg.d_model.to_s` → `sp_poly_to_s`,
+# `RoPE.new(...)` arg → poly, `cache.token_ids = token_ids` → IntArray←PolyArray.
+#
+# Root cause (spinel-dev#12, isolated to a 22-line repro): #11's fix back-
+# propagates a callee's param type to an UNCALLED forwarder's param — but ONLY
+# when the shared callee is a regular instance method. It does NOT cover a
+# CONSTRUCTOR slot: `Klass.new(x)` from an uncalled method does not pin `x` from
+# `Klass#initialize`'s param type. LoRA#realize! forwards `cfg` (uncalled in the
+# compute surface) into realize_for_mmap, which builds the model via `.new`
+# (RoPE.new etc.); `cfg` never gets pinned, stays poly, and UNIONS into the
+# shared SmolLM2/RoPE constructor — which FromScratch's live realize_for_random_init
+# path also feeds concretely — poisoning it program-wide (`sp_Cfg` vs `sp_Cfg *`,
+# same shape as #11 but on the constructor argument). The untyped FFI leading
+# param on realize_for_mmap is INCIDENTAL (a no-handle, cfg-leading variant of
+# the repro fails identically); it only means an RBS sig can't independently
+# rescue it. A consumer that actually trains LoRA requires `toy/llm/recipes/lora`
+# itself (and calls realize! with a concrete cfg, which pins the type). Re-add
+# tracked by toy#52 — blocked on spinel-dev#12 (constructor-slot back-prop), not #11.
 require_relative "llm/recipes/from_scratch"
 require_relative "llm/recipes/warm_start"
 require_relative "llm/recipes/vit_tiny"
