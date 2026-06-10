@@ -96,13 +96,11 @@ so `bin/toy` can require it; don't use `toy.rb` for the compute surface. If you
 build only one engine and want to compile less (Spinel has no tree-shaking),
 require that engine's file directly instead of `toy/compute`. The
 `gate-compute-surface` make target proves the one-require surface co-compiles +
-runs a from-scratch training step (`examples/smoke_compute_surface`).
-
-> One exception: `toy/compute` does **not** pull `recipes/lora` — loading it
-> uncalled trips a Spinel analyzer bug that poisons `cfg` to poly program-wide
-> ([spinel-dev#11](https://github.com/OriPekelman/spinel-dev/issues/11);
-> re-add tracked by toy#52). A consumer that trains LoRA requires
-> `toy/llm/recipes/lora` itself (and calls it, which pins the type).
+runs a from-scratch training step (`examples/smoke_compute_surface`), with
+`recipes/lora` co-loaded uncalled — historically the poisoning shape
+([spinel-dev#11](https://github.com/OriPekelman/spinel-dev/issues/11) /
+[spinel-dev#12](https://github.com/OriPekelman/spinel-dev/issues/12), fixed
+upstream; re-added by toy#52).
 
 From here you write your experiment loop against
 `Toy::LLM::Engine::LlamaSeqEngine` / `Toy::LLM::Engine::ViTTinyEngine` /
