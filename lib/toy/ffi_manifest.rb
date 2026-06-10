@@ -32,8 +32,7 @@ module Toy
         ld_paths: [
           ".",                                   # toy root (libtinynn_ggml.a is in tinynn/ — kept for legacy compat)
           "tinynn",                              # libtinynn_ggml.a
-          "vendor/ggml/build/src",               # libggml.a, libggml-base.a
-          "vendor/ggml/build/src/ggml-cpu",      # libggml-cpu.a
+          "vendor/ggml/build/src",               # libggml.a, libggml-base.a, libggml-cpu.a
         ],
         # Trailing flags that go after the -L paths.
         tail: "-Wno-int-conversion",
@@ -44,7 +43,6 @@ module Toy
           ".",
           "tinynn",
           "vendor/ggml/build-cuda/src",
-          "vendor/ggml/build-cuda/src/ggml-cpu",
           "vendor/ggml/build-cuda/src/ggml-cuda",
         ],
         # CUDA libdir is system-absolute, NOT relative to TOY_SRC.
