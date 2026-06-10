@@ -19,7 +19,7 @@
   {
     "name": "tinynn",
     "build": { "tool": "make", "dir": "tinynn", "artifacts": ["libtinynn_ggml.a"] },
-    "placeholder": "-L. -Ltinynn -Lvendor/ggml/build/src -Lvendor/ggml/build/src/ggml-cpu -Wno-int-conversion",
+    "placeholder": "-L. -Ltinynn -Lvendor/ggml/build/src -Wno-int-conversion",
     "link": ["-L{dir}", "-L{dir:ggml}/build/src", "-Wno-int-conversion"]
   }
 ]

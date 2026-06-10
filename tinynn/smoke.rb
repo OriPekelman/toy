@@ -20,7 +20,7 @@ module TinyNN
 
   # Library search paths injected by Makefile via SPINEL_FFI_CFLAGS.
   # Default fallback works for the in-tree build.
-  ffi_cflags "-L. -Ltinynn -Lvendor/ggml/build/src -Lvendor/ggml/build/src/ggml-cpu"
+  ffi_cflags "-L. -Ltinynn -Lvendor/ggml/build/src"
 
   ffi_func :tnn_session_new,      [:int],                   :ptr
   ffi_func :tnn_session_free,     [:ptr],                   :void

@@ -19,7 +19,10 @@ module GgufKV
   ffi_lib "pthread"
   ffi_lib "m"
 
-  ffi_cflags "-L. -Ltinynn -Lvendor/ggml/build/src -Lvendor/ggml/build/src/ggml-cpu -Wno-int-conversion"
+  # Keep BYTE-IDENTICAL to lib/tinynn.rb's line — it doubles as the
+  # spinel-ext.json "tinynn" placeholder (toy#45) and the vendor step
+  # substitutes every vendored .rb carrying it.
+  ffi_cflags "-L. -Ltinynn -Lvendor/ggml/build/src -Wno-int-conversion"
 
   ffi_func :tnn_gguf_load,     [:str],            :ptr
   ffi_func :tnn_gguf_free,     [:ptr],            :void

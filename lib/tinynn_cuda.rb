@@ -90,7 +90,11 @@ module TinyNNCuda
   ffi_lib "rt"
   ffi_lib "dl"
 
-  ffi_cflags "-L. -Ltinynn -Lvendor/ggml/build-cuda/src -Lvendor/ggml/build-cuda/src/ggml-cpu -Lvendor/ggml/build-cuda/src/ggml-cuda -L/usr/local/cuda/lib64 -Wno-int-conversion"
+  # NOTE: this literal line doubles as the spinel-ext-gpu.json "tinynn-cuda"
+  # placeholder (toy#45 Phase 3, staged) — change them in lockstep. Fresh
+  # ggml (GGML_REV 41e7949) puts the CPU archives at build-cuda/src/ — the
+  # only subdir archive is ggml-cuda/libggml-cuda.a.
+  ffi_cflags "-L. -Ltinynn -Lvendor/ggml/build-cuda/src -Lvendor/ggml/build-cuda/src/ggml-cuda -L/usr/local/cuda/lib64 -Wno-int-conversion"
 
   ffi_func :tnn_session_new,      [:int],                   :ptr
   # GH#3 — multi-GPU mode 1 device-aware session ctor.

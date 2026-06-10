@@ -71,6 +71,10 @@ Gem::Specification.new do |s|
     # spinel-ext.json build-units (toy#45): consumers' `spinel-compat vendor`
     # builds ggml + the tinynn archive INSIDE their vendor tree.
     "spinel-ext.json",
+    # spinel-ext-gpu.json: STAGED default-disabled CUDA/Metal build-unit
+    # entries (inert until spinelgems#20; shipped for transparency + the
+    # manual CUDA recipe in docs/consuming-toy.md).
+    "spinel-ext-gpu.json",
     "tinynn/Makefile",
     # Pristine pinned ggml source (GGML_REV), shipped IN the gem so vendoring
     # is hermetic (nokogiri-vendoring-libxml2 precedent). It is NOT in toy's
