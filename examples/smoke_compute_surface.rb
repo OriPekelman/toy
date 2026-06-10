@@ -11,6 +11,17 @@
 # combined-surface gate (every file compute.rb pulls co-compiles); the RUN
 # proves the surface is live.
 #
+# WHY LoRA IS INSTANTIATED BUT NOT TRAINED (toy#52). `recipes/lora` is the file
+# whose UNCALLED LoRA#realize! historically poisoned the shared SmolLM2/RoPE
+# constructor (cfg → poly via the constructor slot, spinel-dev#12; the regular-
+# method facet was spinel-dev#11). Keeping realize! UNCALLED here is the point:
+# the C compile of this very gate exercises exactly that shape, so a Spinel
+# regression re-breaks the BUILD loudly. Calling realize! would pin cfg
+# concretely and mask the bug — and would also drag a GGUF base model into a
+# gate that is deliberately data-free (the byte-exact LoRA *training* gate is
+# examples/smoke_recipe_lora.rb). We instantiate LoRA.new to prove the class is
+# addressable from the one require.
+#
 #   make examples/smoke_compute_surface && ./examples/smoke_compute_surface
 #
 # Expected last line: "compute-surface: ok".
@@ -28,6 +39,9 @@ cfg = Toy::SmolLM2Config.new(VOCAB, 64, 4, 4, 128, 2, CONTEXT, 10000.0, 1.0e-5)
 llama = Toy::LLM::Engine::LlamaSeqEngine.new
 vit   = Toy::LLM::Engine::ViTTinyEngine.new
 gpt2  = Toy::LLM::Engine::GPT2SeqEngine.new
+
+# LoRA recipe: instantiated, realize! left UNCALLED on purpose (see header).
+lora = Toy::LLM::Recipes::LoRA.new
 
 recipe = Toy::LLM::Recipes::FromScratch.new
 recipe.realize!(cfg, CONTEXT, 1, 0, false, false, 0, 1.0)
@@ -53,7 +67,7 @@ while step < STEPS
   step = step + 1
 end
 
-puts "compute-surface: engines=[llama,vit,gpt2] + FromScratch recipe trained, final_loss=" + loss.to_s
+puts "compute-surface: engines=[llama,vit,gpt2] recipes=[from_scratch trained, lora addressable] final_loss=" + loss.to_s
 if loss.finite?
   puts "compute-surface: ok"
 else
