@@ -20,6 +20,19 @@
 SPINEL_DIR  ?= $(HOME)/sites/spinel
 SPINEL_BIN  ?= $(SPINEL_DIR)/spinel
 
+# toy#69 — sig/*.rbs type roots. Every Spinel compile seeds the analyzer
+# with toy's shipped RBS tree (`--rbs sig`): uncalled public methods
+# keep their DECLARED param/return/ivar types instead of widening to
+# poly (the spinel-dev#11/#12 facet family). Seeds are ADVISORY —
+# inference runs on top and widens on observed contradiction (spinel
+# docs/RBS-EXTRACT.md), and the full gate sweep was byte-exact at
+# adoption. Vendored gems' sig roots ride along through the gitignored
+# sig/vendor symlink -> ../vendor/spinel/sig, refreshed by `make
+# vendor-tep` (spinel takes ONE --rbs dir; spinel_rbs_extract walks it
+# recursively and follows symlinks). Set SPINEL_RBS= (empty) to compile
+# without seeds when chasing an analyzer issue.
+SPINEL_RBS ?= --rbs $(CURDIR)/sig
+
 # --- DevEx polish knobs (cosmetic, never gate correctness) ----------------
 # QUIET=1 (default) routes known-harmless build chatter through the
 # prep/quietly + prep/progress helpers so the terminal stays readable
@@ -34,12 +47,12 @@ QUIET    ?= 1
 QUIETLY  := $(CURDIR)/prep/quietly
 PROGRESS := $(CURDIR)/prep/progress
 ifeq ($(QUIET),0)
-  SPINEL = $(SPINEL_BIN)
+  SPINEL = $(SPINEL_BIN) $(SPINEL_RBS)
 else
   SPINEL = $(QUIETLY) \
       'cannot resolve call to' \
       'ignoring duplicate libraries' \
-      -- $(SPINEL_BIN)
+      -- $(SPINEL_BIN) $(SPINEL_RBS)
 endif
 # Sentinel deps so example/demo Spinel-compiled binaries get re-spun
 # when the Spinel compiler itself changes. Without this, stale .o /
@@ -126,6 +139,17 @@ vendor-tep:
 	fi
 	bundle lock
 	SPINEL_EXT_DISABLE=pg SPINEL_DIR=$(HOME)/sites/spinel ../spinelgems/exe/spinel-compat vendor
+	@# toy#69 — fold the vendored gems' aggregated sig root (advertised
+	@# by vendor/spinel/deps.rb, spinelgems#13) into toy's own --rbs
+	@# root via a gitignored symlink: spinel accepts ONE --rbs dir and
+	@# spinel_rbs_extract follows symlinks. Removed when no gem ships
+	@# sig (a dangling link would warn on every compile).
+	@if [ -d vendor/spinel/sig ]; then \
+	    ln -sfn ../vendor/spinel/sig sig/vendor; \
+	    echo "  sig/vendor -> ../vendor/spinel/sig (rbs ride-along)"; \
+	else \
+	    rm -f sig/vendor; \
+	fi
 
 # Build vendor/spinel/tep/lib/tep.rb on demand for tep_demo/* targets.
 # Triggers vendor-tep, which gates on sibling checkouts.
