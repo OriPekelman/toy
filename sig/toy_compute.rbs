@@ -1,0 +1,357 @@
+# sig/toy_compute.rbs — type signatures for the SPINEL-ONLY compute
+# surface (lib/toy/compute.rb and everything it pulls). Companion to
+# sig/toy.rbs (the pure-Ruby Mat / model surface).
+#
+# WHY (toy#69): RBS type roots pin a method's param/return/ivar types
+# WITHOUT needing a call site — a standing defense against the
+# uncalled-param poly-widening family (spinel-dev#11/#12, the f7ae245
+# facets). As a published gem, this sig/ tree flows automatically into
+# every consumer's vendor tree (spinelgems#13: `spinel-compat vendor`
+# copies sig/ and advertises one `--rbs <into>/sig` root), so uncalled
+# toy methods in consumer builds stay concretely typed.
+#
+# SUPPORTED SUBSET (spinel docs/RBS-EXTRACT.md — seeds are ADVISORY;
+# inference runs on top and widens on observed contradiction):
+#   - Integer/Float/String/Symbol/bool/void/nil, nominal Foo::Bar,
+#     Array[T], Hash[String|Symbol, T], T?.
+#   - NO optional/keyword/rest/block params — a signature touching any
+#     is dropped WHOLESALE. NO untyped/self/tuples/generics.
+#   - FFI `:ptr` values have NO RBS spelling: every ptr-typed accessor
+#     (sess, t_seq_* tensor handles, gguf handles, g_* arch handles)
+#     and every method with a ptr param or ptr return is intentionally
+#     OMITTED here — the analyzer's own inference handles those. This
+#     is also why LoRA#realize! / *#realize_for_mmap can NOT be rescued
+#     by sig alone: their leading gguf_handle param is a ptr (see the
+#     lora-exclusion note in lib/toy/compute.rb; spinel-dev#12).
+#   - Unqualified type names resolve to TOP-LEVEL (probed on a699cf9),
+#     so every non-top-level reference below is fully qualified.
+#
+# Conventions match sig/toy.rbs: Array[Integer] = token-id lists,
+# Array[Float] = flat f32/f64 buffers, Mat = 2-D Float matrix.
+# Keep this file accurate against lib/.
+
+# ============================================================================
+# Toy:: value objects shared by the recipes (pure Ruby, no FFI).
+# ============================================================================
+module Toy
+  # ---- AdamW (lib/toy/llm/adamw.rb) — named hyper-params → Mat(1,7) ------
+  # Slots 5/6 are DUAL-MEANING per graph family; `mode` declares the
+  # convention and hp() fails loud when unset/mismatched.
+  class AdamW
+    attr_accessor lr:           Float
+    attr_accessor beta1:        Float
+    attr_accessor beta2:        Float
+    attr_accessor eps:          Float
+    attr_accessor weight_decay: Float
+    attr_accessor bias_correct: bool
+    attr_accessor mode:         Integer
+
+    def initialize: () -> void
+    def self.for_from_scratch: () -> Toy::AdamW
+    def self.for_lora:         () -> Toy::AdamW
+    # step is the caller's 1-indexed step; ignored when bias_correct
+    # is false. Returns the Mat(1,7) handed to the recipes' step!.
+    def hp: (Integer step) -> Mat
+  end
+
+  # ---- Labels (lib/toy/llm/labels.rb) — shift-by-one one-hot builders ----
+  module Labels
+    def self.next_token:         (Array[Integer] seq_ids, Integer vocab,
+                                  Integer context, Integer batch) -> Mat
+    def self.next_token_guarded: (Array[Integer] seq_ids, Integer vocab,
+                                  Integer context, Integer batch) -> Mat
+  end
+
+  # ---- Device (lib/toy/compute{,_cuda,_metal}.rb) ------------------------
+  # The device-agnostic construction seam. ONLY `name` is declared:
+  # the factory methods (llama_engine, gpt2_engine, from_scratch_recipe,
+  # warm_start_recipe) return DIFFERENT classes per compute entry
+  # (LlamaSeqEngine vs LlamaSeqEngineCuda, ...), and this one sig tree
+  # serves all device builds — pinning a CPU return type would seed a
+  # contradiction into every CUDA/Metal build.
+  module Device
+    def self.name: () -> String
+  end
+end
+
+# ============================================================================
+# Toy::LLM:: — recipe options, training batch, recipes, engines.
+# ============================================================================
+module Toy
+  module LLM
+    # ---- RecipeOptions (lib/toy/llm/recipe_options.rb) -------------------
+    # Named realize-time options. Feed MONOMORPHIC values only (a poly
+    # assignment silently shifts training numerics — see the file's
+    # loud warning); these ivar seeds pin the expected types.
+    class RecipeOptions
+      attr_accessor t_seq:        Integer
+      attr_accessor t_batch:      Integer
+      attr_accessor weight_dtype: Integer
+      attr_accessor untied:       bool
+      attr_accessor qkv_bias:     bool
+      attr_accessor seed:         Integer
+      attr_accessor init_scale:   Float
+
+      def initialize: () -> void
+    end
+
+    # ---- TrainingBatch (lib/toy/llm/training_batch.rb) -------------------
+    # Validating wrapper for the per-step quartet. hp is caller-owned
+    # (Mat(1,7) from Toy::AdamW#hp).
+    class TrainingBatch
+      attr_accessor vocab:     Integer
+      attr_accessor context:   Integer
+      attr_accessor batch:     Integer
+      attr_accessor seq_ids:   Array[Integer]
+      attr_accessor positions: Array[Integer]
+      attr_accessor labels:    Mat
+      attr_accessor hp:        Mat
+
+      def initialize: (Integer vocab, Integer context, Integer batch_size) -> void
+      def fill!: (Array[Integer] new_seq_ids) -> void
+    end
+
+    # ======================================================================
+    # Recipes (lib/toy/llm/recipes/) — the L4 named training plans.
+    # The engine-handle ivars (fs_cache, ws_cache, lora_cache, vt_cache)
+    # and stashed tensor handles (*_t_loss/_t_labels/_t_hp) are ptr-
+    # adjacent internals and stay inference-typed.
+    # ======================================================================
+    module Recipes
+      # ---- FromScratch — random-init train --------------------------------
+      class FromScratch
+        attr_accessor fs_cache:      Toy::LLM::Engine::LlamaSeqEngine
+        attr_accessor fs_step_index: Integer
+
+        def initialize: () -> void
+        def realize!: (Toy::SmolLM2Config cfg, Toy::LLM::RecipeOptions opts) -> void
+        # Returns the loss. m_labels/m_hp from Toy::Labels / Toy::AdamW#hp.
+        def step!: (Array[Integer] seq_ids, Array[Integer] positions,
+                    Mat m_labels, Mat m_hp, bool is_first) -> Float
+      end
+
+      # ---- WarmStart — random-init + donor-embed upload window ------------
+      class WarmStart
+        attr_accessor ws_cache:      Toy::LLM::Engine::LlamaSeqEngine
+        attr_accessor ws_step_index: Integer
+
+        def initialize: () -> void
+        def realize_scratch!: (Toy::SmolLM2Config cfg, Toy::LLM::RecipeOptions opts) -> void
+        # donor_buf_flat is the ALREADY-READ flat donor embedding.
+        def realize_warm!: (Array[Float] donor_buf_flat, Integer n_floats) -> void
+        def build!: () -> void
+        def step!: (Array[Integer] seq_ids, Array[Integer] positions,
+                    Mat m_labels, Mat m_hp, bool is_first) -> Float
+      end
+
+      # ---- LoRA — frozen mmap base + rank-r Q adapters ---------------------
+      # realize!(gguf_handle, cfg, rank, opts) is NOT declarable: its
+      # leading param is an FFI ptr (out of the RBS subset; the whole
+      # signature would be dropped). This is exactly why sig roots can
+      # not independently rescue the lora-in-compute exclusion (toy#52,
+      # spinel-dev#12) — see lib/toy/compute.rb.
+      class LoRA
+        attr_accessor lora_cache:      Toy::LLM::Engine::LlamaSeqEngine
+        attr_accessor lora_step_index: Integer
+
+        def initialize: () -> void
+        def step!: (Array[Integer] seq_ids, Array[Integer] positions,
+                    Mat m_labels, Mat m_hp, bool is_first) -> Float
+      end
+
+      # ---- VitTiny — ViT-Tiny from-scratch image classifier ----------------
+      class VitTiny
+        attr_accessor vt_cache: Toy::LLM::Engine::ViTTinyEngine
+
+        def initialize: () -> void
+        def realize!: (ViTTinyConfig cfg, Toy::LLM::RecipeOptions opts) -> void
+        # cls_idx is the single-element class-index array.
+        def step!: (Mat m_image, Array[Integer] cls_idx,
+                    Mat m_labels, Mat m_hp, bool is_first) -> Float
+      end
+    end
+
+    # ======================================================================
+    # Engines (lib/toy/llm/engine/) — the L4 forward/train drivers.
+    # Tensor-handle accessors (sess, t_seq_*, g_*, ft_globals_*) are
+    # FFI ptrs / ptr arrays — intentionally omitted (no RBS spelling).
+    # ======================================================================
+    module Engine
+      # ---- LlamaSeqEngine (llama_seq_engine.rb) ----------------------------
+      class LlamaSeqEngine
+        attr_accessor seq_has_untied_output:       bool
+        attr_accessor seq_has_qkv_bias:            bool
+        attr_accessor seq_t:                       Integer
+        attr_accessor seq_b:                       Integer
+        attr_accessor seq_d_model:                 Integer
+        attr_accessor seq_d_ff:                    Integer
+        attr_accessor seq_n_heads:                 Integer
+        attr_accessor seq_n_kv:                    Integer
+        attr_accessor seq_d_head:                  Integer
+        attr_accessor seq_group_size:              Integer
+        attr_accessor seq_n_layers:                Integer
+        attr_accessor seq_vocab_size:              Integer
+        attr_accessor seq_rope_base:               Float
+        attr_accessor seq_rope_scaling:            Toy::RopeScaling
+        attr_accessor seq_rms_eps:                 Float
+        attr_accessor seq_realized:                bool
+        attr_accessor seq_weight_dtype:            Integer
+        attr_accessor seq_lora_q_enabled:          bool
+        attr_accessor seq_lora_q_rank:             Integer
+        attr_accessor seq_lora_q_adamw_enabled:    bool
+        attr_accessor seq_full_finetune_enabled:   bool
+        attr_accessor ft_train_embeddings_enabled: bool
+
+        def initialize: () -> void
+        def enable_full_finetune_embeddings!: () -> bool
+        def enable_full_finetune!: () -> bool
+        def enable_lora_q!: (Integer r) -> Integer
+        def enable_lora_q_adamw!: () -> bool
+        # Pure ivar writes from cfg.*; pins the cfg slot CONCRETELY even
+        # from call sites the analyzer never sees live (the #52 chain).
+        def apply_seq_cfg!: (Toy::SmolLM2Config cfg) -> Float
+        # The from-scratch/warm-start realize. (The gguf-handle realizes —
+        # realize_for_mmap / realize_for_q8_copy / realize_for_full_finetune
+        # — take a leading FFI ptr and can not be declared.)
+        def realize_for_random_init: (Toy::SmolLM2Config cfg, Integer t_seq,
+                                      Integer t_batch, Integer weight_dtype,
+                                      bool untied, bool qkv_bias,
+                                      Integer seed, Float init_scale) -> bool
+        def upload_block_causal_mask!: () -> Integer
+        def upload_random_init!: (Integer seed, Float init_scale,
+                                  bool qkv_bias, bool untied) -> void
+        def upload_lora_q_init!: (Integer seed, Float init_scale) -> void
+        def build_and_realize!: () -> bool
+      end
+
+      # ---- GPT2SeqEngine (gpt2_seq_engine.rb) ------------------------------
+      class GPT2SeqEngine
+        attr_accessor g_vocab:    Integer
+        attr_accessor g_d_model:  Integer
+        attr_accessor g_n_heads:  Integer
+        attr_accessor g_d_head:   Integer
+        attr_accessor g_d_ff:     Integer
+        attr_accessor g_n_layers: Integer
+        attr_accessor g_context:  Integer
+        attr_accessor g_rng:      Integer
+
+        def initialize: () -> void
+        def realize!: (Integer vocab, Integer d_model, Integer n_heads,
+                       Integer d_ff, Integer n_layers, Integer context,
+                       Integer seed) -> void
+        def build_forward!: () -> void
+        def build_train_step!: () -> void
+        def step!: (Array[Integer] seq_ids, Array[Integer] positions,
+                    Mat m_labels, Mat m_hp, bool is_first) -> Float
+      end
+
+      # ---- ViTTinyEngine (vit_tiny_engine.rb) ------------------------------
+      class ViTTinyEngine
+        attr_accessor cfg:            ViTTinyConfig
+        attr_accessor n_patches:      Integer
+        attr_accessor seq_t:          Integer
+        attr_accessor patch_flat_dim: Integer
+        attr_accessor realized:       bool
+
+        def initialize: () -> void
+        def realize_for_random_init: (ViTTinyConfig cfg, Integer seed,
+                                      Float init_scale) -> bool
+        def upload_random_init!: (Integer seed, Float init_scale) -> void
+      end
+    end
+  end
+end
+
+# ============================================================================
+# ViTTinyConfig (lib/toy/models/toy_vit.rb) — top-level.
+# ============================================================================
+class ViTTinyConfig
+  attr_accessor image_size:   Integer
+  attr_accessor patch_size:   Integer
+  attr_accessor num_channels: Integer
+  attr_accessor d_model:      Integer
+  attr_accessor n_heads:      Integer
+  attr_accessor d_head:       Integer
+  attr_accessor d_ff:         Integer
+  attr_accessor n_layers:     Integer
+  attr_accessor num_classes:  Integer
+  attr_accessor ln_eps:       Float
+
+  def initialize: (Integer image_size, Integer patch_size,
+                   Integer num_channels, Integer d_model, Integer n_heads,
+                   Integer d_ff, Integer n_layers, Integer num_classes,
+                   Float ln_eps) -> void
+end
+
+# ============================================================================
+# KV-cache decode engine (lib/toy/llm/engine/llama_kv_engine.rb) —
+# top-level classes ("LlamaKvEngine" is the FILE name; the classes keep
+# their historical names). Heavily ptr-typed; only the scalar config /
+# flag surface and the ptr-free methods are declared.
+# ============================================================================
+class SmolLM2KVFFICache
+  attr_accessor max_T:      Integer
+  attr_accessor d_model:    Integer
+  attr_accessor d_ff:       Integer
+  attr_accessor n_heads:    Integer
+  attr_accessor n_kv:       Integer
+  attr_accessor d_head:     Integer
+  attr_accessor group_size: Integer
+  attr_accessor n_layers:   Integer
+  attr_accessor vocab_size: Integer
+  attr_accessor rope_base:  Float
+  attr_accessor rms_eps:    Float
+  attr_accessor realized:   bool
+
+  def initialize: () -> void
+  def enable_kv_q8!: () -> bool
+  def enable_flash_attn!: () -> bool
+  def enable_moe!: (Integer n_experts, Integer n_experts_used) -> Integer
+  def enable_lora_q!: (Integer r) -> Integer
+  def enable_lora_q_adamw!: () -> bool
+  def set_weight_type: (Integer t) -> Integer
+  def upload_lora_q_init!: (Integer seed, Float init_scale) -> void
+  # realize_for_mmap / realize_and_load_auto / build_decode_step /
+  # load_weights / read_persistent_mat traffic in FFI ptrs — omitted.
+  def realize_for: (Integer max_T, Integer d_model, Integer d_ff,
+                    Integer n_heads, Integer n_kv, Integer n_layers,
+                    Integer vocab_size, Float rope_base, Float rms_eps,
+                    bool untied, bool qkv_bias) -> bool
+end
+
+module SmolLM2KV
+  # decode_step returns the [1, vocab] logits Mat for one token.
+  def self.upload_from: (SmolLM2KVFFICache kv_cache, Toy::SmolLM2 model) -> void
+  def self.decode_step: (SmolLM2KVFFICache kv_cache, Integer token_id,
+                         Integer pos) -> Mat
+end
+
+# ============================================================================
+# GGUFLoad (lib/toy/io/loaders/toy_smollm2_loader.rb, lib/toy/io/gguf_load.rb)
+# — capability flags + path-level loaders (ptr-free subset).
+# ============================================================================
+module GGUFLoad
+  # SmolLM2Flags#initialize takes optional positional args (out of the
+  # RBS subset — would be dropped wholesale), so only the ivars are
+  # seeded. These pins matter: flags readers feed RecipeOptions /
+  # engine realize params, and a poly flag value silently shifts
+  # training numerics (see lib/toy/llm/recipe_options.rb's warning).
+  class SmolLM2Flags
+    attr_accessor untied:         bool
+    attr_accessor qkv_bias:       bool
+    attr_accessor qk_norm:        bool
+    attr_accessor swa_window:     Integer
+    attr_accessor is_moe:         bool
+    attr_accessor n_experts:      Integer
+    attr_accessor n_experts_used: Integer
+    attr_accessor qk_norm_kind:   Integer
+    attr_accessor has_post_norms: bool
+    attr_accessor embed_scale:    Float
+    attr_accessor attn_softcap:   Float
+    attr_accessor final_softcap:  Float
+    attr_accessor swa_alternates: bool
+  end
+
+  def self.detect_smollm2_flags: (String path) -> GGUFLoad::SmolLM2Flags
+  def self.detect_weight_type: (String path) -> Integer
+end

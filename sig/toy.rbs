@@ -2,12 +2,12 @@
 #
 # Used by Steep (typecheck), the Phuong–Hutter algorithm-card emitter
 # (source of truth), and Spinel's `--rbs sig` flag (analyzer-arbitration
-# hint). The Makefile doesn't pass --rbs by default — it adds a few
-# polymorphic-dispatch warnings on GPT2LM's Array<Mat> accessors that
-# we'd want to silence first — but feeding the file in costs 3 extra
-# warnings (was 45 before matz/spinel#97bf268 fixed Mat-in-Toy::
-# resolution), so enabling it per-build is now reasonable. Keep this
-# file accurate against lib/.
+# hint; seeds are ADVISORY — see spinel docs/RBS-EXTRACT.md for the
+# supported subset). Since toy#69 the Makefile passes `--rbs sig` on
+# every spinel invocation (SPINEL_RBS_FLAG), and `spinel-compat vendor`
+# ships this tree to consumers (spinelgems#13). The compute surface
+# (recipes / engines / value objects) lives in sig/toy_compute.rbs.
+# Keep this file accurate against lib/.
 #
 # Conventions:
 #   - Mat is a 2-D Float matrix with flat f64 storage. Where shape is
@@ -23,7 +23,7 @@
 
 # ============================================================================
 # Mat — 2D Float matrix, flat row-major f64 storage.
-# (Lives in lib/transformer.rb.)
+# (Lives in lib/toy/models/transformer.rb.)
 # ============================================================================
 class Mat
   attr_accessor nrows: Integer
@@ -202,22 +202,68 @@ module Toy
 
   # ========================================================================
   # SmolLM2 / Llama-family model.
-  # (Lives in lib/toy_smollm2.rb.)
+  # (Lives in lib/toy/models/toy_smollm2.rb.)
   # ========================================================================
-  class SmolLM2Config
-    attr_accessor vocab:     Integer
-    attr_accessor d_model:   Integer
-    attr_accessor n_heads:   Integer
-    attr_accessor n_kv:      Integer
-    attr_accessor d_ff:      Integer
-    attr_accessor n_layers:  Integer
-    attr_accessor ctx:       Integer
-    attr_accessor rope_base: Float
-    attr_accessor rms_eps:   Float
 
-    def initialize: (Integer, Integer, Integer, Integer, Integer,
-                     Integer, Integer, Float, Float) -> void
-    def self.smollm2_135m: () -> SmolLM2Config
+  # ---- RopeScaling — RoPE frequency-scaling parameters --------------------
+  # Carried on SmolLM2Config; the GGUF loader sets it from
+  # rope_scaling.* metadata. kind ∈ :none / :linear / :llama3.
+  class RopeScaling
+    attr_accessor kind:             Symbol
+    attr_accessor freq_scale:       Float
+    attr_accessor orig_max_pos:     Integer
+    attr_accessor factor:           Float
+    attr_accessor low_freq_factor:  Float
+    attr_accessor high_freq_factor: Float
+    attr_accessor ext_factor:       Float
+    attr_accessor attn_factor:      Float
+    attr_accessor beta_fast:        Float
+    attr_accessor beta_slow:        Float
+
+    def initialize: (Symbol kind, Float freq_scale, Integer orig_max_pos,
+                     Float factor, Float low_freq_factor,
+                     Float high_freq_factor, Float ext_factor,
+                     Float attn_factor, Float beta_fast,
+                     Float beta_slow) -> void
+    def self.none:   () -> Toy::RopeScaling
+    def self.linear: (Float factor) -> Toy::RopeScaling
+    def self.llama3: (Float factor, Float low_freq, Float high_freq,
+                      Integer orig_max_pos) -> Toy::RopeScaling
+    # Returns the (d_head/2)-element per-dim freq_factors array.
+    def self.compute_llama3_freq_factors: (Integer d_head, Float freq_base,
+                                           Integer orig_max_pos, Float factor,
+                                           Float low_freq, Float high_freq) -> Array[Float]
+  end
+
+  class SmolLM2Config
+    attr_accessor vocab:        Integer
+    attr_accessor d_model:      Integer
+    attr_accessor n_heads:      Integer
+    attr_accessor n_kv:         Integer
+    attr_accessor d_ff:         Integer
+    attr_accessor n_layers:     Integer
+    attr_accessor ctx:          Integer
+    attr_accessor rope_base:    Float
+    attr_accessor rms_eps:      Float
+    attr_accessor rope_scaling: Toy::RopeScaling
+    attr_accessor head_dim:     Integer
+    attr_accessor donor_d_in:   Integer
+
+    # THE #52 CONSTRUCTOR SLOT: this ctor sits on the shared path that
+    # uncalled forwarders (LoRA#realize! → realize_for_mmap → .new)
+    # union poly args into (spinel-dev#12). The seed pins it.
+    def initialize: (Integer vocab, Integer d_model, Integer n_heads,
+                     Integer n_kv, Integer d_ff, Integer n_layers,
+                     Integer ctx, Float rope_base, Float rms_eps) -> void
+    def self.smollm2_135m: () -> Toy::SmolLM2Config
+    def self.tiny:         () -> Toy::SmolLM2Config
+    def self.mid:          () -> Toy::SmolLM2Config
+    def self.mha: (Integer vocab, Integer d_model, Integer heads,
+                   Integer d_ff, Integer layers, Integer ctx,
+                   Float rope_base, Float rms_eps) -> Toy::SmolLM2Config
+    def self.gqa: (Integer vocab, Integer d_model, Integer heads,
+                   Integer n_kv, Integer d_ff, Integer layers, Integer ctx,
+                   Float rope_base, Float rms_eps) -> Toy::SmolLM2Config
   end
 
   class SmolLM2Block
@@ -247,7 +293,6 @@ module Toy
     # Returns logits of shape [T, V].
     def forward:                  (Array[Integer] ids, Integer pos_start) -> Mat
     def param_count:              () -> Integer
-    def describe:                 () -> String
   end
 
   # ========================================================================
@@ -320,22 +365,29 @@ class GPT2LM
 end
 
 # ============================================================================
-# Tokenizer — GGUF-embedded BPE decoder. (lib/tokenizer.rb)
+# Tokenizer — GGUF-embedded BPE decoder. (lib/toy/io/tokenizer.rb)
 # Declared here to pin Spinel's analyzer; cross-class polymorphism on
 # `length` was widening Mat#nrows to sp_RbVal in compiled artifacts.
 # ============================================================================
 class Tokenizer
-  attr_reader vocab_size: Integer
-  attr_reader bos_id:     Integer
-  attr_reader eos_id:     Integer
-  attr_reader pad_id:     Integer
-  attr_reader unk_id:     Integer
-  attr_reader present:    bool
+  attr_reader vocab_size:  Integer
+  attr_reader bos_id:      Integer
+  attr_reader eos_id:      Integer
+  attr_reader pad_id:      Integer
+  attr_reader unk_id:      Integer
+  attr_reader present:     bool
+  attr_reader spm:         bool
+  attr_reader spm_unigram: bool
+  attr_accessor add_bos:   bool
 
-  def initialize: (Array[String] vocab,
-                   Array[String] merges,
-                   Integer bos_id, Integer eos_id,
-                   Integer pad_id, Integer unk_id) -> void
+  # initialize is NOT declared: it takes 2 trailing DEFAULT args
+  # (model_name = "", add_bos = false), which are outside the RBS
+  # subset — and a deliberately-truncated 6-param declaration is NOT
+  # safe: the seed pinned a 6-slot signature against the 8-slot
+  # compiled ctor and broke the C compile of toy-infer with
+  # "too few arguments to function 'sp_Tokenizer_new'" (probed on
+  # a699cf9 during toy#69 adoption — a wrong-ARITY seed is the one
+  # case that is NOT an advisory no-op). Keep arity exact or absent.
 
   def token_at: (Integer id) -> String
   def decode:   (Array[Integer] ids) -> String
