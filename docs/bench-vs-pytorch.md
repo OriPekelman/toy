@@ -20,16 +20,32 @@ make bench-vs-pytorch-update   # re-record the budget after an intended change
 make bench-vs-pytorch-report   # measure + print, no gate
 ```
 
-Latest GB10 (SmolLM2-135M, measured live, same session):
+Latest GB10 (SmolLM2-135M, measured live, same session — 2026-06-11,
+toy `d605aea` / spinel `a699cf9` / ggml `41e7949`, toy#61 pass):
 
 | Workload | toy (CUDA) | PyTorch (CUDA) | ratio toy/pt |
 | --- | --- | --- | --- |
-| Full-FT training step (T=4) | ~77 ms | ~77 ms | **~1.0× (parity)** |
-| KV-cache decode | ~82 tok/s | ~113 tok/s | **~1.38×** |
+| Full-FT training step (T=4) | 82.05 ms | 82.48 ms | **0.995× (parity)** |
+| KV-cache decode | — see below | 98.9 tok/s | **not measurable** |
 
 For a transformer you can read top-to-bottom, parity on the training
-step and ~1.4× on decode at 135M is a healthy place to be. (The CPU
-story is different — see "Caveats".)
+step at 135M is a healthy place to be. (The CPU story is different —
+see "Caveats".)
+
+> **Known-broken (2026-06-11): the decode leg.** `demos/qwen25_bench_cuda`
+> segfaults at startup (`sp_gc_mark` → `sp_PtrArray_new_scan` inside
+> `SmolLM2KVCuda.decode_step`, right after `ggml_cuda_init`), so the
+> infer ratio cannot be measured at this pin. Not an `a699cf9`
+> regression — a main-tree binary built 2026-05-31 segfaults
+> identically, so the leg has been dead since shortly after the budget
+> was recorded (2026-05-24). Worse, `bench/check_vs_pytorch.rb`
+> silently skips a ratio whose inputs are missing and still prints
+> `ok` — a fail-loud violation. The last good decode numbers (~82 vs
+> ~113 tok/s, 1.38×) are RETIRED until the demo is fixed and the leg
+> re-measured; reported on toy#61.
+>
+> The *CPU* decode bench (`make bench`, `bench/inference.rb`) is alive
+> and green: 85.4 tok/s vs a 64.4 baseline on 2026-06-11.
 
 ## What it measures
 

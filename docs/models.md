@@ -5,22 +5,30 @@ The canonical "what's actually wired" reference is
 is the model-level view: which checkpoints run, in which precision, on
 which backend — and the footnotes that keep the table honest.
 
+> **Verified at:** toy `d605aea` / spinel `a699cf9` / ggml `41e7949`
+> on 2026-06-11 (toy#61 re-verification pass; serve leg at spinel
+> `f6d5eef`, see spinel-dev#14). Every ✓ below was re-run on that
+> date on the gx10 (GB10, aarch64) except where a footnote says
+> otherwise. Greedy `toy infer` decode, CUDA asserted token-identical
+> to CPU; GPT-2 family additionally parity-checked against recorded
+> HuggingFace/PyTorch logits.
+
 | Model              | Family               | Params      | F32 | Q8_0 | CPU | CUDA F32 | CUDA Q8 | Metal F32 |
 | ------------------ | -------------------- | ----------- | --- | ---- | --- | -------- | ------- | --------- |
 | DistilGPT-2        | GPT-2                | 82M         | ✓   |      | ✓   | ✓        |         | ‡         |
 | GPT-2 small        | GPT-2                | 124M        | ✓   |      | ✓   | ✓        |         | ‡         |
-| SmolLM2-135M       | Llama family         | 135M        | ✓   | ✓    | ✓   | ✓        |         | ✓         |
+| SmolLM2-135M       | Llama family         | 135M        | ✓   | ✓    | ✓   | ✓        |         | ✓◇        |
 | SmolLM2-360M       | Llama family         | 360M        | ✓   |      | ✓   | ✓        |         | ‡         |
 | TinyLlama-1.1B     | Llama + SPM-BPE tok  | 1.1B        | ✓   | ✓    | ✓   | ✓        |         | ‡         |
 | Llama-3.2-1B       | Llama family         | 1B          | ✓   |      | ✓   | ✓        |         | ‡         |
 | Llama-3.2-3B       | Llama family         | 3B          | ✓   |      | ✓   | ✓        |         | ‡         |
 | Mistral-7B-v0.2    | Llama + SPM-BPE tok  | 7B          | ✓   | ✓    | ✓   |          | ✓       |           |
 | Qwen2.5-0.5B       | Llama + QKV bias     | 0.5B        | ✓   | ✓    | ✓   | ✓        |         | ‡         |
-| Qwen2.5-1.5B       | Llama + QKV bias     | 1.5B        | ✓   | ✓    | ✓   | ✓        | †       | ‡         |
-| Qwen2.5-3B         | Llama + QKV bias     | 3B          | ✓   | ✓    | ✓   | ✓        | †       | ‡         |
+| Qwen2.5-1.5B       | Llama + QKV bias     | 1.5B        | ✓   | ✓    | ✓   | ✓        | ✓†      | ‡         |
+| Qwen2.5-3B         | Llama + QKV bias     | 3B          | ✓   | ✓    | ✓   | ✓        | ✓†      | ‡         |
 | Qwen2.5-7B         | Llama + QKV bias     | 7B          | ✓   | ✓    | ✓   |          | ✓       |           |
-| Qwen3-0.6B         | Qwen3 + QK-norm      | 0.6B        | ✓   |      | ✓   | ✓        |         | ‡         |
-| Qwen3-1.7B         | Qwen3 + QK-norm      | 1.7B        | ✓   | ✓    | ✓   | ✓        |         | ‡         |
+| Qwen3-0.6B         | Qwen3 + QK-norm      | 0.6B        | ✓   |      | ✓   | ✗※       |         | ‡         |
+| Qwen3-1.7B         | Qwen3 + QK-norm      | 1.7B        | ✓   | ✓°   | ✓   | ✗※       |         | ‡         |
 | Qwen3-4B           | Qwen3 + QK-norm      | 4B          | ✓   |      | ✓   |          |         | ‡         |
 | OLMoE-1B-7B-Instr  | Llama + MoE + QK-norm⁂  | 7B (1B act) |     | ✓    | ✓   |          |         | ‡         |
 | Gemma 2-2b-it      | Llama + Gemma extras⁂⁂  | 2B          |     | ✓    | ✓   |          |         | ‡         |
@@ -37,9 +45,25 @@ each sublayer, and per-layer alternating SWA/full attention. All
 auto-detected from the GGUF (`gemma2.*` metadata). Its tokenizer is
 SPM-Unigram (no merges), enabled automatically.
 
-† Qwen2.5-1.5B/3B Q8 abort on CUDA at weight-load time: ggml-cuda's
-quantized matmul requires `d_ff` aligned to 512, and those models'
-`d_ff` (8960, 11008) aren't. The F32 path works for all sizes.
+† These cells used to read "aborts on CUDA at weight-load time
+(ggml-cuda quantized matmul required `d_ff` aligned to 512)". At the
+current ggml pin (`41e7949`) that restriction no longer reproduces:
+Qwen2.5-1.5B/3B Q8 run on CUDA and decode token-identical to the CPU
+Q8 and F32 paths (re-verified 2026-06-11).
+
+※ **Qwen3 on CUDA is broken** (caught by the 2026-06-11 re-verification;
+previously over-claimed). CPU decode is coherent; the CUDA binary runs
+but decodes degenerate output (`Once upon a time Answer Answer Answer…`
+on 0.6B, `Once upon a time::::::` on 1.7B), and `toy eval --device cuda`
+returns a top-5 disjoint from CPU's. Not a spinel-pin regression — a
+main-tree binary built 2026-06-06 reproduces it. Qwen3 is the only
+QK-norm + explicit-head_dim arch in the CUDA matrix; every other
+CUDA row above passes token-identical. Reported on toy#61 (needs its
+own issue).
+
+° Qwen3-1.7B Q8 was not re-verified on 2026-06-11: no Q8 checkpoint of
+it on the bench box (re-quantizing needs an HF download we don't keep).
+The ✓ is carried over from the original v0.5 validation.
 
 ‡ Metal: validated end-to-end only on SmolLM2-135M F32 (bit-identical
 to CPU). Other Llama-family models should work — same FFI surface,
@@ -47,6 +71,10 @@ same graph builder, same ggml-metal kernel coverage — but haven't been
 smoked. GPT-2-family isn't wired on Metal. Quantized weights on Metal
 are untested. The Metal path uses copy-load rather than mmap, so
 multi-GB models pay the copy cost.
+
+◇ The SmolLM2-135M Metal ✓ is Mac-gated (#27) and was not re-run in the
+2026-06-11 gx10 pass; it stands from the 2026-05-31 Mac validation
+(`9b5131a`).
 
 ## Tokenizer / RoPE coverage
 
