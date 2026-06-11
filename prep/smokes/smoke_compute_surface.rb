@@ -29,6 +29,15 @@ llama = Toy::LLM::Engine::LlamaSeqEngine.new
 vit   = Toy::LLM::Engine::ViTTinyEngine.new
 gpt2  = Toy::LLM::Engine::GPT2SeqEngine.new
 
+# LoRA tripwire (toy#52): instantiated, realize! left deliberately UNCALLED.
+# The uncalled-forwarder-into-constructor-slot shape is exactly what poisoned
+# cfg to poly program-wide (spinel-dev#12) before the RecipeOptions reshape
+# (toy#64) dissolved it — keeping it uncalled here means a Spinel regression
+# re-breaks this gate's C COMPILE loudly. Calling realize! would pin cfg and
+# mask the bug (and drag a GGUF into a data-free gate; byte-exact LoRA
+# training lives in prep/smokes/smoke_recipe_lora.rb).
+lora = Toy::LLM::Recipes::LoRA.new
+
 # Named realize options (toy#64): canonical defaults (t_batch=1,
 # weight_dtype=0/f32, untied=false, qkv_bias=false, seed=0,
 # init_scale=1.0); only t_seq needs setting.

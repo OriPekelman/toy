@@ -41,14 +41,14 @@ require_relative "llm/engine/gpt2_seq_engine_cuda"
 # KV-cache decode engine (inference), CUDA mirror.
 require_relative "llm/engine/llama_kv_engine_cuda"
 
-# Recipes — the hand-maintained CUDA twins. Exclusions mirror the CPU
-# entry's where they exist and the backend's gaps where they don't:
-#   - lora_cuda: NOT required, same spinel-dev#12 constructor-slot
-#     facet as compute.rb's lora exclusion (toy#52).
-#   - vit_tiny: no CUDA recipe (no CUDA vit engine).
+# Recipes — the generated CUDA twins. lora_cuda included since toy#52
+# closed (the spinel-dev#12 constructor-slot facet was dissolved by the
+# toy#64 RecipeOptions reshape; see compute.rb's HISTORY note). Backend
+# gap that remains: vit_tiny has no CUDA recipe (no CUDA vit engine).
 require_relative "llm/recipe_options"
 require_relative "llm/recipes/from_scratch_cuda"
 require_relative "llm/recipes/warm_start_cuda"
+require_relative "llm/recipes/lora_cuda"
 
 # Inference I/O (shared): GGUF model loading + the BPE tokenizer.
 require_relative "io/gguf_load"

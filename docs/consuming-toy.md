@@ -76,11 +76,12 @@ require that engine's file directly instead of `toy/compute`. The
 `gate-compute-surface` make target proves the one-require surface co-compiles +
 runs a from-scratch training step (`prep/smokes/smoke_compute_surface`).
 
-> One exception: `toy/compute` does **not** pull `recipes/lora` — loading it
-> uncalled trips a Spinel analyzer bug that poisons `cfg` to poly program-wide
-> ([spinel-dev#11](https://github.com/OriPekelman/spinel-dev/issues/11);
-> re-add tracked by toy#52). A consumer that trains LoRA requires
-> `toy/llm/recipes/lora` itself (and calls it, which pins the type).
+> `toy/compute` pulls **all four** recipes, LoRA included (the historical
+> lora exclusion — a Spinel uncalled-forwarder/constructor-slot facet,
+> [spinel-dev#12](https://github.com/OriPekelman/spinel-dev/issues/12) —
+> was dissolved by the toy#64 RecipeOptions reshape and closed as toy#52;
+> the compute-surface gate keeps an uncalled-LoRA tripwire against
+> regressions).
 
 From here you write your experiment loop against
 `Toy::LLM::Engine::LlamaSeqEngine` / `Toy::LLM::Engine::ViTTinyEngine` /
@@ -139,9 +140,9 @@ Two honest limits (probed on spinel a699cf9):
 
 - **FFI `:ptr` has no RBS spelling.** Methods with a ptr param or return
   (the `realize_for_mmap` family, tensor-handle accessors) can't be
-  declared — sig roots can NOT rescue the lora-in-compute exclusion
-  (toy#52) because `LoRA#realize!`'s leading `gguf_handle` is a ptr and
-  the poison is a CONSTRUCTOR slot (spinel-dev#12).
+  declared. (This briefly mattered for the historical lora-in-compute
+  exclusion — spinel-dev#12 / toy#52, since dissolved by the toy#64
+  reshape — and still means ptr-surfaces rely on call-site inference.)
 - **Arity must be exact or absent.** A truncated declaration against a
   default-arg method is NOT a no-op: it breaks the C compile with a
   "too few arguments" error (the one non-advisory failure mode; toy's

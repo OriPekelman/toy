@@ -46,30 +46,19 @@ require_relative "llm/engine/llama_kv_engine"
 # Recipes — the named training/init compositions. Realize-path orchestration
 # over the engines.
 #
-# NOTE: `recipes/lora` is deliberately NOT required here — a SECOND Spinel facet,
-# distinct from spinel-dev#11 (which matz/spinel#1385 fixed + landed). Re-adding
-# the require and rebuilding against the #11-fixed Spinel STILL fails the C
-# compile (verified 2026-06-09): `@cfg.d_model.to_s` → `sp_poly_to_s`,
-# `RoPE.new(...)` arg → poly, `cache.token_ids = token_ids` → IntArray←PolyArray.
-#
-# Root cause (spinel-dev#12, isolated to a 22-line repro): #11's fix back-
-# propagates a callee's param type to an UNCALLED forwarder's param — but ONLY
-# when the shared callee is a regular instance method. It does NOT cover a
-# CONSTRUCTOR slot: `Klass.new(x)` from an uncalled method does not pin `x` from
-# `Klass#initialize`'s param type. LoRA#realize! forwards `cfg` (uncalled in the
-# compute surface) into realize_for_mmap, which builds the model via `.new`
-# (RoPE.new etc.); `cfg` never gets pinned, stays poly, and UNIONS into the
-# shared SmolLM2/RoPE constructor — which FromScratch's live realize_for_random_init
-# path also feeds concretely — poisoning it program-wide (`sp_Cfg` vs `sp_Cfg *`,
-# same shape as #11 but on the constructor argument). The untyped FFI leading
-# param on realize_for_mmap is INCIDENTAL (a no-handle, cfg-leading variant of
-# the repro fails identically); it only means an RBS sig can't independently
-# rescue it. A consumer that actually trains LoRA requires `toy/llm/recipes/lora`
-# itself (and calls realize! with a concrete cfg, which pins the type). Re-add
-# tracked by toy#52 — blocked on spinel-dev#12 (constructor-slot back-prop), not #11.
+# HISTORY (toy#52, closed 2026-06-11): `recipes/lora` was excluded from this
+# surface for three days — an UNCALLED LoRA#realize! forwarding `cfg` into a
+# constructor slot poisoned the shared SmolLM2/RoPE ctor to poly program-wide
+# (spinel-dev#12, the constructor-slot sibling of spinel-dev#11). The Phase-A
+# RecipeOptions reshape of realize! (toy#64) dissolved the poison path: the
+# re-add compiles + trains byte-identically even on pre-#12-fix Spinel revs
+# (probed at 08a189c, 2026-06-11, toy#69). The compute-surface smoke keeps an
+# instantiated-but-UNCALLED LoRA as a tripwire so any regression re-breaks
+# that gate's C compile loudly.
 require_relative "llm/recipe_options"
 require_relative "llm/recipes/from_scratch"
 require_relative "llm/recipes/warm_start"
+require_relative "llm/recipes/lora"
 require_relative "llm/recipes/vit_tiny"
 
 # Inference I/O: GGUF model loading + the BPE tokenizer.

@@ -22,7 +22,8 @@
 # Backend gaps (consumers needing more require the files directly):
 #   - warm-start: NO Metal recipe exists (from-scratch only, matching
 #     libexec/toy-train-metal) — Device.warm_start_recipe is absent.
-#   - vit: no Metal engine. lora: no Metal recipe (and see toy#52).
+#   - vit: no Metal engine. lora: no Metal recipe (a backend gap only —
+#     the toy#52 exclusion is history, see compute.rb's HISTORY note).
 
 # FFI compute layer: Metal TinyNN + the MRI-safe sugar (Mat + Card).
 require_relative "ffi/tinynn_metal"
