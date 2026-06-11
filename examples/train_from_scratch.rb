@@ -2,9 +2,10 @@
 #
 # A tiny Llama-shape model (RMSNorm + GQA + RoPE + SwiGLU) trained
 # through the L4 FromScratch recipe. This is the SHORT tutorial: a
-# clean read of how the four value objects compose —
+# clean read of how the five value objects compose —
 #   Toy::SmolLM2Config.mha  — the model shape (no 9-arg positional soup)
-#   Toy::LLM::Recipes::FromScratch — realize! + step! (the algorithm)
+#   Toy::LLM::RecipeOptions — named realize-time options (no 8-arg wall)
+#   Toy::LLM::Recipes::FromScratch — realize!(cfg, opts) + step!
 #   Toy::Labels.next_token  — the shift-by-one one-hot label Mat
 #   Toy::AdamW              — the named optimizer hyper-params
 #
@@ -50,10 +51,17 @@ puts "config: vocab=" + cfg.vocab.to_s +
      " L=" + cfg.n_layers.to_s +
      " heads=" + cfg.n_heads.to_s
 
-# Realize the random-init graph THROUGH the recipe. untied=true (arg4)
-# is mandatory when donor_d_in > 0.
+# Realize the random-init graph THROUGH the recipe, with NAMED options
+# (Toy::LLM::RecipeOptions, toy#64). untied=true is mandatory when
+# donor_d_in > 0; everything else keeps the canonical defaults
+# (t_batch=1, weight_dtype=0/f32, qkv_bias=false, init_scale=1.0).
+opts = Toy::LLM::RecipeOptions.new
+opts.t_seq  = CONTEXT
+opts.untied = true
+opts.seed   = SEED
+
 recipe = Toy::LLM::Recipes::FromScratch.new
-recipe.realize!(cfg, CONTEXT, 1, 0, true, false, SEED, 1.0)
+recipe.realize!(cfg, opts)
 puts "realize OK"
 
 # A fixed training sequence — the first corpus line, CONTEXT ints,
@@ -78,7 +86,7 @@ m_labels = Toy::Labels.next_token(seq_ids, VOCAB, CONTEXT, 1)
 # Named AdamW hyper-params. Defaults (lr=0.001, beta1=0.9, beta2=0.95,
 # eps=1e-8, wd=0.0, bias_correct=false) → constant slots 5/6 = betas.
 # from-scratch hp is CONSTANT, so build it once before the loop.
-m_hp = Toy::AdamW.new.hp(0)
+m_hp = Toy::AdamW.for_from_scratch.hp(0)
 
 step = 0
 while step < STEPS

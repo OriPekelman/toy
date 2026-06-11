@@ -234,10 +234,8 @@ end
 lr_per_step = LR / GRAD_ACCUM.to_f
 # NAMED AdamW (byte-identical to the old hand-filled m_hp): per-micro-step
 # 1/(1-beta^t) bias correction with beta2=0.999. m_hp rebuilt per micro below.
-adamw = Toy::AdamW.new
-adamw.lr           = lr_per_step
-adamw.beta2        = 0.999
-adamw.bias_correct = true
+adamw = Toy::AdamW.for_lora   # 06 trains with per-step bias correction (lora hp convention)
+adamw.lr = lr_per_step
 
 # Positions cycle 0..CONTEXT-1 per batch element. RoPE applies the
 # correct per-batch positional encoding because rope_ext reads

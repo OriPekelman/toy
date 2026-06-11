@@ -1,0 +1,146 @@
+#!/usr/bin/env ruby
+# prep/run_log_gate.rb — unit gate for Toy::RunLog (toy#64 item 6).
+#
+# CRuby-only (RunLog is a lib/toy/core/ CLI-side class — no Spinel).
+# Self-contained: builds a deterministic synthetic runs/ fixture in a
+# tmpdir and asserts the full surface (open / config / steps /
+# loss_curve / final_loss / scan ordering / fail-loud arms). If the
+# repo's own runs/ root has real train-gate bundles, additionally
+# opens the freshest one as an integration sniff.
+#
+#   ruby prep/run_log_gate.rb    # exit 0 PASS / 1 FAIL
+
+require "tmpdir"
+require "json"
+require "fileutils"
+require_relative "../lib/toy/core/run_log"
+
+$failures = []
+def check(name)
+  ok = yield
+  if ok
+    puts "  ok: #{name}"
+  else
+    puts "  FAIL: #{name}"
+    $failures << name
+  end
+rescue => e
+  puts "  FAIL: #{name} raised #{e.class}: #{e.message}"
+  $failures << name
+end
+
+def write_run(root, id, losses, final: true, run_start_extra: {})
+  dir = File.join(root, id)
+  FileUtils.mkdir_p(dir)
+  File.open(File.join(dir, "events.jsonl"), "w") do |f|
+    f.puts JSON.generate({ "kind" => "run_start", "schema" => "toy/v1",
+                           "run_id" => id, "phase" => "train",
+                           "model" => { "arch" => "llama", "d_model" => 64 },
+                           "config" => { "steps" => losses.length, "seed" => 0 } }
+                         .merge(run_start_extra))
+    losses.each_with_index do |loss, i|
+      f.puts JSON.generate({ "kind" => "step", "phase" => "train",
+                             "step" => i + 1, "loss" => loss })
+    end
+    if final
+      f.puts JSON.generate({ "kind" => "run_end", "reason" => "completed",
+                             "final_step" => losses.length,
+                             "final_loss" => losses.last })
+    end
+  end
+  dir
+end
+
+Dir.mktmpdir("toy_run_log_gate") do |root|
+  good = write_run(root, "llama-20990101-001", [6.4, 6.3, 6.2])
+  best = write_run(root, "llama-20990101-002", [6.4, 6.1, 5.9])
+  cut  = write_run(root, "llama-20990101-003", [6.5, 6.45], final: false)
+  write_run(root, "llama-20990101-004", [])                     # never stepped
+  FileUtils.mkdir_p(File.join(root, "not-a-run"))               # no events.jsonl
+
+  log = Toy::RunLog.open(good)
+  check("config carries run_start fields") do
+    log.config["run_id"] == "llama-20990101-001" &&
+      log.config["model"]["d_model"] == 64 &&
+      log.config["config"]["steps"] == 3
+  end
+  check("run_id reader")        { log.run_id == "llama-20990101-001" }
+  check("steps are the step events in order") do
+    log.steps.length == 3 && log.steps.map { |s| s["step"] } == [1, 2, 3]
+  end
+  check("loss_curve")           { log.loss_curve == [6.4, 6.3, 6.2] }
+  check("final_loss from run_end") { log.final_loss == 6.2 }
+
+  check("interrupted run falls back to last step loss") do
+    Toy::RunLog.open(cut).final_loss == 6.45
+  end
+  check("never-stepped run has nil final_loss") do
+    Toy::RunLog.open(File.join(root, "llama-20990101-004")).final_loss.nil?
+  end
+
+  scanned = Toy::RunLog.scan(root)
+  check("scan finds the 4 bundles, skips non-run dirs") { scanned.length == 4 }
+  check("scan sorts by final_loss ascending, lossless last") do
+    scanned.map(&:run_id) ==
+      ["llama-20990101-002", "llama-20990101-001",
+       "llama-20990101-003", "llama-20990101-004"]
+  end
+  check("the 3-line 'find my best run' works") do
+    Toy::RunLog.scan(root).first.final_loss == 5.9
+  end
+
+  check("open on a dir without events.jsonl fails loud") do
+    begin
+      Toy::RunLog.open(File.join(root, "not-a-run"))
+      false
+    rescue ArgumentError => e
+      e.message.include?("no events.jsonl")
+    end
+  end
+  check("malformed JSONL line fails loud with line number") do
+    bad = File.join(root, "bad-run")
+    FileUtils.mkdir_p(bad)
+    File.write(File.join(bad, "events.jsonl"),
+               %({"kind":"run_start","run_id":"bad-run"}\n{not json}\n))
+    begin
+      Toy::RunLog.open(bad)
+      false
+    rescue ArgumentError => e
+      e.message.include?(":2:") && e.message.include?("malformed")
+    end
+  end
+  check("missing run_start fails loud") do
+    no_start = File.join(root, "no-start")
+    FileUtils.mkdir_p(no_start)
+    File.write(File.join(no_start, "events.jsonl"),
+               %({"kind":"step","step":1,"loss":1.0}\n))
+    begin
+      Toy::RunLog.open(no_start)
+      false
+    rescue ArgumentError => e
+      e.message.include?("no run_start")
+    end
+  end
+end
+
+# Integration sniff against real train-gate bundles, when present.
+repo_runs = File.expand_path("../runs", __dir__)
+if Dir.exist?(repo_runs) &&
+   Dir.children(repo_runs).any? { |d| File.file?(File.join(repo_runs, d, "events.jsonl")) }
+  check("integration: scan(repo runs/) parses real bundles") do
+    logs = Toy::RunLog.scan(repo_runs)
+    !logs.empty? && logs.all? { |l| l.config["schema"] == "toy/v1" } &&
+      logs.first.final_loss.is_a?(Float)
+  end
+else
+  puts "  note: repo runs/ has no bundles — integration sniff skipped " \
+       "(run `ruby prep/train_gate.rb` to generate)"
+end
+
+if $failures.empty?
+  puts "GATE PASS [run-log]: Toy::RunLog parses run bundles (config/steps/loss_curve/final_loss/scan)"
+  exit 0
+else
+  puts "GATE FAIL [run-log]: #{$failures.length} failure(s): #{$failures.join('; ')}"
+  exit 1
+end

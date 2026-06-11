@@ -24,6 +24,8 @@
 # member names for type-isolation. Single-type binary: TinyNNCuda is the only
 # compute module referenced here.
 
+require_relative "../recipe_options"
+
 module Toy; module LLM; module Recipes
   # The LoRA fine-tune recipe, CUDA backend. realize! builds the frozen-base +
   # LoRA-Q-adapter forward+CE+backward+AdamW graph on a
@@ -47,12 +49,16 @@ module Toy; module LLM; module Recipes
     # two flags BEFORE realize), then realize_for_mmap (mmap the frozen base
     # in place), then the seeded upload_lora_q_init!(seed, init_scale), then
     # build_training_step. Stashes the returned [t_loss, t_labels, t_hp]
-    # triple. Positional args + order match lora.rb:65-75 exactly. Returns nil.
-    def realize!(gguf_handle, cfg, t_seq, untied, qkv_bias, rank, seed, init_scale)
+    # triple. `opts` is a Toy::LLM::RecipeOptions (toy#64 item 1); the
+    # lora mmap path consumes its t_seq / untied / qkv_bias / seed /
+    # init_scale; `rank` is lora-specific so it stays a leading
+    # positional. Signature + order match lora.rb exactly. Returns nil.
+    def realize!(gguf_handle, cfg, rank, opts)
       @lora_cache.enable_lora_q!(rank)
       @lora_cache.enable_lora_q_adamw!
-      @lora_cache.realize_for_mmap(gguf_handle, cfg, t_seq, untied, qkv_bias)
-      @lora_cache.upload_lora_q_init!(seed, init_scale)
+      @lora_cache.realize_for_mmap(gguf_handle, cfg, opts.t_seq,
+                                   opts.untied, opts.qkv_bias)
+      @lora_cache.upload_lora_q_init!(opts.seed, opts.init_scale)
       result         = @lora_cache.build_training_step
       @lora_t_loss   = result[0]
       @lora_t_labels = result[1]

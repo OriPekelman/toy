@@ -46,10 +46,8 @@ end
 
 # NAMED AdamW (byte-identical to the old hand-filled m_hp Mat). lora-style
 # bias correction: beta2=0.999 and slots 5/6 = 1/(1-beta^t) per step.
-adamw = Toy::AdamW.new
-adamw.lr           = LR
-adamw.beta2        = 0.999
-adamw.bias_correct = true
+adamw = Toy::AdamW.for_lora   # full-finetune graph reads the lora hp convention
+adamw.lr = LR
 
 positions = [0, 1, 2, 3]
 step = 1

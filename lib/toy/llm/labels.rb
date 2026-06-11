@@ -31,9 +31,16 @@ module Toy
     # multiplied into the row count: all current callers are
     # single-sequence context×vocab (batch implicitly 1). Multiplying
     # it in would change the Mat shape and break the byte gate. It is a
-    # forward-looking param for a future batched caller — deliberately
-    # unused in the row count today.
+    # forward-looking param for a future batched caller — and because a
+    # batch != 1 would otherwise be SILENTLY IGNORED (training on a
+    # wrongly-shaped one-hot), it now FAILS LOUD (toy#64 item 5).
     def self.next_token(seq_ids, vocab, context, batch)
+      if batch != 1
+        raise "Toy::Labels.next_token: batch " + batch.to_s +
+              " unsupported — batched training deferred (the one-hot " +
+              "is context x vocab; batch is not multiplied into the " +
+              "row count)"
+      end
       m = Mat.new(context, vocab)
       j = 0
       while j < context * vocab
@@ -57,8 +64,15 @@ module Toy
     # Rebuilt every step (seq_ids streams from the corpus).
     #
     # `batch` is INCLUDED per the requested signature, NOT multiplied
-    # into the row count (same rationale as next_token).
+    # into the row count (same rationale as next_token) — and FAILS
+    # LOUD on batch != 1 (toy#64 item 5, same trap).
     def self.next_token_guarded(seq_ids, vocab, context, batch)
+      if batch != 1
+        raise "Toy::Labels.next_token_guarded: batch " + batch.to_s +
+              " unsupported — batched training deferred (the one-hot " +
+              "is context x vocab; batch is not multiplied into the " +
+              "row count)"
+      end
       m = Mat.new(context, vocab)
       j = 0
       while j < context * vocab
