@@ -679,7 +679,7 @@ examples/smoke_projection_lens: examples/smoke_projection_lens.rb lib/toy/llm/en
 # running it realizes a LlamaSeqEngine to prove the surface is live. The prereq
 # is just lib/toy/compute.rb — it pulls everything else transitively, and
 # $(SPINEL) follows the require graph.
-examples/smoke_compute_surface: examples/smoke_compute_surface.rb lib/toy/compute.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+examples/smoke_compute_surface: examples/smoke_compute_surface.rb lib/toy/compute.rb lib/toy/llm/training_batch.rb lib/toy/llm/recipe_options.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
 # P2.6 — GQA-divergent (w_o) gate. Realizes a config with head_dim=24 so

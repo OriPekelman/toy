@@ -40,22 +40,25 @@ recipe.realize!(cfg, opts)
 
 seq_ids = [0]
 seq_ids.pop
-positions = [0]
-positions.pop
 i = 0
 while i < CONTEXT
   seq_ids.push(i % VOCAB)
-  positions.push(i)
   i = i + 1
 end
 
-m_labels = Toy::Labels.next_token(seq_ids, VOCAB, CONTEXT, 1)
-m_hp     = Toy::AdamW.new.hp(0)
+# The validating per-step quartet (toy#64 item 3): positions built by
+# the ctor, fill! validates the sequence + rebuilds labels via
+# Toy::Labels (byte-identical to the former hand-built inputs), hp is
+# caller-owned.
+batch = Toy::LLM::TrainingBatch.new(VOCAB, CONTEXT, 1)
+batch.fill!(seq_ids)
+batch.hp = Toy::AdamW.new.hp(0)
 
 loss = 0.0
 step = 0
 while step < STEPS
-  loss = recipe.step!(seq_ids, positions, m_labels, m_hp, step == 0)
+  loss = recipe.step!(batch.seq_ids, batch.positions, batch.labels,
+                      batch.hp, step == 0)
   step = step + 1
 end
 

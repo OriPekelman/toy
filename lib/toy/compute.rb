@@ -77,6 +77,7 @@ require_relative "io/gguf_load"
 require_relative "io/tokenizer"
 
 # AdamW hyper-parameter value object + training labels (used when driving
-# build_training_step directly).
+# build_training_step directly) + the validating per-step batch wrapper.
 require_relative "llm/adamw"
 require_relative "llm/labels"
+require_relative "llm/training_batch"
