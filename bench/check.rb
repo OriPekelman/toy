@@ -86,7 +86,10 @@ def build_bench(source, binary)
   # linker's `-o bench/build/<bin>` then fails with errno=2. Create it first
   # so `make bench` works on a clean clone (e.g. Mac), not just where a prior
   # run already made the dir.
-  cmd = "cd #{ROOT} && mkdir -p #{File.dirname(binary)} && ~/sites/spinel/spinel #{source} -o #{binary} 2>&1"
+  # Honor SPINEL_DIR (the Makefile's pin knob) so a pinned-rev bench run
+  # actually builds with the pinned compiler instead of ~/sites/spinel.
+  spinel = File.join(ENV["SPINEL_DIR"] || File.expand_path("~/sites/spinel"), "spinel")
+  cmd = "cd #{ROOT} && mkdir -p #{File.dirname(binary)} && #{spinel} #{source} -o #{binary} 2>&1"
   out = `#{cmd}`
   unless $?.success?
     warn "build failed: #{source}\n#{out}"; return false
