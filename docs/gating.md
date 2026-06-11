@@ -155,7 +155,7 @@ mirror is a gate failure; edit the CPU source and run `make gen-mirrors`.
 
 ## Vendored ggml patches
 
-Six local patches sit on top of vendored upstream `ggml@e484d08`, in
+Nine local patches sit on top of vendored upstream `ggml@41e7949`, in
 `vendor-patches/`. They are applied in filename order to `vendor/ggml/` by the
 Makefile's `$(GGML_DIR)/.patched` sentinel target, which `setup-ggml` /
 `setup-ggml-cuda` / `setup-ggml-metal` depend on through `CMakeLists.txt`.
@@ -172,6 +172,9 @@ the next build.
 | `0004-cuda-cpy-strided.patch` | `src/ggml-cuda/cpy.cu` | **CUDA KV-cache bit-identity** — guards `cpy_scalar_transpose` behind a contiguous-dst check; without it, KV writes into a strided `view_2d` silently miswrite. |
 | `0005-concat-backward.patch` | `src/ggml.c` | **Training** — adds the `GGML_OP_CONCAT` case to `ggml_compute_backward`; live at `vendor/ggml/src/ggml.c:6514`. Without it autograd aborts on per-head concat before the O projection. |
 | `0006-getrows-back-large-vocab.patch` | `src/ggml-cuda/getrows.cu` | **Training (large vocab)** — chunks the `get_rows_back` launch; the original `gridDim.y = vocab` aborts for Qwen-class vocabs (V > 65535). |
+| `0007-gpt2-backward-kernels.patch` | `include/ggml.h`, `src/ggml.c`, `src/ggml-cpu/*` | **GPT-2 training** — `gelu_back` + `norm_back` (our ggml#1514); without them GPT-2 backward aborts. |
+| `0008-mul-mat-backward-mixed-precision.patch` | `src/ggml.c` | **f16 training (GH#9)** — mul_mat backward for non-f32 weight dtypes; gated by `make gate-mixed-precision`. |
+| `0009-sched-unsupported-node-diagnostic.patch` | `src/ggml-backend.cpp` | **Diagnostics** — names the offending node when sched-alloc hits an unsupported op instead of a bare abort. |
 
 Patches 0001–0003 (the CUDA BYO-pointer path) are documented in
 `docs/reference/memory-design.md`. Patch 0005 (concat-backward) has its
