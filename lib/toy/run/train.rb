@@ -123,7 +123,7 @@ if RECIPE == "warm-start"
   # adamw.lr refreshes each step from the cosine schedule; we rebuild a
   # fresh 7-float Mat per step (NOT the hot path) instead of mutating
   # flat[0] in place — byte-identical, and faithful to the named object.
-  adamw_ws = Toy::AdamW.new
+  adamw_ws = Toy::AdamW.for_from_scratch
 
   positions = [0]; positions.pop
   p = 0; while p < CONTEXT; positions.push(p); p = p + 1; end
@@ -280,7 +280,7 @@ m_labels = Toy::Labels.next_token(seq_ids, VOCAB, CONTEXT, 1)
 # CONSTANT hyper-params via NAMED AdamW (NOT 06's per-step bias-corrected
 # hp; beta2=0.95 here, NOT 0.999; bias_correct=false → slots5/6=betas).
 # Using 06's lora-style hp breaks the byte gate. Built ONCE (constant).
-m_hp = Toy::AdamW.new.hp(0)
+m_hp = Toy::AdamW.for_from_scratch.hp(0)
 
 # --- Events (EVENTS hoisted to top-level; cheap-when-off; FILE only). ---
 

@@ -81,7 +81,7 @@ m_labels = Toy::Labels.next_token(seq_ids, VOCAB, CONTEXT, 1)
 
 # CONSTANT hyper-params via NAMED AdamW (NOT example 06's bias-corrected
 # per-step hp; defaults beta2=0.95, bias_correct=false → slots5/6=betas).
-m_hp = Toy::AdamW.new.hp(0)
+m_hp = Toy::AdamW.for_from_scratch.hp(0)
 
 losses = [0.0]; losses.pop
 step = 0

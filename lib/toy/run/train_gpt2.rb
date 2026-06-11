@@ -84,10 +84,8 @@ end
 
 # NAMED AdamW (byte-identical to the old hand-filled m_hp). slots 5/6 =
 # 1/(1-beta^t) bias correction, matching the gated inline GPT-2 trainer.
-adamw = Toy::AdamW.new
-adamw.lr           = LR
-adamw.beta2        = 0.999
-adamw.bias_correct = true
+adamw = Toy::AdamW.for_lora   # gpt2 graph reads the lora hp convention
+adamw.lr = LR
 
 step = 0
 while step < STEPS

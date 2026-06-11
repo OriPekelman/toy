@@ -134,7 +134,7 @@ module Toy
 
           # Shift-by-one one-hot labels + named AdamW hyper-params.
           m_labels = Toy::Labels.next_token(seq_ids, VOCAB, CONTEXT, 1)
-          m_hp     = Toy::AdamW.new.hp(0)
+          m_hp     = Toy::AdamW.for_from_scratch.hp(0)
 
           step = 0
           while step < STEPS
@@ -210,7 +210,7 @@ module Toy
           end
 
           m_labels = Toy::Labels.next_token(seq_ids, VOCAB, CONTEXT, 1)
-          m_hp     = Toy::AdamW.new.hp(0)
+          m_hp     = Toy::AdamW.for_from_scratch.hp(0)
 
           step = 0
           while step < STEPS

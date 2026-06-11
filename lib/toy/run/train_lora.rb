@@ -106,9 +106,7 @@ end
 # denominators 1/(1-beta^t) — NOT constant betas (see the loud finding in
 # lib/toy/llm/adamw.rb: the lora FFI graph interprets slots 5/6 DIFFERENTLY
 # from the from-scratch/warm/vit graphs). m_hp is rebuilt per step below.
-adamw_lora = Toy::AdamW.new
-adamw_lora.beta2 = 0.999
-adamw_lora.bias_correct = true
+adamw_lora = Toy::AdamW.for_lora   # beta2=0.999 + per-step bias correction
 
 positions = [0, 1, 2, 3]
 

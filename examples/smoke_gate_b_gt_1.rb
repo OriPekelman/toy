@@ -188,7 +188,7 @@ puts "ASSERT 3 OK: seq_ids/positions length == " + tb.to_s +
 # NAMED AdamW (byte-identical to the old hand-filled m_hp): all defaults
 # (lr=0.001, β1=0.9, β2=0.95, eps=1e-8, wd=0, bias_correct=false → slots
 # 5/6 = constant betas).
-m_hp = Toy::AdamW.new.hp(0)
+m_hp = Toy::AdamW.for_from_scratch.hp(0)
 
 losses = [0.0]; losses.pop
 step = 0

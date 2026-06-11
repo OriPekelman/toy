@@ -212,7 +212,7 @@ cls_idx  = [0]
 # NAMED AdamW (byte-identical to the old hand-filled m_hp): defaults
 # (β1=0.9, β2=0.95, eps=1e-8, wd=0, bias_correct=false → slots 5/6 =
 # constant betas) match; lr is set per-step from the cosine schedule below.
-adamw = Toy::AdamW.new
+adamw = Toy::AdamW.for_from_scratch
 
 images_path = IMG_DIR + "/images.bin"
 labels_path = IMG_DIR + "/labels.bin"

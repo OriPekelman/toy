@@ -86,7 +86,7 @@ puts "realize OK"
 # NAMED AdamW. Defaults (beta2=0.95, bias_correct=false) → slots5/6 =
 # constant betas — byte-identical to 09's inline hp. lr refreshes each
 # step from the cosine schedule; the hp Mat is rebuilt per step below.
-adamw = Toy::AdamW.new
+adamw = Toy::AdamW.for_from_scratch
 
 # Pre-compute the position vector (shared across steps). 09 L284-285.
 positions = [0]; positions.pop

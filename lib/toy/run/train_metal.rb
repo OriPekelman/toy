@@ -118,7 +118,7 @@ m_labels = Toy::Labels.next_token(seq_ids, VOCAB, CONTEXT, 1)
 # CONSTANT hyper-params via NAMED AdamW (NOT 06's per-step bias-corrected
 # hp; beta2=0.95 here, NOT 0.999; bias_correct=false → slots5/6=betas).
 # Using 06's lora-style hp breaks the byte gate. Built ONCE (constant).
-m_hp = Toy::AdamW.new.hp(0)
+m_hp = Toy::AdamW.for_from_scratch.hp(0)
 
 # --- Events (EVENTS hoisted to top-level; cheap-when-off; FILE only). ---
 

@@ -52,7 +52,7 @@ end
 # caller-owned.
 batch = Toy::LLM::TrainingBatch.new(VOCAB, CONTEXT, 1)
 batch.fill!(seq_ids)
-batch.hp = Toy::AdamW.new.hp(0)
+batch.hp = Toy::AdamW.for_from_scratch.hp(0)
 
 loss = 0.0
 step = 0

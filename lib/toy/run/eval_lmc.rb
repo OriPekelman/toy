@@ -275,7 +275,7 @@ while ai < alphas_arr.length
   # NAMED AdamW with lr=0 → no weight update (eval is forward + CE only).
   # Defaults (β1=0.9, β2=0.95, eps=1e-8, wd=0, bias_correct=false → slots 5/6
   # = constant betas) match the old hand-filled m_hp slot-for-slot.
-  adamw_eval = Toy::AdamW.new
+  adamw_eval = Toy::AdamW.for_from_scratch
   adamw_eval.lr = 0.0
   m_hp = adamw_eval.hp(0)
   TinyNN.upload_row_major(fcache.sess, t_hp, m_hp)

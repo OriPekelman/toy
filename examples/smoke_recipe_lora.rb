@@ -90,10 +90,8 @@ end
 # lib/toy/llm/adamw.rb: the lora FFI graph reads slots 5/6 DIFFERENTLY
 # from the from-scratch/warm/vit graphs). lr comes from ENV (default
 # 0.001). m_hp is rebuilt per step below.
-adamw = Toy::AdamW.new
+adamw = Toy::AdamW.for_lora   # beta2=0.999 + per-step bias correction
 adamw.lr = LR
-adamw.beta2 = 0.999
-adamw.bias_correct = true
 
 positions = [0, 1, 2, 3]
 

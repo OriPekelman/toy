@@ -103,7 +103,7 @@ cls_idx  = [0]
 # per-step assignment), and the hp Mat is rebuilt per step below — the
 # original implicit flat[0]=0.0-until-set is reproduced by Mat.new's
 # zero-init inside hp(). Single-class labels stay inline (NOT shift-by-one).
-adamw_vit = Toy::AdamW.new
+adamw_vit = Toy::AdamW.for_from_scratch
 
 images_path = IMG_DIR + "/images.bin"
 labels_path = IMG_DIR + "/labels.bin"

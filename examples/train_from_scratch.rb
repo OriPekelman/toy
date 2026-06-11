@@ -86,7 +86,7 @@ m_labels = Toy::Labels.next_token(seq_ids, VOCAB, CONTEXT, 1)
 # Named AdamW hyper-params. Defaults (lr=0.001, beta1=0.9, beta2=0.95,
 # eps=1e-8, wd=0.0, bias_correct=false) → constant slots 5/6 = betas.
 # from-scratch hp is CONSTANT, so build it once before the loop.
-m_hp = Toy::AdamW.new.hp(0)
+m_hp = Toy::AdamW.for_from_scratch.hp(0)
 
 step = 0
 while step < STEPS
