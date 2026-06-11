@@ -49,6 +49,8 @@
 # step! inlines TinyNN.* calls so it is backend-coupled; the CUDA mirror
 # is DEFERRED alongside the GPU deferral — this pass ships CPU-only.
 
+require_relative "../recipe_options"
+
 module Toy; module LLM; module Recipes
   # The warm-start training recipe. realize_scratch! builds the
   # random-init forward+CE+backward+AdamW graph on a
@@ -75,14 +77,17 @@ module Toy; module LLM; module Recipes
     # Realize the random-init graph and OPEN the warm window. Delegates
     # VERBATIM to the cache: realize_for_random_init (which self-enables
     # @ft_train_embeddings_enabled + @seq_full_finetune_enabled).
-    # Positional args match realize_for_random_init exactly and are
-    # identical to FromScratch#realize! / 09 L138 (cfg, t_seq, t_batch,
-    # weight_dtype, untied, qkv_bias, seed, init_scale). Does NOT bake
-    # the graph — that is build!'s job, leaving the window open for an
-    # optional realize_warm! upload in between. Returns nil.
-    def realize_scratch!(cfg, t_seq, t_batch, weight_dtype, untied, qkv_bias, seed, init_scale)
-      @ws_cache.realize_for_random_init(cfg, t_seq, t_batch, weight_dtype,
-                                        untied, qkv_bias, seed, init_scale)
+    # `opts` is a Toy::LLM::RecipeOptions (toy#64 item 1) carrying the
+    # former 7 trailing positional args, unpacked here in the engine's
+    # exact positional order (identical to FromScratch#realize! / 09
+    # L138), so the realize is byte-identical. Does NOT bake the graph —
+    # that is build!'s job, leaving the window open for an optional
+    # realize_warm! upload in between. Returns nil.
+    def realize_scratch!(cfg, opts)
+      @ws_cache.realize_for_random_init(cfg, opts.t_seq, opts.t_batch,
+                                        opts.weight_dtype, opts.untied,
+                                        opts.qkv_bias, opts.seed,
+                                        opts.init_scale)
       nil
     end
 

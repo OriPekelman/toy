@@ -157,6 +157,34 @@ module Toy
                              8192, 100000.0, 1.0e-5)
     end
 
+    # PROFILE factories (toy#64 item 2) — named experiment shapes with
+    # sane ratios baked in, so a sweep starts from a one-liner instead
+    # of nine positionals. Both are additive sugar over .new (head_dim
+    # derives in initialize, rope_scaling defaults to none, donor_d_in
+    # to 0 — byte-identical to the equivalent .new).
+
+    # The canonical SMOKE/GATE shape — the exact tiny config every
+    # from-scratch fixture trains (smoke_compute_surface /
+    # smoke_recipe_from_scratch / lib/toy/run/train.rb): TinyStories
+    # vocab 627, d=64, MHA 4 heads (d_head=16), d_ff=2*d_model=128,
+    # 2 layers, ctx 32, rope_base=10000.0 (FOUR zeros — the
+    # from-scratch convention), rms_eps=1e-5. NOTE: the gate fixtures
+    # additionally set cfg.donor_d_in = 128 (projection lens) at the
+    # call site; tiny does not bake that (it is experiment-specific).
+    def self.tiny
+      Toy::SmolLM2Config.new(627, 64, 4, 4, 128, 2,
+                             32, 10000.0, 1.0e-5)
+    end
+
+    # A MID experiment shape — big enough to show real curves, small
+    # enough for a single GB10/laptop run: vocab 4096 (BPE-toy range),
+    # d=256, MHA 8 heads (d_head=32), d_ff=4*d_model=1024, 8 layers,
+    # ctx 256, rope_base=10000.0, rms_eps=1e-5. ~12M params.
+    def self.mid
+      Toy::SmolLM2Config.new(4096, 256, 8, 8, 1024, 8,
+                             256, 10000.0, 1.0e-5)
+    end
+
     # NAMED positional factories so call sites stop being 9-arg
     # positional soup. Both produce a cfg BYTE-IDENTICAL to the
     # equivalent .new(...): head_dim derives in initialize

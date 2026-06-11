@@ -65,10 +65,8 @@ end
 
 # NAMED AdamW (byte-identical to the old hand-filled m_hp): lr=0.01,
 # beta2=0.999, per-step 1/(1-beta^t) bias correction.
-adamw = Toy::AdamW.new
-adamw.lr           = 0.01
-adamw.beta2        = 0.999
-adamw.bias_correct = true
+adamw = Toy::AdamW.for_lora   # gpt2 graph reads the lora hp convention
+adamw.lr = 0.01
 
 first_loss = 0.0
 last_loss  = 0.0

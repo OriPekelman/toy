@@ -87,8 +87,16 @@ lora_qkv_bias = false
 
 gguf_h      = TinyNNCuda.tnn_gguf_load(GGUF)
 recipe_lora = Toy::LLM::Recipes::LoRACuda.new
-recipe_lora.realize!(gguf_h, cfg_lora, TOKENS.length, lora_untied,
-                     lora_qkv_bias, RANK_LORA, 42, 0.01)
+# Named realize options (toy#64): same values as the historical
+# positional call (TOKENS.length, untied, qkv_bias, 42, 0.01); RANK
+# stays a leading positional (lora-specific).
+opts_lora = Toy::LLM::RecipeOptions.new
+opts_lora.t_seq      = TOKENS.length
+opts_lora.untied     = lora_untied
+opts_lora.qkv_bias   = lora_qkv_bias
+opts_lora.seed       = 42
+opts_lora.init_scale = 0.01
+recipe_lora.realize!(gguf_h, cfg_lora, RANK_LORA, opts_lora)
 ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe_lora.lora_cache.sess)
 
 # Vocab × T one-hot labels: every position targets TARGET_ID.
@@ -107,9 +115,7 @@ end
 # — NOT constant betas (see the loud finding in lib/toy/llm/adamw.rb: the
 # lora FFI graph interprets slots 5/6 DIFFERENTLY from from-scratch/warm/
 # vit). m_hp is rebuilt per step below.
-adamw_lora = Toy::AdamW.new
-adamw_lora.beta2 = 0.999
-adamw_lora.bias_correct = true
+adamw_lora = Toy::AdamW.for_lora   # beta2=0.999 + per-step bias correction
 
 positions = [0, 1, 2, 3]
 

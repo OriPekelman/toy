@@ -79,8 +79,13 @@ WARMUP = 10
 cfg = ViTTinyConfig.new(IMAGE_SIZE, PATCH_SIZE, NUM_CHAN, D_MODEL,
                         N_HEADS, D_FF, N_LAYERS, NUM_CLASSES, LN_EPS)
 
+# Named realize options (toy#64): the ViT path consumes seed +
+# init_scale only (init_scale keeps the canonical 1.0 default).
+opts = Toy::LLM::RecipeOptions.new
+opts.seed = SEED
+
 recipe = Toy::LLM::Recipes::VitTiny.new
-recipe.realize!(cfg, SEED, 1.0)
+recipe.realize!(cfg, opts)
 # tao#flow-json-emit (#25): self-describing run bundle, parallel to events.jsonl.
 ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe.vt_cache.sess)
 
@@ -98,7 +103,7 @@ cls_idx  = [0]
 # per-step assignment), and the hp Mat is rebuilt per step below — the
 # original implicit flat[0]=0.0-until-set is reproduced by Mat.new's
 # zero-init inside hp(). Single-class labels stay inline (NOT shift-by-one).
-adamw_vit = Toy::AdamW.new
+adamw_vit = Toy::AdamW.for_from_scratch
 
 images_path = IMG_DIR + "/images.bin"
 labels_path = IMG_DIR + "/labels.bin"

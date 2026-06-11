@@ -49,8 +49,15 @@ puts "config: vocab=" + cfg.vocab.to_s +
      " d=" + cfg.d_model.to_s +
      " L=" + cfg.n_layers.to_s
 
+# Named realize options (toy#64): same values as the historical
+# positional call (CONTEXT, 1, 0, true, false, SEED, 1.0).
+opts = Toy::LLM::RecipeOptions.new
+opts.t_seq  = CONTEXT
+opts.untied = true        # mandatory when donor_d_in > 0
+opts.seed   = SEED
+
 recipe = Toy::LLM::Recipes::FromScratch.new
-recipe.realize!(cfg, CONTEXT, 1, 0, true, false, SEED, 1.0)
+recipe.realize!(cfg, opts)
 puts "realize OK"
 
 # Train a few steps on a fixed sequence — identical input construction
@@ -74,7 +81,7 @@ m_labels = Toy::Labels.next_token(seq_ids, VOCAB, CONTEXT, 1)
 
 # CONSTANT hyper-params via NAMED AdamW (NOT example 06's bias-corrected
 # per-step hp; defaults beta2=0.95, bias_correct=false → slots5/6=betas).
-m_hp = Toy::AdamW.new.hp(0)
+m_hp = Toy::AdamW.for_from_scratch.hp(0)
 
 losses = [0.0]; losses.pop
 step = 0

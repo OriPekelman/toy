@@ -108,9 +108,15 @@ if RECIPE == "warm-start"
                                   D_FF, N_LAYERS, CONTEXT, 10000.0, 1.0e-5)
   cfg_ws.donor_d_in = DONOR_D
 
+  # Named realize options (toy#64): same values as the historical
+  # positional call (CONTEXT, 1, 0, true, false, SEED, 1.0).
+  opts_ws = Toy::LLM::RecipeOptions.new
+  opts_ws.t_seq  = CONTEXT
+  opts_ws.untied = true   # mandatory when donor_d_in > 0
+  opts_ws.seed   = SEED
+
   recipe_ws = Toy::LLM::Recipes::WarmStartCuda.new
-  # untied=true is mandatory when donor_d_in > 0.
-  recipe_ws.realize_scratch!(cfg_ws, CONTEXT, 1, 0, true, false, SEED, 1.0)
+  recipe_ws.realize_scratch!(cfg_ws, opts_ws)
   # INIT=scratch: skip realize_warm! (no donor GGUF, train from random init).
   recipe_ws.build!
   ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe_ws.ws_cache.sess)
@@ -119,7 +125,7 @@ if RECIPE == "warm-start"
   # (beta2=0.95, bias_correct=false) → slots5/6=constant betas. lr
   # refreshes per step from the cosine schedule; hp Mat rebuilt per step
   # (NOT the hot path) — byte-identical to the historical inline hp.
-  adamw_ws = Toy::AdamW.new
+  adamw_ws = Toy::AdamW.for_from_scratch
 
   positions = [0]; positions.pop
   p = 0; while p < CONTEXT; positions.push(p); p = p + 1; end
@@ -236,12 +242,18 @@ cfg = Toy::SmolLM2Config.mha(VOCAB, D_MODEL, N_HEADS,
                              D_FF, N_LAYERS, CONTEXT, 10000.0, 1.0e-5)
 cfg.donor_d_in = DONOR_D
 
-# Realize the random-init graph THROUGH the CUDA recipe. CRITICAL: untied=TRUE
-# (arg4), weight_dtype=0, qkv_bias=false, init_scale=1.0 — the SMOKE config,
-# NOT 06's untied=false. realize_for_random_init self-enables full_finetune +
+# Realize the random-init graph THROUGH the CUDA recipe, with NAMED
+# options (toy#64). CRITICAL: untied=TRUE, weight_dtype=0,
+# qkv_bias=false, init_scale=1.0 — the SMOKE config, NOT 06's
+# untied=false. realize_for_random_init self-enables full_finetune +
 # train_embeddings, so no extra enable_* call.
+opts = Toy::LLM::RecipeOptions.new
+opts.t_seq  = CONTEXT
+opts.untied = true
+opts.seed   = SEED
+
 recipe = Toy::LLM::Recipes::FromScratchCuda.new
-recipe.realize!(cfg, CONTEXT, 1, 0, true, false, SEED, 1.0)
+recipe.realize!(cfg, opts)
 ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe.fs_cache.sess)
 
 # Per-step inputs built IN THE RUNNER, byte-identical to the CPU runner.
@@ -266,7 +278,7 @@ m_labels = Toy::Labels.next_token(seq_ids, VOCAB, CONTEXT, 1)
 # CONSTANT hyper-params via NAMED AdamW (NOT 06's per-step bias-corrected
 # hp; beta2=0.95 here, NOT 0.999; bias_correct=false → slots5/6=betas).
 # Using 06's lora-style hp breaks the byte gate. Built ONCE (constant).
-m_hp = Toy::AdamW.new.hp(0)
+m_hp = Toy::AdamW.for_from_scratch.hp(0)
 
 # --- Events (EVENTS hoisted to top-level; cheap-when-off; FILE only). ---
 

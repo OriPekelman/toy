@@ -54,10 +54,23 @@ puts "training: GGUF=" + GGUF + " RANK=" + RANK.to_s + " STEPS=" + STEPS.to_s
 
 gguf   = TinyNN.tnn_gguf_load(GGUF)
 recipe = Toy::LLM::Recipes::LoRA.new
-# Positional args match the reference call sites: gguf handle, cfg,
-# T positions, untied/qkv_bias flags, RANK, seed=42, init_scale=0.01.
-recipe.realize!(gguf, cfg, TOKENS.length, flags.untied, flags.qkv_bias,
-                RANK, 42, 0.01)
+# Named realize options (toy#64): same values as the reference call
+# sites (T positions, untied/qkv_bias flags, seed=42, init_scale=0.01).
+# RANK stays a leading positional (lora-specific).
+#
+# TYPE-PIN (`? true : false`): SmolLM2Flags has a default-arg ctor
+# (landmine #4), so flags.untied/.qkv_bias read back as poly. Storing
+# poly into RecipeOptions ivars silently poisons the options object and
+# SHIFTS THE LOSS CURVE from step 2 (verified on spinel a699cf9:
+# step 2 9.213868141174316 -> 9.213866233825684 without the pin — no
+# analyzer warning fires). The ternary forces a concrete Bool. Keep it.
+opts = Toy::LLM::RecipeOptions.new
+opts.t_seq      = TOKENS.length
+opts.untied     = flags.untied ? true : false
+opts.qkv_bias   = flags.qkv_bias ? true : false
+opts.seed       = 42
+opts.init_scale = 0.01
+recipe.realize!(gguf, cfg, RANK, opts)
 puts "realize OK"
 
 # Vocab × T one-hot label matrix in Mat(T, vocab) layout — identical
@@ -77,10 +90,8 @@ end
 # lib/toy/llm/adamw.rb: the lora FFI graph reads slots 5/6 DIFFERENTLY
 # from the from-scratch/warm/vit graphs). lr comes from ENV (default
 # 0.001). m_hp is rebuilt per step below.
-adamw = Toy::AdamW.new
+adamw = Toy::AdamW.for_lora   # beta2=0.999 + per-step bias correction
 adamw.lr = LR
-adamw.beta2 = 0.999
-adamw.bias_correct = true
 
 positions = [0, 1, 2, 3]
 

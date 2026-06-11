@@ -36,6 +36,8 @@
 # is backend-coupled; the CUDA mirror (from_scratch_cuda.rb) is DEFERRED
 # alongside the GPU deferral — this pass ships CPU-only.
 
+require_relative "../recipe_options"
+
 module Toy; module LLM; module Recipes
   # The from-scratch random-init training recipe. Encapsulates the
   # existing loop: realize! builds the random-init forward+CE+backward+
@@ -58,12 +60,16 @@ module Toy; module LLM; module Recipes
     # realize_for_random_init (which self-enables @ft_train_embeddings_enabled
     # + @seq_full_finetune_enabled) then build_training_step (forward + CE
     # + backward + opt_step_adamw baked into the ggml graph). Stashes the
-    # returned [t_loss, t_labels, t_hp] triple. Positional args match
-    # realize_for_random_init exactly (cfg, t_seq, t_batch, weight_dtype,
-    # untied, qkv_bias, seed, init_scale). Returns nil.
-    def realize!(cfg, t_seq, t_batch, weight_dtype, untied, qkv_bias, seed, init_scale)
-      @fs_cache.realize_for_random_init(cfg, t_seq, t_batch, weight_dtype,
-                                        untied, qkv_bias, seed, init_scale)
+    # returned [t_loss, t_labels, t_hp] triple. `opts` is a
+    # Toy::LLM::RecipeOptions (toy#64 item 1) carrying the former 7
+    # trailing positional args (t_seq, t_batch, weight_dtype, untied,
+    # qkv_bias, seed, init_scale) — unpacked here in the engine's exact
+    # positional order, so the realize is byte-identical. Returns nil.
+    def realize!(cfg, opts)
+      @fs_cache.realize_for_random_init(cfg, opts.t_seq, opts.t_batch,
+                                        opts.weight_dtype, opts.untied,
+                                        opts.qkv_bias, opts.seed,
+                                        opts.init_scale)
       result       = @fs_cache.build_training_step
       @fs_t_loss   = result[0]
       @fs_t_labels = result[1]
