@@ -185,9 +185,14 @@ module Toy
         attr_accessor ws_step_index: Integer
 
         def initialize: () -> void
+        # The pre-realize half of the donor plumbing (toy#73 item 4):
+        # the width cfg.donor_d_in must carry before realize_scratch!.
+        def self.donor_embed_width: (String donor_gguf_path) -> Integer
         def realize_scratch!: (Toy::SmolLM2Config cfg, Toy::LLM::RecipeOptions opts) -> void
-        # donor_buf_flat is the ALREADY-READ flat donor embedding.
-        def realize_warm!: (Array[Float] donor_buf_flat, Integer n_floats) -> void
+        # Owns the donor GGUF read + dim-check + upload (toy#73 item 4).
+        def realize_warm!: (String donor_gguf_path, Toy::SmolLM2Config cfg) -> void
+        # The raw upload seam for ALREADY-READ buffers (PCA-lens flow).
+        def upload_donor!: (Array[Float] donor_buf_flat, Integer n_floats) -> void
         def build!: () -> void
         def step!: (Array[Integer] seq_ids, Array[Integer] positions,
                     Mat m_labels, Mat m_hp, bool is_first) -> Float

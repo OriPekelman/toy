@@ -22,13 +22,12 @@
 #                  — diff the loss curves to see what the donor buys
 #
 # THE API — Toy::LLM::Recipes::WarmStart splits realize into a window:
+#   donor_embed_width(gguf)       read the donor's width for the cfg
 #   realize_scratch!(cfg, opts)   build the random-init graph, window OPEN
-#   realize_warm!(buf, n)         upload donor embeddings into the graph
+#   realize_warm!(gguf, cfg)      read + dim-check + upload the donor
+#                                 embeddings (fails loud on mismatch)
 #   build!                        bake forward+loss+backward+AdamW, CLOSED
 #   step!(…)                      same per-step contract as FromScratch
-#
-# The donor read itself is plain GGUF plumbing (open, read one tensor,
-# free) — the recipe deliberately only owns the upload mechanism.
 
 require_relative "../lib/toy/compute"
 
@@ -56,18 +55,10 @@ if !File.exist?(CORPUS)
   exit 1
 end
 
-# Open the donor and read its embedding width — the projection lens is
-# sized donor_d_in × d_model, so the cfg must know the donor's width.
-ggh = TinyNN.tnn_gguf_load(DONOR_GGUF)
-if ggh == nil || ggh == TinyNN.tnn_null_ptr
-  puts "02_finetune_warm_start: failed to open " + DONOR_GGUF + " (not a GGUF?)"
-  exit 1
-end
-donor_d = TinyNN.tnn_gguf_get_u32(ggh, "llama.embedding_length")
-if donor_d <= 0
-  puts "02_finetune_warm_start: donor has no llama.embedding_length key — not llama-family?"
-  exit 1
-end
+# Read the donor's embedding width — the projection lens is sized
+# donor_d_in × d_model, so the cfg must know the donor's width before
+# realize. (Fails loud if the donor is not llama-family.)
+donor_d = Toy::LLM::Recipes::WarmStart.donor_embed_width(DONOR_GGUF)
 
 cfg = Toy::SmolLM2Config.tiny
 cfg.donor_d_in = donor_d        # embed table becomes vocab × donor_d
@@ -83,29 +74,18 @@ opts.seed   = SEED
 recipe = Toy::LLM::Recipes::WarmStart.new
 recipe.realize_scratch!(cfg, opts)
 
-# Read the first VOCAB rows of the donor's token_embd.weight and upload
-# them while the warm window is open. (The donor's vocab is much larger;
-# rows align when the corpus is tokenized with the donor's tokenizer —
-# for this tiny demo the POINT is the mechanism, not token alignment.)
+# Warm the embed table from the donor while the window is open:
+# realize_warm! owns the read (open, dim-check vs cfg.donor_d_in, read
+# the first VOCAB rows of token_embd.weight, upload, free) and fails
+# loud on any mismatch. (The donor's vocab is much larger; rows align
+# when the corpus is tokenized with the donor's tokenizer — for this
+# tiny demo the POINT is the mechanism, not token alignment.)
 if INIT == "warm"
-  te_idx = TinyNN.tnn_gguf_find_index(ggh, "token_embd.weight")
-  if te_idx < 0
-    puts "02_finetune_warm_start: donor has no token_embd.weight tensor"
-    exit 1
-  end
-  n_floats = VOCAB * donor_d
-  te_buf = Mat.new(1, n_floats)
-  rc = TinyNN.tnn_gguf_read_f32_to_doubles(ggh, te_idx, te_buf.flat, n_floats)
-  if rc != 0
-    puts "02_finetune_warm_start: token_embd.weight read failed rc=" + rc.to_s
-    exit 1
-  end
-  recipe.realize_warm!(te_buf.flat, n_floats)
-  puts "warm: loaded " + n_floats.to_s + " donor embedding floats"
+  recipe.realize_warm!(DONOR_GGUF, cfg)
+  puts "warm: loaded " + (VOCAB * donor_d).to_s + " donor embedding floats"
 else
   puts "warm: SKIPPED (INIT=" + INIT + " — random embeddings, same graph)"
 end
-TinyNN.tnn_gguf_free(ggh)
 
 recipe.build!                   # bake the graph; window closed
 
