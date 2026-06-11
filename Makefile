@@ -916,6 +916,8 @@ MIRROR_CUDA := \
   lib/toy/llm/primitives/swiglu_cuda.rb lib/toy/llm/primitives/gqa_cuda.rb \
   lib/toy/llm/blocks/transformer_block_cuda.rb lib/toy/llm/archs/llama_arch_cuda.rb \
   lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/llm/engine/gpt2_seq_engine_cuda.rb \
+  lib/toy/llm/recipes/from_scratch_cuda.rb lib/toy/llm/recipes/lora_cuda.rb \
+  lib/toy/llm/recipes/warm_start_cuda.rb \
   lib/toy_smollm2_ffi_kv_cuda.rb \
   lib/gpt2_ffi_cuda.rb lib/gpt2_ffi_kv_cuda.rb \
   examples/06_train_from_scratch_cuda.rb examples/smoke_projection_lens_cuda.rb
