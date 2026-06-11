@@ -57,12 +57,16 @@ module Toy
     def hp_for_step: (Integer step) -> Mat
   end
 
-  # ---- Labels (lib/toy/llm/labels.rb) — shift-by-one one-hot builders ----
+  # ---- Labels (lib/toy/llm/labels.rb) — one-hot label builders -----------
   module Labels
     def self.next_token:         (Array[Integer] seq_ids, Integer vocab,
                                   Integer context, Integer batch) -> Mat
     def self.next_token_guarded: (Array[Integer] seq_ids, Integer vocab,
                                   Integer context, Integer batch) -> Mat
+    # toy#73 item 3 — the two non-shift-by-one objectives.
+    def self.fixed_target:  (Integer vocab, Integer context,
+                             Integer target_id) -> Mat
+    def self.one_hot_class: (Integer num_classes, Integer label) -> Mat
   end
 
   # ---- RunBundle (lib/toy/io/run_bundle.rb) — toy/v1 bundle writer -------
@@ -133,6 +137,27 @@ module Toy
 
       def initialize: (Integer vocab, Integer context, Integer batch_size) -> void
       def fill!: (Array[Integer] new_seq_ids) -> void
+      # toy#73 item 3 — fixed-target objective (every position targets
+      # target_id; the lora-smoke shape).
+      def fill_fixed_target!: (Array[Integer] new_seq_ids,
+                               Integer target_id) -> void
+    end
+
+    # ---- ClassifyBatch (lib/toy/llm/classify_batch.rb) -------------------
+    # Image-classification sibling of TrainingBatch (toy#73 item 3):
+    # validates one (patches, label) record per fill!.
+    class ClassifyBatch
+      attr_accessor cb_classes:    Integer
+      attr_accessor cb_patch_flat: Integer
+      attr_accessor cb_n_patches:  Integer
+      attr_accessor image:         Mat
+      attr_accessor cls_idx:       Array[Integer]
+      attr_accessor labels:        Mat
+      attr_accessor hp:            Mat
+
+      def initialize: (Integer num_classes, Integer patch_flat,
+                       Integer n_patches) -> void
+      def fill!: (Array[Float] patches, Integer label) -> void
     end
 
     # ======================================================================

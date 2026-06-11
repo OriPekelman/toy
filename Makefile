@@ -816,7 +816,7 @@ example_02: examples/example_02_finetune_warm_start
 
 # 03 — LoRA adapters over a frozen mmap'd base GGUF, via the one-require
 # compute surface (lora re-added to it by toy#52).
-examples/example_03_lora: examples/03_lora.rb lib/toy/compute.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/llm/adamw.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/lora.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+examples/example_03_lora: examples/03_lora.rb lib/toy/compute.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/llm/adamw.rb lib/toy/llm/labels.rb lib/toy/llm/training_batch.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/lora.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 example_03: examples/example_03_lora
 .PHONY: example_03
@@ -840,7 +840,7 @@ example_06:
 .PHONY: example_06
 
 # 07 — ViT-Tiny on the committed data/vit_smoke corpus via Recipes::VitTiny.
-examples/example_07_vit_tiny: examples/07_vit_tiny.rb lib/toy/compute.rb lib/toy/llm/engine/vit_tiny_engine.rb lib/toy/llm/recipes/vit_tiny.rb lib/toy/models/toy_vit.rb lib/toy/io/toy_image_loader.rb lib/toy/train/toy_lr_schedule.rb lib/toy/llm/adamw.rb lib/toy/llm/recipe_options.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+examples/example_07_vit_tiny: examples/07_vit_tiny.rb lib/toy/compute.rb lib/toy/llm/engine/vit_tiny_engine.rb lib/toy/llm/recipes/vit_tiny.rb lib/toy/models/toy_vit.rb lib/toy/io/toy_image_loader.rb lib/toy/train/toy_lr_schedule.rb lib/toy/llm/adamw.rb lib/toy/llm/labels.rb lib/toy/llm/classify_batch.rb lib/toy/llm/recipe_options.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 example_07: examples/example_07_vit_tiny
 .PHONY: example_07

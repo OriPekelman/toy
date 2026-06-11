@@ -17,8 +17,12 @@
 # only shape every current graph accepts); fill! validates the sequence
 # (length == context, every id in 0...vocab) and rebuilds the labels
 # Mat via Toy::Labels.next_token — byte-identical to the hand loops it
-# replaces. hp stays a plain accessor: which AdamW convention applies
-# is the caller's choice (see the slot-5/6 finding in adamw.rb).
+# replaces. fill_fixed_target! (toy#73 item 3) is the second objective:
+# same sequence validation, labels target ONE fixed id at every
+# position (the lora-smoke shape). hp stays a plain accessor: which
+# AdamW convention applies is the caller's choice (see the slot-5/6
+# finding in adamw.rb). The image-classification sibling is
+# Toy::LLM::ClassifyBatch (classify_batch.rb).
 #
 # batch_size must be 1: batched training is deferred (the Labels
 # builders do not multiply batch into the row count — see labels.rb);
@@ -98,6 +102,31 @@ module Toy; module LLM
       end
       @seq_ids = new_seq_ids
       @labels  = Toy::Labels.next_token(new_seq_ids, @vocab, @context, @batch)
+      nil
+    end
+
+    # FIXED-TARGET objective (toy#73 item 3): validate the sequence the
+    # same way fill! does, but build labels where EVERY position
+    # targets `target_id` (the lora-smoke objective — push the whole
+    # prompt toward one token). Same loud guarantees: length mismatch,
+    # out-of-vocab id, and out-of-vocab target all raise (via
+    # Toy::Labels.fixed_target for the target). Returns nil.
+    def fill_fixed_target!(new_seq_ids, target_id)
+      if new_seq_ids.length != @context
+        raise "TrainingBatch#fill_fixed_target!: seq_ids length " +
+              new_seq_ids.length.to_s + " != context " + @context.to_s
+      end
+      k = 0
+      while k < @context
+        id = new_seq_ids[k]
+        if id < 0 || id >= @vocab
+          raise "TrainingBatch#fill_fixed_target!: seq_ids[" + k.to_s +
+                "] = " + id.to_s + " out of vocab 0..." + @vocab.to_s
+        end
+        k = k + 1
+      end
+      @seq_ids = new_seq_ids
+      @labels  = Toy::Labels.fixed_target(@vocab, @context, target_id)
       nil
     end
   end

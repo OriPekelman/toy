@@ -79,6 +79,7 @@ require_relative "train/toy_lr_schedule"
 require_relative "llm/adamw"
 require_relative "llm/labels"
 require_relative "llm/training_batch"
+require_relative "llm/classify_batch"
 
 # Run-bundle writer (toy#73 item 1): runs/<id>/events.jsonl in the toy/v1
 # schema + the weights/ checkpoint-dir convention. SHARED (not mirrored):

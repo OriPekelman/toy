@@ -77,10 +77,11 @@ if got != record_f
   exit 1
 end
 
-m_image  = Mat.new(patch_flat, n_patches)
-m_labels = Mat.new(1, NUM_CLASSES)
-cls_idx  = [0]                       # read the class token at position 0
-adamw    = Toy::AdamW.for_from_scratch
+# The validating batch (the ClassifyBatch sibling of 01's
+# TrainingBatch): fill! checks the record length + label range and
+# rebuilds the image Mat + one-hot labels — a torn corpus fails loud.
+batch = Toy::LLM::ClassifyBatch.new(NUM_CLASSES, patch_flat, n_patches)
+adamw = Toy::AdamW.for_from_scratch
 
 first_loss = 0.0
 final_loss = 0.0
@@ -92,18 +93,10 @@ while step < STEPS
   # corpus would advance the index).
   patches = ToyImageLoader.read_image(images_path, 0, record_f)
   label   = ToyImageLoader.read_label(labels_path, 0)
-  i = 0
-  while i < record_f
-    m_image.flat[i] = patches[i]
-    i = i + 1
-  end
-  j = 0
-  while j < NUM_CLASSES
-    m_labels.flat[j] = j == label ? 1.0 : 0.0
-    j = j + 1
-  end
+  batch.fill!(patches, label)
 
-  loss = recipe.step!(m_image, cls_idx, m_labels, adamw.hp_for_step(step), step == 0)
+  loss = recipe.step!(batch.image, batch.cls_idx, batch.labels,
+                      adamw.hp_for_step(step), step == 0)
   if step == 0
     first_loss = loss
   end

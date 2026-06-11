@@ -16,10 +16,14 @@
 #   next_token          — UNGUARDED  (from-scratch: known-good seq_ids)
 #   next_token_guarded  — in-vocab guarded (warm-start: streamed corpus)
 #
-# OUT OF SCOPE (deliberately NOT routed through here, they are NOT
-# shift-by-one): lora's constant-TARGET_ID one-hot (every row targets
-# the same id) and vit's single-class one-hot stay as inline builds in
-# their runners.
+# Since toy#73 item 3 the two NON-shift-by-one objectives also live
+# here (they used to be inline hand fills in the lora/vit fixtures):
+#   fixed_target   — every position targets ONE id (the lora smoke
+#                    objective; consumed by TrainingBatch#fill_fixed_target!)
+#   one_hot_class  — single-row class one-hot (the ViT objective;
+#                    consumed by ClassifyBatch#fill!)
+# Both FAIL LOUD on an out-of-range target/label — the unguarded
+# scatter would silently write outside the row otherwise.
 
 module Toy
   module Labels
@@ -86,6 +90,51 @@ module Toy
           m.flat[k * vocab + target] = 1.0
         end
         k = k + 1
+      end
+      m
+    end
+
+    # FIXED-TARGET one-hot (toy#73 item 3): every one of the `context`
+    # positions targets the SAME id — the lora-smoke objective
+    # (examples/03_lora.rb: push every position of a fixed prompt
+    # toward one token). Reproduces the example's hand fill VERBATIM
+    # (zero the Mat, then scatter 1.0 at row*vocab + target_id).
+    # FAILS LOUD on an out-of-vocab target.
+    def self.fixed_target(vocab, context, target_id)
+      if target_id < 0 || target_id >= vocab
+        raise "Toy::Labels.fixed_target: target_id " + target_id.to_s +
+              " out of vocab 0..." + vocab.to_s
+      end
+      m = Mat.new(context, vocab)
+      j = 0
+      while j < context * vocab
+        m.flat[j] = 0.0
+        j = j + 1
+      end
+      k = 0
+      while k < context
+        m.flat[k * vocab + target_id] = 1.0
+        k = k + 1
+      end
+      m
+    end
+
+    # SINGLE-ROW CLASS one-hot (toy#73 item 3): Mat(1, num_classes)
+    # with 1.0 at `label` — the ViT classification objective
+    # (examples/07_vit_tiny.rb's hand loop, byte-identical). FAILS
+    # LOUD on an out-of-range label (ToyImageLoader.read_label returns
+    # -1 on a short read, so a torn labels.bin fails here, not as a
+    # silent all-zero label row).
+    def self.one_hot_class(num_classes, label)
+      if label < 0 || label >= num_classes
+        raise "Toy::Labels.one_hot_class: label " + label.to_s +
+              " out of range 0..." + num_classes.to_s
+      end
+      m = Mat.new(1, num_classes)
+      j = 0
+      while j < num_classes
+        m.flat[j] = j == label ? 1.0 : 0.0
+        j = j + 1
       end
       m
     end

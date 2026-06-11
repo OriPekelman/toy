@@ -74,20 +74,11 @@ opts.init_scale = 0.01
 recipe.realize!(gguf, cfg, RANK, opts)
 puts "realize OK (base mmap'd, adapters attached)"
 
-# One-hot labels: every position targets TARGET_ID. (A custom objective
-# like this is hand-built — Toy::Labels/TrainingBatch model the
-# next-token objective only.)
-m_labels = Mat.new(TOKENS.length, cfg.vocab)
-i = 0
-while i < TOKENS.length * cfg.vocab
-  m_labels.flat[i] = 0.0
-  i = i + 1
-end
-ti = 0
-while ti < TOKENS.length
-  m_labels.flat[ti * cfg.vocab + TARGET_ID] = 1.0
-  ti = ti + 1
-end
+# The validating batch, fixed-target objective: every position targets
+# TARGET_ID (out-of-vocab ids or target fail loud, not mid-graph). The
+# prompt is constant, so one fill before the loop covers every step.
+batch = Toy::LLM::TrainingBatch.new(cfg.vocab, TOKENS.length, 1)
+batch.fill_fixed_target!(TOKENS, TARGET_ID)
 
 # LoRA's AdamW convention differs from from-scratch: beta2=0.999 and
 # PER-STEP bias correction. hp_for_step knows that: it takes the plain
@@ -95,13 +86,11 @@ end
 adamw = Toy::AdamW.for_lora
 adamw.lr = LR
 
-positions = [0, 1, 2, 3]
-
 first_loss = 0.0
 final_loss = 0.0
 step = 0
 while step < STEPS
-  loss = recipe.step!(TOKENS, positions, m_labels,
+  loss = recipe.step!(batch.seq_ids, batch.positions, batch.labels,
                       adamw.hp_for_step(step), step == 0)
   if step == 0
     first_loss = loss
