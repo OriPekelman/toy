@@ -3,8 +3,8 @@
 # Kept separate from lib/gguf_load.rb so a demo that only uses
 # GPT-2 doesn't have to pull SmolLM2 types into Spinel's compile graph.
 
-require_relative "../io/gguf_load"
-require_relative "toy_smollm2"
+require_relative "../gguf_load"
+require_relative "../../models/toy_smollm2"
 
 module GGUFLoad
   # Llama-family weight load into a Toy::SmolLM2.

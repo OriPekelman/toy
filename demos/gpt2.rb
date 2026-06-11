@@ -7,7 +7,7 @@
 
 require_relative "../lib/toy"
 require_relative "../lib/toy/models/toy_gpt2"
-require_relative "../lib/toy/models/toy_gpt2_loader"
+require_relative "../lib/toy/io/loaders/toy_gpt2_loader"
 require_relative "../lib/toy/train/training"   # parse_ids: comma- or space-separated int line
 
 # --- config from GGUF ----

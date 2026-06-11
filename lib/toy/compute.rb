@@ -31,7 +31,7 @@ require_relative "../toy"
 
 # Models + configs (Llama/SmolLM2, ViT) and the GGUF→engine loader.
 require_relative "models/toy_smollm2"
-require_relative "models/toy_smollm2_loader"
+require_relative "io/loaders/toy_smollm2_loader"
 require_relative "models/toy_vit"
 
 # Engines — the L4 forward/train drivers. Each pulls its L1 primitives,

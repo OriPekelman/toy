@@ -25,7 +25,7 @@ require_relative "arch"
 require_relative "../train/sampler"
 require_relative "../../toy"
 require_relative "toy_smollm2"
-require_relative "toy_smollm2_loader"
+require_relative "../io/loaders/toy_smollm2_loader"
 require_relative "../../toy_smollm2_ffi_kv_metal"
 
 class ToyLMMetal

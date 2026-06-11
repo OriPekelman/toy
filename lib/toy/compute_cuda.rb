@@ -28,7 +28,7 @@ require_relative "../toy"
 
 # Models + configs (shared — pure model/config code, no backend calls).
 require_relative "models/toy_smollm2"
-require_relative "models/toy_smollm2_loader"
+require_relative "io/loaders/toy_smollm2_loader"
 require_relative "models/toy_vit"
 
 # Engines — the CUDA mirrors (generated from the CPU files by

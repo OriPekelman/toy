@@ -28,7 +28,7 @@
 require_relative "../../toy_smollm2_ffi_kv"
 require_relative "../../../vendor/spinel/spinel_kit/lib/spinel_kit/json_builder"
 require_relative "../io/toy_events"
-require_relative "../models/toy_smollm2_loader"
+require_relative "../io/loaders/toy_smollm2_loader"
 require_relative "../../../vendor/spinel/deps"
 require_relative "../serve/openai/embeddings_handler"
 require_relative "../serve/openai/server"
