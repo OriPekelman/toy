@@ -36,6 +36,6 @@ Model shape is built with the named `Toy::SmolLM2Config.mha` /
 The byte-gated exemplars users read:
 
 - `examples/train_from_scratch.rb` — the blessed short tutorial.
-- `examples/smoke_recipe_from_scratch.rb`
-- `examples/smoke_recipe_warm_start.rb`
-- `examples/smoke_recipe_lora.rb`
+- `prep/smokes/smoke_recipe_from_scratch.rb`
+- `prep/smokes/smoke_recipe_warm_start.rb`
+- `prep/smokes/smoke_recipe_lora.rb`

@@ -3,8 +3,8 @@
 # below) THROUGH Toy::LLM::Recipes::LoRA and prints "step N: loss="
 # lines whose loss VALUES MUST byte-equal the reference's per-step CE.
 #
-#   make examples/smoke_recipe_lora
-#   STEPS=5 RANK=8 ./examples/smoke_recipe_lora | grep '^step'
+#   make prep/smokes/smoke_recipe_lora
+#   STEPS=5 RANK=8 ./prep/smokes/smoke_recipe_lora | grep '^step'
 #
 # Reference (examples/03_finetune_lora.rb, STEPS=5 RANK=8 LR=0.001
 # GGUF=data/smollm2-135m-native.gguf, seeded upload_lora_q_init!(42,0.01)):
@@ -24,12 +24,12 @@
 # Load order is verbatim so the backend TinyNN loads (via
 # llama_seq_forward_ffi) before the recipe is required.
 
-require_relative "../lib/toy"
-require_relative "../lib/toy/models/toy_smollm2"
-require_relative "../lib/toy/io/loaders/toy_smollm2_loader"
-require_relative "../lib/toy/llm/engine/llama_seq_engine"
-require_relative "../lib/toy/llm/adamw"
-require_relative "../lib/toy/llm/recipes/lora"
+require_relative "../../lib/toy"
+require_relative "../../lib/toy/models/toy_smollm2"
+require_relative "../../lib/toy/io/loaders/toy_smollm2_loader"
+require_relative "../../lib/toy/llm/engine/llama_seq_engine"
+require_relative "../../lib/toy/llm/adamw"
+require_relative "../../lib/toy/llm/recipes/lora"
 
 GGUF  = ENV["GGUF"]  || "data/smollm2-135m-native.gguf"
 RANK  = (ENV["RANK"]  || "8").to_i

@@ -3,15 +3,15 @@
 # couple of values. Tep's future /v1/embeddings consumes this primitive
 # (then mean-pools or returns per-token).
 #
-#   make examples/smoke_embed_api
-#   GGUF=data/smollm2-135m-native.gguf ./examples/smoke_embed_api
+#   make prep/smokes/smoke_embed_api
+#   GGUF=data/smollm2-135m-native.gguf ./prep/smokes/smoke_embed_api
 #
 # Default path uses a from-scratch toy ckpt because that's the cheapest
 # end-to-end smoke; vocab is small (627) and the embedding rows are f32.
 # For a quantized-table test, set GGUF=data/qwen25-0.5b-native-q8.gguf.
 
-require_relative "../lib/toy/models/arch"
-require_relative "../lib/toy/models/transformer_lm"
+require_relative "../../lib/toy/models/arch"
+require_relative "../../lib/toy/models/transformer_lm"
 
 GGUF = ENV["GGUF"] || "data/llama-3.2-1b-native.gguf"
 

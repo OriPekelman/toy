@@ -55,15 +55,15 @@
 # This fixture needs Spinel compilation (ffi_lib is a Spinel intrinsic; it
 # cannot run under MRI), so branch-hit verification is make + run.
 #
-#   make examples/smoke_gate_qkv_bias
-#   ./examples/smoke_gate_qkv_bias        # MUST run from repo root (data/)
+#   make prep/smokes/smoke_gate_qkv_bias
+#   ./prep/smokes/smoke_gate_qkv_bias        # MUST run from repo root (data/)
 #
 # Exits non-zero (loud, with first mismatch index) on ANY divergence/NaN;
 # prints the VERDICT line + the baseline logits on success.
 
-require_relative "../lib/toy"
-require_relative "../lib/toy/models/toy_smollm2"
-require_relative "../lib/toy/llm/engine/llama_seq_engine"
+require_relative "../../lib/toy"
+require_relative "../../lib/toy/models/toy_smollm2"
+require_relative "../../lib/toy/llm/engine/llama_seq_engine"
 
 # VERIFIED Qwen2.5-0.5B-Instruct native GGUF dims.
 VOCAB   = 151936

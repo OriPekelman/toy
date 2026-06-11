@@ -79,7 +79,7 @@ Verified bit-identical to the GGUF source on SmolLM2-135M's 28M-float
 
 The full-graph round-trip (write → reload → forward, asserting
 bit-identical logits) is gated separately by
-`examples/smoke_gguf_roundtrip.rb` (`make examples/smoke_gguf_roundtrip`).
+`prep/smokes/smoke_gguf_roundtrip.rb` (`make prep/smokes/smoke_gguf_roundtrip`).
 
 ## Why both, why not just one
 

@@ -25,7 +25,7 @@
 # (default the 135m native gguf), TAO_RUN_DIR (events + checkpoint sink),
 # TOY_RUN_ID (run metadata). The gate-fixed lora knobs (LR=0.001,
 # TARGET_ID=99, TOKENS, seed=42, init_scale=0.01, hp) are HARDCODED here,
-# byte-mirroring examples/smoke_recipe_lora.rb (the gate ground truth).
+# byte-mirroring prep/smokes/smoke_recipe_lora.rb (the gate ground truth).
 #
 # CONFIG NOTE: we deliberately do NOT `require toy_smollm2_loader` (it
 # transitively pulls gpt2.rb, whose CausalSelfAttention/FFN share an

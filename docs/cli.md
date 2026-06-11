@@ -168,7 +168,7 @@ gate fixtures.
 | `examples/07_train_vit_tiny.rb` | ViT-Tiny image classifier with timm AugReg donor warm-start. |
 | `examples/legacy/08_lmc.rb` (or `toy eval lmc`) | Linear Mode Connectivity blend of two from-scratch checkpoints over an α grid. |
 | `examples/legacy/09_warm_start_train.rb` (or `toy train warm-start`) | Warm-start trainer with donor `token_embd` + optional PCA-init projection lens. |
-| `examples/smoke_*.rb` | Single-purpose wire smokes — also the gate fixtures (see [gating.md](gating.md)). |
+| `prep/smokes/smoke_*.rb` | Single-purpose wire smokes — the gate fixtures, not tutorials (see [gating.md](gating.md)). |
 
 CUDA / Metal mirrors exist for several (`*_cuda.rb`, `*_metal.rb`).
 

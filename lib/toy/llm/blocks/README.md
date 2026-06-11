@@ -23,5 +23,5 @@ Backend twins: `transformer_block_cuda.rb`, `transformer_block_metal.rb`.
 - Block stacking across N layers.
 - Whole-graph allocation.
 
-See `examples/smoke_recipe_*.rb` and the blessed
+See `prep/smokes/smoke_recipe_*.rb` and the blessed
 `examples/train_from_scratch.rb` for the block driven end-to-end.

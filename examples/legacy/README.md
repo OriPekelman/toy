@@ -13,5 +13,5 @@ no longer part of the curated example set. Prefer the CLI.
 
 These were the right shape before the CLI existed; the CLI now drives the same
 compute runners with a controlled environment. The byte-exact behaviour is
-preserved by the gates (`prep/*_gate.rb`, `examples/smoke_*`), which are the
+preserved by the gates (`prep/*_gate.rb`, `prep/smokes/smoke_*`), which are the
 test suite and live at `examples/`, not here.

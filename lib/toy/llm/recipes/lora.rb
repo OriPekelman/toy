@@ -27,7 +27,7 @@
 # (landmine #4). Members uniquely lora_-prefixed for type-isolation. No
 # Card/step_bind/FFI :str args at class load. Experiment config (GGUF
 # path, RANK, tokens, labels, hp, LR, seed/scale) stays in the FIXTURE
-# (examples/smoke_recipe_lora.rb) per lib-vs-example scope, never here.
+# (prep/smokes/smoke_recipe_lora.rb) per lib-vs-example scope, never here.
 #
 # Like FromScratch, this file does NOT `require_relative "tinynn"`: the
 # loading module (lib/llama_seq_forward_ffi.rb, required by the fixture

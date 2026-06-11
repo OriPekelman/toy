@@ -3,12 +3,12 @@
 # stats to verify the round-trip.
 #
 #   uv run prep/preprocess_images.py            # produces data/vit_smoke/
-#   make examples/smoke_image_loader
-#   ./examples/smoke_image_loader
+#   make prep/smokes/smoke_image_loader
+#   ./prep/smokes/smoke_image_loader
 
-require_relative "../lib/toy/models/transformer"
-require_relative "../lib/toy/ffi/tinynn"
-require_relative "../lib/toy/io/toy_image_loader"
+require_relative "../../lib/toy/models/transformer"
+require_relative "../../lib/toy/ffi/tinynn"
+require_relative "../../lib/toy/io/toy_image_loader"
 
 DIR        = ENV["IMG_DIR"]      || "data/vit_smoke"
 N          = (ENV["N"]           || "3").to_i

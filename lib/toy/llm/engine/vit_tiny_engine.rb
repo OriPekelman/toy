@@ -102,7 +102,7 @@ class ViTTinyEngine
     #
     # Caller responsibility: pre-flatten each patch into
     # [IC*P*P, N_patches] before uploading to t_image. Done host-side
-    # (cheap; see examples/smoke_vit_tiny.rb).
+    # (cheap; see prep/smokes/smoke_vit_tiny.rb).
     @patch_flat_dim = cfg.num_channels * cfg.patch_size * cfg.patch_size
     @t_patch_kernel = TinyNN.tnn_input_2d_f32_persistent(@sess,
                         cfg.d_model, @patch_flat_dim)
@@ -192,7 +192,7 @@ class ViTTinyEngine
 
     # Image input (graph input, NOT a PARAM): pre-flattened patch
     # matrix shape [IC*P*P, N_patches]. Caller does the host-side
-    # patch extraction; see examples/smoke_vit_tiny.rb.
+    # patch extraction; see prep/smokes/smoke_vit_tiny.rb.
     @t_image = TinyNN.tnn_input_2d_f32_persistent(@sess,
                   @n_patches, @patch_flat_dim)
 

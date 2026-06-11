@@ -10,17 +10,17 @@
 #
 # Pure-Ruby CPU, Spinel-compiled. NO lib/ behavior change, NO mirror regen.
 #
-#   make examples/smoke_gate_gqa_divergent
-#   STEPS=5 SEED=0 ./examples/smoke_gate_gqa_divergent   (run from repo root)
+#   make prep/smokes/smoke_gate_gqa_divergent
+#   STEPS=5 SEED=0 ./prep/smokes/smoke_gate_gqa_divergent   (run from repo root)
 #
 # Determinism: SEED=0 + weight_dtype=0 (F32, bit-identical) + B=1 +
 # fixed first line of data/ts_seqs.txt => bit-reproducible loss curve.
 
-require_relative "../lib/toy"
-require_relative "../lib/toy/models/toy_smollm2"
-require_relative "../lib/toy/llm/engine/llama_seq_engine"
-require_relative "../lib/toy/llm/adamw"
-require_relative "../lib/toy/train/toy_drift_grad"
+require_relative "../../lib/toy"
+require_relative "../../lib/toy/models/toy_smollm2"
+require_relative "../../lib/toy/llm/engine/llama_seq_engine"
+require_relative "../../lib/toy/llm/adamw"
+require_relative "../../lib/toy/train/toy_drift_grad"
 
 STEPS    = (ENV["STEPS"] || "5").to_i
 SEED     = (ENV["SEED"]  || "0").to_i

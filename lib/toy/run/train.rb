@@ -92,7 +92,7 @@ EVENTS = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/events.jsonl") : ""
 if RECIPE == "warm-start"
   # ==================================================================
   # WARM-START BRANCH — fully self-contained (landmine #16). Mirrors
-  # examples/smoke_recipe_warm_start.rb at INIT=scratch (the gate ground
+  # prep/smokes/smoke_recipe_warm_start.rb at INIT=scratch (the gate ground
   # truth). INIT=scratch skips realize_warm! (no donor GGUF).
   # ==================================================================
   lr_max = 0.001

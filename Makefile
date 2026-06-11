@@ -406,13 +406,13 @@ gate-mixed-precision:
 gate-run-log:
 	ruby prep/run_log_gate.rb
 
-# toy#42 full-API require gate. Builds examples/smoke_compute_surface (which
+# toy#42 full-API require gate. Builds prep/smokes/smoke_compute_surface (which
 # requires ONLY lib/toy/compute.rb) and asserts it realizes a live engine —
 # proving the one-require compute surface co-compiles + works for a library
 # consumer. Builds the smoke itself.
 .PHONY: gate-compute-surface
-gate-compute-surface: examples/smoke_compute_surface
-	@out="$$(./examples/smoke_compute_surface 2>&1)"; \
+gate-compute-surface: prep/smokes/smoke_compute_surface
+	@out="$$(./prep/smokes/smoke_compute_surface 2>&1)"; \
 	echo "$$out" | tail -2; \
 	echo "$$out" | grep -q "compute-surface: ok" \
 	  && echo "GATE PASS [compute-surface]: lib/toy/compute.rb one-require surface is live" \
@@ -421,8 +421,8 @@ gate-compute-surface: examples/smoke_compute_surface
 # toy#64 item 8 — CUDA twin of gate-compute-surface: build + run the
 # consumer-ish CUDA entry smoke on the GPU (GB10 sm_121).
 .PHONY: gate-compute-surface-cuda
-gate-compute-surface-cuda: examples/smoke_compute_surface_cuda
-	@out="$$(./examples/smoke_compute_surface_cuda 2>&1)"; \
+gate-compute-surface-cuda: prep/smokes/smoke_compute_surface_cuda
+	@out="$$(./prep/smokes/smoke_compute_surface_cuda 2>&1)"; \
 	echo "$$out" | tail -2; \
 	echo "$$out" | grep -q "compute-surface-cuda: ok" \
 	  && echo "GATE PASS [compute-surface-cuda]: lib/toy/compute_cuda.rb device entry is live" \
@@ -664,21 +664,21 @@ toy-serve: libexec/toy-serve
 
 # toy#gguf-checkpoint-reload (#153) — smoke binary that loads a
 # from-scratch toy GGUF and runs a tiny generation. No tokenizer.
-examples/smoke_toy_ckpt_reload: examples/smoke_toy_ckpt_reload.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a
+prep/smokes/smoke_toy_ckpt_reload: prep/smokes/smoke_toy_ckpt_reload.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 # toy#embed-api (#145) — smoke for ToyLM#embed_lookup.
-examples/smoke_embed_api: examples/smoke_embed_api.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/io/tokenizer.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a
+prep/smokes/smoke_embed_api: prep/smokes/smoke_embed_api.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/io/tokenizer.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 # P1 framework refactor — runtime Card derivation smoke. Loads a
 # llama-family GGUF, realizes the seq-mode cache, derives a
 # structural Toy::Card via ToyDescribeFlow.card, prints + gates.
-examples/smoke_card_derive: examples/smoke_card_derive.rb lib/toy.rb lib/toy/models/toy_smollm2.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/dev/toy_describe_flow.rb lib/toy/train/toy_drift_grad.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/dev/toy_card.rb tinynn/libtinynn_ggml.a
+prep/smokes/smoke_card_derive: prep/smokes/smoke_card_derive.rb lib/toy.rb lib/toy/models/toy_smollm2.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/dev/toy_describe_flow.rb lib/toy/train/toy_drift_grad.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/dev/toy_card.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 # toy#decode-logprobs (#151) — smoke for ToyLM#decode_step_with_logprobs.
-examples/smoke_decode_logprobs: examples/smoke_decode_logprobs.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/io/tokenizer.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a
+prep/smokes/smoke_decode_logprobs: prep/smokes/smoke_decode_logprobs.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/io/tokenizer.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 # GH#18 — LMC interpolate-and-eval runner.
@@ -687,7 +687,7 @@ examples/example_lmc: examples/legacy/08_lmc.rb lib/toy/llm/engine/llama_seq_eng
 example_lmc: examples/example_lmc
 
 # E2.3 (towards GH#14) — projection-lens smoke.
-examples/smoke_projection_lens: examples/smoke_projection_lens.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb lib/toy/train/toy_drift_grad.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+prep/smokes/smoke_projection_lens: prep/smokes/smoke_projection_lens.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb lib/toy/train/toy_drift_grad.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
 # toy#42 full-API require gate. Compiling this proves lib/toy/compute.rb's whole
@@ -695,7 +695,7 @@ examples/smoke_projection_lens: examples/smoke_projection_lens.rb lib/toy/llm/en
 # running it realizes a LlamaSeqEngine to prove the surface is live. The prereq
 # is just lib/toy/compute.rb — it pulls everything else transitively, and
 # $(SPINEL) follows the require graph.
-examples/smoke_compute_surface: examples/smoke_compute_surface.rb lib/toy/compute.rb lib/toy/llm/training_batch.rb lib/toy/llm/recipe_options.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+prep/smokes/smoke_compute_surface: prep/smokes/smoke_compute_surface.rb lib/toy/compute.rb lib/toy/llm/training_batch.rb lib/toy/llm/recipe_options.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
 # toy#64 item 8 — the CUDA compute entry (lib/toy/compute_cuda.rb), the
@@ -703,7 +703,7 @@ examples/smoke_compute_surface: examples/smoke_compute_surface.rb lib/toy/comput
 # compute-surface gate but requires compute_cuda + links the CUDA
 # archives with the force-link flag. The generated CUDA mirrors in the
 # dep list are kept fresh by the $(MIRROR_CUDA) pattern rules.
-examples/smoke_compute_surface_cuda: examples/smoke_compute_surface_cuda.rb lib/toy/compute_cuda.rb \
+prep/smokes/smoke_compute_surface_cuda: prep/smokes/smoke_compute_surface_cuda.rb lib/toy/compute_cuda.rb \
 		lib/toy/llm/training_batch.rb lib/toy/llm/recipe_options.rb \
 		lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/llm/engine/gpt2_seq_engine_cuda.rb \
 		lib/toy/llm/engine/llama_kv_engine_cuda.rb \
@@ -717,7 +717,7 @@ examples/smoke_compute_surface_cuda: examples/smoke_compute_surface_cuda.rb lib/
 # P2.6 — GQA-divergent (w_o) gate. Realizes a config with head_dim=24 so
 # n_heads*head_dim (96) != d_model (64), proving the divergent w_o shape
 # [d_model, n_heads*head_dim] allocates and runs forward+backward.
-examples/smoke_gate_gqa_divergent: examples/smoke_gate_gqa_divergent.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb lib/toy/train/toy_drift_grad.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+prep/smokes/smoke_gate_gqa_divergent: prep/smokes/smoke_gate_gqa_divergent.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb lib/toy/train/toy_drift_grad.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
 # P2.6 — llama3 RoPE post-rope TENSOR parity gate. Builds a standalone
@@ -728,7 +728,7 @@ examples/smoke_gate_gqa_divergent: examples/smoke_gate_gqa_divergent.rb lib/toy/
 # asserts (a) freq_factors non-uniform / kind==:llama3, (b) post-rope output
 # byte-identical run-to-run, plus a contrast guard vs :none (NULL factors).
 # No model file, no lib/ change, no mirror regen. Run from repo root.
-examples/smoke_gate_llama3_tensor: examples/smoke_gate_llama3_tensor.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+prep/smokes/smoke_gate_llama3_tensor: prep/smokes/smoke_gate_llama3_tensor.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
 # P2.6 — B>1 (micro-batch) gate. Realizes with t_batch=2 so @seq_b=2,
@@ -736,13 +736,13 @@ examples/smoke_gate_llama3_tensor: examples/smoke_gate_llama3_tensor.rb lib/toy/
 # soft_max_ext attention path (gqa.rb:50). Proves the batched graph
 # allocates the [T*B,T*B] mask and runs forward+backward; records a
 # reproducible loss baseline. MUST run from repo root (data/ts_seqs.txt).
-examples/smoke_gate_b_gt_1: examples/smoke_gate_b_gt_1.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb lib/toy/train/toy_drift_grad.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+prep/smokes/smoke_gate_b_gt_1: prep/smokes/smoke_gate_b_gt_1.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb lib/toy/train/toy_drift_grad.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
 # P2.6 — L4 FromScratch recipe gate. Drives the same random-init config
 # as smoke_projection_lens THROUGH Toy::LLM::Recipes::FromScratch; its
 # loss curve must byte-equal the projection-lens reference.
-examples/smoke_recipe_from_scratch: examples/smoke_recipe_from_scratch.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb lib/toy/train/toy_drift_grad.rb lib/toy/llm/adamw.rb lib/toy/llm/labels.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/from_scratch.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+prep/smokes/smoke_recipe_from_scratch: prep/smokes/smoke_recipe_from_scratch.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb lib/toy/train/toy_drift_grad.rb lib/toy/llm/adamw.rb lib/toy/llm/labels.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/from_scratch.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
 # BLESSED from-scratch path — the short tutorial. Same gate-fixture
@@ -755,7 +755,7 @@ example_train_from_scratch_blessed: examples/example_train_from_scratch_blessed
 # L4 LoRA recipe gate. Drives the same LoRA fine-tune config as the
 # frozen reference 03_finetune_lora THROUGH Toy::LLM::Recipes::LoRA; its
 # loss curve must byte-equal the reference at the fixed config.
-examples/smoke_recipe_lora: examples/smoke_recipe_lora.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/llm/adamw.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/lora.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+prep/smokes/smoke_recipe_lora: prep/smokes/smoke_recipe_lora.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/llm/adamw.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/lora.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
 # L4 WarmStart recipe gate. Drives the same warm-start config as the
@@ -763,7 +763,7 @@ examples/smoke_recipe_lora: examples/smoke_recipe_lora.rb lib/toy/llm/engine/lla
 # Toy::LLM::Recipes::WarmStart; its loss curve must byte-equal 09's at
 # the fixed config (SEED=0 STEPS=5). The fixture drives the cosine LR
 # schedule + streaming corpus loader (deps below); the recipe stays thin.
-examples/smoke_recipe_warm_start: examples/smoke_recipe_warm_start.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb lib/toy/train/toy_drift_grad.rb lib/toy/io/toy_corpus_loader.rb lib/toy/train/toy_lr_schedule.rb lib/toy/llm/adamw.rb lib/toy/llm/labels.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/warm_start.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+prep/smokes/smoke_recipe_warm_start: prep/smokes/smoke_recipe_warm_start.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb lib/toy/train/toy_drift_grad.rb lib/toy/io/toy_corpus_loader.rb lib/toy/train/toy_lr_schedule.rb lib/toy/llm/adamw.rb lib/toy/llm/labels.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/warm_start.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
 # P2.6 gate — GGUF F32 mmap round-trip parity. Head-fuses a random_init
@@ -773,10 +773,10 @@ examples/smoke_recipe_warm_start: examples/smoke_recipe_warm_start.rb lib/toy/ll
 # (previously only realize_for_random_init was gated). CPU-only: the GGUF
 # WRITE half reads host data ptrs (tnn_gguf_w_add_tensor), which the CUDA
 # writer doesn't implement — do NOT auto-mirror this to CUDA.
-examples/smoke_gguf_roundtrip: examples/smoke_gguf_roundtrip.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb lib/toy/train/toy_gguf_fuse.rb lib/toy/train/toy_gguf_writer.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+prep/smokes/smoke_gguf_roundtrip: prep/smokes/smoke_gguf_roundtrip.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb lib/toy/train/toy_gguf_fuse.rb lib/toy/train/toy_gguf_writer.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
-examples/smoke_full_finetune: examples/smoke_full_finetune.rb lib/toy/llm/adamw.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+prep/smokes/smoke_full_finetune: prep/smokes/smoke_full_finetune.rb lib/toy/llm/adamw.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
 # P2.6 gate — qkv_bias mmap branch. Loads the real Qwen2.5-0.5B native GGUF
@@ -787,14 +787,14 @@ examples/smoke_full_finetune: examples/smoke_full_finetune.rb lib/toy/llm/adamw.
 # (qkv_bias=FALSE). Records a deterministic finite-logit baseline. CPU-only;
 # DATA DEPENDENCY: data/qwen25-0.5b-native.gguf (not self-contained). MUST run
 # from repo root. Do NOT auto-mirror to CUDA.
-examples/smoke_gate_qkv_bias: examples/smoke_gate_qkv_bias.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+prep/smokes/smoke_gate_qkv_bias: prep/smokes/smoke_gate_qkv_bias.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
 # P2.6 gate — Q8-stays-Q8 realize_for_q8_copy branch. Loads the existing
 # Q8 GGUF, asserts blk.0 attn_q weight stays Q8_0 in memory (NOT dequant
 # to F32), deterministic forward x2 byte-identical baseline. Pure-Ruby
 # fixture (no toy_drift_grad dep; seq_blocks_ffi directly).
-examples/smoke_gate_q8_preserve: examples/smoke_gate_q8_preserve.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+prep/smokes/smoke_gate_q8_preserve: prep/smokes/smoke_gate_q8_preserve.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
 # P2.6 CUDA gate — GPU mirror of the projection-lens smoke. Exercises
@@ -802,11 +802,11 @@ examples/smoke_gate_q8_preserve: examples/smoke_gate_q8_preserve.rb lib/toy/llm/
 # realize-path refactor can be parity-gated on GPU (CUDA self-consistency
 # before/after; CUDA floats don't bit-equal CPU). Mirror auto-generated
 # by prep/gen_cuda_mirror.rb. Same force-link recipe as the 06 CUDA entry.
-examples/smoke_projection_lens_cuda: examples/smoke_projection_lens_cuda.rb lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn_cuda.rb lib/toy/train/toy_drift_grad.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS)
+prep/smokes/smoke_projection_lens_cuda: prep/smokes/smoke_projection_lens_cuda.rb lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn_cuda.rb lib/toy/train/toy_drift_grad.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS)
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 
 # E2.4 (towards GH#14) — streaming corpus loader + cosine LR smoke.
-examples/smoke_corpus_loader: examples/smoke_corpus_loader.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb lib/toy/io/toy_corpus_loader.rb lib/toy/train/toy_lr_schedule.rb tinynn/libtinynn_ggml.a
+prep/smokes/smoke_corpus_loader: prep/smokes/smoke_corpus_loader.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb lib/toy/io/toy_corpus_loader.rb lib/toy/train/toy_lr_schedule.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 # E2.5 (towards GH#14) — warm-start training driver.
@@ -920,7 +920,7 @@ MIRROR_CUDA := \
   lib/toy/llm/recipes/warm_start_cuda.rb \
   lib/toy/llm/engine/llama_kv_engine_cuda.rb \
   lib/gpt2_ffi_cuda.rb lib/gpt2_ffi_kv_cuda.rb \
-  examples/06_train_from_scratch_cuda.rb examples/smoke_projection_lens_cuda.rb
+  examples/06_train_from_scratch_cuda.rb prep/smokes/smoke_projection_lens_cuda.rb
 MIRROR_METAL := $(MIRROR_CUDA:_cuda.rb=_metal.rb)
 
 $(MIRROR_CUDA): %_cuda.rb: %.rb prep/gen_cuda_mirror.rb
@@ -1176,11 +1176,11 @@ tinynn/ab_smoke_patch_embed: tinynn/ab_smoke_patch_embed.rb lib/toy/models/trans
 	$(SPINEL) tinynn/ab_smoke_patch_embed.rb -o tinynn/ab_smoke_patch_embed
 
 # E1.3 / GH#13 — ViT-Tiny forward + training smoke.
-examples/smoke_vit_tiny: examples/smoke_vit_tiny.rb lib/toy/llm/engine/vit_tiny_engine.rb lib/toy/models/toy_vit.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+prep/smokes/smoke_vit_tiny: prep/smokes/smoke_vit_tiny.rb lib/toy/llm/engine/vit_tiny_engine.rb lib/toy/models/toy_vit.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
 # E1.5 / GH#13 — image-loader smoke.
-examples/smoke_image_loader: examples/smoke_image_loader.rb lib/toy/io/toy_image_loader.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
+prep/smokes/smoke_image_loader: prep/smokes/smoke_image_loader.rb lib/toy/io/toy_image_loader.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 # E1.6 / GH#13 — ViT-Tiny training driver.

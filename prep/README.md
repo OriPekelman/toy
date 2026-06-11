@@ -4,6 +4,16 @@ Everything in here is *development tooling*: nothing under `prep/` ships
 in the library, and `lib/` never requires a `prep/` file. Three families
 live side by side; the filename tells you which one you're holding.
 
+## Gate smokes (`smokes/smoke_*.rb`) — the compiled fixtures
+
+`prep/smokes/` holds the Spinel-compiled smoke fixtures the gates build
+and run (formerly `examples/smoke_*.rb` — they are GATES, not tutorials,
+so they live in gate-land). Each `smoke_<name>.rb` compiles to
+`prep/smokes/smoke_<name>` via `make prep/smokes/smoke_<name>` and
+asserts one primitive/recipe/branch end-to-end; `docs/gating.md` is the
+index. Binaries are gitignored; run them from the repo root (they read
+`data/` fixtures relative to the cwd).
+
 ## Gates (`*_gate.rb`) — the acceptance bar
 
 A gate is a self-contained CRuby script that builds whatever it needs

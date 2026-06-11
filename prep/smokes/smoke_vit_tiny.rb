@@ -1,16 +1,16 @@
 # E1.3 / GH#13 — ViT-Tiny forward + training smoke.
 #
-#   make examples/smoke_vit_tiny
-#   STEPS=5 ./examples/smoke_vit_tiny
+#   make prep/smokes/smoke_vit_tiny
+#   STEPS=5 ./prep/smokes/smoke_vit_tiny
 #
 # Runs a tiny ViT (image 16×16, patch 4, d_model 64, 2 layers, 4
 # heads, 10 classes). Trains 5 steps on the same random image →
 # random class label; verifies forward + backward + AdamW step
 # without crashing and that loss decreases.
 
-require_relative "../lib/toy/models/toy_vit"
-require_relative "../lib/toy/llm/engine/vit_tiny_engine"
-require_relative "../lib/toy/llm/adamw"
+require_relative "../../lib/toy/models/toy_vit"
+require_relative "../../lib/toy/llm/engine/vit_tiny_engine"
+require_relative "../../lib/toy/llm/adamw"
 
 IMAGE_SIZE  = (ENV["IMAGE_SIZE"]  || "16").to_i
 PATCH_SIZE  = (ENV["PATCH_SIZE"]  || "4").to_i

@@ -4,8 +4,8 @@
 # Toy::LLM::Recipes::WarmStart and prints "step N: loss=" lines whose
 # loss VALUES MUST byte-equal the reference's per-step loss.
 #
-#   make examples/smoke_recipe_warm_start
-#   SEED=0 STEPS=5 ./examples/smoke_recipe_warm_start | grep '^step'
+#   make prep/smokes/smoke_recipe_warm_start
+#   SEED=0 STEPS=5 ./prep/smokes/smoke_recipe_warm_start | grep '^step'
 #
 # Reference (SEED=0 STEPS=5 INIT=scratch ./examples/example_warm_start_train):
 #   step 1: loss=6.440947532653809   (lr=0.0002)
@@ -34,14 +34,14 @@
 # Load order is verbatim so the backend TinyNN loads (via
 # llama_seq_forward_ffi) before the recipe is required.
 
-require_relative "../lib/toy"
-require_relative "../lib/toy/models/toy_smollm2"
-require_relative "../lib/toy/llm/engine/llama_seq_engine"
-require_relative "../lib/toy/io/toy_corpus_loader"
-require_relative "../lib/toy/train/toy_lr_schedule"
-require_relative "../lib/toy/llm/adamw"
-require_relative "../lib/toy/llm/labels"
-require_relative "../lib/toy/llm/recipes/warm_start"
+require_relative "../../lib/toy"
+require_relative "../../lib/toy/models/toy_smollm2"
+require_relative "../../lib/toy/llm/engine/llama_seq_engine"
+require_relative "../../lib/toy/io/toy_corpus_loader"
+require_relative "../../lib/toy/train/toy_lr_schedule"
+require_relative "../../lib/toy/llm/adamw"
+require_relative "../../lib/toy/llm/labels"
+require_relative "../../lib/toy/llm/recipes/warm_start"
 
 # All 09 defaults (the gate's resolved config).
 STEPS    = (ENV["STEPS"]    || "5").to_i

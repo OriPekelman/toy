@@ -208,8 +208,8 @@ several runners read them back.
 ```sh
 # Load a from-scratch toy GGUF and generate from it (smoke; the
 # checkpoint per-head naming is detected automatically).
-make examples/smoke_toy_ckpt_reload
-GGUF=/tmp/run_a/weights/latest ./examples/smoke_toy_ckpt_reload
+make prep/smokes/smoke_toy_ckpt_reload
+GGUF=/tmp/run_a/weights/latest ./prep/smokes/smoke_toy_ckpt_reload
 
 # Linear Mode Connectivity: blend two ckpts along α and eval CE.
 # Emits one eval(name="lmc", extra.alpha) per α — Tao's Analyze.lmc
@@ -222,13 +222,13 @@ LMC_A=/tmp/run_a/weights/latest LMC_B=/tmp/run_b/weights/latest \
 
 # Embedding-table lookup (one row per token id; dequant-aware,
 # F32/Q4/Q5/Q6/Q8/F16). Building block for Tep's /v1/embeddings.
-make examples/smoke_embed_api
-GGUF=data/llama-3.2-1b-native.gguf ./examples/smoke_embed_api
+make prep/smokes/smoke_embed_api
+GGUF=data/llama-3.2-1b-native.gguf ./prep/smokes/smoke_embed_api
 
 # Per-step logprobs + top-K (building block for Tep's
 # /v1/chat?logprobs=true).
-make examples/smoke_decode_logprobs
-GGUF=data/smollm2-135m-native.gguf TOP_K=5 ./examples/smoke_decode_logprobs
+make prep/smokes/smoke_decode_logprobs
+GGUF=data/smollm2-135m-native.gguf TOP_K=5 ./prep/smokes/smoke_decode_logprobs
 ```
 
 ## Where to go after the examples

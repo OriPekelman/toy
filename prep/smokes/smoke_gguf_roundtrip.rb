@@ -25,17 +25,17 @@
 # slice math. So a faithful round-trip MUST reproduce the logits exactly.
 # No tolerance — strict ==. A mismatch means the round-trip is unfaithful.
 #
-#   make examples/smoke_gguf_roundtrip
-#   SEED=0 ./examples/smoke_gguf_roundtrip
+#   make prep/smokes/smoke_gguf_roundtrip
+#   SEED=0 ./prep/smokes/smoke_gguf_roundtrip
 #
 # Exits non-zero (with the first mismatching index + both values on
 # STDERR) on ANY logit divergence; prints the VERDICT line on full match.
 
-require_relative "../lib/toy"
-require_relative "../lib/toy/models/toy_smollm2"
-require_relative "../lib/toy/llm/engine/llama_seq_engine"
-require_relative "../lib/toy/train/toy_gguf_fuse"
-require_relative "../lib/toy/train/toy_gguf_writer"
+require_relative "../../lib/toy"
+require_relative "../../lib/toy/models/toy_smollm2"
+require_relative "../../lib/toy/llm/engine/llama_seq_engine"
+require_relative "../../lib/toy/train/toy_gguf_fuse"
+require_relative "../../lib/toy/train/toy_gguf_writer"
 
 SEED     = (ENV["SEED"] || "0").to_i
 VOCAB    = 627

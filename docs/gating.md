@@ -23,43 +23,44 @@ Two failure modes are explicitly rejected:
 
 ## Smoke fixtures
 
-The gate fixtures live in `examples/` as Spinel-compiled smoke binaries (each
-with a `.rb` source built via its `make examples/<name>` target). They run
-pure-Ruby CPU, SEED=0, F32 weights — deterministic by construction.
+The gate fixtures live in `prep/smokes/` as Spinel-compiled smoke binaries
+(each with a `.rb` source built via its `make prep/smokes/<name>` target).
+They run pure-Ruby CPU, SEED=0, F32 weights — deterministic by construction.
+(They are gates, not tutorials — the narrated tutorials live in `examples/`.)
 
 **Layer-decomposition gates** — prove a refactored path equals the inlined
 reference loss curve:
 
-- `examples/smoke_projection_lens` (+ `_cuda`, `_metal`) — the frozen
+- `prep/smokes/smoke_projection_lens` (+ `_cuda`, `_metal`) — the frozen
   reference forward+backward loss curve; the CUDA/Metal mirrors gate the
   generated backends against it.
-- `examples/smoke_recipe_from_scratch` — drives the same random-init config
+- `prep/smokes/smoke_recipe_from_scratch` — drives the same random-init config
   through `Toy::LLM::Recipes::FromScratch`; its `step N: loss=` lines must
   byte-equal the projection-lens reference.
-- `examples/smoke_recipe_lora`, `examples/smoke_recipe_warm_start` — the
+- `prep/smokes/smoke_recipe_lora`, `prep/smokes/smoke_recipe_warm_start` — the
   same discipline for the LoRA and warm-start recipes.
 
 **Realize-divergence gates** — exercise graph slices the bulk-realize path
 must not silently unify:
 
-- `examples/smoke_gate_gqa_divergent` — the `n_heads*head_dim != d_model`
+- `prep/smokes/smoke_gate_gqa_divergent` — the `n_heads*head_dim != d_model`
   case where `w_o` is non-square.
-- `examples/smoke_gate_b_gt_1` — batch dimension > 1.
-- `examples/smoke_gate_qkv_bias` — separate Q/K/V bias tensors.
-- `examples/smoke_gate_q8_preserve` — Q8_0 weights stay Q8_0 (no silent
+- `prep/smokes/smoke_gate_b_gt_1` — batch dimension > 1.
+- `prep/smokes/smoke_gate_qkv_bias` — separate Q/K/V bias tensors.
+- `prep/smokes/smoke_gate_q8_preserve` — Q8_0 weights stay Q8_0 (no silent
   dequant-to-F32 on the realize path).
-- `examples/smoke_gate_llama3_tensor` — Llama-3 tensor layout.
+- `prep/smokes/smoke_gate_llama3_tensor` — Llama-3 tensor layout.
 
 **Runner / format gates:**
 
-- `examples/smoke_gguf_roundtrip` — GGUF write→read bit-identity.
-- `examples/smoke_decode_logprobs` — per-token logprob decode.
+- `prep/smokes/smoke_gguf_roundtrip` — GGUF write→read bit-identity.
+- `prep/smokes/smoke_decode_logprobs` — per-token logprob decode.
 
 Build and run any fixture directly, e.g.:
 
 ```
-make examples/smoke_recipe_from_scratch
-SEED=0 STEPS=5 ./examples/smoke_recipe_from_scratch | grep '^step'
+make prep/smokes/smoke_recipe_from_scratch
+SEED=0 STEPS=5 ./prep/smokes/smoke_recipe_from_scratch | grep '^step'
 ```
 
 ## Runner harnesses
