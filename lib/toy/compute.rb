@@ -71,6 +71,11 @@ require_relative "llm/adamw"
 require_relative "llm/labels"
 require_relative "llm/training_batch"
 
+# Run-bundle writer (toy#73 item 1): runs/<id>/events.jsonl in the toy/v1
+# schema + the weights/ checkpoint-dir convention. SHARED (not mirrored):
+# the events C symbols live in libtinynn_ggml.a, linked by every backend.
+require_relative "io/run_bundle"
+
 # ── Toy::Device — the device-agnostic construction seam (toy#64 item 8) ──
 #
 # DEVICE IS CHOSEN AT COMPILE TIME by which compute entry you require:

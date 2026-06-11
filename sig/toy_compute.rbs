@@ -62,6 +62,27 @@ module Toy
                                   Integer context, Integer batch) -> Mat
   end
 
+  # ---- RunBundle (lib/toy/io/run_bundle.rb) — toy/v1 bundle writer -------
+  # Truncate-opens runs/<id>/events.jsonl in the ctor; run_start!/step!/
+  # run_end! emit the toy/v1 events; weights_dir is the checkpoint home.
+  class RunBundle
+    attr_accessor rb_root:   String
+    attr_accessor rb_run_id: String
+    attr_accessor rb_dir:    String
+    attr_accessor rb_active: bool
+
+    def initialize: (String runs_root, String run_id) -> void
+    def active: () -> bool
+    def events_path: () -> String
+    def weights_dir: () -> String
+    def run_start!: (String arch, Integer vocab, Integer d_model,
+                     Integer n_layers, Integer context, Integer steps,
+                     Float lr, Integer seed) -> void
+    def step!: (Integer step, Float loss) -> void
+    def run_end!: (Integer final_step, Float final_loss) -> void
+    def self.json_escape: (String s) -> String
+  end
+
   # ---- Device (lib/toy/compute{,_cuda,_metal}.rb) ------------------------
   # The device-agnostic construction seam. ONLY `name` is declared:
   # the factory methods (llama_engine, gpt2_engine, from_scratch_recipe,

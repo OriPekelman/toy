@@ -346,11 +346,21 @@ shared `run_start` provenance — `host{}` + `backend{}` + `git{}` — is one ca
 object (`adamw.hp(step)`), not a hand-filled `Mat(1,7)`. All four are pure-Ruby
 (no FFI), Spinel-compiled, and shared across the CPU/CUDA/Metal runners.
 
+Compiled **library consumers** (anything riding `lib/toy/compute*.rb`)
+should not hand-roll the stream at all: `Toy::RunBundle`
+(`lib/toy/io/run_bundle.rb`, toy#73) owns the run-dir creation, the
+`run_start`/`step`/`run_end` JSON, and the sink. Its ctor opens
+`events.jsonl` via `tnn_events_open_trunc` (truncate, not append), so
+re-running with the same run id replaces the bundle instead of doubling
+it; `weights_dir` returns the `runs/<id>/weights/` checkpoint home.
+
 ## Producer guarantees
 
 1. `run_start` is written before any other event and flushed before
    compute begins.
-2. The file is opened `O_APPEND`. One run, one writer — concurrent
+2. The file is opened `O_APPEND` by the runners (`tnn_events_open`);
+   `Toy::RunBundle` opens with truncate (`tnn_events_open_trunc`) for
+   re-runnable consumer bundles. One run, one writer — concurrent
    writers to the same file are not supported.
 3. Each event is a complete line ending in `\n`; newlines inside strings
    are JSON-escaped.

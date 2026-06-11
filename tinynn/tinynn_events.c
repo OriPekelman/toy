@@ -19,16 +19,24 @@ static double monotonic_seconds(void) {
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1.0e9;
 }
 
-int tnn_events_open(const char *path) {
+static int events_open_mode(const char *path, const char *mode) {
     if (g_evt.out) return -1;
     if (!path)     return -2;
-    g_evt.out = fopen(path, "a");
+    g_evt.out = fopen(path, mode);
     if (!g_evt.out) return -3;
     /* Line-buffered so consumers tailing the file see new events
      * promptly — no waiting on a 4 KB stdio block boundary. */
     setvbuf(g_evt.out, NULL, _IOLBF, 0);
     g_evt.epoch_sec = monotonic_seconds();
     return 0;
+}
+
+int tnn_events_open(const char *path) {
+    return events_open_mode(path, "a");
+}
+
+int tnn_events_open_trunc(const char *path) {
+    return events_open_mode(path, "w");
 }
 
 void tnn_events_emit(const char *json_obj) {

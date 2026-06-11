@@ -802,7 +802,7 @@ example_train_from_scratch_blessed: examples/example_train_from_scratch_blessed
 # 01 — from-scratch on the bundled tiny corpus via the one-require
 # compute surface + the named value objects. THE showcase; the example
 # in docs/framework.md must stay truthful to this file.
-examples/example_01_train_tiny: examples/01_train_tiny.rb lib/toy/compute.rb lib/toy/io/toy_corpus_loader.rb lib/toy/llm/training_batch.rb lib/toy/llm/recipe_options.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+examples/example_01_train_tiny: examples/01_train_tiny.rb lib/toy/compute.rb lib/toy/io/toy_corpus_loader.rb lib/toy/io/run_bundle.rb lib/toy/llm/training_batch.rb lib/toy/llm/recipe_options.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 example_01: examples/example_01_train_tiny
 .PHONY: example_01

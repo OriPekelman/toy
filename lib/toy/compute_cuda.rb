@@ -59,6 +59,13 @@ require_relative "llm/adamw"
 require_relative "llm/labels"
 require_relative "llm/training_batch"
 
+# Run-bundle writer (toy#73 item 1): runs/<id>/events.jsonl in the toy/v1
+# schema + the weights/ checkpoint-dir convention. SHARED (not mirrored):
+# the events C symbols live in libtinynn_ggml.a, linked by every backend
+# (the CPU TinyNN module is defined in this binary too — see the
+# checkpoint-seam note above).
+require_relative "io/run_bundle"
+
 # ── Toy::Device, CUDA arm — see the compute.rb doc block. Same
 # surface, CUDA types; user source stays device-agnostic.
 module Toy

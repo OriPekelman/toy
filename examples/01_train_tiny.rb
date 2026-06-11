@@ -18,12 +18,13 @@
 #   SEED=1            a different random init
 #   RUN_ID=lr-01      label the runs/<RUN_ID>/ bundle (for 06's table)
 #
-# THE API (the whole story is five named objects — docs/framework.md):
+# THE API (the whole story is six named objects — docs/framework.md):
 #   Toy::SmolLM2Config.tiny      — the model shape (no 9-arg soup)
 #   Toy::LLM::RecipeOptions      — named realize-time options
 #   Toy::LLM::Recipes::FromScratch — realize!(cfg, opts) once, step! per step
 #   Toy::LLM::TrainingBatch      — validates each step's ids + labels
 #   Toy::AdamW.for_from_scratch  — the optimizer hyper-params, named
+#   Toy::RunBundle               — the runs/<id>/events.jsonl writer
 #
 # Everything compute rides ONE require (lib/toy/compute.rb). The corpus
 # streamer is the one extra: it lives outside the compute surface.
@@ -76,32 +77,11 @@ adamw.lr = LR
 
 # Run bundle: runs/<RUN_ID>/events.jsonl in the toy/v1 schema, the same
 # stream `toy train` writes — Toy::RunLog reads it back (06_runlog_compare).
-# Hand-rolled JSON lines: the SpinelKit JSON builder lives in vendor/
-# (a `make vendor-tep` artifact), and a tutorial should run on a fresh
-# clone — so we emit the three event kinds by string concat.
-TinyNN.tnn_filesystem_mkdir("runs")
-RUN_DIR = "runs/" + RUN_ID
-TinyNN.tnn_filesystem_mkdir(RUN_DIR)
-# The events sink APPENDS (and the FFI surface has no truncate), so a
-# re-run with the same RUN_ID would double the bundle — warn loud.
-if File.exist?(RUN_DIR + "/events.jsonl")
-  puts "warn: " + RUN_DIR + "/events.jsonl already exists — appending."
-  puts "      rm -r " + RUN_DIR + " (or set RUN_ID=) for a fresh bundle."
-end
-events_on = TinyNN.tnn_events_open(RUN_DIR + "/events.jsonl") == 0
-if events_on
-  TinyNN.tnn_events_emit("{\"kind\":\"run_start\",\"schema\":\"toy/v1\"," +
-    "\"run_id\":\"" + RUN_ID + "\",\"phase\":\"train\"," +
-    "\"model\":{\"arch\":\"llama\",\"vocab\":" + cfg.vocab.to_s +
-    ",\"d_model\":" + cfg.d_model.to_s +
-    ",\"n_layers\":" + cfg.n_layers.to_s + "}," +
-    "\"config\":{\"context\":" + cfg.ctx.to_s +
-    ",\"steps\":" + STEPS.to_s +
-    ",\"lr\":" + LR.to_s +
-    ",\"seed\":" + SEED.to_s + "}}")
-else
-  puts "warn: could not open " + RUN_DIR + "/events.jsonl (run bundle disabled)"
-end
+# Toy::RunBundle owns the dirs + the JSON + the sink, and TRUNCATES on
+# open, so a re-run with the same RUN_ID replaces the bundle.
+bundle = Toy::RunBundle.new("runs", RUN_ID)
+bundle.run_start!("llama", cfg.vocab, cfg.d_model, cfg.n_layers,
+                  cfg.ctx, STEPS, LR, SEED)
 
 # Train: stream context-sized windows off the corpus, one step each.
 first_loss  = 0.0
@@ -122,25 +102,19 @@ while step < STEPS
   end
   final_loss = loss
   puts "step " + (step + 1).to_s + ": loss=" + loss.to_s
-  if events_on
-    TinyNN.tnn_events_emit("{\"kind\":\"step\",\"step\":" + (step + 1).to_s +
-                           ",\"loss\":" + loss.to_s + "}")
-  end
+  bundle.step!(step + 1, loss)
   step = step + 1
 end
 
-if events_on
-  TinyNN.tnn_events_emit("{\"kind\":\"run_end\",\"reason\":\"completed\"," +
-    "\"final_step\":" + STEPS.to_s + ",\"final_loss\":" + final_loss.to_s + "}")
-  TinyNN.tnn_events_close
-end
+wrote_bundle = bundle.active
+bundle.run_end!(STEPS, final_loss)
 
 # The run-log summary.
 puts ""
 puts "run " + RUN_ID + ": " + STEPS.to_s + " steps, loss " +
      first_loss.to_s + " -> " + final_loss.to_s
-if events_on
-  puts "bundle: " + RUN_DIR + "/events.jsonl  (toy/v1 events)"
+if wrote_bundle
+  puts "bundle: " + bundle.events_path + "  (toy/v1 events)"
   puts "inspect from plain Ruby:  ruby examples/06_runlog_compare.rb"
 end
 if final_loss < first_loss
