@@ -68,6 +68,18 @@ class ToyLMMetal
       kv.enable_flash_attn!
     end
 
+    if flags.qk_norm
+      # #76, fail loud (never mask): Metal only has the copy-load path
+      # (realize_for), which has no QK-norm support — the gamma tensors
+      # are only allocated on the mmap path. Decoding a QK-norm model
+      # (Qwen3 / OLMoE) here would be silently degenerate, exactly the
+      # CUDA #76 failure mode. Abort until a Metal mmap/QK-norm path
+      # exists.
+      puts "ToyLMMetal.load: " + path + " needs QK-norm, which the " +
+           "Metal copy-load path cannot apply (no mmap path on Metal " +
+           "yet, issue #2). Aborting rather than decode degenerate."
+      exit 1
+    end
     kv.realize_for(@max_T, cfg.d_model, cfg.d_ff, cfg.n_heads, cfg.n_kv,
                    cfg.n_layers, cfg.vocab, cfg.rope_base, cfg.rms_eps,
                    flags.untied, flags.qkv_bias)

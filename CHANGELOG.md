@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Fixed #76: Qwen3 CUDA F32 degenerate decode.** The hand-written CUDA
+  loader (`transformer_lm_cuda.rb`) never wired the detected QK-norm flags
+  into the engine — it called `realize_for_mmap` with 5 of 6 args (Spinel
+  zero-fills missing call args silently), so Qwen3's per-head Q/K RMS-norms
+  were never built on the CUDA graph. Now wired identically to the CPU
+  loader; Qwen3-0.6B/1.7B CUDA decode is token-identical to CPU and
+  `docs/models.md` rows are restored ✓. Also: `NO_QK_NORM=1` actually
+  disables the norm now (it was overwritten by `realize_for_mmap`), and
+  loading a QK-norm model through the legacy (non-`toy.ggml_native`)
+  copy-load path fails loud instead of decoding silently degenerate.
+
 - **The `toy` gem name is ours.** With huge thanks to **Ninoslav Milenović**,
   who graciously transferred ownership of the [`toy`](https://rubygems.org/gems/toy)
   gem on RubyGems. See the README acknowledgments. (Not released yet — name

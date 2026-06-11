@@ -115,8 +115,13 @@ class ToyLM
     # ([d_model] per-head packed; per-head sliced gamma).
     kv.qk_norm_kind = flags.qk_norm_kind
     # NO_QK_NORM=1 turns the norm off entirely as a diagnostic.
+    # #76: the old form (kv.has_qk_norm = false) was ineffective on
+    # the mmap path — realize_for_mmap overwrites @has_qk_norm from
+    # its qk_norm parameter. Carry the override in a local instead
+    # and pass it to realize_for_mmap below.
+    qk_norm_on = flags.qk_norm
     if (ENV["NO_QK_NORM"] || "") == "1"
-      kv.has_qk_norm  = false
+      qk_norm_on = false
       kv.qk_norm_kind = 0
     end
     # #113: Gemma 2 extras. All inert by default — non-Gemma callers
@@ -140,9 +145,18 @@ class ToyLM
       # tensors stay quantized; matmul kernels read them in place.
       kv.set_weight_type(wtype)
       @gguf_handle = TinyNN.tnn_gguf_load(path)
-      kv.realize_for_mmap(@gguf_handle, cfg, @max_T, flags.untied, flags.qkv_bias, flags.qk_norm)
+      kv.realize_for_mmap(@gguf_handle, cfg, @max_T, flags.untied, flags.qkv_bias, qk_norm_on)
       kv.swa_window = flags.swa_window
     else
+      if qk_norm_on
+        # #76, fail loud (never mask): realize_for has no QK-norm
+        # support — the gamma tensors are only allocated on the mmap
+        # path, so decode here would be silently degenerate.
+        puts "ToyLM.load_cpu: " + path + " needs QK-norm but is not in " +
+             "toy.ggml_native layout; the legacy copy-load path cannot " +
+             "apply QK-norm. Re-convert with --ggml-native. Aborting."
+        exit 1
+      end
       # Legacy layout: dequantize-to-F32 on copy. The
       # tnn_gguf_copy_head_slice_to_persistent helper writes F32 bytes
       # into the dst, so dst tensors must be F32-typed — there's no

@@ -65,11 +65,37 @@ class ToyLMCuda
     if (ENV["FLASH_ATTN"] || "") == "1"
       kv.enable_flash_attn!
     end
+    # #76 fix: wire QK-norm through to the engine, parity with
+    # load_cpu in lib/toy/models/transformer_lm.rb. This call site
+    # previously passed only 5 of realize_for_mmap's 6 args; Spinel
+    # zero-fills missing call args WITHOUT a diagnostic, so qk_norm
+    # arrived as false and Qwen3's per-head Q/K RMS-norms were never
+    # built on CUDA → degenerate decode (CPU was coherent).
+    # 1 = Qwen3-style ([d_head] shared), 2 = OLMoE/Granite-style
+    # ([d_model] packed, per-head sliced gamma). Must be set BEFORE
+    # realize_for_mmap.
+    kv.qk_norm_kind = flags.qk_norm_kind
+    qk_norm_on = flags.qk_norm
+    # NO_QK_NORM=1 turns the norm off entirely as a diagnostic
+    # (same env knob as the CPU loader).
+    if (ENV["NO_QK_NORM"] || "") == "1"
+      qk_norm_on = false
+      kv.qk_norm_kind = 0
+    end
 
     if is_native
       @gguf_handle = TinyNNCuda.tnn_gguf_load(path)
-      kv.realize_for_mmap(@gguf_handle, cfg, @max_T, flags.untied, flags.qkv_bias)
+      kv.realize_for_mmap(@gguf_handle, cfg, @max_T, flags.untied, flags.qkv_bias, qk_norm_on)
     else
+      if qk_norm_on
+        # Fail loud (never mask): the legacy copy-load path has no
+        # QK-norm support — realize_for can't allocate the gamma
+        # tensors, so decode would be silently degenerate.
+        puts "ToyLMCuda.load: " + path + " needs QK-norm but is not in " +
+             "toy.ggml_native layout; the legacy copy-load path cannot " +
+             "apply QK-norm. Re-convert with --ggml-native. Aborting."
+        exit 1
+      end
       kv.realize_for(@max_T, cfg.d_model, cfg.d_ff, cfg.n_heads, cfg.n_kv,
                      cfg.n_layers, cfg.vocab, cfg.rope_base, cfg.rms_eps,
                      flags.untied, flags.qkv_bias)
