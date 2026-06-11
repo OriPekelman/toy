@@ -400,6 +400,12 @@ gate-full-finetune:
 gate-mixed-precision:
 	ruby prep/mixed_precision_gate.rb
 
+# toy#64 item 6 — Toy::RunLog unit gate (CRuby-only, no Spinel build).
+# Self-contained synthetic fixture + integration sniff of repo runs/.
+.PHONY: gate-run-log
+gate-run-log:
+	ruby prep/run_log_gate.rb
+
 # toy#42 full-API require gate. Builds examples/smoke_compute_surface (which
 # requires ONLY lib/toy/compute.rb) and asserts it realizes a live engine —
 # proving the one-require compute surface co-compiles + works for a library
