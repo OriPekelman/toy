@@ -65,11 +65,26 @@ require_relative "llm/recipes/vit_tiny"
 require_relative "io/gguf_load"
 require_relative "io/tokenizer"
 
+# Training I/O + schedule (toy#73 item 2): the streaming token-corpus
+# loader, the ViT image/label loader, and the cosine LR schedule. The
+# loaders are plain file I/O through C helpers in libtinynn_ggml.a
+# (backend-agnostic; every backend links it) and ToyLR is pure Ruby, so
+# all three are SHARED across the CPU/CUDA/Metal entries — no mirrors.
+require_relative "io/toy_corpus_loader"
+require_relative "io/toy_image_loader"
+require_relative "train/toy_lr_schedule"
+
 # AdamW hyper-parameter value object + training labels (used when driving
 # build_training_step directly) + the validating per-step batch wrapper.
 require_relative "llm/adamw"
 require_relative "llm/labels"
 require_relative "llm/training_batch"
+require_relative "llm/classify_batch"
+
+# Run-bundle writer (toy#73 item 1): runs/<id>/events.jsonl in the toy/v1
+# schema + the weights/ checkpoint-dir convention. SHARED (not mirrored):
+# the events C symbols live in libtinynn_ggml.a, linked by every backend.
+require_relative "io/run_bundle"
 
 # ── Toy::Device — the device-agnostic construction seam (toy#64 item 8) ──
 #

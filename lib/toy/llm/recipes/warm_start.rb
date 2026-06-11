@@ -23,18 +23,20 @@
 # INIT=scratch (09's default) skips it entirely and trains from the
 # random init, which is what reproduces 09's scratch loss curve.
 #
-# Experiment concerns stay in the FIXTURE (lib-vs-example scope): the
-# GGUF open / dim-check / find_index / read / free (09 L151-181) and the
-# PCA-lens W_proj read+upload (09 L188-229) are experiment-specific. The
-# recipe exposes @ws_cache.sess + the t_seq_token_embed / t_seq_w_proj
-# public delegators (llama_seq_forward_ffi.rb:81-88) for the fixture to
-# upload through; realize_warm! is the mechanism ONLY — it takes the
-# ALREADY-READ donor float buffer + its length and performs the single
-# tnn_upload_from_float_array (mirrors 09 L180). The cosine LR schedule
-# and corpus streaming likewise live in the fixture; the per-step LR
-# enters ONLY via the caller mutating m_hp.flat[0] before step! — there
-# is deliberately NO lr param on step! (would diverge from the siblings
-# and move schedule logic into the recipe).
+# Since toy#73 item 4 realize_warm! OWNS the donor plumbing (the GGUF
+# open / width dim-check / find_index / read / upload / free that every
+# consumer hand-rolled, ~25 lines each): realize_warm!(path, cfg) does
+# the whole read and fails NAMED+LOUD on every mismatch; the class
+# method donor_embed_width(path) is the pre-realize half (cfg.donor_d_in
+# must carry the donor width BEFORE realize_scratch! sizes the lens).
+# The raw upload mechanism survives as upload_donor!(buf, n) for
+# already-read buffers. Still caller-side (lib-vs-example scope): the
+# PCA-lens W_proj read+upload (09 L188-229) through @ws_cache.sess +
+# the t_seq_w_proj delegator, the cosine LR schedule, and the corpus
+# streaming; the per-step LR enters ONLY via the caller mutating
+# m_hp.flat[0] before step! — there is deliberately NO lr param on
+# step! (would diverge from the siblings and move schedule logic into
+# the recipe).
 #
 # Spinel hygiene: NEVER Struct.new (landmine #16 / matz/spinel#1043) —
 # hand-written plain class, explicit no-arg ctor, NO default-arg ctor
@@ -91,17 +93,98 @@ module Toy; module LLM; module Recipes
       nil
     end
 
-    # OPTIONAL: upload an already-read donor embedding into the realize'd
-    # token_embed table. Mechanism ONLY — mirrors 09 L180. The caller
-    # (fixture) owns the GGUF open / dim-check / find_index / read / free
-    # (09 L151-181) and passes the resulting flat float buffer + its
-    # length. Must be called AFTER realize_scratch! (the tensor exists)
-    # and BEFORE build! (else we train through the random init). The PCA
-    # lens W_proj upload (09 L188-229) is performed by the fixture
-    # directly through @ws_cache.sess + the t_seq_w_proj delegator — the
-    # recipe does not wrap it (same lib-vs-example rationale). INIT=scratch
-    # skips this method entirely (matches 09 default). Returns nil.
-    def realize_warm!(donor_buf_flat, n_floats)
+    # Read the donor's embedding width (llama.embedding_length) from a
+    # GGUF path — the value the caller must put in cfg.donor_d_in
+    # BEFORE realize_scratch! (the projection lens is sized
+    # donor_d_in x d_model at realize time, so the recipe cannot learn
+    # it later). FAILS LOUD on a missing/corrupt donor or a
+    # non-llama-family GGUF. (toy#73 item 4 — the read half of the
+    # donor plumbing realize_warm! owns.)
+    def self.donor_embed_width(donor_gguf_path)
+      if !File.exist?(donor_gguf_path)
+        raise "WarmStart.donor_embed_width: donor GGUF not found: " +
+              donor_gguf_path
+      end
+      ggh = TinyNN.tnn_gguf_load(donor_gguf_path)
+      if ggh == nil || ggh == TinyNN.tnn_null_ptr
+        raise "WarmStart.donor_embed_width: failed to open " +
+              donor_gguf_path + " (not a GGUF?)"
+      end
+      donor_d = TinyNN.tnn_gguf_get_u32(ggh, "llama.embedding_length")
+      TinyNN.tnn_gguf_free(ggh)
+      if donor_d <= 0
+        raise "WarmStart.donor_embed_width: donor has no " +
+              "llama.embedding_length key — not llama-family? (" +
+              donor_gguf_path + ")"
+      end
+      donor_d
+    end
+
+    # OPTIONAL: warm the realize'd embed table from a donor GGUF. Owns
+    # the WHOLE donor read (toy#73 item 4 — was ~25 lines of bare GGUF
+    # plumbing in every consumer): open, re-read llama.embedding_length
+    # and DIM-CHECK it against cfg.donor_d_in (the width the lens was
+    # realized at — a mismatch would silently upload garbage through
+    # the wrong stride), find token_embd.weight, read the first
+    # cfg.vocab rows, upload through upload_donor!, free. Every failure
+    # raises NAMED + LOUD (which tensor, expected vs got, which path).
+    # Must be called AFTER realize_scratch! (the tensor exists) and
+    # BEFORE build! (else we train through the random init).
+    # INIT=scratch flows skip this method entirely. Returns nil.
+    def realize_warm!(donor_gguf_path, cfg)
+      if !File.exist?(donor_gguf_path)
+        raise "WarmStart#realize_warm!: donor GGUF not found: " +
+              donor_gguf_path
+      end
+      ggh = TinyNN.tnn_gguf_load(donor_gguf_path)
+      if ggh == nil || ggh == TinyNN.tnn_null_ptr
+        raise "WarmStart#realize_warm!: failed to open " +
+              donor_gguf_path + " (not a GGUF?)"
+      end
+      donor_d = TinyNN.tnn_gguf_get_u32(ggh, "llama.embedding_length")
+      if donor_d <= 0
+        TinyNN.tnn_gguf_free(ggh)
+        raise "WarmStart#realize_warm!: donor has no " +
+              "llama.embedding_length key — not llama-family? (" +
+              donor_gguf_path + ")"
+      end
+      if donor_d != cfg.donor_d_in
+        TinyNN.tnn_gguf_free(ggh)
+        raise "WarmStart#realize_warm!: token_embd.weight width " +
+              "mismatch: expected donor_d_in=" + cfg.donor_d_in.to_s +
+              " (the width realize_scratch! sized the lens at) but " +
+              "donor llama.embedding_length=" + donor_d.to_s + " (" +
+              donor_gguf_path + ")"
+      end
+      te_idx = TinyNN.tnn_gguf_find_index(ggh, "token_embd.weight")
+      if te_idx < 0
+        TinyNN.tnn_gguf_free(ggh)
+        raise "WarmStart#realize_warm!: donor has no " +
+              "token_embd.weight tensor (" + donor_gguf_path + ")"
+      end
+      n_floats = cfg.vocab * donor_d
+      te_buf = Mat.new(1, n_floats)
+      rc = TinyNN.tnn_gguf_read_f32_to_doubles(ggh, te_idx,
+                                               te_buf.flat, n_floats)
+      if rc != 0
+        TinyNN.tnn_gguf_free(ggh)
+        raise "WarmStart#realize_warm!: token_embd.weight read failed " +
+              "rc=" + rc.to_s + " — wanted " + n_floats.to_s +
+              " floats (vocab " + cfg.vocab.to_s + " x donor_d " +
+              donor_d.to_s + ") from " + donor_gguf_path
+      end
+      upload_donor!(te_buf.flat, n_floats)
+      TinyNN.tnn_gguf_free(ggh)
+      nil
+    end
+
+    # The raw upload MECHANISM realize_warm! rides (and the seam for
+    # already-read buffers — e.g. the legacy PCA-lens flow): one
+    # tnn_upload_from_float_array into the realize'd token_embed table
+    # (mirrors 09 L180). Same window rules as realize_warm!. The PCA
+    # lens W_proj upload (09 L188-229) stays caller-side through
+    # @ws_cache.sess + the t_seq_w_proj delegator. Returns nil.
+    def upload_donor!(donor_buf_flat, n_floats)
       TinyNN.tnn_upload_from_float_array(@ws_cache.sess,
                                          @ws_cache.t_seq_token_embed,
                                          donor_buf_flat, n_floats)

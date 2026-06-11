@@ -49,10 +49,27 @@ require_relative "llm/recipes/from_scratch_metal"
 require_relative "io/gguf_load"
 require_relative "io/tokenizer"
 
+# Training I/O + schedule (toy#73 item 2): corpus loader + image loader +
+# cosine LR schedule. SHARED with the CPU entry (file I/O through C helpers
+# in libtinynn_ggml.a + pure Ruby) — see compute.rb's note. The image
+# loader rides along even though vit training stays CPU-only this arc
+# (the loader is backend-free; the missing piece is the engine/recipe).
+require_relative "io/toy_corpus_loader"
+require_relative "io/toy_image_loader"
+require_relative "train/toy_lr_schedule"
+
 # AdamW + labels + the validating batch wrapper (shared, pure Ruby).
 require_relative "llm/adamw"
 require_relative "llm/labels"
 require_relative "llm/training_batch"
+require_relative "llm/classify_batch"
+
+# Run-bundle writer (toy#73 item 1): runs/<id>/events.jsonl in the toy/v1
+# schema + the weights/ checkpoint-dir convention. SHARED (not mirrored):
+# the events C symbols live in libtinynn_ggml.a, linked by every backend
+# (the CPU TinyNN module is defined in this binary too — see the
+# checkpoint-seam note above).
+require_relative "io/run_bundle"
 
 # ── Toy::Device, Metal arm — see the compute.rb doc block. NOTE: no
 # warm_start_recipe here (no Metal recipe exists); a device-agnostic

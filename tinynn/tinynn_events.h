@@ -42,6 +42,12 @@ extern "C" {
  * on failure (-1 already open, -2 null path, -3 fopen failed). */
 int     tnn_events_open(const char *path);
 
+/* Same as tnn_events_open but TRUNCATES an existing file ("w" vs
+ * "a"). The fresh-bundle opener for re-runnable run dirs
+ * (Toy::RunBundle, toy#73): re-running with the same run_id replaces
+ * the bundle instead of doubling it. Same return codes as open. */
+int     tnn_events_open_trunc(const char *path);
+
 /* Append a single JSON event followed by `\n`. The string MUST be a
  * complete, well-formed JSON object — we do not validate. When the
  * file isn't open, this is a single load + branch (no-op). */

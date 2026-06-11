@@ -179,6 +179,9 @@ module TinyNNMetal
   # train_metal.rb's events/provenance + run_start/step/run_end stream needs
   # all nine. (cuda twin: lib/toy/ffi/tinynn_cuda.rb:188-197.)
   ffi_func :tnn_events_open,          [:str],                       :int
+  # Truncate-open ("w" not "a"): the fresh-bundle opener (Toy::RunBundle,
+  # toy#73) — a re-run with the same run_id replaces the bundle.
+  ffi_func :tnn_events_open_trunc,    [:str],                       :int
   ffi_func :tnn_events_emit,          [:str],                       :void
   ffi_func :tnn_events_close,         [],                           :void
   ffi_func :tnn_events_active,        [],                           :int

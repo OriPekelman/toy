@@ -52,14 +52,42 @@ module Toy
     # step is the caller's 1-indexed step; ignored when bias_correct
     # is false. Returns the Mat(1,7) handed to the recipes' step!.
     def hp: (Integer step) -> Mat
+    # Mode-aware builder: takes the 0-INDEXED loop step; applies lora's
+    # 1-indexed t internally (hp_for_step(k) == hp(k+1) in MODE_LORA).
+    def hp_for_step: (Integer step) -> Mat
   end
 
-  # ---- Labels (lib/toy/llm/labels.rb) — shift-by-one one-hot builders ----
+  # ---- Labels (lib/toy/llm/labels.rb) — one-hot label builders -----------
   module Labels
     def self.next_token:         (Array[Integer] seq_ids, Integer vocab,
                                   Integer context, Integer batch) -> Mat
     def self.next_token_guarded: (Array[Integer] seq_ids, Integer vocab,
                                   Integer context, Integer batch) -> Mat
+    # toy#73 item 3 — the two non-shift-by-one objectives.
+    def self.fixed_target:  (Integer vocab, Integer context,
+                             Integer target_id) -> Mat
+    def self.one_hot_class: (Integer num_classes, Integer label) -> Mat
+  end
+
+  # ---- RunBundle (lib/toy/io/run_bundle.rb) — toy/v1 bundle writer -------
+  # Truncate-opens runs/<id>/events.jsonl in the ctor; run_start!/step!/
+  # run_end! emit the toy/v1 events; weights_dir is the checkpoint home.
+  class RunBundle
+    attr_accessor rb_root:   String
+    attr_accessor rb_run_id: String
+    attr_accessor rb_dir:    String
+    attr_accessor rb_active: bool
+
+    def initialize: (String runs_root, String run_id) -> void
+    def active: () -> bool
+    def events_path: () -> String
+    def weights_dir: () -> String
+    def run_start!: (String arch, Integer vocab, Integer d_model,
+                     Integer n_layers, Integer context, Integer steps,
+                     Float lr, Integer seed) -> void
+    def step!: (Integer step, Float loss) -> void
+    def run_end!: (Integer final_step, Float final_loss) -> void
+    def self.json_escape: (String s) -> String
   end
 
   # ---- Device (lib/toy/compute{,_cuda,_metal}.rb) ------------------------
@@ -109,6 +137,27 @@ module Toy
 
       def initialize: (Integer vocab, Integer context, Integer batch_size) -> void
       def fill!: (Array[Integer] new_seq_ids) -> void
+      # toy#73 item 3 — fixed-target objective (every position targets
+      # target_id; the lora-smoke shape).
+      def fill_fixed_target!: (Array[Integer] new_seq_ids,
+                               Integer target_id) -> void
+    end
+
+    # ---- ClassifyBatch (lib/toy/llm/classify_batch.rb) -------------------
+    # Image-classification sibling of TrainingBatch (toy#73 item 3):
+    # validates one (patches, label) record per fill!.
+    class ClassifyBatch
+      attr_accessor cb_classes:    Integer
+      attr_accessor cb_patch_flat: Integer
+      attr_accessor cb_n_patches:  Integer
+      attr_accessor image:         Mat
+      attr_accessor cls_idx:       Array[Integer]
+      attr_accessor labels:        Mat
+      attr_accessor hp:            Mat
+
+      def initialize: (Integer num_classes, Integer patch_flat,
+                       Integer n_patches) -> void
+      def fill!: (Array[Float] patches, Integer label) -> void
     end
 
     # ======================================================================
@@ -136,9 +185,14 @@ module Toy
         attr_accessor ws_step_index: Integer
 
         def initialize: () -> void
+        # The pre-realize half of the donor plumbing (toy#73 item 4):
+        # the width cfg.donor_d_in must carry before realize_scratch!.
+        def self.donor_embed_width: (String donor_gguf_path) -> Integer
         def realize_scratch!: (Toy::SmolLM2Config cfg, Toy::LLM::RecipeOptions opts) -> void
-        # donor_buf_flat is the ALREADY-READ flat donor embedding.
-        def realize_warm!: (Array[Float] donor_buf_flat, Integer n_floats) -> void
+        # Owns the donor GGUF read + dim-check + upload (toy#73 item 4).
+        def realize_warm!: (String donor_gguf_path, Toy::SmolLM2Config cfg) -> void
+        # The raw upload seam for ALREADY-READ buffers (PCA-lens flow).
+        def upload_donor!: (Array[Float] donor_buf_flat, Integer n_floats) -> void
         def build!: () -> void
         def step!: (Array[Integer] seq_ids, Array[Integer] positions,
                     Mat m_labels, Mat m_hp, bool is_first) -> Float
@@ -354,4 +408,28 @@ module GGUFLoad
 
   def self.detect_smollm2_flags: (String path) -> GGUFLoad::SmolLM2Flags
   def self.detect_weight_type: (String path) -> Integer
+end
+
+# ============================================================================
+# Training I/O + LR schedule (toy#73 item 2) — folded into the compute
+# entries; top-level modules, ptr-free.
+# ============================================================================
+# ---- ToyLR (lib/toy/train/toy_lr_schedule.rb) ------------------------------
+module ToyLR
+  def self.cosine: (Integer step, Integer n_steps, Float lr_max,
+                    Float lr_min, Integer warmup_steps) -> Float
+  def self.constant: (Integer step, Float lr) -> Float
+end
+
+# ---- ToyCorpusLoader (lib/toy/io/toy_corpus_loader.rb) ---------------------
+module ToyCorpusLoader
+  def self.read_seq: (String path, Integer byte_offset,
+                      Integer n_tokens) -> Array[Integer]
+end
+
+# ---- ToyImageLoader (lib/toy/io/toy_image_loader.rb) -----------------------
+module ToyImageLoader
+  def self.read_image: (String images_path, Integer image_idx,
+                        Integer record_floats) -> Array[Float]
+  def self.read_label: (String labels_path, Integer image_idx) -> Integer
 end

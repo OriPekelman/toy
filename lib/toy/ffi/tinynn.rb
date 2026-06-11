@@ -451,6 +451,9 @@ module TinyNN
   # docs/events-schema.md. One file per run, line-buffered, opt-in
   # via the caller passing a path (typically from ENV["TOY_EVENTS"]).
   ffi_func :tnn_events_open,          [:str],                   :int
+  # Truncate-open ("w" not "a"): the fresh-bundle opener (Toy::RunBundle,
+  # toy#73) — a re-run with the same run_id replaces the bundle.
+  ffi_func :tnn_events_open_trunc,    [:str],                   :int
   ffi_func :tnn_events_emit,          [:str],                   :void
   ffi_func :tnn_events_close,         [],                       :void
   ffi_func :tnn_events_active,        [],                       :int

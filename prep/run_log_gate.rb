@@ -123,6 +123,45 @@ Dir.mktmpdir("toy_run_log_gate") do |root|
   end
 end
 
+# Toy::RunBundle round-trip (toy#73 item 1): run the compiled example 01
+# (which writes its bundle through Toy::RunBundle) twice with the same
+# RUN_ID and assert (a) RunLog parses the bundle, (b) the second run
+# REPLACED the first (tnn_events_open_trunc — no doubled events). Needs
+# the Spinel-built binary; SKIPs loudly when absent (CRuby-only envs).
+example_bin = File.expand_path("../examples/example_01_train_tiny", __dir__)
+if File.executable?(example_bin)
+  require "open3"
+  rt_id  = "run-log-gate-roundtrip"
+  rt_dir = File.expand_path("../runs/#{rt_id}", __dir__)
+  rt_env = { "RUN_ID" => rt_id, "STEPS" => "3" }
+  root   = File.expand_path("..", __dir__)
+  out1, st1 = Open3.capture2e(rt_env, example_bin, chdir: root)
+  out2, st2 = Open3.capture2e(rt_env, example_bin, chdir: root)
+  check("round-trip: example 01 (RunBundle) runs") do
+    unless st1.success? && st2.success?
+      puts out1 unless st1.success?
+      puts out2 unless st2.success?
+    end
+    st1.success? && st2.success?
+  end
+  check("round-trip: RunLog parses the RunBundle bundle") do
+    log = Toy::RunLog.open(rt_dir)
+    log.run_id == rt_id &&
+      log.config["schema"] == "toy/v1" &&
+      log.config["model"]["arch"] == "llama" &&
+      log.config["config"]["steps"] == 3 &&
+      log.loss_curve.length == 3 &&
+      log.final_loss.is_a?(Float)
+  end
+  check("round-trip: re-run TRUNCATES (3 steps, not 6)") do
+    Toy::RunLog.open(rt_dir).steps.length == 3
+  end
+  FileUtils.rm_rf(rt_dir)
+else
+  puts "  SKIP: examples/example_01_train_tiny not built — RunBundle " \
+       "round-trip not exercised (run `make example_01` first)"
+end
+
 # Integration sniff against real train-gate bundles, when present.
 repo_runs = File.expand_path("../runs", __dir__)
 if Dir.exist?(repo_runs) &&

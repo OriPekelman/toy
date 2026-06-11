@@ -24,16 +24,11 @@
 # THE API — Toy::LLM::Recipes::LoRA:
 #   realize!(gguf, cfg, rank, opts)  — mmap base + attach rank-R adapters
 #   step!(ids, pos, labels, hp, is_first) — same contract as the siblings
-# NOTE: LoRA is required DIRECTLY (not part of the one-require
-# toy/compute surface yet — Spinel constructor-slot inference, toy#52).
+# LoRA rides the one-require compute surface like its siblings (re-added
+# by toy#52 once the toy#64 reshape dissolved the spinel-dev#12 facet).
 # The CLI form of this example is `toy train lora`.
 
-require_relative "../lib/toy"
-require_relative "../lib/toy/models/toy_smollm2"
-require_relative "../lib/toy/io/loaders/toy_smollm2_loader"
-require_relative "../lib/toy/llm/engine/llama_seq_engine"
-require_relative "../lib/toy/llm/adamw"
-require_relative "../lib/toy/llm/recipes/lora"
+require_relative "../lib/toy/compute"
 
 GGUF      = ENV["GGUF"]  || "data/smollm2-135m-native.gguf"
 RANK      = (ENV["RANK"]  || "8").to_i
@@ -79,40 +74,29 @@ opts.init_scale = 0.01
 recipe.realize!(gguf, cfg, RANK, opts)
 puts "realize OK (base mmap'd, adapters attached)"
 
-# One-hot labels: every position targets TARGET_ID. (A custom objective
-# like this is hand-built — Toy::Labels/TrainingBatch model the
-# next-token objective only.)
-m_labels = Mat.new(TOKENS.length, cfg.vocab)
-i = 0
-while i < TOKENS.length * cfg.vocab
-  m_labels.flat[i] = 0.0
-  i = i + 1
-end
-ti = 0
-while ti < TOKENS.length
-  m_labels.flat[ti * cfg.vocab + TARGET_ID] = 1.0
-  ti = ti + 1
-end
+# The validating batch, fixed-target objective: every position targets
+# TARGET_ID (out-of-vocab ids or target fail loud, not mid-graph). The
+# prompt is constant, so one fill before the loop covers every step.
+batch = Toy::LLM::TrainingBatch.new(cfg.vocab, TOKENS.length, 1)
+batch.fill_fixed_target!(TOKENS, TARGET_ID)
 
 # LoRA's AdamW convention differs from from-scratch: beta2=0.999 and
-# PER-STEP bias correction (slots 5/6 of hp carry the correction
-# denominators, not the betas) — hence hp is rebuilt every step.
+# PER-STEP bias correction. hp_for_step knows that: it takes the plain
+# 0-indexed loop step and applies the lora 1-indexed t internally.
 adamw = Toy::AdamW.for_lora
 adamw.lr = LR
 
-positions = [0, 1, 2, 3]
-
 first_loss = 0.0
 final_loss = 0.0
-step = 1
-while step <= STEPS
-  m_hp = adamw.hp(step)                  # 1-indexed for bias correction
-  loss = recipe.step!(TOKENS, positions, m_labels, m_hp, step == 1)
-  if step == 1
+step = 0
+while step < STEPS
+  loss = recipe.step!(batch.seq_ids, batch.positions, batch.labels,
+                      adamw.hp_for_step(step), step == 0)
+  if step == 0
     first_loss = loss
   end
   final_loss = loss
-  puts "step " + step.to_s + ": loss=" + loss.to_s
+  puts "step " + (step + 1).to_s + ": loss=" + loss.to_s
   step = step + 1
 end
 
