@@ -37,10 +37,10 @@ Two distinctions that should not be conflated:
 
 | Axis | What it specifies |
 | --- | --- |
-| **Card layer** | Granularity of the IR — how big a unit is. Primitive / Block / Arch / Recipe. |
+| **Card layer** | Granularity of the IR — how big a unit is. Primitive / Block / Arch / Engine / Recipe. |
 | **Kind slot** | Role of the unit in a workflow — what it does. Arch / Trainer / Decoder / Eval / Server / DataSpec. |
 
-A Recipe (Layer 4) might be "from-scratch trainer + Llama arch +
+A Recipe (Layer 5) might be "from-scratch trainer + Llama arch +
 TinyStories dataset" — composing one of each Kind. An `RMSNorm`
 (Layer 1) is also of a Kind (an Arch-side primitive). Layers describe
 *size*; Kinds describe *role*.
@@ -51,7 +51,7 @@ derives the Card by walking the runtime compute graph
 (`lib/toy/dev/toy_describe_flow.rb`, leveraged by `lib/toy/dev/toy_card.rb`). No
 hand-written step descriptions to drift from the code.
 
-## The five Card layers (granularity)
+## The six Card layers (granularity)
 
 A Card exists at every level; same IR type, layered composition. Each
 unit is one file under `lib/toy/llm/`. Layer N composes Layer N-1.
@@ -61,7 +61,21 @@ unit is one file under `lib/toy/llm/`. Layer N composes Layer N-1.
 | **L1 Primitive** | A single named op | `primitives/{rope,swiglu,rms_norm,gqa}.rb` | Implementation of one op |
 | **L2 Block** | One state-threading unit | `blocks/transformer_block.rb` | Which primitives, with what cfg |
 | **L3 Arch** | Stack of blocks + embedding + head | `archs/llama_arch.rb` | Block count, per-layer overrides, embedding/head choice |
-| **L4 Recipe** | A training plan (one or more stages) | `recipes/{from_scratch,lora,warm_start}.rb` | Stage sequence, optimizer, schedule, dataset progression |
+| **L4 Engine** | A realized session: graph + weights + step/decode driver | `engine/{llama_seq_engine,llama_kv_engine,gpt2_seq_engine,vit_tiny_engine}.rb` | Execution mode (seq-train vs KV-decode), weight residency, backend session |
+| **L5 Recipe** | A training plan (one or more stages) | `recipes/{from_scratch,lora,warm_start,vit_tiny}.rb` | Stage sequence, optimizer, schedule, dataset progression |
+
+The Engine is the layer the L1–L3 units realize *into*: it owns the FFI
+session, allocates the persistent tensors, builds the forward (and, for
+training, backward + AdamW) graph by calling down into Arch/Block/
+Primitive code, and exposes the flat step/decode surface that Recipes
+(and the serve/infer runners) drive. Engines are deliberately plain
+classes with no taxonomy of their own — one engine per execution shape:
+
+- `llama_seq_engine.rb` — seq-mode forward + training + LoRA (the
+  retired monolith).
+- `llama_kv_engine.rb` — KV-cache decode (was `lib/toy_smollm2_ffi_kv.rb`).
+- `gpt2_seq_engine.rb` — GPT-2 from-scratch training (self-contained).
+- `vit_tiny_engine.rb` — ViT-tiny training.
 
 The exact tree (verified):
 
@@ -70,7 +84,11 @@ lib/toy/llm/
 ├── primitives/   rope.rb  swiglu.rb  rms_norm.rb  gqa.rb   (+ _cuda / _metal mirrors)
 ├── blocks/       transformer_block.rb                      (+ _cuda / _metal mirrors)
 ├── archs/        llama_arch.rb                             (+ _cuda / _metal mirrors)
-└── recipes/      from_scratch.rb  lora.rb  warm_start.rb   (CPU-only)
+├── engine/       llama_seq_engine.rb  llama_kv_engine.rb
+│                 gpt2_seq_engine.rb  vit_tiny_engine.rb    (+ _cuda / _metal mirrors;
+│                                                            vit_tiny_engine is CPU-only)
+└── recipes/      from_scratch.rb  lora.rb  warm_start.rb   (+ _cuda / _metal mirrors)
+                  vit_tiny.rb                               (CPU-only)
 ```
 
 **Recipes include curriculum.** A Recipe is a training plan: one stage
@@ -88,9 +106,9 @@ common case; multi-stage curricula are a strict superset.
 > Trainer/DataSpec/Eval taxonomy is deferred to the multi-stage
 > recipes. See [`roadmap.md`](roadmap.md).
 
-**L5 Experiment** (varying a Recipe along an axis — sweeps, ablations,
+**L6 Experiment** (varying a Recipe along an axis — sweeps, ablations,
 LMC pairs) is **Tao's territory**, not Toy's. Tao reads the Recipe Card
-to learn what knobs exist, then drives the sweep. Toy's top layer is L4.
+to learn what knobs exist, then drives the sweep. Toy's top layer is L5.
 
 ## The Kind slots (role)
 
@@ -141,7 +159,7 @@ the expected vs. actual shape.
 ## Composition operators (the API surface)
 
 Cards at any layer expose a small, machine-readable operator set, so
-Tao (L5) can introspect what knobs a Recipe exposes and vary them
+Tao (L6) can introspect what knobs a Recipe exposes and vary them
 systematically across sweep arms.
 
 | Operator | Effect |
@@ -253,7 +271,8 @@ backends:
 - **CUDA** — GB10, sm_121.
 - **Metal** — Mac.
 
-L1/L2/L3 units ship CPU `.rb` plus `_cuda` / `_metal` mirrors. The
+L1–L5 units ship CPU `.rb` plus `_cuda` / `_metal` mirrors (exceptions:
+`vit_tiny_engine.rb` and `recipes/vit_tiny.rb` are CPU-only today). The
 mirrors are **generated**, not hand-maintained: `prep/gen_cuda_mirror.rb`
 rewrites the CPU source (driven by `MIRRORABLE` markers in that script).
 The gate `make verify-mirrors` runs the generator with `--verify` and
@@ -267,7 +286,7 @@ For the vendored ggml patches and the CUDA BYO-pointer path, see
 
 ## Where it's going
 
-L5 (experiments / sweeps) belongs to Tao. A `toy g` generator surface
+L6 (experiments / sweeps) belongs to Tao. A `toy g` generator surface
 and a Prism-based static Card lowerer are future/optional — there is
 currently **no `toy g` and no `lib/toy/core/cli/curriculum.rb`**; those
 remain design intent. The deferred list and live research notes live in

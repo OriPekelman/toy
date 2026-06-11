@@ -1,4 +1,4 @@
-# L4 — Recipes
+# L5 — Recipes
 
 A Recipe is a training plan: realize a model (random init, mmap'd
 base, or warm-started), then drive `step!` over the data.
