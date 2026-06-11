@@ -15,7 +15,7 @@
 #
 # The 4 algos/ subdirs are the documented convention but optional at use
 # time — discovery also accepts a single algos/my_llama.rb. recipes/ ships
-# a runnable hello.rb (mirrors examples/train_from_scratch.rb) so the very
+# a runnable hello.rb (mirrors examples/legacy/train_from_scratch.rb) so the very
 # first thing a newcomer can do is RUN something end-to-end.
 
 require "fileutils"
@@ -63,7 +63,7 @@ module Toy
         RUBY
 
         # A RUNNABLE L4 from-scratch starter, scaffolded into
-        # algos/recipes/hello.rb. Mirrors examples/train_from_scratch.rb:
+        # algos/recipes/hello.rb. Mirrors examples/legacy/train_from_scratch.rb:
         # the blessed value-object path (SmolLM2Config.mha + Toy::Labels +
         # Toy::AdamW + the FromScratch recipe).
         #
@@ -84,7 +84,7 @@ module Toy
           #
           # The blessed value-object path: a tiny Llama-shape model
           # (RMSNorm + GQA + RoPE + SwiGLU) trained through the L4
-          # FromScratch recipe. Mirrors examples/train_from_scratch.rb.
+          # FromScratch recipe. Mirrors examples/legacy/train_from_scratch.rb.
           #
           # Compile with Spinel (it loads the ffi-bearing TinyNN stack, so
           # it cannot run under MRI). The `toy_lib` symlink (→ a toy source

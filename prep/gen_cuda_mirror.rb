@@ -69,7 +69,7 @@ MIRRORABLE = [
   "lib/toy/llm/engine/llama_kv_engine.rb", # KV-cache decode engine (was lib/toy_smollm2_ffi_kv.rb; toy#65 item 2)
   "lib/gpt2_ffi.rb",                    # GPT-2 full-forward FFI (Phase 0.6 step 3)
   "lib/gpt2_ffi_kv.rb",                 # GPT-2 KV-cache decode (Phase 0.6 step 3)
-  "examples/06_train_from_scratch.rb",  # #152: from-scratch training entry (CPU/CUDA)
+  "examples/legacy/06_train_from_scratch.rb",  # #152: from-scratch training entry (CPU/CUDA)
   "prep/smokes/smoke_projection_lens.rb", # P2.6 CUDA gate: realize_for_random_init forward on GPU
 ]
 
@@ -355,14 +355,15 @@ def subs_for(cpu_path, backend)
       [/^module GPT2KV$/,             "module GPT2KV" + suffix],
     ] + common_module_tail
 
-  when "examples/06_train_from_scratch.rb"
+  when "examples/legacy/06_train_from_scratch.rb"
     # #152 — CUDA mirror of the from-scratch training entry. Rewrites
     # the require to the GPU-side engine mirror, renames LlamaSeqEngine
     # to its backend variant, and swaps every TinyNN. call to
-    # TinyNN<Suffix>. (handled by common_module_tail).
+    # TinyNN<Suffix>. (handled by common_module_tail). Lives two levels
+    # below repo root (examples/legacy/) — hence the ../../ depth.
     [
-      [/^require_relative "..\/lib\/toy\/llm\/engine\/llama_seq_engine"$/,
-       'require_relative "../lib/toy/llm/engine/llama_seq_engine_' + backend.to_s + '"'],
+      [/^require_relative "..\/..\/lib\/toy\/llm\/engine\/llama_seq_engine"$/,
+       'require_relative "../../lib/toy/llm/engine/llama_seq_engine_' + backend.to_s + '"'],
       [/\bLlamaSeqEngine\b/, "LlamaSeqEngine" + suffix],
     ] + common_module_tail
 
@@ -425,7 +426,7 @@ def derive_mirror_path(cpu_path, backend)
   # examples/NN_name.rb → examples/NN_name_<backend>.rb (#152)
   # lib/toy/llm/primitives/<name>.rb → ..._<backend>.rb (P2.3 L1 primitives)
   unless cpu_path =~ /_ffi(_[a-z]+)?\.rb$/ ||
-         cpu_path =~ %r{^examples/\d+_[a-z0-9_]+\.rb$} ||
+         cpu_path =~ %r{^examples/(legacy/)?\d+_[a-z0-9_]+\.rb$} ||
          cpu_path =~ %r{^prep/smokes/smoke_[a-z0-9_]+\.rb$} ||
          cpu_path =~ %r{^lib/toy/llm/primitives/[a-z0-9_]+\.rb$} ||
          cpu_path =~ %r{^lib/toy/llm/blocks/[a-z0-9_]+\.rb$} ||

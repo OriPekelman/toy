@@ -22,10 +22,10 @@
 # up). A wrong path is silently ignored by Spinel → TinyNN/Mat unloaded →
 # emit-0 → CE=0. (Bit us once; see docs/notes/gpt2-engine-spinel-blocker.md.)
 
-require_relative "../lib/toy"
-require_relative "../lib/toy/ffi/tinynn"
-require_relative "../lib/toy/llm/engine/gpt2_seq_engine"
-require_relative "../lib/toy/llm/adamw"
+require_relative "../../lib/toy"
+require_relative "../../lib/toy/ffi/tinynn"
+require_relative "../../lib/toy/llm/engine/gpt2_seq_engine"
+require_relative "../../lib/toy/llm/adamw"
 
 VOCAB   = 64
 D_MODEL = 32

@@ -1,5 +1,5 @@
 # P2.6 — L4 WarmStart recipe gate. Drives the EXACT same warm-start
-# config as the frozen reference examples/09_warm_start_train.rb at
+# config as the frozen reference examples/legacy/09_warm_start_train.rb at
 # INIT=scratch (09's DEFAULT, so no donor GGUF dependency) THROUGH
 # Toy::LLM::Recipes::WarmStart and prints "step N: loss=" lines whose
 # loss VALUES MUST byte-equal the reference's per-step loss.

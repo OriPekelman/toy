@@ -10,7 +10,7 @@
 # SPLIT into separate public methods (realize_scratch! / realize_warm! /
 # build!) so the fixture can upload the donor embedding (and/or the PCA
 # lens) BETWEEN realize and build — mirroring the frozen reference
-# examples/09_warm_start_train.rb: realize (L138) → upload donor
+# examples/legacy/09_warm_start_train.rb: realize (L138) → upload donor
 # (L145-184) / PCA lens (L188-229) → build_training_step (L231).
 # FromScratch FUSES realize_for_random_init + build_training_step into
 # one realize! because it has nothing to upload between; WarmStart must

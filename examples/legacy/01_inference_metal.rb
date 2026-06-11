@@ -24,10 +24,10 @@
 # have. The OS reclaims everything cleanly; see tinynn_backend_metal.m
 # for the full rationale.
 
-require_relative "../lib/toy/models/arch"
-require_relative "../lib/toy/ffi/tinynn_metal"
-require_relative "../lib/toy/models/transformer_lm_metal"
-require_relative "../lib/toy/io/tokenizer"
+require_relative "../../lib/toy/models/arch"
+require_relative "../../lib/toy/ffi/tinynn_metal"
+require_relative "../../lib/toy/models/transformer_lm_metal"
+require_relative "../../lib/toy/io/tokenizer"
 
 DEFAULT_GGUF = "data/smollm2-135m-f32.gguf"
 GGUF_ENV     = ENV["GGUF"]

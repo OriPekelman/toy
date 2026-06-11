@@ -26,4 +26,4 @@ end-to-end:
 - `prep/smokes/smoke_recipe_warm_start.rb`
 - `prep/smokes/smoke_recipe_lora.rb`
 
-and the blessed tutorial `examples/train_from_scratch.rb`.
+and the blessed tutorial `examples/01_train_tiny.rb`.

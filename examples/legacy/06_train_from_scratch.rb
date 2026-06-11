@@ -22,18 +22,18 @@
 #     Acceptance: loss decreases monotonically; we don't decode
 #     generated tokens.
 
-require_relative "../lib/toy"
-require_relative "../vendor/spinel/spinel_kit/lib/spinel_kit/json_builder"
-require_relative "../lib/toy/llm/adamw"
-require_relative "../lib/toy/io/toy_events"
-require_relative "../lib/toy/models/toy_smollm2"
-require_relative "../lib/toy/llm/engine/llama_seq_engine"
-require_relative "../lib/toy/dev/toy_describe_flow"
-require_relative "../lib/toy/train/toy_drift_grad"
-require_relative "../lib/toy/train/toy_gguf_writer"
-require_relative "../lib/toy/dev/toy_tap"
-require_relative "../lib/toy/train/toy_sample"
-require_relative "../lib/toy/dev/toy_token_drift"
+require_relative "../../lib/toy"
+require_relative "../../vendor/spinel/spinel_kit/lib/spinel_kit/json_builder"
+require_relative "../../lib/toy/llm/adamw"
+require_relative "../../lib/toy/io/toy_events"
+require_relative "../../lib/toy/models/toy_smollm2"
+require_relative "../../lib/toy/llm/engine/llama_seq_engine"
+require_relative "../../lib/toy/dev/toy_describe_flow"
+require_relative "../../lib/toy/train/toy_drift_grad"
+require_relative "../../lib/toy/train/toy_gguf_writer"
+require_relative "../../lib/toy/dev/toy_tap"
+require_relative "../../lib/toy/train/toy_sample"
+require_relative "../../lib/toy/dev/toy_token_drift"
 
 VOCAB_SIZE = 627
 D_MODEL    = (ENV["D_MODEL"]  || "64").to_i

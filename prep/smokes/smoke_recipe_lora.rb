@@ -1,12 +1,12 @@
 # L4 LoRA recipe gate. Drives the SAME LoRA fine-tune config as the
-# frozen reference examples/03_finetune_lora.rb (at the fixed config
+# frozen reference examples/legacy/03_finetune_lora.rb (at the fixed config
 # below) THROUGH Toy::LLM::Recipes::LoRA and prints "step N: loss="
 # lines whose loss VALUES MUST byte-equal the reference's per-step CE.
 #
 #   make prep/smokes/smoke_recipe_lora
 #   STEPS=5 RANK=8 ./prep/smokes/smoke_recipe_lora | grep '^step'
 #
-# Reference (examples/03_finetune_lora.rb, STEPS=5 RANK=8 LR=0.001
+# Reference (examples/legacy/03_finetune_lora.rb, STEPS=5 RANK=8 LR=0.001
 # GGUF=data/smollm2-135m-native.gguf, seeded upload_lora_q_init!(42,0.01)):
 #   step 1: loss=9.236274719238281
 #   step 2: loss=9.213868141174316

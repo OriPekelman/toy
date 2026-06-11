@@ -17,7 +17,7 @@
 # download-loss. Per the L4 design note in from_scratch.rb, a sibling
 # class duplicating the ~8-line step! is acceptable and simpler than a
 # shared module; we do NOT over-abstract. Op order is VERBATIM from the
-# frozen reference examples/03_finetune_lora.rb:179-191.
+# frozen reference examples/legacy/03_finetune_lora.rb:179-191.
 #
 # This recipe just CALLS realize_for_mmap — it does not refactor it — so
 # no realize-bulk coverage rules apply.

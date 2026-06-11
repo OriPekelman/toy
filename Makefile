@@ -214,12 +214,15 @@ help:
 	    echo "    make example_inference_metal       same, Metal-accelerated (macOS) — use this on Mac"; \
 	fi
 	@echo "    Most tasks are the CLI now: toy train|infer|eval|serve (see 'toy --help')."
-	@echo "    Curated library/instrumentation examples:"
-	@echo "    make example_train                 tiny GPT from scratch on TinyStories (pure-Ruby teaching path)"
-	@echo "    make example_train_from_scratch    modern Llama-shape from-scratch trainer (instrumentation ref)"
-	@echo "    make example_train_vit_tiny        ViT-Tiny image-classifier + warm-start from timm"
-	@echo "    toy train from-scratch --arch gpt2 GPT-2 from-scratch (CPU/CUDA) — see examples/gpt2_train.rb"
-	@echo "    (CLI-superseded demos moved to examples/legacy/: lora, warm-start, lmc, metal-infer.)"
+	@echo "    Curated examples (narrated; examples/README.md is the tour):"
+	@echo "    make example_01                    train a tiny Llama from scratch (start here; ~2 s)"
+	@echo "    make example_02                    warm-start fine-tune from a real GGUF's embeddings"
+	@echo "    make example_03                    LoRA adapters over a frozen mmap'd base"
+	@echo "    make example_04                    load a GGUF, KV decode, print text"
+	@echo "    make example_05                    per-token logprobs (the eval building block)"
+	@echo "    make example_06                    compare your runs/ (CRuby, no build)"
+	@echo "    make example_07                    ViT-Tiny image classifier (same recipe shape)"
+	@echo "    (Superseded tutorials live on in examples/legacy/ — they still build.)"
 	@echo ""
 	@echo "  HTTP SERVING — tep_demo/"
 	@echo "    make tep_demo/hello                minimal Tep HTTP smoke"
@@ -748,9 +751,60 @@ prep/smokes/smoke_recipe_from_scratch: prep/smokes/smoke_recipe_from_scratch.rb 
 # BLESSED from-scratch path — the short tutorial. Same gate-fixture
 # config as smoke_recipe_from_scratch, but the clean tutorial read using
 # the value objects (Toy::SmolLM2Config.mha + Toy::Labels + Toy::AdamW).
-examples/example_train_from_scratch_blessed: examples/train_from_scratch.rb lib/toy.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb lib/toy/llm/adamw.rb lib/toy/llm/labels.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/from_scratch.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+examples/example_train_from_scratch_blessed: examples/legacy/train_from_scratch.rb lib/toy.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb lib/toy/llm/adamw.rb lib/toy/llm/labels.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/from_scratch.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 example_train_from_scratch_blessed: examples/example_train_from_scratch_blessed
+
+# ── Curated examples (toy#60) — the narrated teaching set. One file,
+# one make target, one binary each; see examples/README.md for the tour.
+# 01 — from-scratch on the bundled tiny corpus via the one-require
+# compute surface + the named value objects. THE showcase; the example
+# in docs/framework.md must stay truthful to this file.
+examples/example_01_train_tiny: examples/01_train_tiny.rb lib/toy/compute.rb lib/toy/io/toy_corpus_loader.rb lib/toy/llm/training_batch.rb lib/toy/llm/recipe_options.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+example_01: examples/example_01_train_tiny
+.PHONY: example_01
+
+# 02 — warm-start fine-tune: donor token_embd from a real GGUF through
+# Toy::LLM::Recipes::WarmStart (realize_scratch! → realize_warm! → build!).
+examples/example_02_finetune_warm_start: examples/02_finetune_warm_start.rb lib/toy.rb lib/toy/models/toy_smollm2.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/io/toy_corpus_loader.rb lib/toy/train/toy_lr_schedule.rb lib/toy/llm/adamw.rb lib/toy/llm/labels.rb lib/toy/llm/training_batch.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/warm_start.rb lib/toy/ffi/tinynn.rb lib/toy/models/transformer.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+example_02: examples/example_02_finetune_warm_start
+.PHONY: example_02
+
+# 03 — LoRA adapters over a frozen mmap'd base GGUF. Requires the lora
+# recipe DIRECTLY (not via toy/compute — spinel-dev#12 / toy#52).
+examples/example_03_lora: examples/03_lora.rb lib/toy.rb lib/toy/models/toy_smollm2.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/llm/adamw.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/lora.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+example_03: examples/example_03_lora
+.PHONY: example_03
+
+# 04 — load a GGUF, KV-cache decode, print text (the llama_kv_engine
+# path the `toy infer` runner drives).
+examples/example_04_generate: examples/04_generate.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+example_04: examples/example_04_generate
+.PHONY: example_04
+
+# 05 — per-token logprobs at a decode position (the `toy eval` compute).
+examples/example_05_eval_logprobs: examples/05_eval_logprobs.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/io/tokenizer.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+example_05: examples/example_05_eval_logprobs
+.PHONY: example_05
+
+# 06 — CRuby, NOT compiled: Toy::RunLog comparison table over runs/.
+example_06:
+	ruby examples/06_runlog_compare.rb
+.PHONY: example_06
+
+# 07 — ViT-Tiny on the committed data/vit_smoke corpus via Recipes::VitTiny.
+examples/example_07_vit_tiny: examples/07_vit_tiny.rb lib/toy/llm/engine/vit_tiny_engine.rb lib/toy/llm/recipes/vit_tiny.rb lib/toy/models/toy_vit.rb lib/toy/models/toy_smollm2.rb lib/toy/io/toy_image_loader.rb lib/toy/train/toy_lr_schedule.rb lib/toy/llm/adamw.rb lib/toy/llm/recipe_options.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+example_07: examples/example_07_vit_tiny
+.PHONY: example_07
+
+examples-curated: example_01 example_02 example_03 example_04 example_05 example_07
+.PHONY: examples-curated
 
 # L4 LoRA recipe gate. Drives the same LoRA fine-tune config as the
 # frozen reference 03_finetune_lora THROUGH Toy::LLM::Recipes::LoRA; its
@@ -826,7 +880,7 @@ coverage-check:
 	ruby prep/gen_coverage.rb --check
 .PHONY: coverage coverage-check
 
-examples/example_train: examples/02_train_custom_gpt.rb lib/toy/models/transformer.rb lib/toy/train/training.rb lib/toy/train/toy_trainer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
+examples/example_train: examples/legacy/02_train_custom_gpt.rb lib/toy/models/transformer.rb lib/toy/train/training.rb lib/toy/train/toy_trainer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 example_train: examples/example_train
 
@@ -866,12 +920,12 @@ example_inference_metal: examples/example_inference_metal
 # toy#train-device-select-cuda follow-up. The dispatcher errors
 # cleanly on DEVICE=cuda so Tao's `run_start.backend.kind=="cuda"`
 # acceptance fails honestly rather than silently emitting cpu data.
-examples/example_train_from_scratch_cpu: examples/06_train_from_scratch.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb lib/toy/dev/toy_describe_flow.rb lib/toy/train/toy_drift_grad.rb lib/toy/train/toy_gguf_writer.rb lib/toy/dev/toy_tap.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+examples/example_train_from_scratch_cpu: examples/legacy/06_train_from_scratch.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb lib/toy/dev/toy_describe_flow.rb lib/toy/train/toy_drift_grad.rb lib/toy/train/toy_gguf_writer.rb lib/toy/dev/toy_tap.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
-examples/example_train_from_scratch_cuda: examples/06_train_from_scratch_cuda.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn_cuda.rb lib/toy/dev/toy_describe_flow.rb lib/toy/train/toy_drift_grad.rb lib/toy/train/toy_gguf_writer.rb lib/toy/dev/toy_tap.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS)
+examples/example_train_from_scratch_cuda: examples/legacy/06_train_from_scratch_cuda.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn_cuda.rb lib/toy/dev/toy_describe_flow.rb lib/toy/train/toy_drift_grad.rb lib/toy/train/toy_gguf_writer.rb lib/toy/dev/toy_tap.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS)
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 examples/example_train_from_scratch: examples/example_train_from_scratch_cpu
-	@printf '#!/bin/sh\n# Auto-generated by Makefile. DEVICE selects the backend binary.\n# Edit examples/06_train_from_scratch.rb (cpu) for behaviour; CUDA mirror is auto-generated by prep/gen_cuda_mirror.rb.\ncase "$${DEVICE:-cpu}" in\n  cpu|"") exec "$$(dirname "$$0")/example_train_from_scratch_cpu" "$$@" ;;\n  cuda)   exec "$$(dirname "$$0")/example_train_from_scratch_cuda" "$$@" ;;\n  metal)  echo "DEVICE=metal not yet supported for training (inference only)" >&2; exit 2 ;;\n  *)      echo "DEVICE=$${DEVICE} not recognised (want cpu|cuda)" >&2; exit 2 ;;\nesac\n' > $@
+	@printf '#!/bin/sh\n# Auto-generated by Makefile. DEVICE selects the backend binary.\n# Edit examples/legacy/06_train_from_scratch.rb (cpu) for behaviour; CUDA mirror is auto-generated by prep/gen_cuda_mirror.rb.\ncase "$${DEVICE:-cpu}" in\n  cpu|"") exec "$$(dirname "$$0")/example_train_from_scratch_cpu" "$$@" ;;\n  cuda)   exec "$$(dirname "$$0")/example_train_from_scratch_cuda" "$$@" ;;\n  metal)  echo "DEVICE=metal not yet supported for training (inference only)" >&2; exit 2 ;;\n  *)      echo "DEVICE=$${DEVICE} not recognised (want cpu|cuda)" >&2; exit 2 ;;\nesac\n' > $@
 	@chmod +x $@
 example_train_from_scratch: examples/example_train_from_scratch
 example_train_from_scratch_cuda: examples/example_train_from_scratch_cuda
@@ -879,7 +933,7 @@ example_train_from_scratch_cuda: examples/example_train_from_scratch_cuda
 # GPT-2 from-scratch via the GPT2SeqEngine library API (the curated GPT-2 demo;
 # CLI surface is `toy train from-scratch --arch gpt2`). Memorizes a synthetic
 # sequence so CE visibly collapses; exercises the vendored LayerNorm/GELU kernels.
-examples/gpt2_train: examples/gpt2_train.rb lib/toy.rb \
+examples/gpt2_train: examples/legacy/gpt2_train.rb lib/toy.rb \
 		lib/toy/llm/engine/gpt2_seq_engine.rb lib/toy/models/transformer.rb \
 		lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
 	$(SPINEL) $< -o $@
@@ -920,7 +974,7 @@ MIRROR_CUDA := \
   lib/toy/llm/recipes/warm_start_cuda.rb \
   lib/toy/llm/engine/llama_kv_engine_cuda.rb \
   lib/gpt2_ffi_cuda.rb lib/gpt2_ffi_kv_cuda.rb \
-  examples/06_train_from_scratch_cuda.rb prep/smokes/smoke_projection_lens_cuda.rb
+  examples/legacy/06_train_from_scratch_cuda.rb prep/smokes/smoke_projection_lens_cuda.rb
 MIRROR_METAL := $(MIRROR_CUDA:_cuda.rb=_metal.rb)
 
 $(MIRROR_CUDA): %_cuda.rb: %.rb prep/gen_cuda_mirror.rb
@@ -1184,7 +1238,7 @@ prep/smokes/smoke_image_loader: prep/smokes/smoke_image_loader.rb lib/toy/io/toy
 	$(SPINEL) $< -o $@
 
 # E1.6 / GH#13 — ViT-Tiny training driver.
-examples/example_train_vit_tiny: examples/07_train_vit_tiny.rb lib/toy/llm/engine/vit_tiny_engine.rb lib/toy/models/toy_vit.rb lib/toy/models/toy_smollm2.rb lib/toy/io/toy_image_loader.rb lib/toy/train/toy_lr_schedule.rb lib/toy/train/toy_drift_grad.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+examples/example_train_vit_tiny: examples/legacy/07_train_vit_tiny.rb lib/toy/llm/engine/vit_tiny_engine.rb lib/toy/models/toy_vit.rb lib/toy/models/toy_smollm2.rb lib/toy/io/toy_image_loader.rb lib/toy/train/toy_lr_schedule.rb lib/toy/train/toy_drift_grad.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 example_train_vit_tiny: examples/example_train_vit_tiny
 

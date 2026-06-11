@@ -1,6 +1,6 @@
 # lib/toy/llm/recipes/vit_tiny.rb — L4 recipe: ViT-Tiny from-scratch
 # random-init image-classifier training plan. Encapsulates the EXISTING
-# ViT training loop (examples/07_train_vit_tiny.rb at INIT=scratch): realize
+# ViT training loop (examples/legacy/07_train_vit_tiny.rb at INIT=scratch): realize
 # a random-init forward+CE+backward+AdamW graph on a Toy::LLM::Engine::ViTTinyEngine,
 # then drive one training step at a time.
 #
@@ -48,7 +48,7 @@ module Toy; module LLM; module Recipes
     end
 
     # ONE training step. Op order is VERBATIM from
-    # examples/07_train_vit_tiny.rb:269-281: graph_reset on the first step
+    # examples/legacy/07_train_vit_tiny.rb:269-281: graph_reset on the first step
     # else reset_grads_only; the four uploads in order
     # (image/cls_idx/labels/hp); compute_backward; download_row_major(t_loss,
     # 1, 1). is_first selects the reset, so the caller stays in full control

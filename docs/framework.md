@@ -74,7 +74,8 @@ end
 ```
 
 That is the *entire* contract — the same one toy's own gates train
-through (`prep/smokes/smoke_compute_surface.rb` is the living version).
+through (`prep/smokes/smoke_compute_surface.rb` is the gate fixture;
+`examples/01_train_tiny.rb` is the narrated, runnable version).
 `WarmStart` resumes from a GGUF instead of random init; `LoRA` trains
 adapters over frozen base weights (`recipe.realize!(gguf, cfg, rank,
 opts)`); `VitTiny` is the same shape for images. Writing your own

@@ -24,4 +24,4 @@ Backend twins: `transformer_block_cuda.rb`, `transformer_block_metal.rb`.
 - Whole-graph allocation.
 
 See `prep/smokes/smoke_recipe_*.rb` and the blessed
-`examples/train_from_scratch.rb` for the block driven end-to-end.
+`examples/01_train_tiny.rb` for the block driven end-to-end.

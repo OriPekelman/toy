@@ -24,7 +24,7 @@
 # of data/ts_seqs.txt + single unscaled opt_step per step => bit-
 # reproducible loss curve.
 #
-# Layout adopted from examples/06_train_from_scratch.rb (the proven B>1
+# Layout adopted from examples/legacy/06_train_from_scratch.rb (the proven B>1
 # path): flat [T*B] token + position vectors, per-(batch,position)
 # shift-by-one one-hot labels. NO GRAD_ACCUM LR-scaling — this gate is
 # ONLY about batching. head_dim defaults to d_model/n_heads (16) so

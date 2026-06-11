@@ -24,4 +24,4 @@ Backend twins: `llama_arch_cuda.rb`, `llama_arch_metal.rb`.
 - Data pipeline.
 
 See `prep/smokes/smoke_recipe_*.rb` and the blessed
-`examples/train_from_scratch.rb` for the arch driven end-to-end.
+`examples/01_train_tiny.rb` for the arch driven end-to-end.

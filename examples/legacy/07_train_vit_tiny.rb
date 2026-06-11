@@ -14,14 +14,14 @@
 #   make example_train_vit_tiny
 #   STEPS=200 TAO_RUN_DIR=/tmp/vit ./examples/example_train_vit_tiny
 
-require_relative "../vendor/spinel/spinel_kit/lib/spinel_kit/json_builder"
-require_relative "../lib/toy/llm/adamw"
-require_relative "../lib/toy/io/toy_events"
-require_relative "../lib/toy/models/toy_vit"
-require_relative "../lib/toy/llm/engine/vit_tiny_engine"
-require_relative "../lib/toy/io/toy_image_loader"
-require_relative "../lib/toy/train/toy_lr_schedule"
-require_relative "../lib/toy/train/toy_drift_grad"
+require_relative "../../vendor/spinel/spinel_kit/lib/spinel_kit/json_builder"
+require_relative "../../lib/toy/llm/adamw"
+require_relative "../../lib/toy/io/toy_events"
+require_relative "../../lib/toy/models/toy_vit"
+require_relative "../../lib/toy/llm/engine/vit_tiny_engine"
+require_relative "../../lib/toy/io/toy_image_loader"
+require_relative "../../lib/toy/train/toy_lr_schedule"
+require_relative "../../lib/toy/train/toy_drift_grad"
 # NB: NOT requiring toy_gguf_writer here — its `cfg.vocab` / `cfg.d_ff`
 # style calls clash with ViTTinyConfig under Spinel poly inference
 # (the writer's cfg arg goes poly when both SmolLM2Config and

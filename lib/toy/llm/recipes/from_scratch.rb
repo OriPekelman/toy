@@ -2,7 +2,7 @@
 # random-init training plan. This is the MINIMAL viable surface that
 # encapsulates the EXISTING random_init training loop (the inlined loop
 # in prep/smokes/smoke_projection_lens.rb:97-112 and the fuller driver in
-# examples/06_train_from_scratch.rb): realize a random-init forward+
+# examples/legacy/06_train_from_scratch.rb): realize a random-init forward+
 # backward+AdamW graph on a Toy::LLM::Engine::LlamaSeqEngine, then drive one
 # training step at a time.
 #

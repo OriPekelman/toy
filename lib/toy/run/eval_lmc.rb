@@ -11,7 +11,7 @@
 # this runner (`make libexec/toy-eval-lmc`), and shells out to it via Open3
 # with a CONTROLLED ENV.
 #
-# It is a FUSED-FORMAT-AWARE port of examples/08_lmc.rb. 08_lmc predates the
+# It is a FUSED-FORMAT-AWARE port of examples/legacy/08_lmc.rb. 08_lmc predates the
 # #3 fused-llama checkpoint format; `toy train` now writes a STANDARD FUSED
 # llama GGUF (projection-lens folded + per-head attention FUSED to
 # blk.N.attn_q.weight at write time). The session realized here is the
