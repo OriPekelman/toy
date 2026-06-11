@@ -35,6 +35,8 @@
 # inlines TinyNN.* calls so it is backend-coupled; the CUDA mirror is
 # DEFERRED alongside the GPU deferral — this pass ships CPU-only.
 
+require_relative "../recipe_options"
+
 module Toy; module LLM; module Recipes
   # The LoRA fine-tune recipe. realize! builds the frozen-base +
   # LoRA-Q-adapter forward+CE+backward+AdamW graph on a
@@ -60,13 +62,18 @@ module Toy; module LLM; module Recipes
     # upload_lora_q_init!(seed, init_scale) (deterministic adapter init),
     # then build_training_step (forward + CE + backward + opt_step_adamw
     # on the adapters baked into the ggml graph). Stashes the returned
-    # [t_loss, t_labels, t_hp] triple. Positional args match the
-    # reference call sites exactly. Returns nil.
-    def realize!(gguf_handle, cfg, t_seq, untied, qkv_bias, rank, seed, init_scale)
+    # [t_loss, t_labels, t_hp] triple. `opts` is a Toy::LLM::RecipeOptions
+    # (toy#64 item 1); the lora mmap path consumes its t_seq / untied /
+    # qkv_bias / seed / init_scale (NO t_batch / weight_dtype knob on
+    # realize_for_mmap). `rank` is lora-specific so it stays a leading
+    # positional. Unpacked in the engine's exact positional order, so
+    # the realize is byte-identical. Returns nil.
+    def realize!(gguf_handle, cfg, rank, opts)
       @lora_cache.enable_lora_q!(rank)
       @lora_cache.enable_lora_q_adamw!
-      @lora_cache.realize_for_mmap(gguf_handle, cfg, t_seq, untied, qkv_bias)
-      @lora_cache.upload_lora_q_init!(seed, init_scale)
+      @lora_cache.realize_for_mmap(gguf_handle, cfg, opts.t_seq,
+                                   opts.untied, opts.qkv_bias)
+      @lora_cache.upload_lora_q_init!(opts.seed, opts.init_scale)
       result         = @lora_cache.build_training_step
       @lora_t_loss   = result[0]
       @lora_t_labels = result[1]

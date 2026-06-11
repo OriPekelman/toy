@@ -68,10 +68,16 @@ puts "config: vocab=" + cfg.vocab.to_s +
      " heads=" + cfg.n_heads.to_s +
      " d_ff=" + cfg.d_ff.to_s
 
-recipe = Toy::LLM::Recipes::WarmStart.new
-# untied=true is mandatory when donor_d_in > 0. Positional args identical
+# Named realize options (toy#64): same values as the historical
+# positional call (CONTEXT, 1, 0, true, false, SEED, 1.0) — identical
 # to 09 L138 / FromScratch#realize!.
-recipe.realize_scratch!(cfg, CONTEXT, 1, 0, true, false, SEED, 1.0)
+opts = Toy::LLM::RecipeOptions.new
+opts.t_seq  = CONTEXT
+opts.untied = true        # mandatory when donor_d_in > 0
+opts.seed   = SEED
+
+recipe = Toy::LLM::Recipes::WarmStart.new
+recipe.realize_scratch!(cfg, opts)
 # INIT=scratch: skip realize_warm! (matches 09's default arm — no donor
 # GGUF, no PCA lens; train from the random init).
 recipe.build!

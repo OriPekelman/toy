@@ -29,8 +29,14 @@ llama = Toy::LLM::Engine::LlamaSeqEngine.new
 vit   = Toy::LLM::Engine::ViTTinyEngine.new
 gpt2  = Toy::LLM::Engine::GPT2SeqEngine.new
 
+# Named realize options (toy#64): canonical defaults (t_batch=1,
+# weight_dtype=0/f32, untied=false, qkv_bias=false, seed=0,
+# init_scale=1.0); only t_seq needs setting.
+opts = Toy::LLM::RecipeOptions.new
+opts.t_seq = CONTEXT
+
 recipe = Toy::LLM::Recipes::FromScratch.new
-recipe.realize!(cfg, CONTEXT, 1, 0, false, false, 0, 1.0)
+recipe.realize!(cfg, opts)
 
 seq_ids = [0]
 seq_ids.pop

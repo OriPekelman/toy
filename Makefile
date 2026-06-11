@@ -484,8 +484,8 @@ gate-serve:
 libexec/toy-train: lib/toy/run/train.rb lib/toy/dev/toy_describe_flow.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
 		vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
 		lib/toy/io/toy_corpus_loader.rb lib/toy/train/toy_lr_schedule.rb \
-		lib/toy/llm/engine/llama_seq_engine.rb lib/toy/llm/recipes/from_scratch.rb \
-		lib/toy/llm/recipes/warm_start.rb \
+		lib/toy/llm/engine/llama_seq_engine.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/from_scratch.rb \
+		lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/warm_start.rb \
 		lib/toy/llm/adamw.rb lib/toy/llm/labels.rb \
 		lib/toy/train/toy_gguf_writer.rb lib/toy/train/toy_drift_grad.rb lib/toy/models/transformer.rb \
 		lib/toy/llm/primitives/rms_norm.rb lib/toy/llm/primitives/rope.rb \
@@ -500,7 +500,7 @@ toy-train: libexec/toy-train
 # random-init path (cfg type-merge miscompile; see lib/toy/run/train_lora.rb
 # header). CPU-only; NOT in MIRRORABLE.
 libexec/toy-train-lora: lib/toy/run/train_lora.rb lib/toy/dev/toy_describe_flow.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
-		lib/toy/llm/engine/llama_seq_engine.rb lib/toy/llm/recipes/lora.rb \
+		lib/toy/llm/engine/llama_seq_engine.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/lora.rb \
 		lib/toy/llm/adamw.rb \
 		lib/toy/train/toy_gguf_writer.rb lib/toy/train/toy_drift_grad.rb lib/toy/models/transformer.rb \
 		lib/toy/llm/primitives/rms_norm.rb lib/toy/llm/primitives/rope.rb \
@@ -553,7 +553,7 @@ toy-train-gpt2-metal: libexec/toy-train-gpt2-metal
 # trains random-init on the COMMITTED data/vit_smoke corpus. NO toy_gguf_writer
 # dep (cfg.vocab/d_ff poly-collide with ViTTinyConfig — #169 checkpoint
 # follow-up). CPU-only; absent from MIRRORABLE (no CUDA/Metal twin this slice).
-libexec/toy-train-vit: lib/toy/run/train_vit.rb lib/toy/dev/toy_describe_flow.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb lib/toy/llm/recipes/vit_tiny.rb \
+libexec/toy-train-vit: lib/toy/run/train_vit.rb lib/toy/dev/toy_describe_flow.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/vit_tiny.rb \
 		lib/toy/llm/engine/vit_tiny_engine.rb lib/toy/models/toy_vit.rb lib/toy/models/toy_smollm2.rb \
 		lib/toy/io/toy_image_loader.rb lib/toy/train/toy_lr_schedule.rb lib/toy/train/toy_drift_grad.rb \
 		lib/toy/llm/adamw.rb \
@@ -570,8 +570,8 @@ toy-train-vit: libexec/toy-train-vit
 # CPU-only; NOT in MIRRORABLE (hand-written, see prep/gen_cuda_mirror.rb).
 libexec/toy-train-cuda: lib/toy/run/train_cuda.rb lib/toy/dev/toy_describe_flow.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
 		lib/toy/io/toy_corpus_loader.rb lib/toy/train/toy_lr_schedule.rb \
-		lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/llm/recipes/from_scratch_cuda.rb \
-		lib/toy/llm/recipes/warm_start_cuda.rb \
+		lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/from_scratch_cuda.rb \
+		lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/warm_start_cuda.rb \
 		lib/toy/llm/adamw.rb lib/toy/llm/labels.rb \
 		lib/toy/train/toy_gguf_writer.rb lib/toy/train/toy_drift_grad.rb lib/toy/train/toy_gguf_fuse.rb lib/toy/models/transformer.rb \
 		lib/toy/llm/primitives/rms_norm_cuda.rb lib/toy/llm/primitives/rope_cuda.rb \
@@ -592,7 +592,7 @@ toy-train-cuda: libexec/toy-train-cuda
 # (lora uses ToyDriftGrad.params, not the lens-fold path). Links the CUDA
 # ggml backend via -Wl,-u,tnn_cuda_force_link. NOT in MIRRORABLE (hand-written).
 libexec/toy-train-lora-cuda: lib/toy/run/train_lora_cuda.rb lib/toy/dev/toy_describe_flow.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
-		lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/llm/recipes/lora_cuda.rb \
+		lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/lora_cuda.rb \
 		lib/toy/llm/adamw.rb \
 		lib/toy/train/toy_gguf_writer.rb lib/toy/train/toy_drift_grad.rb lib/toy/models/transformer.rb \
 		lib/toy/llm/primitives/rms_norm_cuda.rb lib/toy/llm/primitives/rope_cuda.rb \
@@ -613,7 +613,7 @@ toy-train-lora-cuda: libexec/toy-train-lora-cuda
 # stays in deps for the write seam + base ggml. NOT in MIRRORABLE (hand-written).
 # gx10 RUNTIME-UNVERIFIED — pin baseline + gate on the Mac.
 libexec/toy-train-metal: lib/toy/run/train_metal.rb lib/toy/dev/toy_describe_flow.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
-		lib/toy/llm/engine/llama_seq_engine_metal.rb lib/toy/llm/recipes/from_scratch_metal.rb \
+		lib/toy/llm/engine/llama_seq_engine_metal.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/from_scratch_metal.rb \
 		lib/toy/llm/adamw.rb lib/toy/llm/labels.rb \
 		lib/toy/train/toy_gguf_writer.rb lib/toy/train/toy_drift_grad.rb lib/toy/train/toy_gguf_fuse.rb lib/toy/models/transformer.rb \
 		lib/toy/llm/primitives/rms_norm_metal.rb lib/toy/llm/primitives/rope_metal.rb \
@@ -710,20 +710,20 @@ examples/smoke_gate_b_gt_1: examples/smoke_gate_b_gt_1.rb lib/toy/llm/engine/lla
 # P2.6 — L4 FromScratch recipe gate. Drives the same random-init config
 # as smoke_projection_lens THROUGH Toy::LLM::Recipes::FromScratch; its
 # loss curve must byte-equal the projection-lens reference.
-examples/smoke_recipe_from_scratch: examples/smoke_recipe_from_scratch.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/tinynn.rb lib/toy/train/toy_drift_grad.rb lib/toy/llm/adamw.rb lib/toy/llm/labels.rb lib/toy/llm/recipes/from_scratch.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+examples/smoke_recipe_from_scratch: examples/smoke_recipe_from_scratch.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/tinynn.rb lib/toy/train/toy_drift_grad.rb lib/toy/llm/adamw.rb lib/toy/llm/labels.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/from_scratch.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
 # BLESSED from-scratch path — the short tutorial. Same gate-fixture
 # config as smoke_recipe_from_scratch, but the clean tutorial read using
 # the value objects (Toy::SmolLM2Config.mha + Toy::Labels + Toy::AdamW).
-examples/example_train_from_scratch_blessed: examples/train_from_scratch.rb lib/toy.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/tinynn.rb lib/toy/llm/adamw.rb lib/toy/llm/labels.rb lib/toy/llm/recipes/from_scratch.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+examples/example_train_from_scratch_blessed: examples/train_from_scratch.rb lib/toy.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/tinynn.rb lib/toy/llm/adamw.rb lib/toy/llm/labels.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/from_scratch.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 example_train_from_scratch_blessed: examples/example_train_from_scratch_blessed
 
 # L4 LoRA recipe gate. Drives the same LoRA fine-tune config as the
 # frozen reference 03_finetune_lora THROUGH Toy::LLM::Recipes::LoRA; its
 # loss curve must byte-equal the reference at the fixed config.
-examples/smoke_recipe_lora: examples/smoke_recipe_lora.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn.rb lib/toy/llm/adamw.rb lib/toy/llm/recipes/lora.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+examples/smoke_recipe_lora: examples/smoke_recipe_lora.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/tinynn.rb lib/toy/llm/adamw.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/lora.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
 # L4 WarmStart recipe gate. Drives the same warm-start config as the
@@ -731,7 +731,7 @@ examples/smoke_recipe_lora: examples/smoke_recipe_lora.rb lib/toy/llm/engine/lla
 # Toy::LLM::Recipes::WarmStart; its loss curve must byte-equal 09's at
 # the fixed config (SEED=0 STEPS=5). The fixture drives the cosine LR
 # schedule + streaming corpus loader (deps below); the recipe stays thin.
-examples/smoke_recipe_warm_start: examples/smoke_recipe_warm_start.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/tinynn.rb lib/toy/train/toy_drift_grad.rb lib/toy/io/toy_corpus_loader.rb lib/toy/train/toy_lr_schedule.rb lib/toy/llm/adamw.rb lib/toy/llm/labels.rb lib/toy/llm/recipes/warm_start.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+examples/smoke_recipe_warm_start: examples/smoke_recipe_warm_start.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/tinynn.rb lib/toy/train/toy_drift_grad.rb lib/toy/io/toy_corpus_loader.rb lib/toy/train/toy_lr_schedule.rb lib/toy/llm/adamw.rb lib/toy/llm/labels.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/warm_start.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
 # P2.6 gate — GGUF F32 mmap round-trip parity. Head-fuses a random_init

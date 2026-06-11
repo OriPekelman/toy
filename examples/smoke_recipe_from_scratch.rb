@@ -49,8 +49,15 @@ puts "config: vocab=" + cfg.vocab.to_s +
      " d=" + cfg.d_model.to_s +
      " L=" + cfg.n_layers.to_s
 
+# Named realize options (toy#64): same values as the historical
+# positional call (CONTEXT, 1, 0, true, false, SEED, 1.0).
+opts = Toy::LLM::RecipeOptions.new
+opts.t_seq  = CONTEXT
+opts.untied = true        # mandatory when donor_d_in > 0
+opts.seed   = SEED
+
 recipe = Toy::LLM::Recipes::FromScratch.new
-recipe.realize!(cfg, CONTEXT, 1, 0, true, false, SEED, 1.0)
+recipe.realize!(cfg, opts)
 puts "realize OK"
 
 # Train a few steps on a fixed sequence — identical input construction

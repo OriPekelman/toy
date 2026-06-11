@@ -27,6 +27,8 @@
 # member names for type-isolation. Single-type binary: TinyNNCuda is the only
 # compute module referenced here.
 
+require_relative "../recipe_options"
+
 module Toy; module LLM; module Recipes
   # The warm-start training recipe, CUDA backend. realize_scratch! builds
   # the random-init forward+CE+backward+AdamW graph on a
@@ -50,13 +52,16 @@ module Toy; module LLM; module Recipes
     end
 
     # Realize the random-init graph and OPEN the warm window. Delegates
-    # VERBATIM to the cache: realize_for_random_init. Positional args match
-    # realize_for_random_init exactly (cfg, t_seq, t_batch, weight_dtype,
-    # untied, qkv_bias, seed, init_scale). Does NOT bake the graph — that is
-    # build!'s job. Returns nil.
-    def realize_scratch!(cfg, t_seq, t_batch, weight_dtype, untied, qkv_bias, seed, init_scale)
-      @ws_cache.realize_for_random_init(cfg, t_seq, t_batch, weight_dtype,
-                                        untied, qkv_bias, seed, init_scale)
+    # VERBATIM to the cache: realize_for_random_init. `opts` is a
+    # Toy::LLM::RecipeOptions (toy#64 item 1) carrying the former 7
+    # trailing positional args, unpacked here in the engine's exact
+    # positional order, so the realize is byte-identical. Does NOT bake
+    # the graph — that is build!'s job. Returns nil.
+    def realize_scratch!(cfg, opts)
+      @ws_cache.realize_for_random_init(cfg, opts.t_seq, opts.t_batch,
+                                        opts.weight_dtype, opts.untied,
+                                        opts.qkv_bias, opts.seed,
+                                        opts.init_scale)
       nil
     end
 

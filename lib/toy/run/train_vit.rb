@@ -79,8 +79,13 @@ WARMUP = 10
 cfg = ViTTinyConfig.new(IMAGE_SIZE, PATCH_SIZE, NUM_CHAN, D_MODEL,
                         N_HEADS, D_FF, N_LAYERS, NUM_CLASSES, LN_EPS)
 
+# Named realize options (toy#64): the ViT path consumes seed +
+# init_scale only (init_scale keeps the canonical 1.0 default).
+opts = Toy::LLM::RecipeOptions.new
+opts.seed = SEED
+
 recipe = Toy::LLM::Recipes::VitTiny.new
-recipe.realize!(cfg, SEED, 1.0)
+recipe.realize!(cfg, opts)
 # tao#flow-json-emit (#25): self-describing run bundle, parallel to events.jsonl.
 ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe.vt_cache.sess)
 

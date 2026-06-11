@@ -11,11 +11,14 @@
 # t_loss ptr, not the [t_loss, t_labels, t_hp] triple the llama cache
 # returns — t_labels/t_hp/t_cls_idx are cache accessors here).
 #
-# NO require_relative: the runner (lib/toy/run/train_vit.rb) requires
+# NO backend require_relative (only the pure-Ruby RecipeOptions value
+# object): the runner (lib/toy/run/train_vit.rb) requires
 # vit_tiny_engine.rb first, which pulls TinyNN + transformer + toy_vit
 # + toy_smollm2 — same bare-header convention as from_scratch.rb. This recipe
 # inlines TinyNN.* in step! so it is backend-coupled; CPU-only this slice (no
 # CUDA twin — vit train is absent from MIRRORABLE).
+
+require_relative "../recipe_options"
 
 module Toy; module LLM; module Recipes
   # The ViT-Tiny from-scratch random-init training recipe. realize! builds
@@ -35,9 +38,11 @@ module Toy; module LLM; module Recipes
     # realize_for_random_init (3-arg: cfg, seed, init_scale — self-seeds via
     # Box-Muller, NO donor) then build_training_step (forward + CE + backward
     # + opt_step_adamw baked into the ggml graph; returns a SINGLE t_loss
-    # ptr). init_scale=1.0 per 07_train_vit_tiny.rb:80. Returns nil.
-    def realize!(cfg, seed, init_scale)
-      @vt_cache.realize_for_random_init(cfg, seed, init_scale)
+    # ptr). `opts` is a Toy::LLM::RecipeOptions (toy#64 item 1); the ViT
+    # random-init path consumes ONLY seed + init_scale (init_scale=1.0
+    # per 07_train_vit_tiny.rb:80). Returns nil.
+    def realize!(cfg, opts)
+      @vt_cache.realize_for_random_init(cfg, opts.seed, opts.init_scale)
       @vt_t_loss = @vt_cache.build_training_step
       nil
     end

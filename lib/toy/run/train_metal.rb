@@ -82,12 +82,18 @@ cfg = Toy::SmolLM2Config.mha(VOCAB, D_MODEL, N_HEADS,
                              D_FF, N_LAYERS, CONTEXT, 10000.0, 1.0e-5)
 cfg.donor_d_in = DONOR_D
 
-# Realize the random-init graph THROUGH the Metal recipe. CRITICAL: untied=TRUE
-# (arg4), weight_dtype=0, qkv_bias=false, init_scale=1.0 — the SMOKE config,
-# NOT 06's untied=false. realize_for_random_init self-enables full_finetune +
+# Realize the random-init graph THROUGH the Metal recipe, with NAMED
+# options (toy#64). CRITICAL: untied=TRUE, weight_dtype=0,
+# qkv_bias=false, init_scale=1.0 — the SMOKE config, NOT 06's
+# untied=false. realize_for_random_init self-enables full_finetune +
 # train_embeddings, so no extra enable_* call.
+opts = Toy::LLM::RecipeOptions.new
+opts.t_seq  = CONTEXT
+opts.untied = true
+opts.seed   = SEED
+
 recipe = Toy::LLM::Recipes::FromScratchMetal.new
-recipe.realize!(cfg, CONTEXT, 1, 0, true, false, SEED, 1.0)
+recipe.realize!(cfg, opts)
 ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe.fs_cache.sess)
 
 # Per-step inputs built IN THE RUNNER, byte-identical to the CPU runner.

@@ -67,6 +67,7 @@ require_relative "../toy_smollm2_ffi_kv"
 # rescue it. A consumer that actually trains LoRA requires `toy/llm/recipes/lora`
 # itself (and calls realize! with a concrete cfg, which pins the type). Re-add
 # tracked by toy#52 — blocked on spinel-dev#12 (constructor-slot back-prop), not #11.
+require_relative "llm/recipe_options"
 require_relative "llm/recipes/from_scratch"
 require_relative "llm/recipes/warm_start"
 require_relative "llm/recipes/vit_tiny"

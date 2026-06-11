@@ -117,8 +117,15 @@ module Toy
           cfg = Toy::SmolLM2Config.mha(VOCAB, D_MODEL, N_HEADS,
                                        D_FF, N_LAYERS, CONTEXT, 10000.0, 1.0e-5)
 
+          # Named realize-time options (Toy::LLM::RecipeOptions): only
+          # the non-default knobs need setting.
+          opts = Toy::LLM::RecipeOptions.new
+          opts.t_seq  = CONTEXT
+          opts.untied = true
+          opts.seed   = SEED
+
           recipe = Toy::LLM::Recipes::FromScratch.new
-          recipe.realize!(cfg, CONTEXT, 1, 0, true, false, SEED, 1.0)
+          recipe.realize!(cfg, opts)
 
           # A trivial fixed sequence + positions.
           seq_ids   = [1, 2, 3, 4, 5, 6, 7, 8]
@@ -182,9 +189,14 @@ module Toy
           cfg = Toy::SmolLM2Config.new(VOCAB, D_MODEL, HEADS, HEADS, 128,
                                        LAYERS, CONTEXT, 10000.0, 1.0e-5)
 
-          # The L4 recipe drives the engine. weight_dtype=0 (f32), B=1, seed=0.
+          # The L4 recipe drives the engine. Named realize-time options
+          # (Toy::LLM::RecipeOptions); defaults are weight_dtype=0 (f32),
+          # B=1, seed=0 — only t_seq needs setting.
+          opts = Toy::LLM::RecipeOptions.new
+          opts.t_seq = CONTEXT
+
           recipe = Toy::LLM::Recipes::FromScratch.new
-          recipe.realize!(cfg, CONTEXT, 1, 0, false, false, 0, 1.0)
+          recipe.realize!(cfg, opts)
 
           seq_ids = [0]
           seq_ids.pop
