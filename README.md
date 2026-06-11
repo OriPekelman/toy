@@ -74,25 +74,34 @@ Studio will populate a cache it sees.
 ## Using toy as a framework
 
 The CLI is the front door; the framework is the house. Everything is a
-layered stack — **primitives → blocks → archs → recipes** — each layer
-plain Ruby, each gated bit-identical against a reference, all of it
-loaded with one require:
+layered stack — **primitives → blocks → archs → engines → recipes** —
+each layer plain Ruby, each gated bit-identical against a reference,
+all of it loaded with one require:
 
 ```ruby
 require "toy/compute"
 
+cfg  = Toy::SmolLM2Config.tiny
+opts = Toy::LLM::RecipeOptions.new
+opts.t_seq = 32
+opts.seed  = 42
+
 recipe = Toy::LLM::Recipes::FromScratch.new
-recipe.realize!(cfg, context_len, 1, 0, false, false, 0, 1.0)
+recipe.realize!(cfg, opts)
 steps.times do |step|
-  loss = recipe.step!(seq_ids, positions, m_labels, m_hp, step == 0)
+  loss = recipe.step!(batch.seq_ids, batch.positions, batch.labels,
+                      batch.hp, step == 0)
 end
 ```
 
 `realize!` builds the entire forward + loss + backward + AdamW graph
-natively; `step!` drives one training step. That's the whole training
-contract — the same one toy's own gates use. Start your own project
-with `toy new mylab` (an experiment tree) or `toy new mylib --lib` (a
-library consuming toy as a gem, native vendoring included).
+natively; `step!` drives one training step; every knob is a named
+setter. That's the whole training contract — the same one toy's own
+gates use. Start your own project with `toy new mylab` (an experiment
+tree with ENV-driven hyperparameters — one compile, many runs) or
+`toy new mylib --lib` (a library consuming toy as a gem, native
+vendoring and a multi-arch `build.sh` included; devices are chosen at
+compile time).
 
 **[The framework guide](docs/framework.md)** is the tour;
 [`docs/authoring.md`](docs/authoring.md) shows how to add your own
