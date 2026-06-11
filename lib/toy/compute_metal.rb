@@ -25,7 +25,7 @@
 #   - vit: no Metal engine. lora: no Metal recipe (and see toy#52).
 
 # FFI compute layer: Metal TinyNN + the MRI-safe sugar (Mat + Card).
-require_relative "../tinynn_metal"
+require_relative "ffi/tinynn_metal"
 require_relative "../toy"
 
 # Models + configs (shared).

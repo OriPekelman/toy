@@ -31,7 +31,7 @@ fi
 # {gpt2_ffi_kv, gguf_load, bpe} → app source. The require_relative
 # lines we strip have no effect at runtime once everything's inlined.
 LIBS=(
-  lib/tinynn.rb
+  lib/toy/ffi/tinynn.rb
   lib/transformer.rb
   lib/gpt2.rb
   lib/gpt2_ffi_kv.rb

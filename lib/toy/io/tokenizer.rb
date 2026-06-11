@@ -14,7 +14,7 @@
 # non-ASCII (CJK, accented letters) falls into the "other" branch and
 # may diverge from HF for those code points.
 #
-# Decoupled from lib/tinynn.rb via lib/gguf_kv.rb to keep this loadable
+# Decoupled from lib/toy/ffi/tinynn.rb via lib/gguf_kv.rb to keep this loadable
 # in tokenizer-only binaries (avoids a known Spinel cross-class
 # type-inference issue with lib/transformer.rb's Mat).
 

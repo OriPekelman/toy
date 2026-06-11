@@ -26,7 +26,7 @@
 # selects its backend by requiring the matching engine variant.
 
 # FFI compute layer (Mat, sessions, tnn_* ops) + the MRI-safe sugar.
-require_relative "../tinynn"
+require_relative "ffi/tinynn"
 require_relative "../toy"
 
 # Models + configs (Llama/SmolLM2, ViT) and the GGUF→engine loader.

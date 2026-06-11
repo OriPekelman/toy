@@ -16,7 +16,7 @@
 
 require_relative "toy/models/transformer"
 require_relative "toy/models/gpt2"
-require_relative "tinynn"
+require_relative "toy/ffi/tinynn"
 
 # Per-block persistent tensor handles. Includes per-head K/V buffers
 # alongside the standard GPT-2 weights.

@@ -1,8 +1,8 @@
-# lib/tinynn_metal.rb — Metal-flavored FFI bridge.
+# lib/toy/ffi/tinynn_metal.rb — Metal-flavored FFI bridge.
 #
-# Sibling of lib/tinynn.rb and lib/tinynn_cuda.rb. Same API surface,
+# Sibling of lib/toy/ffi/tinynn.rb and lib/toy/ffi/tinynn_cuda.rb. Same API surface,
 # different backend underneath. Drivers needing Metal `require_relative
-# "lib/tinynn_metal"` and pass `2` to `tnn_session_new`.
+# "lib/toy/ffi/tinynn_metal"` and pass `2` to `tnn_session_new`.
 #
 # Build chain: `make setup-ggml-metal` then any `_metal` target. The
 # ggml-metal kernels JIT-compile on first device load (~15s, then
@@ -14,7 +14,7 @@
 # with a discrete AMD GPU also work in principle; not tested in this
 # project.
 
-# Same AdamStepResult definition as lib/tinynn.rb and lib/tinynn_cuda.rb
+# Same AdamStepResult definition as lib/toy/ffi/tinynn.rb and lib/toy/ffi/tinynn_cuda.rb
 # — drivers require exactly one of {tinynn, tinynn_cuda, tinynn_metal}
 # so we duplicate to keep each file self-sufficient.
 class AdamStepResult
@@ -177,7 +177,7 @@ module TinyNNMetal
   # Spinel resolves TinyNNMetal.tnn_events_* as MODULE methods, so the
   # declarations must live here even though the C symbol is backend-agnostic.
   # train_metal.rb's events/provenance + run_start/step/run_end stream needs
-  # all nine. (cuda twin: lib/tinynn_cuda.rb:188-197.)
+  # all nine. (cuda twin: lib/toy/ffi/tinynn_cuda.rb:188-197.)
   ffi_func :tnn_events_open,          [:str],                       :int
   ffi_func :tnn_events_emit,          [:str],                       :void
   ffi_func :tnn_events_close,         [],                           :void
@@ -286,7 +286,7 @@ module TinyNNMetal
   # the FFI surface. The mirror generator only rewrites the per-method
   # `TinyNN.` qualifiers, not the helper-method bodies themselves;
   # callers in the SmolLM2 mirror reference `TinyNNMetal.upload_int_array`
-  # etc., so we define them here. Bodies are identical to lib/tinynn.rb.
+  # etc., so we define them here. Bodies are identical to lib/toy/ffi/tinynn.rb.
   def self.upload_row_major(sess, tensor, mat)
     TinyNNMetal.tnn_upload_from_float_array(sess, tensor, mat.flat, mat.nrows * mat.ncols)
   end

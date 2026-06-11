@@ -19,7 +19,7 @@
 require_relative "../../models/transformer"
 require_relative "../../../toy"
 require_relative "../../models/toy_smollm2"
-require_relative "../../../tinynn"
+require_relative "../../ffi/tinynn"
 require_relative "../primitives/rms_norm"
 require_relative "../primitives/rope"
 require_relative "../primitives/swiglu"

@@ -97,7 +97,7 @@ def subs_for(cpu_path, backend)
     [/\bTinyNN\.\b/,                   module_ + "."],
     [/\bTinyNN\b/,                     module_],
     [/tnn_session_new\(0\)/,           "tnn_session_new(" + session.to_s + ")"],
-    [/^require_relative "tinynn"$/,    'require_relative "' + tinynn + '"'],
+    [/^require_relative "toy\/ffi\/tinynn"$/, 'require_relative "toy/ffi/' + tinynn + '"'],
   ]
 
   case cpu_path
@@ -231,13 +231,14 @@ def subs_for(cpu_path, backend)
       # arch and its TinyNN.* calls would hit the CPU backend).
       [/^require_relative "\.\.\/archs\/llama_arch"$/,
        'require_relative "../archs/llama_arch_' + backend.to_s + '"'],
-      # The engine lives 3 levels deep (lib/toy/llm/engine/), so its TinyNN
-      # require is depth-prefixed ("../../../tinynn"). common_module_tail's
-      # rewrite only matches the BARE "tinynn" (the pre-relocation form), so
-      # rewrite the depth-prefixed path to the backend TinyNN here — else the
-      # GPU mirror loads CPU TinyNN and every TinyNN<Backend>.* fails to resolve.
-      [/^require_relative "\.\.\/\.\.\/\.\.\/tinynn"$/,
-       'require_relative "../../../tinynn_' + backend.to_s + '"'],
+      # The engine lives at lib/toy/llm/engine/ and TinyNN at lib/toy/ffi/
+      # (toy#65 item 4), so its TinyNN require is "../../ffi/tinynn".
+      # common_module_tail's rewrite only matches the lib-root form
+      # ("toy/ffi/tinynn"), so rewrite the depth-prefixed path to the backend
+      # TinyNN here — else the GPU mirror loads CPU TinyNN and every
+      # TinyNN<Backend>.* fails to resolve.
+      [/^require_relative "\.\.\/\.\.\/ffi\/tinynn"$/,
+       'require_relative "../../ffi/tinynn_' + backend.to_s + '"'],
       [/\bLlamaSeqEngine\b/, "LlamaSeqEngine" + suffix],
     ] + common_module_tail
 

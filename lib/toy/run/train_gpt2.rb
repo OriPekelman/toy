@@ -27,7 +27,7 @@
 # only (this slice); the CUDA/Metal mirrors come after the CPU gate.
 
 require_relative "../../toy"
-require_relative "../../tinynn"
+require_relative "../ffi/tinynn"
 require_relative "../llm/engine/gpt2_seq_engine"
 require_relative "../llm/adamw"
 

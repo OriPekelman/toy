@@ -18,7 +18,7 @@
 
 require_relative "toy/models/transformer"
 require_relative "toy/models/gpt2"
-require_relative "tinynn"
+require_relative "toy/ffi/tinynn"
 
 # Per-block tensor handles. Distinct class from BlockFFICache (in
 # lib/tinynn.rb) to avoid Spinel collapsing :ptr-array ivars across

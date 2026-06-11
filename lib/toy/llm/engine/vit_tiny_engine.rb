@@ -22,7 +22,7 @@
 # helper arrays seed-and-pop with concrete element types.
 
 require_relative "../../models/transformer"
-require_relative "../../../tinynn"
+require_relative "../../ffi/tinynn"
 require_relative "../../models/toy_vit"
 require_relative "../../models/toy_smollm2"   # for Toy::RopeScaling stub (unused, but consistent)
 

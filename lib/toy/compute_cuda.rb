@@ -23,7 +23,7 @@
 # compute.rb: Spinel-only, never require from the CRuby CLI.
 
 # FFI compute layer: CUDA TinyNN + the MRI-safe sugar (Mat + Card).
-require_relative "../tinynn_cuda"
+require_relative "ffi/tinynn_cuda"
 require_relative "../toy"
 
 # Models + configs (shared — pure model/config code, no backend calls).

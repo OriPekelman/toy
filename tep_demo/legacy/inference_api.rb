@@ -10,7 +10,7 @@
 # Bench: wrk -t4 -c64 -d10s "http://localhost:4567/generate?n=5"
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 require_relative "../vendor/spinel/deps"
 
 VOCAB    = 16

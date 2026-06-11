@@ -1,17 +1,17 @@
-# CUDA-flavored FFI bridge (sibling of lib/tinynn.rb).
+# CUDA-flavored FFI bridge (sibling of lib/toy/ffi/tinynn.rb).
 #
-# Same API surface as lib/tinynn.rb — same `TinyNNCuda.matmul(a, b)`
+# Same API surface as lib/toy/ffi/tinynn.rb — same `TinyNNCuda.matmul(a, b)`
 # semantics — but links against the CUDA-built ggml backend and asks
 # tnn_session_new for the CUDA device. Drivers that need CPU use
-# `require_relative "lib/tinynn"`; drivers that need GPU use
-# `require_relative "lib/tinynn_cuda"`. We deliberately do *not* try to
+# `require_relative "lib/toy/ffi/tinynn"`; drivers that need GPU use
+# `require_relative "lib/toy/ffi/tinynn_cuda"`. We deliberately do *not* try to
 # pick at runtime: spinel's FFI library linkage is static so a single
 # binary either has the CUDA archives linked in or it doesn't.
 #
 # Build: `make ab-smoke-cuda` (requires `make setup-ggml-cuda` to have
 # produced vendor/ggml/build-cuda first).
 
-# Same AdamStepResult definition as lib/tinynn.rb — drivers require
+# Same AdamStepResult definition as lib/toy/ffi/tinynn.rb — drivers require
 # exactly one of {tinynn, tinynn_cuda} so we duplicate to keep each
 # file self-sufficient.
 class AdamStepResult
@@ -23,7 +23,7 @@ class AdamStepResult
   end
 end
 
-# Same as FFNFFICache in lib/tinynn.rb but uses TinyNNCuda. The class
+# Same as FFNFFICache in lib/toy/ffi/tinynn.rb but uses TinyNNCuda. The class
 # name differs so that drivers requiring BOTH modules (e.g. the CUDA
 # parity smoke loads tinynn_cuda directly, and lib/transformer.rb
 # transitively pulls in tinynn) don't trip Spinel's same-class-defined-
@@ -242,7 +242,7 @@ module TinyNNCuda
   ffi_func :tnn_input_3d_persistent_mmap, [:ptr, :int, :int, :int, :int, :size_t], :ptr
   ffi_func :tnn_input_1d_persistent_mmap, [:ptr, :int, :int, :size_t], :ptr
   # GGUF accessors — same C symbols as TinyNN; exposed here so CUDA-
-  # only demos can avoid pulling in lib/tinynn.rb (which drags in extra
+  # only demos can avoid pulling in lib/toy/ffi/tinynn.rb (which drags in extra
   # CPU-side classes that can trip Spinel's type unifier).
   ffi_func :tnn_gguf_load,                  [:str],           :ptr
   ffi_func :tnn_gguf_free,                  [:ptr],           :void
@@ -789,7 +789,7 @@ module TinyNNCuda
     AdamStepResult.new(new_param, new_mom_m, new_mom_v)
   end
 
-  # ----- Persistent-session API (mirrors TinyNN's; see lib/tinynn.rb) -----
+  # ----- Persistent-session API (mirrors TinyNN's; see lib/toy/ffi/tinynn.rb) -----
   def self.persistent_new(prefer_cuda);  TinyNNCuda.tnn_session_new(prefer_cuda); end
   def self.persistent_free(sess);        TinyNNCuda.tnn_session_free(sess); end
   def self.alloc_2d(sess, r, c);         TinyNNCuda.tnn_input_2d_f32(sess, r, c); end
@@ -1090,7 +1090,7 @@ class FullForwardFFICacheCuda
   end
 end
 
-# Spinel anchor block: mirror of the one at the end of lib/tinynn.rb,
+# Spinel anchor block: mirror of the one at the end of lib/toy/ffi/tinynn.rb,
 # this time pinning TinyNNCuda.upload_int_array's `indices` param to
 # Array<Int>. Without this, library-style methods with no reachable
 # caller default `indices` to mrb_int, the `:int_array` FFI spec's
