@@ -6,7 +6,7 @@
 # GGUF_PATH below to point at whichever file you want to inspect.
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 GGUF_PATH  = "data/distilgpt2-f32.gguf"
 SHOW_VALS  = 4   # first N float values to print per tensor

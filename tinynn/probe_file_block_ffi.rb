@@ -3,7 +3,7 @@
 # FFI init. Verify current Spinel HEAD a03bb49 fixes it.
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 # Pin Mat by touching it once so Spinel resolves sp_Mat.
 m = Mat.new(2, 2)

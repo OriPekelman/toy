@@ -8,7 +8,7 @@
 # the per-iteration cost — most of which is currently graph alloc.
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 T   = 8
 DM  = 16

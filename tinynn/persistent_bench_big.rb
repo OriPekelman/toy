@@ -3,7 +3,7 @@
 # just at the toy shapes. Native Mat#matmul is included for reference.
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 T     = 64
 DM    = 512

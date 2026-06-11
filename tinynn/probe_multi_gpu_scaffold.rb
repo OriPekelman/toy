@@ -12,7 +12,7 @@
 # this with kind=1 device=1 to validate.
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 m = Mat.new(2, 2); m.flat[0] = 1.0
 

@@ -2,7 +2,7 @@
 # the persistent session vs hand-rolled native FFN values.
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 def gelu_native(x)
   c = 0.7978845608028654

@@ -2,7 +2,7 @@
 # Path is hardcoded; flip GGUF_PATH to inspect different models.
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 GGUF_PATH = ENV["GGUF"] || "data/qwen25-1.5b-native.gguf"
 

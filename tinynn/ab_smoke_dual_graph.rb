@@ -14,7 +14,7 @@
 #   4. switch_a + compute -> result2 should equal NEW t_w (differs from result1)
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 rows = 3
 cols = 4

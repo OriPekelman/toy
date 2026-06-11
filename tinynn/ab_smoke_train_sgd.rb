@@ -9,7 +9,7 @@
 # SGD subtracting lr * gradient should reduce |y| → reduce loss.
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 K = 3
 OUT = 2

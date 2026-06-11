@@ -14,7 +14,7 @@
 # kernel or two separate ones (silu then mul) per layer.
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn_cuda"
+require_relative "../lib/toy/ffi/tinynn_cuda"
 
 # Llama-1.5B FFN shape: d_model=1536, d_ff=8960, T=256.
 D_FF     = (ENV["D_FF"]     || "8960").to_i

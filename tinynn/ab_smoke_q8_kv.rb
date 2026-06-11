@@ -14,7 +14,7 @@
 # input (Q8_0 has ~1/128 step at unit scale). RMS error < 0.005.
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 GGML_TYPE_F32  = 0
 GGML_TYPE_Q8_0 = 8

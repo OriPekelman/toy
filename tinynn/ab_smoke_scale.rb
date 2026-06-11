@@ -3,7 +3,7 @@
 # native side to keep semantics out-of-place for comparison.
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 def scale_native(a, s)
   out = Mat.new(a.nrows, a.ncols)

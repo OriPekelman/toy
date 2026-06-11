@@ -9,7 +9,7 @@
 # graph via ggml_build_backward_expand (Phase F0.4).
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 D_HEAD = 4
 ROPE_BASE = 10000.0

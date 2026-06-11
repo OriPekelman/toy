@@ -8,7 +8,7 @@
 #   ./tinynn/gguf_smoke data/tinystories.gguf
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 def ggml_type_name(t)
   if t == 0

@@ -3,7 +3,7 @@
 #   c = sqrt(2/π);  u = c * (x + 0.044715 * x^3);  y = 0.5 * x * (1 + tanh(u))
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 def gelu_native(x)
   c = 0.7978845608028654   # sqrt(2/pi)

@@ -10,7 +10,7 @@
 # correctly and ready for GH#9's master-copy mixed-precision pattern.
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 # Pin Mat type so sp_Mat resolves.
 m = Mat.new(2, 2); m.flat[0] = 1.0

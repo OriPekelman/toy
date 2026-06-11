@@ -7,7 +7,7 @@
 #   dx = dh * dy/dx
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 def gelu_back_native(x, dh)
   c = 0.7978845608028654

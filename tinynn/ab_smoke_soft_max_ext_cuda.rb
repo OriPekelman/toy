@@ -9,8 +9,8 @@
 #   t_attn = TinyNN.tnn_soft_max_ext(@sess, t_scores, t_mask_or_null, scale, 0.0)
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
-require_relative "../lib/tinynn_cuda"
+require_relative "../lib/toy/ffi/tinynn"
+require_relative "../lib/toy/ffi/tinynn_cuda"
 
 ROWS  = 4
 COLS  = 16

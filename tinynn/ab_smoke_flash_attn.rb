@@ -19,7 +19,7 @@
 # n_head=1.
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 D_HEAD = 4
 T_Q    = 1

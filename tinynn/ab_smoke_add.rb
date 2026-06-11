@@ -2,7 +2,7 @@
 # Run via `make ab-smoke-add`.
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 a = Mat.new(2, 3)
 a.flat[0] = 1.5;  a.flat[1] = 2.5;  a.flat[2] = -3.0

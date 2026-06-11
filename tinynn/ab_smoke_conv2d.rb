@@ -15,7 +15,7 @@
 #   stride 1, no padding → output ne=[3, 3, 2, 1] = 18 floats
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 OUT = ENV["OUT"] || "/tmp/conv2d_ref.json"
 W = 4; H = 4; IC = 3; N = 1

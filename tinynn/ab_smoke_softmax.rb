@@ -3,7 +3,7 @@
 #   for each row: subtract row max, exp, divide by row sum.
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 def softmax_native(x)
   out = Mat.new(x.nrows, x.ncols)

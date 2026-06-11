@@ -5,7 +5,7 @@
 #     y[r,c] = x[r,c] / rms * gamma[c]
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 def rms_norm_native(x, gamma, eps)
   out = Mat.new(x.nrows, x.ncols)

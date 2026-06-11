@@ -1,5 +1,5 @@
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 class NativeProbe
   def self.check(path)
