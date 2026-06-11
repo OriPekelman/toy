@@ -24,16 +24,11 @@
 # THE API — Toy::LLM::Recipes::LoRA:
 #   realize!(gguf, cfg, rank, opts)  — mmap base + attach rank-R adapters
 #   step!(ids, pos, labels, hp, is_first) — same contract as the siblings
-# NOTE: LoRA is required DIRECTLY (not part of the one-require
-# toy/compute surface yet — Spinel constructor-slot inference, toy#52).
+# LoRA rides the one-require compute surface like its siblings (re-added
+# by toy#52 once the toy#64 reshape dissolved the spinel-dev#12 facet).
 # The CLI form of this example is `toy train lora`.
 
-require_relative "../lib/toy"
-require_relative "../lib/toy/models/toy_smollm2"
-require_relative "../lib/toy/io/loaders/toy_smollm2_loader"
-require_relative "../lib/toy/llm/engine/llama_seq_engine"
-require_relative "../lib/toy/llm/adamw"
-require_relative "../lib/toy/llm/recipes/lora"
+require_relative "../lib/toy/compute"
 
 GGUF      = ENV["GGUF"]  || "data/smollm2-135m-native.gguf"
 RANK      = (ENV["RANK"]  || "8").to_i

@@ -30,14 +30,7 @@
 # The donor read itself is plain GGUF plumbing (open, read one tensor,
 # free) — the recipe deliberately only owns the upload mechanism.
 
-require_relative "../lib/toy"
-require_relative "../lib/toy/models/toy_smollm2"
-require_relative "../lib/toy/llm/engine/llama_seq_engine"
-require_relative "../lib/toy/io/toy_corpus_loader"
-require_relative "../lib/toy/train/toy_lr_schedule"
-require_relative "../lib/toy/llm/adamw"
-require_relative "../lib/toy/llm/training_batch"
-require_relative "../lib/toy/llm/recipes/warm_start"
+require_relative "../lib/toy/compute"
 
 STEPS      = (ENV["STEPS"] || "20").to_i
 SEED       = (ENV["SEED"]  || "0").to_i

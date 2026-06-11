@@ -26,11 +26,10 @@
 #   Toy::AdamW.for_from_scratch  — the optimizer hyper-params, named
 #   Toy::RunBundle               — the runs/<id>/events.jsonl writer
 #
-# Everything compute rides ONE require (lib/toy/compute.rb). The corpus
-# streamer is the one extra: it lives outside the compute surface.
+# Everything — compute, loaders, schedules, the run bundle — rides ONE
+# require (lib/toy/compute.rb).
 
 require_relative "../lib/toy/compute"
-require_relative "../lib/toy/io/toy_corpus_loader"
 
 STEPS  = (ENV["STEPS"]  || "30").to_i
 SEED   = (ENV["SEED"]   || "0").to_i

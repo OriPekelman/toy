@@ -376,3 +376,27 @@ module GGUFLoad
   def self.detect_smollm2_flags: (String path) -> GGUFLoad::SmolLM2Flags
   def self.detect_weight_type: (String path) -> Integer
 end
+
+# ============================================================================
+# Training I/O + LR schedule (toy#73 item 2) — folded into the compute
+# entries; top-level modules, ptr-free.
+# ============================================================================
+# ---- ToyLR (lib/toy/train/toy_lr_schedule.rb) ------------------------------
+module ToyLR
+  def self.cosine: (Integer step, Integer n_steps, Float lr_max,
+                    Float lr_min, Integer warmup_steps) -> Float
+  def self.constant: (Integer step, Float lr) -> Float
+end
+
+# ---- ToyCorpusLoader (lib/toy/io/toy_corpus_loader.rb) ---------------------
+module ToyCorpusLoader
+  def self.read_seq: (String path, Integer byte_offset,
+                      Integer n_tokens) -> Array[Integer]
+end
+
+# ---- ToyImageLoader (lib/toy/io/toy_image_loader.rb) -----------------------
+module ToyImageLoader
+  def self.read_image: (String images_path, Integer image_idx,
+                        Integer record_floats) -> Array[Float]
+  def self.read_label: (String labels_path, Integer image_idx) -> Integer
+end

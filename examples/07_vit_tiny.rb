@@ -26,12 +26,7 @@
 # one-hot class label — where the LLM recipes take token ids and
 # shift-by-one labels. No CLI surface for ViT yet; this file is it.
 
-require_relative "../lib/toy/models/toy_vit"
-require_relative "../lib/toy/llm/engine/vit_tiny_engine"
-require_relative "../lib/toy/io/toy_image_loader"
-require_relative "../lib/toy/train/toy_lr_schedule"
-require_relative "../lib/toy/llm/recipes/vit_tiny"
-require_relative "../lib/toy/llm/adamw"
+require_relative "../lib/toy/compute"
 
 STEPS   = (ENV["STEPS"] || "20").to_i
 SEED    = (ENV["SEED"]  || "0").to_i

@@ -54,6 +54,15 @@ require_relative "llm/recipes/lora_cuda"
 require_relative "io/gguf_load"
 require_relative "io/tokenizer"
 
+# Training I/O + schedule (toy#73 item 2): corpus loader + image loader +
+# cosine LR schedule. SHARED with the CPU entry (file I/O through C helpers
+# in libtinynn_ggml.a + pure Ruby) — see compute.rb's note. The image
+# loader rides along even though vit training stays CPU-only this arc
+# (the loader is backend-free; the missing piece is the engine/recipe).
+require_relative "io/toy_corpus_loader"
+require_relative "io/toy_image_loader"
+require_relative "train/toy_lr_schedule"
+
 # AdamW + labels + the validating batch wrapper (shared, pure Ruby).
 require_relative "llm/adamw"
 require_relative "llm/labels"
