@@ -317,16 +317,23 @@ module Toy
           # device. Usage: ./build.sh [cpu] [cuda] [metal]   (default: cpu)
           set -e
           devs="${*:-cpu}"
+          # RBS type roots (toy#69 / spinelgems#13): `spinel-compat vendor`
+          # aggregates every vendored gem's sig/ (toy's included) under
+          # vendor/spinel/sig and advertises it in vendor/spinel/deps.rb.
+          # Seeding the analyzer with it keeps UNCALLED gem methods at
+          # their declared types (advisory; safe to omit).
+          rbs=""
+          [ -d vendor/spinel/sig ] && rbs="--rbs vendor/spinel/sig"
           for dev in $devs; do
             entry="main_$dev.rb"
             out="experiment_$dev"
             case "$dev" in
               cpu)
-                spinel "$entry" -o "$out" ;;
+                spinel $rbs "$entry" -o "$out" ;;
               cuda)
-                spinel --cc='cc -Wl,-u,tnn_cuda_force_link' "$entry" -o "$out" ;;
+                spinel $rbs --cc='cc -Wl,-u,tnn_cuda_force_link' "$entry" -o "$out" ;;
               metal)
-                spinel --cc='cc -Wl,-u,_tnn_metal_force_link -framework Foundation -framework Metal -framework MetalKit' "$entry" -o "$out" ;;
+                spinel $rbs --cc='cc -Wl,-u,_tnn_metal_force_link -framework Foundation -framework Metal -framework MetalKit' "$entry" -o "$out" ;;
               *)
                 echo "build.sh: unknown device '$dev' (want cpu|cuda|metal)" >&2
                 exit 2 ;;

@@ -61,6 +61,13 @@ Gem::Specification.new do |s|
     "Makefile",
     "prep/quietly", "prep/progress",
     "lib/**/*.rb",
+    # sig/*.rbs type roots (toy#69): `spinel-compat vendor` copies sig/
+    # alongside lib/ and aggregates it into the consumer's single
+    # `--rbs vendor/spinel/sig` root (spinelgems#13), so UNCALLED toy
+    # methods in consumer builds keep their declared types instead of
+    # poly-widening (spinel-dev#11/#12). The tracked-filter keeps the
+    # machine-generated sig/vendor symlink out.
+    "sig/**/*.rbs",
     "vendor-patches/*.patch",
     "tinynn/tinynn_ggml.h",   "tinynn/tinynn_ggml.c",
     "tinynn/tinynn_gguf.h",   "tinynn/tinynn_gguf.c",

@@ -52,11 +52,31 @@ unless File.executable?(SPINEL)
   exit 2
 end
 
+# toy#69 — seed the analyzer with sig/*.rbs exactly like the Makefile's
+# $(SPINEL) wrapper does, so this gate scans the SAME compile the runners
+# ship from. Override with SPINEL_RBS (e.g. SPINEL_RBS="" to scan an
+# unseeded compile when bisecting whether a warning comes from inference
+# or from a seed).
+RBS_ARGS = if ENV.key?("SPINEL_RBS")
+             ENV["SPINEL_RBS"].split(" ")
+           else
+             ["--rbs", File.join(ROOT, "sig")]
+           end
+
 # Compile one entrypoint and return the sorted-unique set of emit-0 resolve
 # warnings, each prefixed with the entrypoint so a regression names its file.
 def scan(entry)
   out_bin = "/tmp/poly_degrade_#{File.basename(entry, '.rb')}_#{Process.pid}"
-  stdout_err, _status = Open3.capture2e(SPINEL, entry, "-o", out_bin, chdir: ROOT)
+  stdout_err, status = Open3.capture2e(SPINEL, *RBS_ARGS, entry, "-o", out_bin, chdir: ROOT)
+  # Fail LOUD on a failed compile (toy#69): a broken build emits ZERO
+  # emit-0 warnings and would otherwise sail through as "clean" — this
+  # exact masking hid a wrong-arity RBS seed breaking toy-infer's C
+  # compile while the gate stayed green.
+  unless status.success?
+    warn "GATE FAIL [poly-degrade]: #{entry} did not compile (spinel exit #{status.exitstatus})"
+    warn stdout_err.lines.last(15).join
+    exit 1
+  end
   FileUtils.rm_f(out_bin)
   found = []
   stdout_err.each_line do |line|
