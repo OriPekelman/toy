@@ -10,7 +10,7 @@
 #
 # Defaults to 0.5B F32 for quick smoke checks.
 
-require_relative "../lib/toy_smollm2_ffi_kv"
+require_relative "../lib/toy/llm/engine/llama_kv_engine"
 require_relative "../lib/toy/io/loaders/toy_smollm2_loader"
 
 GGUF  = ENV["GGUF"]  || "data/qwen25-0.5b-native.gguf"

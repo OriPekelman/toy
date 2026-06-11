@@ -39,7 +39,7 @@ require_relative "llm/engine/llama_seq_engine_cuda"
 require_relative "llm/engine/gpt2_seq_engine_cuda"
 
 # KV-cache decode engine (inference), CUDA mirror.
-require_relative "../toy_smollm2_ffi_kv_cuda"
+require_relative "llm/engine/llama_kv_engine_cuda"
 
 # Recipes — the hand-maintained CUDA twins. Exclusions mirror the CPU
 # entry's where they exist and the backend's gaps where they don't:

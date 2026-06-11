@@ -41,7 +41,7 @@ require_relative "llm/engine/vit_tiny_engine"
 require_relative "llm/engine/gpt2_seq_engine"
 
 # KV-cache decode engine (inference).
-require_relative "../toy_smollm2_ffi_kv"
+require_relative "llm/engine/llama_kv_engine"
 
 # Recipes — the named training/init compositions. Realize-path orchestration
 # over the engines.

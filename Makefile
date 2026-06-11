@@ -249,14 +249,14 @@ help:
 # NOT in MIRRORABLE (see prep/gen_cuda_mirror.rb).
 libexec:
 	mkdir -p libexec
-libexec/toy-infer: lib/toy/run/infer.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a | libexec
+libexec/toy-infer: lib/toy/run/infer.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a | libexec
 	$(SPINEL) $< -o $@
 toy-infer: libexec/toy-infer
 
 # Diagnostic sibling of toy-infer: enables the cache trace and dumps per-tap
 # min/max/|mean|/nan for every layer (used to localize ggml#1506 — the K-quant
 # MoE attention head_nbytes collapse). See docs/notes/mul_mat_id_quants.md.
-libexec/toy-infer-trace: lib/toy/run/infer_trace.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a | libexec
+libexec/toy-infer-trace: lib/toy/run/infer_trace.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a | libexec
 	$(SPINEL) $< -o $@
 toy-infer-trace: libexec/toy-infer-trace
 
@@ -266,7 +266,7 @@ toy-infer-trace: libexec/toy-infer-trace
 # locates it. Deps = infer's deps + lib/toy/dev/toy_logprobs.rb (a transitive require
 # of transformer_lm; listed explicitly so a touch of it rebuilds the runner).
 # CPU-only; NOT in MIRRORABLE (see prep/gen_cuda_mirror.rb).
-libexec/toy-eval: lib/toy/run/eval.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/io/tokenizer.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a | libexec
+libexec/toy-eval: lib/toy/run/eval.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/io/tokenizer.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a | libexec
 	$(SPINEL) $< -o $@
 toy-eval: libexec/toy-eval
 
@@ -290,11 +290,11 @@ toy-eval-lmc: libexec/toy-eval-lmc
 # hand-written lib/toy/run/{infer,eval}_cuda.rb (ToyLMCuda ctor arity 1 →
 # NOT mechanically mirrorable → ABSENT from MIRRORABLE, like the CPU runners).
 # Force-link recipe matches every other cuda target (-Wl,-u,tnn_cuda_force_link).
-libexec/toy-infer-cuda: lib/toy/run/infer_cuda.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm_cuda.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_cuda.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) | libexec
+libexec/toy-infer-cuda: lib/toy/run/infer_cuda.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm_cuda.rb lib/toy/llm/engine/llama_kv_engine_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_cuda.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) | libexec
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 toy-infer-cuda: libexec/toy-infer-cuda
 
-libexec/toy-eval-cuda: lib/toy/run/eval_cuda.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm_cuda.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_cuda.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) | libexec
+libexec/toy-eval-cuda: lib/toy/run/eval_cuda.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm_cuda.rb lib/toy/llm/engine/llama_kv_engine_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_cuda.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) | libexec
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 toy-eval-cuda: libexec/toy-eval-cuda
 
@@ -307,14 +307,14 @@ toy-eval-cuda: libexec/toy-eval-cuda
 # with the leading-underscore force-link symbol (_tnn_metal_force_link, macOS
 # symbol convention) vs cuda's tnn_cuda_force_link. libtinynn_ggml.a (CPU
 # archive) stays in deps for the base ggml symbols. gx10 RUNTIME-UNVERIFIED.
-libexec/toy-infer-metal: lib/toy/run/infer_metal.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm_metal.rb lib/toy_smollm2_ffi_kv_metal.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_metal.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_metal.a $(SPINEL_DEPS) | libexec
+libexec/toy-infer-metal: lib/toy/run/infer_metal.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm_metal.rb lib/toy/llm/engine/llama_kv_engine_metal.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_metal.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_metal.a $(SPINEL_DEPS) | libexec
 ifneq ($(UNAME_S),Darwin)
 	@echo "toy-infer-metal: macOS-only"; exit 1
 endif
 	$(SPINEL) --cc='cc -Wl,-u,_tnn_metal_force_link -framework Foundation -framework Metal -framework MetalKit' $< -o $@
 toy-infer-metal: libexec/toy-infer-metal
 
-libexec/toy-eval-metal: lib/toy/run/eval_metal.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm_metal.rb lib/toy_smollm2_ffi_kv_metal.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_metal.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_metal.a $(SPINEL_DEPS) | libexec
+libexec/toy-eval-metal: lib/toy/run/eval_metal.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm_metal.rb lib/toy/llm/engine/llama_kv_engine_metal.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_metal.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_metal.a $(SPINEL_DEPS) | libexec
 ifneq ($(UNAME_S),Darwin)
 	@echo "toy-eval-metal: macOS-only"; exit 1
 endif
@@ -657,18 +657,18 @@ libexec/toy-serve: lib/toy/run/serve.rb vendor/spinel/spinel_kit/lib/spinel_kit/
 		lib/toy/serve/openai/server.rb \
 		lib/toy/serve/openai/handlers.rb lib/toy/serve/openai/embeddings_handler.rb \
 		vendor/spinel/tep/lib/tep.rb \
-		lib/toy_smollm2_ffi_kv.rb lib/toy/io/loaders/toy_smollm2_loader.rb \
+		lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb \
 		tinynn/libtinynn_ggml.a | libexec
 	$(SPINEL) $< -o $@
 toy-serve: libexec/toy-serve
 
 # toy#gguf-checkpoint-reload (#153) — smoke binary that loads a
 # from-scratch toy GGUF and runs a tiny generation. No tokenizer.
-examples/smoke_toy_ckpt_reload: examples/smoke_toy_ckpt_reload.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a
+examples/smoke_toy_ckpt_reload: examples/smoke_toy_ckpt_reload.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 # toy#embed-api (#145) — smoke for ToyLM#embed_lookup.
-examples/smoke_embed_api: examples/smoke_embed_api.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/io/tokenizer.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a
+examples/smoke_embed_api: examples/smoke_embed_api.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/io/tokenizer.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 # P1 framework refactor — runtime Card derivation smoke. Loads a
@@ -678,7 +678,7 @@ examples/smoke_card_derive: examples/smoke_card_derive.rb lib/toy.rb lib/toy/mod
 	$(SPINEL) $< -o $@
 
 # toy#decode-logprobs (#151) — smoke for ToyLM#decode_step_with_logprobs.
-examples/smoke_decode_logprobs: examples/smoke_decode_logprobs.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/io/tokenizer.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a
+examples/smoke_decode_logprobs: examples/smoke_decode_logprobs.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/io/tokenizer.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 # GH#18 — LMC interpolate-and-eval runner.
@@ -706,7 +706,7 @@ examples/smoke_compute_surface: examples/smoke_compute_surface.rb lib/toy/comput
 examples/smoke_compute_surface_cuda: examples/smoke_compute_surface_cuda.rb lib/toy/compute_cuda.rb \
 		lib/toy/llm/training_batch.rb lib/toy/llm/recipe_options.rb \
 		lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/llm/engine/gpt2_seq_engine_cuda.rb \
-		lib/toy_smollm2_ffi_kv_cuda.rb \
+		lib/toy/llm/engine/llama_kv_engine_cuda.rb \
 		lib/toy/llm/recipes/from_scratch_cuda.rb lib/toy/llm/recipes/warm_start_cuda.rb \
 		lib/toy/llm/primitives/rms_norm_cuda.rb lib/toy/llm/primitives/rope_cuda.rb \
 		lib/toy/llm/primitives/swiglu_cuda.rb lib/toy/llm/primitives/gqa_cuda.rb \
@@ -848,7 +848,7 @@ example_finetune_cuda: examples/example_finetune_cuda
 # weak-symbol resolution. macOS expects a leading underscore on
 # external symbols, hence `-Wl,-u,_tnn_metal_force_link`.
 # Frameworks (Foundation/Metal/MetalKit) are linked via -framework.
-examples/example_inference_metal: examples/legacy/01_inference_metal.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm_metal.rb lib/toy_smollm2_ffi_kv_metal.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_metal.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_metal.a
+examples/example_inference_metal: examples/legacy/01_inference_metal.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm_metal.rb lib/toy/llm/engine/llama_kv_engine_metal.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_metal.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_metal.a
 ifneq ($(UNAME_S),Darwin)
 	@echo "example_inference_metal: macOS-only"; exit 1
 endif
@@ -918,7 +918,7 @@ MIRROR_CUDA := \
   lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/llm/engine/gpt2_seq_engine_cuda.rb \
   lib/toy/llm/recipes/from_scratch_cuda.rb lib/toy/llm/recipes/lora_cuda.rb \
   lib/toy/llm/recipes/warm_start_cuda.rb \
-  lib/toy_smollm2_ffi_kv_cuda.rb \
+  lib/toy/llm/engine/llama_kv_engine_cuda.rb \
   lib/gpt2_ffi_cuda.rb lib/gpt2_ffi_kv_cuda.rb \
   examples/06_train_from_scratch_cuda.rb examples/smoke_projection_lens_cuda.rb
 MIRROR_METAL := $(MIRROR_CUDA:_cuda.rb=_metal.rb)
@@ -1390,80 +1390,80 @@ demos/smollm2: demos/smollm2.rb lib/toy/dev/toy_card.rb lib/toy.rb lib/toy/model
 
 # SmolLM2-135M FFI KV-cache (CPU).
 smollm2_kv:        demos/smollm2_kv
-demos/smollm2_kv: demos/smollm2_kv.rb lib/toy/dev/toy_card.rb lib/toy.rb lib/toy/models/toy_smollm2.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy_smollm2_ffi_kv.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/train/training.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
+demos/smollm2_kv: demos/smollm2_kv.rb lib/toy/dev/toy_card.rb lib/toy.rb lib/toy/models/toy_smollm2.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/train/training.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 # Qwen2.5 Mat-mediated KV-cache (CPU). The slow, correct reference path.
 # Run with `GGUF=data/qwen25-1.5b-f32.gguf ./demos/qwen25_kv` etc.
 qwen25_kv:        demos/qwen25_kv
-demos/qwen25_kv: demos/qwen25_kv.rb lib/toy/dev/toy_card.rb lib/toy.rb lib/toy/models/toy_smollm2.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy_smollm2_ffi_kv.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/train/training.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
+demos/qwen25_kv: demos/qwen25_kv.rb lib/toy/dev/toy_card.rb lib/toy.rb lib/toy/models/toy_smollm2.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/train/training.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 # Qwen2.5 Phase-2 mmap inference (CPU). Canonical performance path.
 qwen25_native_mmap:        demos/qwen25_native_mmap
-demos/qwen25_native_mmap: demos/qwen25_native_mmap.rb lib/toy_smollm2_ffi_kv.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/train/training.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
+demos/qwen25_native_mmap: demos/qwen25_native_mmap.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/train/training.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 # Phase 0.7 acceptance gates: 0.5B (f32 + Q8) + 1.5B + 3B greedy-decode
 # parity against locked-in golden token-ID sequences. Run before tagging
 # a release; see docs/design/phase-07-acceptance.md.
 qwen25_acceptance:        demos/qwen25_acceptance
-demos/qwen25_acceptance: demos/qwen25_acceptance.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy_smollm2_ffi_kv.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
+demos/qwen25_acceptance: demos/qwen25_acceptance.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 # Inference bench (CPU). Long warmup + long prefill + per-token stats.
 # Pick model via GGUF env; see docs/design/bench-cuda-2026-05-21.md.
 qwen25_bench_cpu:        demos/qwen25_bench_cpu
-demos/qwen25_bench_cpu: demos/qwen25_bench_cpu.rb lib/toy_smollm2_ffi_kv.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
+demos/qwen25_bench_cpu: demos/qwen25_bench_cpu.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 # Inference bench (CUDA). Same shape as the CPU bench for side-by-side.
 qwen25_bench_cuda:        demos/qwen25_bench_cuda
-demos/qwen25_bench_cuda: demos/qwen25_bench_cuda.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS)
+demos/qwen25_bench_cuda: demos/qwen25_bench_cuda.rb lib/toy/llm/engine/llama_kv_engine_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS)
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 
 # F1.2 step 2: LoRA-Q forward-parity gate. Loads SmolLM2-135M twice
 # (baseline + LoRA r=16 B=0), asserts bit-identical generated IDs.
 smollm2_lora_forward:        demos/smollm2_lora_forward
-demos/smollm2_lora_forward: demos/smollm2_lora_forward.rb lib/toy_smollm2_ffi_kv.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
+demos/smollm2_lora_forward: demos/smollm2_lora_forward.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 # F1.2 step 3: backward through the full SmolLM2 decode graph,
 # layer-0 LoRA-Q updated via SGD. Requires the vendored CONCAT
 # backward in vendor/ggml/src/ggml.c.
 smollm2_lora_train_step:        demos/smollm2_lora_train_step
-demos/smollm2_lora_train_step: demos/smollm2_lora_train_step.rb lib/toy_smollm2_ffi_kv.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
+demos/smollm2_lora_train_step: demos/smollm2_lora_train_step.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 # F1.2 step 4: all-layers LoRA-Q SGD on real CE loss against a rare
 # target token. 540 opt_step nodes (30 layers × 9 heads × 2 params).
 # Acceptance: monotonic decrease over 20 steps.
 smollm2_lora_train_ce:        demos/smollm2_lora_train_ce
-demos/smollm2_lora_train_ce: demos/smollm2_lora_train_ce.rb lib/toy_smollm2_ffi_kv.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
+demos/smollm2_lora_train_ce: demos/smollm2_lora_train_ce.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 # F2 step 1: CUDA mirror of the LoRA forward parity gate.
 smollm2_lora_forward_cuda:        demos/smollm2_lora_forward_cuda
-demos/smollm2_lora_forward_cuda: demos/smollm2_lora_forward_cuda.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
+demos/smollm2_lora_forward_cuda: demos/smollm2_lora_forward_cuda.rb lib/toy/llm/engine/llama_kv_engine_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 
 # F2 step 2: CUDA mirror of the multi-layer SGD CE training smoke.
 smollm2_lora_train_ce_cuda:        demos/smollm2_lora_train_ce_cuda
-demos/smollm2_lora_train_ce_cuda: demos/smollm2_lora_train_ce_cuda.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
+demos/smollm2_lora_train_ce_cuda: demos/smollm2_lora_train_ce_cuda.rb lib/toy/llm/engine/llama_kv_engine_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 
 # Task #70 diagnostic — same CE smoke but with every graph_b node
 # pinned. Confirms sched intermediate-grad aliasing is the CPU
 # divergence's root cause. See docs/design/task70-root-cause-2026-05-21.md.
 smollm2_lora_train_ce_pinned:        demos/smollm2_lora_train_ce_pinned
-demos/smollm2_lora_train_ce_pinned: demos/smollm2_lora_train_ce_pinned.rb lib/toy_smollm2_ffi_kv.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
+demos/smollm2_lora_train_ce_pinned: demos/smollm2_lora_train_ce_pinned.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 # F1.2 step 5: AdamW training with per-step m/v preservation via
 # tnn_graph_reset_grads_only. Converges 7.5 → 0.09 in 20 SGD steps
 # at LR=1e-3 — proper SFT-shaped learning curve.
 smollm2_lora_train_adamw_cuda:        demos/smollm2_lora_train_adamw_cuda
-demos/smollm2_lora_train_adamw_cuda: demos/smollm2_lora_train_adamw_cuda.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
+demos/smollm2_lora_train_adamw_cuda: demos/smollm2_lora_train_adamw_cuda.rb lib/toy/llm/engine/llama_kv_engine_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 
 # F1.2 step 6a: multi-target AdamW SFT-shaped training. Cycles through
@@ -1471,14 +1471,14 @@ demos/smollm2_lora_train_adamw_cuda: demos/smollm2_lora_train_adamw_cuda.rb lib/
 # drop on average + per-target. 10.8 → 3.6 in 10 epochs. Foundation
 # for step 6b (multi-position) and step 7 (real alpaca dataset).
 smollm2_lora_sft_multi_cuda:        demos/smollm2_lora_sft_multi_cuda
-demos/smollm2_lora_sft_multi_cuda: demos/smollm2_lora_sft_multi_cuda.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
+demos/smollm2_lora_sft_multi_cuda: demos/smollm2_lora_sft_multi_cuda.rb lib/toy/llm/engine/llama_kv_engine_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 
 # F1.2 step 6b — multi-position SFT (cycle pos4 / pos5). Validates
 # that persistent Adam m/v (allocated by enable_lora_q_adamw! +
 # realize_for_mmap) survive tnn_reset_for_rebuild between cycles.
 smollm2_lora_sft_multipos_cuda:        demos/smollm2_lora_sft_multipos_cuda
-demos/smollm2_lora_sft_multipos_cuda: demos/smollm2_lora_sft_multipos_cuda.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
+demos/smollm2_lora_sft_multipos_cuda: demos/smollm2_lora_sft_multipos_cuda.rb lib/toy/llm/engine/llama_kv_engine_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 
 # M3 step 1 — sequence-mode forward parity at T=1.
@@ -1486,22 +1486,22 @@ demos/smollm2_lora_sft_multipos_cuda: demos/smollm2_lora_sft_multipos_cuda.rb li
 # SmolLM2KVFFICache + decode_step(id, 0). See
 # docs/design/m3-seq-forward-2026-05-21.md.
 smollm2_seq_parity:        demos/smollm2_seq_parity
-demos/smollm2_seq_parity: demos/smollm2_seq_parity.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy_smollm2_ffi_kv.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
+demos/smollm2_seq_parity: demos/smollm2_seq_parity.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 # M3 step 2 — T=4 trajectory parity (CPU). Per-position seq logits must
 # match the decode_step trajectory; proves causal-mask + multi-pos RoPE.
 smollm2_seq_parity_t4:        demos/smollm2_seq_parity_t4
-demos/smollm2_seq_parity_t4: demos/smollm2_seq_parity_t4.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy_smollm2_ffi_kv.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
+demos/smollm2_seq_parity_t4: demos/smollm2_seq_parity_t4.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 # M3 step 2 — CUDA mirror. T=1 and T=4 vs CPU decode_step trajectory.
 smollm2_seq_parity_cuda:        demos/smollm2_seq_parity_cuda
-demos/smollm2_seq_parity_cuda: demos/smollm2_seq_parity_cuda.rb lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy_smollm2_ffi_kv.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
+demos/smollm2_seq_parity_cuda: demos/smollm2_seq_parity_cuda.rb lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 
 smollm2_seq_parity_t4_cuda:        demos/smollm2_seq_parity_t4_cuda
-demos/smollm2_seq_parity_t4_cuda: demos/smollm2_seq_parity_t4_cuda.rb lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy_smollm2_ffi_kv.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
+demos/smollm2_seq_parity_t4_cuda: demos/smollm2_seq_parity_t4_cuda.rb lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 
 # M3 step 3 — seq-mode LoRA training smoke (CPU). One forward + backward
@@ -1536,36 +1536,36 @@ demos/seq_train_bench_cuda: demos/seq_train_bench_cuda.rb lib/toy/llm/engine/lla
 # uploads / compute_backward / download separately. Doc:
 # docs/design/bench-train-2026-05-21.md.
 smollm2_lora_train_bench:        demos/smollm2_lora_train_bench
-demos/smollm2_lora_train_bench: demos/smollm2_lora_train_bench.rb lib/toy_smollm2_ffi_kv.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
+demos/smollm2_lora_train_bench: demos/smollm2_lora_train_bench.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 smollm2_lora_train_bench_cuda:        demos/smollm2_lora_train_bench_cuda
-demos/smollm2_lora_train_bench_cuda: demos/smollm2_lora_train_bench_cuda.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
+demos/smollm2_lora_train_bench_cuda: demos/smollm2_lora_train_bench_cuda.rb lib/toy/llm/engine/llama_kv_engine_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 
 # Task #70 grad-magnitude probes (per-layer maxabs(grad_A), maxabs(grad_B)).
 smollm2_lora_grad_probe:        demos/smollm2_lora_grad_probe
-demos/smollm2_lora_grad_probe: demos/smollm2_lora_grad_probe.rb lib/toy_smollm2_ffi_kv.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
+demos/smollm2_lora_grad_probe: demos/smollm2_lora_grad_probe.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 smollm2_lora_grad_probe_cuda:        demos/smollm2_lora_grad_probe_cuda
-demos/smollm2_lora_grad_probe_cuda: demos/smollm2_lora_grad_probe_cuda.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
+demos/smollm2_lora_grad_probe_cuda: demos/smollm2_lora_grad_probe_cuda.rb lib/toy/llm/engine/llama_kv_engine_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 
 # Qwen2.5 Phase-2 mmap inference (CUDA). Requires `make setup-ggml-cuda`.
 qwen25_native_mmap_cuda:        demos/qwen25_native_mmap_cuda
-demos/qwen25_native_mmap_cuda: demos/qwen25_native_mmap_cuda.rb lib/toy.rb lib/toy/models/toy_smollm2.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/train/training.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
+demos/qwen25_native_mmap_cuda: demos/qwen25_native_mmap_cuda.rb lib/toy.rb lib/toy/models/toy_smollm2.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/llm/engine/llama_kv_engine_cuda.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/train/training.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 
 # SmolLM2-135M FFI KV-cache (CUDA).
 smollm2_kv_cuda:        demos/smollm2_kv_cuda
-demos/smollm2_kv_cuda: demos/smollm2_kv_cuda.rb lib/toy/dev/toy_card.rb lib/toy.rb lib/toy/models/toy_smollm2.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/train/training.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
+demos/smollm2_kv_cuda: demos/smollm2_kv_cuda.rb lib/toy/dev/toy_card.rb lib/toy.rb lib/toy/models/toy_smollm2.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/llm/engine/llama_kv_engine_cuda.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/train/training.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
 	$(SPINEL) $< -o $@
 
 # TinyLlama-1.1B demo. Uses the same Toy::SmolLM2 / FFI KV CUDA stack
 # (llama-family architecture); just configured for the larger shape.
 tinyllama_kv_cuda:        demos/tinyllama_kv_cuda
-demos/tinyllama_kv_cuda: demos/tinyllama_kv_cuda.rb lib/toy/dev/toy_card.rb lib/toy.rb lib/toy/models/toy_smollm2.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy_smollm2_ffi_kv_cuda.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/train/training.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
+demos/tinyllama_kv_cuda: demos/tinyllama_kv_cuda.rb lib/toy/dev/toy_card.rb lib/toy.rb lib/toy/models/toy_smollm2.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/llm/engine/llama_kv_engine_cuda.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/train/training.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a
 	$(SPINEL) $< -o $@
 
 tinyllama:        demos/tinyllama
@@ -1573,7 +1573,7 @@ demos/tinyllama: demos/tinyllama.rb lib/toy/dev/toy_card.rb lib/toy.rb lib/toy/m
 	$(SPINEL) $< -o $@
 
 tinyllama_kv:        demos/tinyllama_kv
-demos/tinyllama_kv: demos/tinyllama_kv.rb lib/toy/dev/toy_card.rb lib/toy.rb lib/toy/models/toy_smollm2.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy_smollm2_ffi_kv.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/train/training.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
+demos/tinyllama_kv: demos/tinyllama_kv.rb lib/toy/dev/toy_card.rb lib/toy.rb lib/toy/models/toy_smollm2.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/train/training.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
 
 # Print the Phuong–Hutter algorithm cards for both models. No

@@ -27,7 +27,7 @@ require_relative "../train/sampler"
 require_relative "../../toy"
 require_relative "toy_smollm2"
 require_relative "../io/loaders/toy_smollm2_loader"
-require_relative "../../toy_smollm2_ffi_kv_cuda"
+require_relative "../llm/engine/llama_kv_engine_cuda"
 
 class ToyLMCuda
   attr_reader :arch, :tokenizer, :max_T

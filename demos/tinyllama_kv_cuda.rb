@@ -12,7 +12,7 @@
 require_relative "../lib/toy"
 require_relative "../lib/toy/models/toy_smollm2"
 require_relative "../lib/toy/io/loaders/toy_smollm2_loader"
-require_relative "../lib/toy_smollm2_ffi_kv_cuda"
+require_relative "../lib/toy/llm/engine/llama_kv_engine_cuda"
 require_relative "../lib/toy/train/training"   # parse_ids
 
 GGUF     = "data/tinyllama-1.1b-f32.gguf"

@@ -25,7 +25,7 @@
 # prefork would change Tep's run_end aggregation -- out of scope. NOT in
 # MIRRORABLE (prep/gen_cuda_mirror.rb): CPU-only, no CUDA mirror.
 
-require_relative "../../toy_smollm2_ffi_kv"
+require_relative "../llm/engine/llama_kv_engine"
 require_relative "../../../vendor/spinel/spinel_kit/lib/spinel_kit/json_builder"
 require_relative "../io/toy_events"
 require_relative "../io/loaders/toy_smollm2_loader"
