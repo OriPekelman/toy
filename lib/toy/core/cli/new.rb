@@ -104,14 +104,19 @@ module Toy
           require_relative "toy_lib/toy/llm/labels"
           require_relative "toy_lib/toy/llm/recipes/from_scratch"
 
-          STEPS    = (ENV["STEPS"] || "3").to_i
-          VOCAB    = 64
-          D_MODEL  = 32
-          N_HEADS  = 2
-          D_FF     = 64
-          N_LAYERS = 1
-          CONTEXT  = 8
-          SEED     = (ENV["SEED"] || "0").to_i
+          # Every hyper-parameter reads from ENV at RUNTIME with the
+          # scaffold defaults below — ONE compile, many runs:
+          #   D_MODEL=128 STEPS=10 ./hello
+          # (explicit ENV["X"] || "default" — no default args, Spinel
+          # landmine #4). D_FF derives as 2*D_MODEL when unset.
+          STEPS    = (ENV["STEPS"]    || "3").to_i
+          SEED     = (ENV["SEED"]     || "0").to_i
+          VOCAB    = (ENV["VOCAB"]    || "64").to_i
+          D_MODEL  = (ENV["D_MODEL"]  || "32").to_i
+          N_HEADS  = (ENV["N_HEADS"]  || "2").to_i
+          N_LAYERS = (ENV["N_LAYERS"] || "1").to_i
+          CONTEXT  = (ENV["CONTEXT"]  || "8").to_i
+          D_FF     = (ENV["D_FF"]     || (2 * D_MODEL).to_s).to_i
 
           # Model shape via the named factory (n_kv == n_heads = MHA).
           cfg = Toy::SmolLM2Config.mha(VOCAB, D_MODEL, N_HEADS,
@@ -127,8 +132,10 @@ module Toy
           recipe = Toy::LLM::Recipes::FromScratch.new
           recipe.realize!(cfg, opts)
 
-          # A trivial fixed sequence + positions.
-          seq_ids   = [1, 2, 3, 4, 5, 6, 7, 8]
+          # A trivial fixed sequence + positions (CONTEXT-length; ids
+          # cycle inside the vocab — 1..8 at the defaults).
+          seq_ids   = [0]; seq_ids.pop
+          i = 0; while i < CONTEXT; seq_ids.push((i + 1) % VOCAB); i = i + 1; end
           positions = [0]; positions.pop
           p = 0; while p < CONTEXT; positions.push(p); p = p + 1; end
 
@@ -143,6 +150,56 @@ module Toy
             step = step + 1
           end
         RUBY
+
+        # App-scaffold README: documents the tree + the ENV-driven hello
+        # recipe (toy#64 item 7 — one compile, many runs).
+        APP_README = <<~'MARKDOWN'
+          # toy project
+
+          Scaffolded by `toy new`. The tree:
+
+          - `algos/` — your code, same 4-layer shape as the framework
+            (`primitives/` `blocks/` `archs/` `recipes/`).
+          - `algos/recipes/hello.rb` — a RUNNABLE from-scratch starter.
+          - `data/` — GGUFs + corpora. `runs/` — event streams + checkpoints.
+          - `bin/toy` — project-local CLI binstub.
+
+          ## hello.rb: one compile, many runs
+
+          Compile once with Spinel (from a toy checkout, so the ggml link
+          paths resolve; `toy_lib` is the symlink `toy new` dropped):
+
+          ```sh
+          cd "$TOY_HOME" && spinel /path/to/algos/recipes/hello.rb -o /path/to/hello
+          ```
+
+          Every hyper-parameter is read from ENV **at runtime** — sweep
+          without recompiling:
+
+          ```sh
+          ./hello                          # defaults (V=64 D=32 H=2 L=1 ctx=8, 3 steps)
+          D_MODEL=128 STEPS=10 ./hello     # wider model, longer run
+          SEED=1 ./hello                   # different init
+          ```
+
+          Knobs: `STEPS` `SEED` `VOCAB` `D_MODEL` `N_HEADS` `N_LAYERS`
+          `CONTEXT` `D_FF` (defaults to `2*D_MODEL` when unset).
+
+          ## Training through the CLI
+
+          ```sh
+          toy train from-scratch --steps 5
+          ```
+
+          Runs land in `runs/<id>/` (events.jsonl + weights/). Inspect them
+          from plain Ruby with `Toy::RunLog`:
+
+          ```ruby
+          require "toy/core/run_log"
+          best = Toy::RunLog.scan("runs").first
+          puts best.run_id, best.final_loss
+          ```
+        MARKDOWN
 
         ALGO_SUBDIRS = %w[primitives blocks archs recipes].freeze
 
@@ -354,6 +411,9 @@ module Toy
 
           write_file(File.join(target, "toy.yml"), TOY_YML)
           created << "toy.yml"
+
+          write_file(File.join(target, "README.md"), APP_README)
+          created << "README.md"
 
           binstub = File.join(target, "bin", "toy")
           write_file(binstub, BINSTUB)
