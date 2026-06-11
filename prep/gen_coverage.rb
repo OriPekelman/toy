@@ -313,7 +313,11 @@ md << <<~MD
   This is the canonical "what we support" matrix. One row per ggml op
   (`enum ggml_op` in `vendor/ggml/include/ggml.h`), with columns for the
   CPU + CUDA + Metal FFI bindings and backward support. Models built on
-  top of these ops are tracked separately in `docs/models-verified.md`.
+  top of these ops are tracked separately in `docs/models.md`.
+
+  Last full re-verification: 2026-06-11 (toy#61) at toy `d605aea` /
+  spinel `a699cf9` / ggml `41e7949` — table regenerated against that
+  tree, runner + training + smoke gates green on CPU and CUDA.
 
   ## Summary
 
@@ -327,11 +331,12 @@ md << <<~MD
 
   Backend caveats not captured by the table:
 
-  - **`MUL_MAT_ID` × Q4_K / Q6_K source weights**: ggml's mul_mat_id
-    kernel produces garbage on K-quantized expert tensors. Q8_0 / F16 /
-    F32 sources work. Tracked in `docs/notes/mul_mat_id_quant.md` once
-    we write it; for now see commit `42b8609` (M2.3) for the
-    repro/workaround.
+  - **`MUL_MAT_ID` × Q4_K / Q6_K source weights — RESOLVED (was ours, not
+    ggml's).** OLMoE-Q4_K_M produced degenerate output and was long misfiled as a
+    ggml mul_mat_id K-quant kernel bug (ggml#1506). The op is correct for K-quants;
+    the real cause was `head_nbytes` returning 0 for K-quant ATTENTION weights,
+    collapsing every head onto head 0 (fixed). K-quant MoE experts load and run
+    coherently. See `docs/notes/mul_mat_id_quants.md` + `make gate-moe-kquant`.
   - **`FLASH_ATTN_BACK`**: ggml's backward kernel calls `GGML_ABORT` at
     runtime (see `vendor/ggml/src/ggml.c::ggml_flash_attn_back`). The
     op is "missing" for us, but it's also broken upstream — wait for

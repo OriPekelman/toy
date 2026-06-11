@@ -6,16 +6,20 @@ hand-edit — run `make coverage` to regenerate.
 This is the canonical "what we support" matrix. One row per ggml op
 (`enum ggml_op` in `vendor/ggml/include/ggml.h`), with columns for the
 CPU + CUDA + Metal FFI bindings and backward support. Models built on
-top of these ops are tracked separately in `docs/models-verified.md`.
+top of these ops are tracked separately in `docs/models.md`.
+
+Last full re-verification: 2026-06-11 (toy#61) at toy `d605aea` /
+spinel `a699cf9` / ggml `41e7949` — table regenerated against that
+tree, runner + training + smoke gates green on CPU and CUDA.
 
 ## Summary
 
-- **30 of 98** ops have a dedicated `tnn_*` wrapper bound on the CPU side (31%).
-- **2** more are composed inside other wrappers (status `via`) — usable in graphs we build but no standalone entry point.
+- **34 of 98** ops have a dedicated `tnn_*` wrapper bound on the CPU side (35%).
+- **1** more are composed inside other wrappers (status `via`) — usable in graphs we build but no standalone entry point.
 - **0** bound ops are CPU-only (no CUDA binding) — see "Parity drift" below.
-- **3** bound ops are not bound on Metal — the Metal mirror (`lib/toy/ffi/tinynn_metal.rb`) is an intentionally thin smoke surface today, see "Metal mirror" below.
-- **5** ops with a `*_BACK` enum case have an explicit backward wrapper; **1** more are emitted automatically by ggml's autodiff (`ggml_build_backward_expand`) without needing a wrapper.
-- **62** ops have no wrapper at all (and aren't composed by another).
+- **2** bound ops are not bound on Metal — the Metal mirror (`lib/toy/ffi/tinynn_metal.rb`) is an intentionally thin smoke surface today, see "Metal mirror" below.
+- **6** ops with a `*_BACK` enum case have an explicit backward wrapper; **2** more are emitted automatically by ggml's autodiff (`ggml_build_backward_expand`) without needing a wrapper.
+- **58** ops have no wrapper at all (and aren't composed by another).
 - **4** ops are dispatch-internal (no public `ggml_<x>()` constructor — e.g. `UNARY`, `MAP_CUSTOM1`).
 
 Backend caveats not captured by the table:
@@ -62,14 +66,14 @@ Backend caveats not captured by the table:
 | `GGML_OP_L2_NORM` | — | missing | missing | missing | — | no tnn_ wrapper |
 | `GGML_OP_MUL_MAT` | `tnn_matmul` | yes | yes | yes | — |  |
 | `GGML_OP_MUL_MAT_ID` | `tnn_mul_mat_id` | yes | yes | yes | — |  |
-| `GGML_OP_OUT_PROD` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_OUT_PROD` | `tnn_out_prod` | no | yes | no | — |  |
 | `GGML_OP_SCALE` | `tnn_scale` | yes | yes | yes | — |  |
 | `GGML_OP_SET` | — | missing | missing | missing | — | no tnn_ wrapper |
 | `GGML_OP_CPY` | `tnn_cpy` | yes | yes | yes | — |  |
-| `GGML_OP_CONT` | — | via | via | via | — | composed inside other wrappers (no dedicated tnn_) |
+| `GGML_OP_CONT` | `tnn_cont_2d` | yes | yes | yes | — |  |
 | `GGML_OP_RESHAPE` | `tnn_reshape_2d` | yes | yes | yes | — |  |
 | `GGML_OP_VIEW` | `tnn_view_1d` | yes | yes | yes | — |  |
-| `GGML_OP_PERMUTE` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_PERMUTE` | `tnn_permute` | yes | yes | yes | — |  |
 | `GGML_OP_TRANSPOSE` | `tnn_transpose` | yes | yes | yes | — |  |
 | `GGML_OP_GET_ROWS` | `tnn_get_rows` | yes | yes | yes | yes |  |
 | `GGML_OP_SET_ROWS` | `tnn_set_rows` | yes | yes | yes | — |  |
@@ -80,9 +84,9 @@ Backend caveats not captured by the table:
 | `GGML_OP_ROPE` | `tnn_rope_ext` | yes | yes | yes | yes |  |
 | `GGML_OP_CLAMP` | — | missing | missing | missing | — | no tnn_ wrapper |
 | `GGML_OP_CONV_TRANSPOSE_1D` | — | missing | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_IM2COL` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_IM2COL` | `tnn_im2col` | yes | yes | yes | yes |  |
 | `GGML_OP_IM2COL_3D` | — | missing | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_CONV_2D` | — | missing | missing | missing | — | no tnn_ wrapper |
+| `GGML_OP_CONV_2D` | `tnn_conv_2d` | yes | yes | yes | — |  |
 | `GGML_OP_CONV_3D` | — | missing | missing | missing | — | no tnn_ wrapper |
 | `GGML_OP_CONV_2D_DW` | — | missing | missing | missing | — | no tnn_ wrapper |
 | `GGML_OP_CONV_TRANSPOSE_2D` | — | missing | missing | missing | — | no tnn_ wrapper |
@@ -111,11 +115,11 @@ Backend caveats not captured by the table:
 | `GGML_OP_RWKV_WKV7` | — | missing | missing | missing | — | no tnn_ wrapper |
 | `GGML_OP_SOLVE_TRI` | — | missing | missing | missing | — | no tnn_ wrapper |
 | `GGML_OP_GATED_DELTA_NET` | — | missing | missing | missing | — | no tnn_ wrapper |
-| `GGML_OP_GELU` | `tnn_gelu` | yes | yes | yes | — | unary sub-op (dispatches via GGML_OP_UNARY) |
+| `GGML_OP_GELU` | `tnn_gelu` | yes | yes | yes | autodiff | unary sub-op (dispatches via GGML_OP_UNARY) |
 | `GGML_OP_SILU` | `tnn_silu` | yes | yes | yes | yes | unary sub-op (dispatches via GGML_OP_UNARY) |
 | `GGML_OP_RELU` | — | missing | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
 | `GGML_OP_GELU_QUICK` | — | missing | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
-| `GGML_OP_TANH` | `tnn_tanh` | yes | yes | no | — | unary sub-op (dispatches via GGML_OP_UNARY) |
+| `GGML_OP_TANH` | `tnn_tanh` | yes | yes | yes | — | unary sub-op (dispatches via GGML_OP_UNARY) |
 | `GGML_OP_ELU` | — | missing | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
 | `GGML_OP_SIGMOID` | — | missing | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
 | `GGML_OP_HARDSIGMOID` | — | missing | missing | missing | — | unary sub-op (dispatches via GGML_OP_UNARY) |
@@ -149,8 +153,8 @@ smoke binding today — just enough to prove `ggml_backend_metal_init`
 regression signal; it's the to-do list for whoever wires real model
 inference on Metal (issue #2 follow-up).
 
-_Metal-bound ops_: **27** of 30 CPU-bound.
-_Not yet on Metal_: 3.
+_Metal-bound ops_: **32** of 34 CPU-bound.
+_Not yet on Metal_: 2.
 
 ## Tnn surface not directly tied to a ggml op
 
@@ -160,21 +164,37 @@ helpers, trace primitive, etc. Listed here for completeness; not
 covered by the table above.
 
 <details>
-<summary>71 infrastructure / helper wrappers</summary>
+<summary>104 infrastructure / helper wrappers</summary>
 
 - `tnn_adam_step_scratch`
 - `tnn_add_to_graph`
 - `tnn_backend_name`
 - `tnn_build_backward`
 - `tnn_build_forward_only`
+- `tnn_cast`
 - `tnn_compute`
 - `tnn_compute_b`
 - `tnn_compute_backward`
+- `tnn_cuda_get_device_count`
+- `tnn_cuda_get_device_count_internal`
 - `tnn_download`
 - `tnn_download_to_f64_array`
+- `tnn_embed_lookup_to_doubles`
 - `tnn_extend_backward_graph`
+- `tnn_filesystem_mkdir`
+- `tnn_filesystem_symlink`
 - `tnn_finalize_weights`
 - `tnn_gelu_back_scratch`
+- `tnn_gguf_w_add_tensor`
+- `tnn_gguf_w_finalize`
+- `tnn_gguf_w_free`
+- `tnn_gguf_w_init`
+- `tnn_gguf_w_set_bool`
+- `tnn_gguf_w_set_f32`
+- `tnn_gguf_w_set_str`
+- `tnn_gguf_w_set_u32`
+- `tnn_graph_n_nodes`
+- `tnn_graph_node`
 - `tnn_graph_reset`
 - `tnn_graph_reset_grads_only`
 - `tnn_input_1d_f32`
@@ -189,11 +209,16 @@ covered by the table above.
 - `tnn_input_3d_f32_persistent`
 - `tnn_input_3d_persistent_mmap`
 - `tnn_input_3d_persistent_typed`
+- `tnn_input_4d_f32_persistent`
 - `tnn_layer_norm`
 - `tnn_link_check`
 - `tnn_matmul_axb`
 - `tnn_null_ptr`
 - `tnn_pin_all_graph_b_nodes`
+- `tnn_pinned_alloc`
+- `tnn_pinned_free`
+- `tnn_read_f32_file`
+- `tnn_read_i32_file`
 - `tnn_realize`
 - `tnn_realize_b`
 - `tnn_realize_backward`
@@ -214,19 +239,31 @@ covered by the table above.
 - `tnn_session_attach_weight_mmap`
 - `tnn_session_free`
 - `tnn_session_new`
+- `tnn_session_new_on`
+- `tnn_session_set_graph_capacity`
 - `tnn_set_2d`
 - `tnn_set_loss`
 - `tnn_set_output`
 - `tnn_set_param`
 - `tnn_shutdown_engines`
 - `tnn_soft_max_ext`
+- `tnn_swiglu_split`
 - `tnn_switch_a`
 - `tnn_switch_b`
+- `tnn_tensor_dtype`
+- `tnn_tensor_flags`
 - `tnn_tensor_grad`
+- `tnn_tensor_name`
 - `tnn_tensor_nbytes`
 - `tnn_tensor_ne0`
 - `tnn_tensor_ne1`
+- `tnn_tensor_ne2`
+- `tnn_tensor_ne3`
 - `tnn_tensor_nelements`
+- `tnn_tensor_op`
+- `tnn_tensor_op_name`
+- `tnn_tensor_set_name`
+- `tnn_tensor_src`
 - `tnn_upload`
 - `tnn_upload_from_float_array`
 - `tnn_upload_from_int_array`
