@@ -123,7 +123,7 @@ while step < STEPS
   byte_offset = byte_offset + CONTEXT * 4
 
   batch.fill!(seq_ids)
-  batch.hp = adamw.hp(step)
+  batch.hp = adamw.hp_for_step(step)
   loss = recipe.step!(batch.seq_ids, batch.positions, batch.labels,
                       batch.hp, step == 0)
   if step == 0

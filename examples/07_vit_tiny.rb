@@ -103,7 +103,7 @@ while step < STEPS
     j = j + 1
   end
 
-  loss = recipe.step!(m_image, cls_idx, m_labels, adamw.hp(step), step == 0)
+  loss = recipe.step!(m_image, cls_idx, m_labels, adamw.hp_for_step(step), step == 0)
   if step == 0
     first_loss = loss
   end

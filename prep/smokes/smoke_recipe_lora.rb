@@ -89,21 +89,22 @@ end
 # denominators 1/(1-beta^t) — NOT constant betas (see the loud finding in
 # lib/toy/llm/adamw.rb: the lora FFI graph reads slots 5/6 DIFFERENTLY
 # from the from-scratch/warm/vit graphs). lr comes from ENV (default
-# 0.001). m_hp is rebuilt per step below.
+# 0.001). hp_for_step (toy#73 item 5) is mode-aware: it takes the
+# 0-indexed loop step and applies lora's 1-indexed t internally —
+# hp_for_step(k) == hp(k + 1), byte-identical to 03_finetune_lora.rb's
+# inline 1/(1-beta^t) at t = k + 1.
 adamw = Toy::AdamW.for_lora   # beta2=0.999 + per-step bias correction
 adamw.lr = LR
 
 positions = [0, 1, 2, 3]
 
 losses = [0.0]; losses.pop
-step = 1
-while step <= STEPS
-  # 1-indexed step; bias_correct=true → slots5/6 = 1/(1-0.9^t),
-  # 1/(1-0.999^t). Byte-identical to 03_finetune_lora.rb:177-178.
-  m_hp = adamw.hp(step)
-  loss = recipe.step!(TOKENS, positions, m_labels, m_hp, step == 1)
+step = 0
+while step < STEPS
+  m_hp = adamw.hp_for_step(step)
+  loss = recipe.step!(TOKENS, positions, m_labels, m_hp, step == 0)
   losses.push(loss)
-  puts "step " + step.to_s + ": loss=" + loss.to_s
+  puts "step " + (step + 1).to_s + ": loss=" + loss.to_s
   step = step + 1
 end
 

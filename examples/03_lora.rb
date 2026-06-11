@@ -90,8 +90,8 @@ while ti < TOKENS.length
 end
 
 # LoRA's AdamW convention differs from from-scratch: beta2=0.999 and
-# PER-STEP bias correction (slots 5/6 of hp carry the correction
-# denominators, not the betas) — hence hp is rebuilt every step.
+# PER-STEP bias correction. hp_for_step knows that: it takes the plain
+# 0-indexed loop step and applies the lora 1-indexed t internally.
 adamw = Toy::AdamW.for_lora
 adamw.lr = LR
 
@@ -99,15 +99,15 @@ positions = [0, 1, 2, 3]
 
 first_loss = 0.0
 final_loss = 0.0
-step = 1
-while step <= STEPS
-  m_hp = adamw.hp(step)                  # 1-indexed for bias correction
-  loss = recipe.step!(TOKENS, positions, m_labels, m_hp, step == 1)
-  if step == 1
+step = 0
+while step < STEPS
+  loss = recipe.step!(TOKENS, positions, m_labels,
+                      adamw.hp_for_step(step), step == 0)
+  if step == 0
     first_loss = loss
   end
   final_loss = loss
-  puts "step " + step.to_s + ": loss=" + loss.to_s
+  puts "step " + (step + 1).to_s + ": loss=" + loss.to_s
   step = step + 1
 end
 

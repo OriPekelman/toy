@@ -144,5 +144,26 @@ module Toy
       end
       m
     end
+
+    # MODE-AWARE per-step hp builder (toy#73 item 5): takes the CALLER's
+    # 0-INDEXED loop step (the convention every recipe loop already uses
+    # for its `step == 0` is_first branch) and applies the mode's step
+    # convention internally:
+    #
+    #   MODE_FROM_SCRATCH — step-agnostic (slots 5/6 = constant betas);
+    #                       hp_for_step(k) == hp(k).
+    #   MODE_LORA         — the lora-family graphs want a 1-INDEXED t in
+    #                       1/(1-beta^t); hp_for_step(k) == hp(k + 1).
+    #
+    # This removes the lora paths' off-by-one ceremony (a 1-indexed loop
+    # carried solely to feed hp(step)). Byte-identical to the hp calls it
+    # replaces. The #64 mode guard STAYS: both arms delegate to hp, so
+    # mode-unset / mode-vs-bias_correct mismatch still fail loud.
+    def hp_for_step(step)
+      if @mode == MODE_LORA
+        return hp(step + 1)
+      end
+      hp(step)
+    end
   end
 end

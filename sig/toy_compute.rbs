@@ -52,6 +52,9 @@ module Toy
     # step is the caller's 1-indexed step; ignored when bias_correct
     # is false. Returns the Mat(1,7) handed to the recipes' step!.
     def hp: (Integer step) -> Mat
+    # Mode-aware builder: takes the 0-INDEXED loop step; applies lora's
+    # 1-indexed t internally (hp_for_step(k) == hp(k+1) in MODE_LORA).
+    def hp_for_step: (Integer step) -> Mat
   end
 
   # ---- Labels (lib/toy/llm/labels.rb) — shift-by-one one-hot builders ----

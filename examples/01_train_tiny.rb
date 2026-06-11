@@ -92,7 +92,7 @@ while step < STEPS
   byte_offset = byte_offset + cfg.ctx * 4              # packed i32
 
   batch.fill!(seq_ids)                                  # validate + labels
-  batch.hp = adamw.hp(step)
+  batch.hp = adamw.hp_for_step(step)
 
   loss = recipe.step!(batch.seq_ids, batch.positions, batch.labels,
                       batch.hp, step == 0)
