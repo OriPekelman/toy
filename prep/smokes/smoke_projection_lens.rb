@@ -4,19 +4,19 @@
 # Verifies the forward graph compiles, the backward propagates
 # through W_proj only (token_embd stays frozen), and loss decreases.
 #
-#   make examples/smoke_projection_lens
-#   STEPS=5 ./examples/smoke_projection_lens
+#   make prep/smokes/smoke_projection_lens
+#   STEPS=5 ./prep/smokes/smoke_projection_lens
 #
 # Tied output is incompatible with donor_d_in > 0 because LM-head
 # matmul(token_embd, x_final) would need ne[0] = d_model on
 # token_embd, but token_embd has ne[0] = donor_d_in. So we always
 # realize_for_random_init with untied=true.
 
-require_relative "../lib/toy"
-require_relative "../lib/toy/models/toy_smollm2"
-require_relative "../lib/toy/llm/engine/llama_seq_engine"
-require_relative "../lib/toy/llm/adamw"
-require_relative "../lib/toy/train/toy_drift_grad"
+require_relative "../../lib/toy"
+require_relative "../../lib/toy/models/toy_smollm2"
+require_relative "../../lib/toy/llm/engine/llama_seq_engine"
+require_relative "../../lib/toy/llm/adamw"
+require_relative "../../lib/toy/train/toy_drift_grad"
 
 STEPS    = (ENV["STEPS"]    || "5").to_i
 D_MODEL  = (ENV["D_MODEL"]  || "64").to_i

@@ -22,8 +22,8 @@ forward graph into the active session; the L3 Llama arch stacks the
 block N times. See the recipe exemplars that drive the whole stack
 end-to-end:
 
-- `examples/smoke_recipe_from_scratch.rb`
-- `examples/smoke_recipe_warm_start.rb`
-- `examples/smoke_recipe_lora.rb`
+- `prep/smokes/smoke_recipe_from_scratch.rb`
+- `prep/smokes/smoke_recipe_warm_start.rb`
+- `prep/smokes/smoke_recipe_lora.rb`
 
-and the blessed tutorial `examples/train_from_scratch.rb`.
+and the blessed tutorial `examples/01_train_tiny.rb`.

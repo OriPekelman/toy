@@ -43,6 +43,14 @@ N_NEW  = (ENV["N_NEW"] || "16").to_i
 # caller passes raw ids. Empty when unset.
 PROMPT_IDS = ENV["PROMPT_IDS"] || ""
 
+# Explicit existence check BEFORE any GGUF read (spinel-dev#17 class:
+# missing user-suppliable paths fail loud and name the path + the fix).
+if !File.exist?(GGUF)
+  puts "toy-infer: no such file: " + GGUF +
+       " (set GGUF= to a llama-family model; `toy list` shows local caches)"
+  exit 1
+end
+
 arch = Arch.load_or_fail(GGUF, "toy-infer")
 puts arch.summary
 

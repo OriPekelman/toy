@@ -16,25 +16,25 @@
 #
 # Pure-Ruby CPU, Spinel-compiled. NO lib/ behavior change, NO mirror regen.
 #
-#   make examples/smoke_gate_b_gt_1
-#   STEPS=5 SEED=0 ./examples/smoke_gate_b_gt_1   (run from repo root)
+#   make prep/smokes/smoke_gate_b_gt_1
+#   STEPS=5 SEED=0 ./prep/smokes/smoke_gate_b_gt_1   (run from repo root)
 #
 # Determinism: SEED=0 + weight_dtype=0 (F32, no F16/BF16 reduction-order
 # nondeterminism across the larger T*B score matrix) + fixed FIRST 2 lines
 # of data/ts_seqs.txt + single unscaled opt_step per step => bit-
 # reproducible loss curve.
 #
-# Layout adopted from examples/06_train_from_scratch.rb (the proven B>1
+# Layout adopted from examples/legacy/06_train_from_scratch.rb (the proven B>1
 # path): flat [T*B] token + position vectors, per-(batch,position)
 # shift-by-one one-hot labels. NO GRAD_ACCUM LR-scaling — this gate is
 # ONLY about batching. head_dim defaults to d_model/n_heads (16) so
 # n_heads*head_dim == d_model (no w_o divergence — that is a separate gate).
 
-require_relative "../lib/toy"
-require_relative "../lib/toy/models/toy_smollm2"
-require_relative "../lib/toy/llm/engine/llama_seq_engine"
-require_relative "../lib/toy/llm/adamw"
-require_relative "../lib/toy/train/toy_drift_grad"
+require_relative "../../lib/toy"
+require_relative "../../lib/toy/models/toy_smollm2"
+require_relative "../../lib/toy/llm/engine/llama_seq_engine"
+require_relative "../../lib/toy/llm/adamw"
+require_relative "../../lib/toy/train/toy_drift_grad"
 
 STEPS    = (ENV["STEPS"] || "5").to_i
 SEED     = (ENV["SEED"]  || "0").to_i

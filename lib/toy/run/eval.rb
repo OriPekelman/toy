@@ -42,6 +42,14 @@ require_relative "../models/transformer_lm"
 GGUF  = ENV["GGUF"] || "data/smollm2-135m-f32.gguf"
 TOP_K = (ENV["TOP_K"] || "5").to_i
 
+# Explicit existence check BEFORE any GGUF read (spinel-dev#17 class:
+# missing user-suppliable paths fail loud and name the path + the fix).
+if !File.exist?(GGUF)
+  puts "toy-eval: no such file: " + GGUF +
+       " (set GGUF= to a llama-family model; `toy list` shows local caches)"
+  exit 1
+end
+
 arch = Arch.load_or_fail(GGUF, "toy-eval")
 
 lm = ToyLM.new(arch, :cpu)

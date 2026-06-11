@@ -208,9 +208,11 @@ toy-*.gem
 # blocklist above and prevents `git add -A` from ever sweeping a build output
 # (incl. the ~680 MB CUDA binaries) into a commit.
 examples/example_*
-examples/smoke_*
 examples/gpt2_train
 !examples/*.rb
+# Gate-smoke binaries (prep/smokes/): .rb sources tracked, Spinel builds ignored.
+prep/smokes/smoke_*
+!prep/smokes/*.rb
 tinynn/ab_smoke_*
 tinynn/probe_*
 !tinynn/*.rb
@@ -260,7 +262,7 @@ lib/gpt2_ffi_cuda.rb
 lib/gpt2_ffi_metal.rb
 lib/gpt2_ffi_kv_cuda.rb
 lib/gpt2_ffi_kv_metal.rb
-examples/06_train_from_scratch_cuda.rb
-examples/06_train_from_scratch_metal.rb
-examples/smoke_projection_lens_cuda.rb
-examples/smoke_projection_lens_metal.rb
+examples/legacy/06_train_from_scratch_cuda.rb
+examples/legacy/06_train_from_scratch_metal.rb
+prep/smokes/smoke_projection_lens_cuda.rb
+prep/smokes/smoke_projection_lens_metal.rb

@@ -10,11 +10,11 @@
 # by ~5 orders of magnitude (5 steps on a 2-layer-4-head model) and
 # its outputs are not expected to be coherent.
 #
-#   make examples/smoke_toy_ckpt_reload
-#   GGUF=/tmp/ckpt/weights/latest ./examples/smoke_toy_ckpt_reload
+#   make prep/smokes/smoke_toy_ckpt_reload
+#   GGUF=/tmp/ckpt/weights/latest ./prep/smokes/smoke_toy_ckpt_reload
 
-require_relative "../lib/toy/models/arch"
-require_relative "../lib/toy/models/transformer_lm"
+require_relative "../../lib/toy/models/arch"
+require_relative "../../lib/toy/models/transformer_lm"
 
 GGUF = ENV["GGUF"] || "/tmp/ckpt_test/weights/latest"
 

@@ -21,7 +21,7 @@ require "open3"
 
 ROOT     = File.expand_path("..", __dir__)
 GGUF     = File.join(ROOT, "data", "smollm2-135m-native.gguf")
-RUNNER   = File.join(ROOT, "examples", "smoke_full_finetune")
+RUNNER   = File.join(ROOT, "prep", "smokes", "smoke_full_finetune")
 BASELINE = File.join(ROOT, "prep", "fixtures", "full_finetune_baseline.txt")
 RECORD   = ARGV.include?("--record")
 
@@ -31,7 +31,7 @@ unless File.exist?(GGUF)
   exit 0
 end
 
-build_out, build_st = Open3.capture2e("make", "examples/smoke_full_finetune", chdir: ROOT)
+build_out, build_st = Open3.capture2e("make", "prep/smokes/smoke_full_finetune", chdir: ROOT)
 unless build_st.success? && File.exist?(RUNNER)
   puts "GATE FAIL [full-finetune]: build failed"
   puts build_out

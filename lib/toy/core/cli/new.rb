@@ -15,12 +15,13 @@
 #
 # The 4 algos/ subdirs are the documented convention but optional at use
 # time — discovery also accepts a single algos/my_llama.rb. recipes/ ships
-# a runnable hello.rb (mirrors examples/train_from_scratch.rb) so the very
+# a runnable hello.rb (mirrors examples/legacy/train_from_scratch.rb) so the very
 # first thing a newcomer can do is RUN something end-to-end.
 
 require "fileutils"
 require "json"
 require_relative "exit_codes"
+require_relative "../toy_root"
 
 module Toy
   module Core
@@ -63,7 +64,7 @@ module Toy
         RUBY
 
         # A RUNNABLE L4 from-scratch starter, scaffolded into
-        # algos/recipes/hello.rb. Mirrors examples/train_from_scratch.rb:
+        # algos/recipes/hello.rb. Mirrors examples/legacy/train_from_scratch.rb:
         # the blessed value-object path (SmolLM2Config.mha + Toy::Labels +
         # Toy::AdamW + the FromScratch recipe).
         #
@@ -84,7 +85,7 @@ module Toy
           #
           # The blessed value-object path: a tiny Llama-shape model
           # (RMSNorm + GQA + RoPE + SwiGLU) trained through the L4
-          # FromScratch recipe. Mirrors examples/train_from_scratch.rb.
+          # FromScratch recipe. Mirrors examples/legacy/train_from_scratch.rb.
           #
           # Compile with Spinel (it loads the ffi-bearing TinyNN stack, so
           # it cannot run under MRI). The `toy_lib` symlink (→ a toy source
@@ -98,7 +99,7 @@ module Toy
           #   /abs/path/to/hello   # → step 1: loss=…
 
           require_relative "toy_lib/toy"
-          require_relative "toy_lib/toy_smollm2"
+          require_relative "toy_lib/toy/models/toy_smollm2"
           require_relative "toy_lib/toy/llm/engine/llama_seq_engine"
           require_relative "toy_lib/toy/llm/adamw"
           require_relative "toy_lib/toy/llm/labels"
@@ -470,6 +471,16 @@ module Toy
           write_file(File.join(target, "algos", "recipes", "hello.rb"), HELLO_RECIPE)
           created << "algos/recipes/hello.rb"
 
+          # Seed data/ with the pinned tiny corpus so `toy train
+          # from-scratch` / `warm-start` work IN THE FRESH PROJECT (the
+          # runners read data/ts_seqs.{txt,bin} cwd-relative; without a
+          # seed the quickstart's first `toy train` failed — toy#60).
+          # Source: prep/fixtures/ts_seqs_gate.bin in the toy checkout
+          # (committed; the byte-pinned gate corpus). The .txt twin is
+          # derived from the same stream (32-token lines). Skipped with a
+          # warning when no toy root is locatable — never fatal.
+          created.concat(seed_corpus(target))
+
           # Symlink algos/recipes/toy_lib → $TOY_HOME/lib so hello.rb's
           # literal require_relative "toy_lib/..." resolves at Spinel
           # compile time. If TOY_HOME is unset we still create a dangling
@@ -492,6 +503,27 @@ module Toy
           created << "bin/toy"
 
           created
+        end
+
+        # Seed the scaffold's data/ with the pinned tiny corpus (both the
+        # packed-i32 .bin the warm-start runner streams and the text .txt
+        # the from-scratch runner reads). Returns the created rel paths
+        # ([] + a stderr warning when the toy root / fixture is missing).
+        def seed_corpus(target)
+          root = ToyRoot.locate_root
+          src  = root && File.join(root, "prep", "fixtures", "ts_seqs_gate.bin")
+          unless src && File.file?(src)
+            $stderr.puts "toy new: warning — could not seed data/ts_seqs.{bin,txt} " \
+                         "(no toy checkout found; set TOY_HOME). `toy train` will " \
+                         "need a corpus in data/."
+            return []
+          end
+          bytes = File.binread(src)
+          File.binwrite(File.join(target, "data", "ts_seqs.bin"), bytes)
+          tokens = bytes.unpack("l<*")
+          lines  = tokens.each_slice(32).map { |seq| seq.join(" ") }
+          File.write(File.join(target, "data", "ts_seqs.txt"), lines.join("\n") + "\n")
+          ["data/ts_seqs.bin", "data/ts_seqs.txt"]
         end
 
         # `toy new --lib <path>` — a library-composition project (Gemfile +

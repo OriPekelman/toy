@@ -23,12 +23,12 @@
 # Load order is verbatim: TinyNN (via llama_seq_forward_ffi) must load
 # before the recipe + value objects are required.
 
-require_relative "../lib/toy"
-require_relative "../lib/toy/models/toy_smollm2"
-require_relative "../lib/toy/llm/engine/llama_seq_engine"
-require_relative "../lib/toy/llm/adamw"
-require_relative "../lib/toy/llm/labels"
-require_relative "../lib/toy/llm/recipes/from_scratch"
+require_relative "../../lib/toy"
+require_relative "../../lib/toy/models/toy_smollm2"
+require_relative "../../lib/toy/llm/engine/llama_seq_engine"
+require_relative "../../lib/toy/llm/adamw"
+require_relative "../../lib/toy/llm/labels"
+require_relative "../../lib/toy/llm/recipes/from_scratch"
 
 STEPS    = (ENV["STEPS"]   || "5").to_i
 D_MODEL  = (ENV["D_MODEL"] || "64").to_i

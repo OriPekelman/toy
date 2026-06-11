@@ -266,13 +266,13 @@ harness. The current fixtures live in `examples/`:
 
 | Layer | Fixture |
 | --- | --- |
-| L1-L3 realize (random-init forward) | `examples/smoke_projection_lens.rb` (+ `_cuda`, `_metal`) |
-| L5 FromScratch | `examples/smoke_recipe_from_scratch.rb` |
-| L5 LoRA | `examples/smoke_recipe_lora.rb` |
-| L5 WarmStart | `examples/smoke_recipe_warm_start.rb` |
+| L1-L3 realize (random-init forward) | `prep/smokes/smoke_projection_lens.rb` (+ `_cuda`, `_metal`) |
+| L5 FromScratch | `prep/smokes/smoke_recipe_from_scratch.rb` |
+| L5 LoRA | `prep/smokes/smoke_recipe_lora.rb` |
+| L5 WarmStart | `prep/smokes/smoke_recipe_warm_start.rb` |
 
-Each fixture is built and run as a gate (the `examples/smoke_recipe_*`
-and `examples/smoke_projection_lens*` Make targets). The shape contract
+Each fixture is built and run as a gate (the `prep/smokes/smoke_recipe_*`
+and `prep/smokes/smoke_projection_lens*` Make targets). The shape contract
 is **bit-identical output**: an extracted layer must reproduce the prior
 op order exactly, and a generated mirror must match its CPU source.
 Compute-runner behavior (infer/train/eval/serve) is gated separately via

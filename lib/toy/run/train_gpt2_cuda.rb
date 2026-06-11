@@ -30,6 +30,12 @@ CONTEXT  = 32
 engine = Toy::LLM::Engine::GPT2SeqEngineCuda.new
 engine.realize!(VOCAB, D_MODEL, N_HEADS, D_FF, N_LAYERS, CONTEXT, SEED)
 
+# FAIL LOUD on a missing corpus (spinel-dev#17: silent "" then nil SEGV).
+if !File.exist?("data/ts_seqs.txt")
+  puts "toy-train-gpt2-cuda: corpus not found: data/ts_seqs.txt (cwd-relative)"
+  puts "  `toy new` seeds a project copy; in a toy checkout run prep/prep_tinystories.rb."
+  exit 1
+end
 raw     = File.read("data/ts_seqs.txt")
 lines   = raw.split("\n")
 parts   = lines[0].split(" ")

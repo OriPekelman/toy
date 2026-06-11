@@ -23,5 +23,5 @@ Backend twins: `llama_arch_cuda.rb`, `llama_arch_metal.rb`.
 - Training loop, optimizer, schedule.
 - Data pipeline.
 
-See `examples/smoke_recipe_*.rb` and the blessed
-`examples/train_from_scratch.rb` for the arch driven end-to-end.
+See `prep/smokes/smoke_recipe_*.rb` and the blessed
+`examples/01_train_tiny.rb` for the arch driven end-to-end.

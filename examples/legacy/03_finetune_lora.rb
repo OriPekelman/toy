@@ -20,10 +20,10 @@
 #   Qwen2.5-0.5B Q8 + r=8 LoRA + Adam ≈ 480 MB.
 #   Larger Q8 bases (1.5B/3B/7B) need proportionally more.
 
-require_relative "../lib/toy"
-require_relative "../lib/toy/models/toy_smollm2"
-require_relative "../lib/toy/io/loaders/toy_smollm2_loader"
-require_relative "../lib/toy/llm/engine/llama_seq_engine"
+require_relative "../../lib/toy"
+require_relative "../../lib/toy/models/toy_smollm2"
+require_relative "../../lib/toy/io/loaders/toy_smollm2_loader"
+require_relative "../../lib/toy/llm/engine/llama_seq_engine"
 
 GGUF      = ENV["GGUF"]    || "data/smollm2-135m-native.gguf"
 RANK      = (ENV["RANK"]   || "8").to_i

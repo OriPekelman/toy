@@ -51,6 +51,13 @@ def all_digits?(s)
   true
 end
 
+# Explicit existence check BEFORE any GGUF read (spinel-dev#17 class).
+if !File.exist?(GGUF)
+  puts "toy-infer-cuda: no such file: " + GGUF +
+       " (set GGUF= to a llama-family model; `toy list` shows local caches)"
+  exit 1
+end
+
 arch = Arch.load_or_fail(GGUF, "toy-infer")
 puts arch.summary
 

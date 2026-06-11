@@ -17,7 +17,7 @@
 # download-loss. Per the L4 design note in from_scratch.rb, a sibling
 # class duplicating the ~8-line step! is acceptable and simpler than a
 # shared module; we do NOT over-abstract. Op order is VERBATIM from the
-# frozen reference examples/03_finetune_lora.rb:179-191.
+# frozen reference examples/legacy/03_finetune_lora.rb:179-191.
 #
 # This recipe just CALLS realize_for_mmap — it does not refactor it — so
 # no realize-bulk coverage rules apply.
@@ -27,7 +27,7 @@
 # (landmine #4). Members uniquely lora_-prefixed for type-isolation. No
 # Card/step_bind/FFI :str args at class load. Experiment config (GGUF
 # path, RANK, tokens, labels, hp, LR, seed/scale) stays in the FIXTURE
-# (examples/smoke_recipe_lora.rb) per lib-vs-example scope, never here.
+# (prep/smokes/smoke_recipe_lora.rb) per lib-vs-example scope, never here.
 #
 # Like FromScratch, this file does NOT `require_relative "tinynn"`: the
 # loading module (lib/llama_seq_forward_ffi.rb, required by the fixture

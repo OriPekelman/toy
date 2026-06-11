@@ -97,6 +97,12 @@ recipe.realize!(cfg, opts)
 ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe.fs_cache.sess)
 
 # Per-step inputs built IN THE RUNNER, byte-identical to the CPU runner.
+# FAIL LOUD on a missing corpus (spinel-dev#17: silent "" then nil SEGV).
+if !File.exist?("data/ts_seqs.txt")
+  puts "toy-train-metal: corpus not found: data/ts_seqs.txt (cwd-relative)"
+  puts "  `toy new` seeds a project copy; in a toy checkout run prep/prep_tinystories.rb."
+  exit 1
+end
 raw        = File.read("data/ts_seqs.txt")
 first_line = raw.split("\n")[0]
 parts      = first_line.split(" ")

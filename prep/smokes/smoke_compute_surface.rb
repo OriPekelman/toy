@@ -1,4 +1,4 @@
-# examples/smoke_compute_surface.rb — proves the toy#42 full-API require
+# prep/smokes/smoke_compute_surface.rb — proves the toy#42 full-API require
 # (lib/toy/compute.rb) compiles under Spinel and yields a working compute
 # surface from ONE require, via the RECIPE path.
 #
@@ -11,11 +11,11 @@
 # combined-surface gate (every file compute.rb pulls co-compiles); the RUN
 # proves the surface is live.
 #
-#   make examples/smoke_compute_surface && ./examples/smoke_compute_surface
+#   make prep/smokes/smoke_compute_surface && ./prep/smokes/smoke_compute_surface
 #
 # Expected last line: "compute-surface: ok".
 
-require_relative "../lib/toy/compute"
+require_relative "../../lib/toy/compute"
 
 VOCAB   = 627
 CONTEXT = 16

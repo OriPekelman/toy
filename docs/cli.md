@@ -155,24 +155,46 @@ backend module per binary), built on demand the same way. `serve` is CPU-only.
 
 ## Examples
 
-The CLI is the supported entry point; `examples/*.rb` are focused, single-file
-programs Spinel compiles to native binaries (no Python, no runtime). They cover
-paths the CLI does not yet expose (GPU, ViT, LMC, warm-start) and serve as the
-gate fixtures.
+The CLI is the supported entry point; the curated `examples/` set (toy#60)
+is the narrated library-API tour — seven single-file programs Spinel
+compiles to native binaries (06 is plain CRuby). Headers carry the
+what/how-long/what-to-tweak narration; every knob is ENV (compile once,
+run many).
 
 | Example | What it does |
 |---|---|
-| `examples/02_train_custom_gpt.rb` | Train a tiny GPT from scratch on TinyStories. |
-| `examples/legacy/03_finetune_lora.rb` (or `toy train lora`) | LoRA / QLoRA fine-tune via the sequence-mode forward graph (CPU). |
-| `examples/06_train_from_scratch.rb` | Modern Llama-shape from-scratch trainer (RMSNorm + GQA + RoPE + SwiGLU); CPU + CUDA. Emits `toy/v1` events. |
-| `examples/07_train_vit_tiny.rb` | ViT-Tiny image classifier with timm AugReg donor warm-start. |
-| `examples/legacy/08_lmc.rb` (or `toy eval lmc`) | Linear Mode Connectivity blend of two from-scratch checkpoints over an α grid. |
-| `examples/legacy/09_warm_start_train.rb` (or `toy train warm-start`) | Warm-start trainer with donor `token_embd` + optional PCA-init projection lens. |
-| `examples/smoke_*.rb` | Single-purpose wire smokes — also the gate fixtures (see [gating.md](gating.md)). |
-
-CUDA / Metal mirrors exist for several (`*_cuda.rb`, `*_metal.rb`).
+| `examples/01_train_tiny.rb` | From-scratch tiny Llama on the bundled corpus; recipe + value objects; writes a `runs/` bundle. |
+| `examples/02_finetune_warm_start.rb` (or `toy train warm-start`) | Warm-start: donor embeddings from a real GGUF, then fine-tune. |
+| `examples/03_lora.rb` (or `toy train lora`) | LoRA / QLoRA adapters over a frozen mmap'd base. |
+| `examples/04_generate.rb` (or `toy infer`) | GGUF → KV-cache decode → text. |
+| `examples/05_eval_logprobs.rb` (or `toy eval`) | Per-token top-K logprobs at a decode position. |
+| `examples/06_runlog_compare.rb` | CRuby: `Toy::RunLog.scan` comparison table over `runs/`. |
+| `examples/07_vit_tiny.rb` | ViT-Tiny classifier on the committed smoke corpus (no CLI surface yet). |
+| `examples/legacy/*` | Superseded tutorials (instrumented trainer, pure-Ruby GPT, …) — still build; see [examples/legacy/README.md](../examples/legacy/README.md). |
+| `prep/smokes/smoke_*.rb` | Single-purpose wire smokes — the gate fixtures, not tutorials (see [gating.md](gating.md)). |
 
 ### Example env knobs
+
+These are read by the example binaries (not the CLI; the CLI passes its own
+controlled env). Each example's header lists its own; the instrumented legacy
+trainer (`examples/legacy/06_train_from_scratch.rb`, built by
+`make example_train_from_scratch`) carries the full set:
+
+| Env | Purpose |
+|---|---|
+| `D_MODEL` `D_FF` `N_HEADS` `N_LAYERS` `CONTEXT` | Model shape |
+| `STEPS` `LR` `SEED` | Training schedule |
+| `DEVICE=cuda` | Use the CUDA mirror path |
+| `TAO_RUN_DIR=<dir>` | Emit the `events.jsonl` stream (and a final checkpoint) here |
+| `TOY_EVENTS=<path>` | Raw alternative to `TAO_RUN_DIR`: full path to the events file |
+| `CHECKPOINT_EVERY=N` | Write `weights/step_<N>.gguf` every N steps (+ `latest` symlink) |
+| `TOY_DESCRIBE=json\|mermaid\|text` | Dump the compute graph and exit (no training) |
+| `TOY_GRAD_SENTINELS=1` `TOY_DRIFT_EVERY=N` `TOY_CKA=N` | Instrumentation events |
+
+See [examples/README.md](../examples/README.md) for the full roster and
+invocations.
+
+## Example env knobs
 
 These are read by the example binaries (not the CLI; the CLI passes its own
 controlled env). Most relevant to `06_train_from_scratch.rb`:

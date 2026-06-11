@@ -56,15 +56,15 @@
 #
 # Needs Spinel compilation (ffi_lib is a Spinel intrinsic). Branch-hit
 # verification is make + run:
-#   make examples/smoke_gate_q8_preserve
-#   ./examples/smoke_gate_q8_preserve     # MUST run from repo root (data/)
+#   make prep/smokes/smoke_gate_q8_preserve
+#   ./prep/smokes/smoke_gate_q8_preserve     # MUST run from repo root (data/)
 #
 # Exits non-zero (loud, with first mismatch index) on ANY divergence/NaN
 # or if the Q8 path is not taken; prints VERDICT + baseline logits on success.
 
-require_relative "../lib/toy"
-require_relative "../lib/toy/models/toy_smollm2"
-require_relative "../lib/toy/llm/engine/llama_seq_engine"
+require_relative "../../lib/toy"
+require_relative "../../lib/toy/models/toy_smollm2"
+require_relative "../../lib/toy/llm/engine/llama_seq_engine"
 
 # VERIFIED Qwen2.5-0.5B-Instruct native-Q8 GGUF dims.
 VOCAB   = 151936

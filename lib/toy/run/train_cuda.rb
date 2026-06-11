@@ -104,6 +104,15 @@ if RECIPE == "warm-start"
   warmup = 5
   corpus = ENV["CORPUS"] || "data/ts_seqs.bin"
 
+  # FAIL LOUD on a missing corpus (spinel-dev#17 class: the loader
+  # zero-fills failed reads with only a WARN line).
+  if !File.exist?(corpus)
+    puts "toy-train: corpus not found: " + corpus
+    puts "  warm-start streams packed-i32 tokens from CORPUS= (default data/ts_seqs.bin)."
+    puts "  `toy new` seeds a project copy; in a toy checkout run prep/prep_tinystories.rb."
+    exit 1
+  end
+
   cfg_ws = Toy::SmolLM2Config.mha(VOCAB, D_MODEL, N_HEADS,
                                   D_FF, N_LAYERS, CONTEXT, 10000.0, 1.0e-5)
   cfg_ws.donor_d_in = DONOR_D
@@ -257,6 +266,12 @@ recipe.realize!(cfg, opts)
 ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe.fs_cache.sess)
 
 # Per-step inputs built IN THE RUNNER, byte-identical to the CPU runner.
+# FAIL LOUD on a missing corpus (spinel-dev#17: silent "" then nil SEGV).
+if !File.exist?("data/ts_seqs.txt")
+  puts "toy-train-cuda: corpus not found: data/ts_seqs.txt (cwd-relative)"
+  puts "  `toy new` seeds a project copy; in a toy checkout run prep/prep_tinystories.rb."
+  exit 1
+end
 raw        = File.read("data/ts_seqs.txt")
 first_line = raw.split("\n")[0]
 parts      = first_line.split(" ")

@@ -92,13 +92,23 @@ EVENTS = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/events.jsonl") : ""
 if RECIPE == "warm-start"
   # ==================================================================
   # WARM-START BRANCH — fully self-contained (landmine #16). Mirrors
-  # examples/smoke_recipe_warm_start.rb at INIT=scratch (the gate ground
+  # prep/smokes/smoke_recipe_warm_start.rb at INIT=scratch (the gate ground
   # truth). INIT=scratch skips realize_warm! (no donor GGUF).
   # ==================================================================
   lr_max = 0.001
   lr_min = 0.00001
   warmup = 5
   corpus = ENV["CORPUS"] || "data/ts_seqs.bin"
+
+  # FAIL LOUD on a missing corpus BEFORE realize (spinel-dev#17 class:
+  # ToyCorpusLoader zero-fills a failed read with a WARN line, so a
+  # missing path would silently train on zeros). Named + actionable.
+  if !File.exist?(corpus)
+    puts "toy-train: corpus not found: " + corpus
+    puts "  warm-start streams packed-i32 tokens from CORPUS= (default data/ts_seqs.bin)."
+    puts "  `toy new` seeds a project copy; in a toy checkout run prep/prep_tinystories.rb."
+    exit 1
+  end
 
   cfg_ws = Toy::SmolLM2Config.mha(VOCAB, D_MODEL, N_HEADS,
                                   D_FF, N_LAYERS, CONTEXT, 10000.0, 1.0e-5)
@@ -259,6 +269,17 @@ ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe.fs_cache.sess)
 
 # Per-step inputs built IN THE RUNNER (the from-scratch entrypoint, the
 # fixture's analog under lib-vs-example), byte-identical to smoke L56-84.
+#
+# FAIL LOUD on the missing corpus FIRST: under Spinel, File.read on a
+# missing path silently returns "" (spinel-dev#17) and the nil first
+# line then SEGVs (observed: `toy train` from a fresh `toy new` project
+# died with signal 11 and no message). Named + actionable instead.
+if !File.exist?("data/ts_seqs.txt")
+  puts "toy-train: corpus not found: data/ts_seqs.txt (cwd-relative)"
+  puts "  from-scratch reads the first line of data/ts_seqs.txt."
+  puts "  `toy new` seeds a project copy; in a toy checkout run prep/prep_tinystories.rb."
+  exit 1
+end
 raw        = File.read("data/ts_seqs.txt")
 first_line = raw.split("\n")[0]
 parts      = first_line.split(" ")

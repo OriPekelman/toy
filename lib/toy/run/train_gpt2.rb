@@ -48,6 +48,13 @@ engine = Toy::LLM::Engine::GPT2SeqEngine.new
 engine.realize!(VOCAB, D_MODEL, N_HEADS, D_FF, N_LAYERS, CONTEXT, SEED)
 
 # First corpus line → CONTEXT token ids, zero-padded (from-scratch ground truth).
+# FAIL LOUD first: Spinel's File.read on a missing path silently returns ""
+# (spinel-dev#17) and the nil first line SEGVs. Named + actionable instead.
+if !File.exist?("data/ts_seqs.txt")
+  puts "toy-train-gpt2: corpus not found: data/ts_seqs.txt (cwd-relative)"
+  puts "  `toy new` seeds a project copy; in a toy checkout run prep/prep_tinystories.rb."
+  exit 1
+end
 raw     = File.read("data/ts_seqs.txt")
 lines   = raw.split("\n")
 parts   = lines[0].split(" ")

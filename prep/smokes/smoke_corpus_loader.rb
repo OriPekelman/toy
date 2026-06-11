@@ -1,18 +1,18 @@
 # E2.4 / GH#14 — smoke for the streaming corpus loader + cosine LR.
 #
 #   uv run prep/pretokenize_corpus.py            # one-time: ts_seqs.bin
-#   make examples/smoke_corpus_loader
-#   ./examples/smoke_corpus_loader
+#   make prep/smokes/smoke_corpus_loader
+#   ./prep/smokes/smoke_corpus_loader
 #
 # Reads 5 successive 32-token sequences from data/ts_seqs.bin and
 # prints the first few tokens of each — should not repeat. Then
 # prints cosine LR at a few representative steps to verify the
 # schedule shape (warmup → cosine → tail).
 
-require_relative "../lib/toy/models/transformer"
-require_relative "../lib/toy/ffi/tinynn"
-require_relative "../lib/toy/io/toy_corpus_loader"
-require_relative "../lib/toy/train/toy_lr_schedule"
+require_relative "../../lib/toy/models/transformer"
+require_relative "../../lib/toy/ffi/tinynn"
+require_relative "../../lib/toy/io/toy_corpus_loader"
+require_relative "../../lib/toy/train/toy_lr_schedule"
 
 PATH    = ENV["CORPUS"] || "data/ts_seqs.bin"
 SEQ_LEN = (ENV["SEQ_LEN"] || "32").to_i

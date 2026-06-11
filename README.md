@@ -141,8 +141,9 @@ what's validated vs. expected-to-work vs. not wired) lives in
 - [`docs/events.md`](docs/events.md) — the `toy/v1` event schema.
 - [`docs/roadmap.md`](docs/roadmap.md) — deferred work and live
   research directions.
-- [`examples/`](examples/README.md) — focused, single-file entry
-  points compiled to native binaries.
+- [`examples/`](examples/README.md) — the narrated teaching set: seven
+  single-file examples (train, warm-start, LoRA, generate, logprobs,
+  run-log compare, ViT), each one `make` target away.
 
 ## Acknowledgments
 

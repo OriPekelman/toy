@@ -3,11 +3,11 @@
 # (token_id, logprob) pairs. Tep's future /v1/chat/completions with
 # `logprobs=true` consumes the same building block.
 #
-#   make examples/smoke_decode_logprobs
-#   GGUF=data/llama-3.2-1b-native.gguf ./examples/smoke_decode_logprobs
+#   make prep/smokes/smoke_decode_logprobs
+#   GGUF=data/llama-3.2-1b-native.gguf ./prep/smokes/smoke_decode_logprobs
 
-require_relative "../lib/toy/models/arch"
-require_relative "../lib/toy/models/transformer_lm"
+require_relative "../../lib/toy/models/arch"
+require_relative "../../lib/toy/models/transformer_lm"
 
 GGUF = ENV["GGUF"] || "data/llama-3.2-1b-native.gguf"
 TOP_K = (ENV["TOP_K"] || "5").to_i

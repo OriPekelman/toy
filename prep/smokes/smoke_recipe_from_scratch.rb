@@ -5,8 +5,8 @@
 # Its loss curve MUST byte-equal the reference captured from
 # smoke_projection_lens.
 #
-#   make examples/smoke_recipe_from_scratch
-#   SEED=0 STEPS=5 ./examples/smoke_recipe_from_scratch | grep '^step'
+#   make prep/smokes/smoke_recipe_from_scratch
+#   SEED=0 STEPS=5 ./prep/smokes/smoke_recipe_from_scratch | grep '^step'
 #
 # Reference (must reproduce byte-for-byte):
 #   step 1: loss=6.440947532653809
@@ -24,12 +24,12 @@
 # Load order is verbatim so the backend TinyNN loads (via
 # llama_seq_forward_ffi) before the recipe is required.
 
-require_relative "../lib/toy"
-require_relative "../lib/toy/models/toy_smollm2"
-require_relative "../lib/toy/llm/engine/llama_seq_engine"
-require_relative "../lib/toy/llm/adamw"
-require_relative "../lib/toy/llm/labels"
-require_relative "../lib/toy/llm/recipes/from_scratch"
+require_relative "../../lib/toy"
+require_relative "../../lib/toy/models/toy_smollm2"
+require_relative "../../lib/toy/llm/engine/llama_seq_engine"
+require_relative "../../lib/toy/llm/adamw"
+require_relative "../../lib/toy/llm/labels"
+require_relative "../../lib/toy/llm/recipes/from_scratch"
 
 STEPS    = (ENV["STEPS"]    || "5").to_i
 D_MODEL  = (ENV["D_MODEL"]  || "64").to_i

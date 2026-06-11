@@ -1,4 +1,4 @@
-# examples/smoke_full_finetune.rb — full fine-tune (F3) loss-curve driver.
+# prep/smokes/smoke_full_finetune.rb — full fine-tune (F3) loss-curve driver.
 #
 # The 6th realize-gate's compiled runner (CPU). Drives the engine's
 # realize_for_full_finetune + build_training_step on a real GGUF and prints
@@ -12,11 +12,11 @@
 # gitignored dev artifact — the gate SKIPs loudly when it is absent). Train
 # losses are ggml-internal → byte-exact across CPU backends + machines.
 
-require_relative "../lib/toy"
-require_relative "../lib/toy/models/toy_smollm2"
-require_relative "../lib/toy/io/loaders/toy_smollm2_loader"
-require_relative "../lib/toy/llm/engine/llama_seq_engine"
-require_relative "../lib/toy/llm/adamw"
+require_relative "../../lib/toy"
+require_relative "../../lib/toy/models/toy_smollm2"
+require_relative "../../lib/toy/io/loaders/toy_smollm2_loader"
+require_relative "../../lib/toy/llm/engine/llama_seq_engine"
+require_relative "../../lib/toy/llm/adamw"
 
 GGUF      = ENV["GGUF"]   || "data/smollm2-135m-native.gguf"
 STEPS     = (ENV["STEPS"] || "8").to_i

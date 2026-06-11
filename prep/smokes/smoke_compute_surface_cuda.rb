@@ -1,4 +1,4 @@
-# examples/smoke_compute_surface_cuda.rb — proves the CUDA compute
+# prep/smokes/smoke_compute_surface_cuda.rb — proves the CUDA compute
 # entry (lib/toy/compute_cuda.rb, toy#64 item 8) compiles under Spinel
 # and yields a working compute surface from ONE require, via the
 # RECIPE path on the GPU.
@@ -13,7 +13,7 @@
 #
 # Expected last line: "compute-surface-cuda: ok".
 
-require_relative "../lib/toy/compute_cuda"
+require_relative "../../lib/toy/compute_cuda"
 
 VOCAB   = 627
 CONTEXT = 16
