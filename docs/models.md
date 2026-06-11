@@ -27,8 +27,8 @@ which backend — and the footnotes that keep the table honest.
 | Qwen2.5-1.5B       | Llama + QKV bias     | 1.5B        | ✓   | ✓    | ✓   | ✓        | ✓†      | ‡         |
 | Qwen2.5-3B         | Llama + QKV bias     | 3B          | ✓   | ✓    | ✓   | ✓        | ✓†      | ‡         |
 | Qwen2.5-7B         | Llama + QKV bias     | 7B          | ✓   | ✓    | ✓   |          | ✓       |           |
-| Qwen3-0.6B         | Qwen3 + QK-norm      | 0.6B        | ✓   |      | ✓   | ✗※       |         | ‡         |
-| Qwen3-1.7B         | Qwen3 + QK-norm      | 1.7B        | ✓   | ✓°   | ✓   | ✗※       |         | ‡         |
+| Qwen3-0.6B         | Qwen3 + QK-norm      | 0.6B        | ✓   |      | ✓   | ✓※       |         | ‡         |
+| Qwen3-1.7B         | Qwen3 + QK-norm      | 1.7B        | ✓   | ✓°   | ✓   | ✓※       |         | ‡         |
 | Qwen3-4B           | Qwen3 + QK-norm      | 4B          | ✓   |      | ✓   |          |         | ‡         |
 | OLMoE-1B-7B-Instr  | Llama + MoE + QK-norm⁂  | 7B (1B act) |     | ✓    | ✓   |          |         | ‡         |
 | Gemma 2-2b-it      | Llama + Gemma extras⁂⁂  | 2B          |     | ✓    | ✓   |          |         | ‡         |
@@ -51,15 +51,17 @@ current ggml pin (`41e7949`) that restriction no longer reproduces:
 Qwen2.5-1.5B/3B Q8 run on CUDA and decode token-identical to the CPU
 Q8 and F32 paths (re-verified 2026-06-11).
 
-※ **Qwen3 on CUDA is broken** (caught by the 2026-06-11 re-verification;
-previously over-claimed). CPU decode is coherent; the CUDA binary runs
-but decodes degenerate output (`Once upon a time Answer Answer Answer…`
-on 0.6B, `Once upon a time::::::` on 1.7B), and `toy eval --device cuda`
-returns a top-5 disjoint from CPU's. Not a spinel-pin regression — a
-main-tree binary built 2026-06-06 reproduces it. Qwen3 is the only
-QK-norm + explicit-head_dim arch in the CUDA matrix; every other
-CUDA row above passes token-identical. Reported on toy#61 (needs its
-own issue).
+※ These cells used to read ✗: Qwen3 CUDA decode was degenerate while
+CPU was coherent (caught by the 2026-06-11 re-verification, toy#76).
+Root cause was toy-side, not a ggml kernel: the hand-written CUDA
+loader (`lib/toy/models/transformer_lm_cuda.rb`) never wired the
+detected `qk_norm` flags through to `realize_for_mmap` — it passed 5
+of the 6 args and Spinel zero-fills missing call args without a
+diagnostic — so the per-head Q/K RMS-norms were never built on the
+CUDA graph. Fixed in the #76 PR; re-verified 2026-06-11 (spinel
+`a699cf9` / ggml `41e7949`, gx10): 0.6B and 1.7B greedy decode
+token-identical to CPU across prompts, `toy eval` top-5 ids identical,
+and the KV_Q8 / FLASH_ATTN opt-ins parity-hold on CUDA too.
 
 ° Qwen3-1.7B Q8 was not re-verified on 2026-06-11: no Q8 checkpoint of
 it on the bench box (re-quantizing needs an HF download we don't keep).
@@ -70,7 +72,9 @@ to CPU). Other Llama-family models should work — same FFI surface,
 same graph builder, same ggml-metal kernel coverage — but haven't been
 smoked. GPT-2-family isn't wired on Metal. Quantized weights on Metal
 are untested. The Metal path uses copy-load rather than mmap, so
-multi-GB models pay the copy cost.
+multi-GB models pay the copy cost — and the copy-load path has no
+QK-norm support, so QK-norm models (Qwen3, OLMoE) abort loudly on
+Metal rather than decode degenerate (#76).
 
 ◇ The SmolLM2-135M Metal ✓ is Mac-gated (#27) and was not re-run in the
 2026-06-11 gx10 pass; it stands from the 2026-05-31 Mac validation
