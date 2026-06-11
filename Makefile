@@ -418,6 +418,16 @@ gate-compute-surface: examples/smoke_compute_surface
 	  && echo "GATE PASS [compute-surface]: lib/toy/compute.rb one-require surface is live" \
 	  || { echo "GATE FAIL [compute-surface]"; exit 1; }
 
+# toy#64 item 8 — CUDA twin of gate-compute-surface: build + run the
+# consumer-ish CUDA entry smoke on the GPU (GB10 sm_121).
+.PHONY: gate-compute-surface-cuda
+gate-compute-surface-cuda: examples/smoke_compute_surface_cuda
+	@out="$$(./examples/smoke_compute_surface_cuda 2>&1)"; \
+	echo "$$out" | tail -2; \
+	echo "$$out" | grep -q "compute-surface-cuda: ok" \
+	  && echo "GATE PASS [compute-surface-cuda]: lib/toy/compute_cuda.rb device entry is live" \
+	  || { echo "GATE FAIL [compute-surface-cuda]"; exit 1; }
+
 # K-quant MoE attention regression gate (the bug long misfiled as ggml#1506):
 # head_nbytes returned 0 for K-quant attention weights → per-head mmap stride
 # collapsed every head onto head 0 → degenerate repeating decode on OLMoE
@@ -688,6 +698,22 @@ examples/smoke_projection_lens: examples/smoke_projection_lens.rb lib/toy/llm/en
 examples/smoke_compute_surface: examples/smoke_compute_surface.rb lib/toy/compute.rb lib/toy/llm/training_batch.rb lib/toy/llm/recipe_options.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
+# toy#64 item 8 — the CUDA compute entry (lib/toy/compute_cuda.rb), the
+# consumer-ish device-at-compile-time gate. Same shape as the CPU
+# compute-surface gate but requires compute_cuda + links the CUDA
+# archives with the force-link flag. The generated CUDA mirrors in the
+# dep list are kept fresh by the $(MIRROR_CUDA) pattern rules.
+examples/smoke_compute_surface_cuda: examples/smoke_compute_surface_cuda.rb lib/toy/compute_cuda.rb \
+		lib/toy/llm/training_batch.rb lib/toy/llm/recipe_options.rb \
+		lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/llm/engine/gpt2_seq_engine_cuda.rb \
+		lib/toy_smollm2_ffi_kv_cuda.rb \
+		lib/toy/llm/recipes/from_scratch_cuda.rb lib/toy/llm/recipes/warm_start_cuda.rb \
+		lib/toy/llm/primitives/rms_norm_cuda.rb lib/toy/llm/primitives/rope_cuda.rb \
+		lib/toy/llm/primitives/swiglu_cuda.rb lib/toy/llm/primitives/gqa_cuda.rb \
+		lib/toy/llm/blocks/transformer_block_cuda.rb lib/toy/llm/archs/llama_arch_cuda.rb \
+		lib/tinynn_cuda.rb lib/tinynn.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS)
+	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
+
 # P2.6 — GQA-divergent (w_o) gate. Realizes a config with head_dim=24 so
 # n_heads*head_dim (96) != d_model (64), proving the divergent w_o shape
 # [d_model, n_heads*head_dim] allocates and runs forward+backward.
@@ -889,7 +915,8 @@ MIRROR_CUDA := \
   lib/toy/llm/primitives/rms_norm_cuda.rb lib/toy/llm/primitives/rope_cuda.rb \
   lib/toy/llm/primitives/swiglu_cuda.rb lib/toy/llm/primitives/gqa_cuda.rb \
   lib/toy/llm/blocks/transformer_block_cuda.rb lib/toy/llm/archs/llama_arch_cuda.rb \
-  lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy_smollm2_ffi_kv_cuda.rb \
+  lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/llm/engine/gpt2_seq_engine_cuda.rb \
+  lib/toy_smollm2_ffi_kv_cuda.rb \
   lib/gpt2_ffi_cuda.rb lib/gpt2_ffi_kv_cuda.rb \
   examples/06_train_from_scratch_cuda.rb examples/smoke_projection_lens_cuda.rb
 MIRROR_METAL := $(MIRROR_CUDA:_cuda.rb=_metal.rb)

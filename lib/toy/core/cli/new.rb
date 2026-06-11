@@ -222,87 +222,157 @@ module Toy
           gem "spinel_kit", "~> 0.1"
         RUBY
 
-        # The starter program. Requires ONLY toy/compute (toy#42 full-API
-        # require) and trains a tiny Llama-shape model from scratch. Mirrors
-        # examples/smoke_compute_surface.rb's proven API. Spinel-clean: literal
-        # require_relative, no #{} interpolation, no kwargs.
+        # The starter program — a DEVICE-AGNOSTIC experiment body. It
+        # deliberately has NO compute require of its own: the per-device
+        # entry shims (main_cpu.rb / main_cuda.rb / main_metal.rb) pick
+        # the compute entry AT COMPILE TIME and then require this body
+        # (Spinel cannot switch a require on ENV — a conditional
+        # require_relative silently compiles to 0). Everything
+        # constructs through Toy::Device, so the same body compiles
+        # against every entry. Spinel-clean: no #{} interpolation, no
+        # kwargs, while-loops.
         LIB_EXPERIMENT = <<~'RUBY'
-          # experiment.rb — compose a model against toy's engines.
+          # experiment.rb — DEVICE-AGNOSTIC experiment body.
           #
-          # ONE require pulls toy's whole compute surface (engines + recipes +
-          # loaders): vendor/spinel/toy/lib/toy/compute (toy#42). It resolves
-          # after `bundle lock && spinel-compat vendor`.
-          #
-          #   spinel experiment.rb -o experiment && ./experiment
-          require_relative "vendor/spinel/toy/lib/toy/compute"
+          # Compiled via the per-device entries (never directly):
+          #   ./build.sh             # cpu
+          #   ./build.sh cpu cuda    # one binary per device
+          # Hyper-parameters read from ENV at RUNTIME with the defaults
+          # below — one compile, many runs (STEPS=50 ./experiment_cpu).
 
-          VOCAB   = 627
-          D_MODEL = 64
-          HEADS   = 4
-          LAYERS  = 2
-          CONTEXT = 16
-          STEPS   = 20
+          VOCAB   = (ENV["VOCAB"]   || "627").to_i
+          D_MODEL = (ENV["D_MODEL"] || "64").to_i
+          HEADS   = (ENV["HEADS"]   || "4").to_i
+          LAYERS  = (ENV["LAYERS"]  || "2").to_i
+          CONTEXT = (ENV["CONTEXT"] || "16").to_i
+          STEPS   = (ENV["STEPS"]   || "20").to_i
+          SEED    = (ENV["SEED"]    || "0").to_i
+          D_FF    = (ENV["D_FF"]    || (2 * D_MODEL).to_s).to_i
 
-          cfg = Toy::SmolLM2Config.new(VOCAB, D_MODEL, HEADS, HEADS, 128,
+          cfg = Toy::SmolLM2Config.mha(VOCAB, D_MODEL, HEADS, D_FF,
                                        LAYERS, CONTEXT, 10000.0, 1.0e-5)
 
-          # The L4 recipe drives the engine. Named realize-time options
-          # (Toy::LLM::RecipeOptions); defaults are weight_dtype=0 (f32),
-          # B=1, seed=0 — only t_seq needs setting.
+          # Named realize-time options; the L4 recipe comes from the
+          # device seam (Toy::Device — cpu/cuda/metal picked by the
+          # entry that required this body).
           opts = Toy::LLM::RecipeOptions.new
           opts.t_seq = CONTEXT
+          opts.seed  = SEED
 
-          recipe = Toy::LLM::Recipes::FromScratch.new
+          recipe = Toy::Device.from_scratch_recipe
           recipe.realize!(cfg, opts)
 
           seq_ids = [0]
           seq_ids.pop
-          positions = [0]
-          positions.pop
           i = 0
           while i < CONTEXT
             seq_ids.push(i % VOCAB)
-            positions.push(i)
             i = i + 1
           end
 
-          m_labels = Toy::Labels.next_token(seq_ids, VOCAB, CONTEXT, 1)
-          m_hp     = Toy::AdamW.for_from_scratch.hp(0)
+          # Validating per-step quartet + named AdamW (from-scratch mode).
+          batch = Toy::LLM::TrainingBatch.new(VOCAB, CONTEXT, 1)
+          batch.fill!(seq_ids)
+          batch.hp = Toy::AdamW.for_from_scratch.hp(0)
 
           step = 0
           while step < STEPS
-            loss = recipe.step!(seq_ids, positions, m_labels, m_hp, step == 0)
+            loss = recipe.step!(batch.seq_ids, batch.positions,
+                                batch.labels, batch.hp, step == 0)
             puts "step " + (step + 1).to_s + ": loss=" + loss.to_s
             step = step + 1
           end
-          puts "experiment: ok"
+          puts "experiment: ok (device=" + Toy::Device.name + ")"
         RUBY
+
+        # Per-device entry shims — device chosen at COMPILE time by
+        # which compute entry each requires. 2 lines each; build.sh
+        # picks the shim per requested device.
+        LIB_MAIN_CPU = <<~'RUBY'
+          # main_cpu.rb — CPU entry: compile with `./build.sh cpu`.
+          require_relative "vendor/spinel/toy/lib/toy/compute"
+          require_relative "experiment"
+        RUBY
+
+        LIB_MAIN_CUDA = <<~'RUBY'
+          # main_cuda.rb — CUDA entry: compile with `./build.sh cuda`.
+          require_relative "vendor/spinel/toy/lib/toy/compute_cuda"
+          require_relative "experiment"
+        RUBY
+
+        LIB_MAIN_METAL = <<~'RUBY'
+          # main_metal.rb — Metal entry (macOS): `./build.sh metal`.
+          require_relative "vendor/spinel/toy/lib/toy/compute_metal"
+          require_relative "experiment"
+        RUBY
+
+        # Multi-arch build script: loops the requested devices over the
+        # per-device entries, producing experiment_<dev> binaries. The
+        # --cc force-link/framework flags match toy's own Makefile cuda
+        # / metal targets.
+        LIB_BUILD_SH = <<~'SH'
+          #!/bin/sh
+          # build.sh — one device-agnostic experiment.rb, one binary per
+          # device. Usage: ./build.sh [cpu] [cuda] [metal]   (default: cpu)
+          set -e
+          devs="${*:-cpu}"
+          for dev in $devs; do
+            entry="main_$dev.rb"
+            out="experiment_$dev"
+            case "$dev" in
+              cpu)
+                spinel "$entry" -o "$out" ;;
+              cuda)
+                spinel --cc='cc -Wl,-u,tnn_cuda_force_link' "$entry" -o "$out" ;;
+              metal)
+                spinel --cc='cc -Wl,-u,_tnn_metal_force_link -framework Foundation -framework Metal -framework MetalKit' "$entry" -o "$out" ;;
+              *)
+                echo "build.sh: unknown device '$dev' (want cpu|cuda|metal)" >&2
+                exit 2 ;;
+            esac
+            echo "built $out"
+          done
+        SH
 
         LIB_README = <<~MARKDOWN
           # toy library-composition project
 
-          A Spinel program that composes a model against toy's engines.
+          A Spinel program that composes a model against toy's engines —
+          with the DEVICE chosen at COMPILE time.
 
           ## Build & run
           ```sh
           bundle lock              # resolve toy + spinel_kit
           spinel-compat vendor     # copy + build toy into vendor/spinel/
-          spinel experiment.rb -o experiment && ./experiment
+          ./build.sh               # cpu binary: ./experiment_cpu
+          ./build.sh cpu cuda      # one binary per device
+          STEPS=50 ./experiment_cpu   # hyper-params are runtime ENV knobs
           ```
 
           > Until `toy` is published to RubyGems, point the Gemfile at a
           > checkout: `gem "toy", path: "../toy"` (or `git:`), then `bundle lock`.
 
-          `experiment.rb` requires `vendor/spinel/toy/lib/toy/compute` — toy's
-          one-shot compute surface (all engines + recipes + loaders). Write your
-          experiment loop against `Toy::LLM::Engine::LlamaSeqEngine` /
-          `ViTTinyEngine` / `GPT2SeqEngine` and the L4 recipes. See toy's
-          `docs/consuming-toy.md`.
+          ## Shape
+
+          - `experiment.rb` — your DEVICE-AGNOSTIC experiment body: it
+            constructs through `Toy::Device` (`.llama_engine`,
+            `.from_scratch_recipe`, …) and never names a backend class.
+          - `main_cpu.rb` / `main_cuda.rb` / `main_metal.rb` — 2-line
+            entry shims requiring toy's per-device compute entry
+            (`toy/compute`, `toy/compute_cuda`, `toy/compute_metal`)
+            then the body. Spinel resolves requires at compile time and
+            cannot switch them on ENV — the shim IS the device choice.
+          - `build.sh` — loops requested devices over the shims.
+
+          See toy's `docs/consuming-toy.md`.
         MARKDOWN
 
         LIB_GITIGNORE = <<~GITIGNORE
           /vendor/
           /experiment
+          /experiment_cpu
+          /experiment_cuda
+          /experiment_metal
           *.o
           *.a
         GITIGNORE
@@ -338,7 +408,8 @@ module Toy
             puts ""
             puts "Next: cd #{@path}"
             puts "      bundle lock && spinel-compat vendor   # fetch + build toy into vendor/"
-            puts "      spinel experiment.rb -o experiment && ./experiment"
+            puts "      ./build.sh            # cpu (also: ./build.sh cpu cuda)"
+            puts "      ./experiment_cpu"
           else
             puts "Created toy project at #{target}"
             created.each { |rel| puts "  #{rel}" }
@@ -433,6 +504,16 @@ module Toy
           created << "Gemfile"
           write_file(File.join(target, "experiment.rb"), LIB_EXPERIMENT)
           created << "experiment.rb"
+          write_file(File.join(target, "main_cpu.rb"), LIB_MAIN_CPU)
+          created << "main_cpu.rb"
+          write_file(File.join(target, "main_cuda.rb"), LIB_MAIN_CUDA)
+          created << "main_cuda.rb"
+          write_file(File.join(target, "main_metal.rb"), LIB_MAIN_METAL)
+          created << "main_metal.rb"
+          build_sh = File.join(target, "build.sh")
+          write_file(build_sh, LIB_BUILD_SH)
+          File.chmod(0o755, build_sh)
+          created << "build.sh"
           write_file(File.join(target, "README.md"), LIB_README)
           created << "README.md"
           write_file(File.join(target, ".gitignore"), LIB_GITIGNORE)

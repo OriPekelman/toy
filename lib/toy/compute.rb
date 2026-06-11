@@ -81,3 +81,48 @@ require_relative "io/tokenizer"
 require_relative "llm/adamw"
 require_relative "llm/labels"
 require_relative "llm/training_batch"
+
+# ── Toy::Device — the device-agnostic construction seam (toy#64 item 8) ──
+#
+# DEVICE IS CHOSEN AT COMPILE TIME by which compute entry you require:
+#   lib/toy/compute.rb        → CPU     (this file)
+#   lib/toy/compute_cuda.rb   → CUDA    (GB10/sm_121 etc.)
+#   lib/toy/compute_metal.rb  → Metal   (macOS only)
+# Spinel does NOT resolve a require_relative inside a conditional — an
+# `if ENV[...]`-guarded require is SILENTLY compiled to 0 (probed on
+# a699cf9: "cannot resolve call to 'require_relative'... emitting 0"),
+# so a TOY_DEVICE-switching single entry is impossible; per-device
+# entry files are the mechanism.
+#
+# User source stays DEVICE-AGNOSTIC by constructing through these
+# factories instead of naming the backend classes: each entry defines
+# the SAME Toy::Device surface returning its backend's types, so the
+# same experiment body compiles against any entry (the `toy new --lib`
+# scaffold's build.sh loops devices over per-device main_<dev>.rb
+# shims). Backends without a given engine/recipe variant simply do not
+# ship it here: vit + warm-start recipes are CPU/CUDA-uneven (vit has
+# no GPU engine; warm-start has no Metal recipe) — consumers that need
+# them require the variant file directly.
+module Toy
+  module Device
+    def self.name
+      "cpu"
+    end
+
+    def self.llama_engine
+      Toy::LLM::Engine::LlamaSeqEngine.new
+    end
+
+    def self.gpt2_engine
+      Toy::LLM::Engine::GPT2SeqEngine.new
+    end
+
+    def self.from_scratch_recipe
+      Toy::LLM::Recipes::FromScratch.new
+    end
+
+    def self.warm_start_recipe
+      Toy::LLM::Recipes::WarmStart.new
+    end
+  end
+end
