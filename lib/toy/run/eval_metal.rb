@@ -33,6 +33,13 @@ require_relative "../dev/toy_logprobs"
 GGUF  = ENV["GGUF"] || "data/smollm2-135m-f32.gguf"
 TOP_K = (ENV["TOP_K"] || "5").to_i
 
+# Explicit existence check BEFORE any GGUF read (spinel-dev#17 class).
+if !File.exist?(GGUF)
+  puts "toy-eval-metal: no such file: " + GGUF +
+       " (set GGUF= to a llama-family model; `toy list` shows local caches)"
+  exit 1
+end
+
 arch = Arch.load_or_fail(GGUF, "toy-eval")
 
 lm = ToyLMMetal.new(arch)

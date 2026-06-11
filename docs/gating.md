@@ -93,6 +93,21 @@ tolerance):
   within 5% of the f32 baseline (~0.2% observed). bf16 is the CUDA/GB10
   follow-up (bf16 backward needs more than f16).
 
+### Consumer cold-start gate
+
+`make gate-consumer` (`prep/consumer_gate.rb`) proves the README /
+`docs/framework.md` quickstart is TESTED: in a throwaway tmpdir it runs
+`toy new gatelab` (asserting the scaffold seeds `data/ts_seqs.{bin,txt}`),
+compiles `algos/recipes/hello.rb` with `$SPINEL_DIR`'s spinel, runs it with
+default ENV and again with `D_MODEL=128 STEPS=10` (no recompile — one
+compile, many runs), runs `toy train from-scratch` in the project (losses
+print + `runs/<id>/events.jsonl` written), and asserts the missing-corpus
+guard fails loud naming the path (the spinel-dev#17 class). The `--lib`
+leg (`toy new gatelib --lib` → `bundle lock` → `spinel-compat vendor` →
+`./build.sh cpu` → run) skips loudly when bundler / spinel-compat are
+absent. Structural assertions (files exist, losses finite, curves react
+to ENV), not byte-exact — numerics are `train_gate`'s job.
+
 ### Model-gated regression gates
 
 Some gates exercise a REAL model whose GGUF is a gitignored multi-GB dev

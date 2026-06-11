@@ -118,6 +118,26 @@ module Toy
             return fail_out("--arch gpt2 supports only the `from-scratch` recipe")
           end
 
+          # Existence checks on user-suppliable paths BEFORE any build/shell
+          # (spinel-dev#17 class: the runner side also guards, but the CLI
+          # names the file and the fix first — and exits 2 like infer's /
+          # describe's named-but-missing model). Paths are cwd-relative to
+          # the PROJECT (the runner runs in Dir.pwd).
+          if @recipe == "lora"
+            lora_gguf = @model || "data/smollm2-135m-native.gguf"
+            unless File.file?(lora_gguf)
+              return bad_arg("no such file: #{lora_gguf} (lora needs a " \
+                             "native-layout base GGUF; see `toy list`, or convert one " \
+                             "with prep/convert_smollm2_to_gguf.py --ggml-native)")
+            end
+          elsif @recipe == "warm-start"
+            ws_corpus = @corpus || "data/ts_seqs.bin"
+            unless File.file?(ws_corpus)
+              return bad_arg("no such file: #{ws_corpus} (warm-start streams " \
+                             "packed-i32 tokens; `toy new` seeds data/ts_seqs.bin, or pass --corpus)")
+            end
+          end
+
           root = ToyRoot.locate_root
           unless root
             return fail_out(
@@ -211,7 +231,12 @@ module Toy
           out, status = Open3.capture2e(env, runner)
           unless status.success?
             tail = out.lines.last(20).join
-            return fail_out("runner exited #{status.exitstatus}:\n#{tail}")
+            # exitstatus is nil for a signal death (e.g. SEGV) — say so
+            # instead of the formerly-masked "runner exited :".
+            how = status.exitstatus ? status.exitstatus.to_s
+                                    : "from signal #{status.termsig} (#{Signal.signame(status.termsig) rescue '?'})"
+            tail = "(no output)" if tail.strip.empty?
+            return fail_out("runner exited #{how}:\n#{tail}")
           end
 
           losses = out.lines.select { |l| l.start_with?("step ") }.map(&:chomp)

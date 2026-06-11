@@ -62,7 +62,19 @@ RUN_DIR  = ENV["TAO_RUN_DIR"] || ""
 RUN_ID   = ENV["TOY_RUN_ID"]  || "lmc"
 
 if LMC_A == "" || LMC_B == ""
-  STDERR.puts "toy-eval-lmc: LMC_A and LMC_B are required"
+  puts "toy-eval-lmc: LMC_A and LMC_B are required"
+  exit 1
+end
+# Explicit existence checks BEFORE the gguf open (spinel-dev#17 class:
+# a missing user-suppliable path must fail loud and name the path).
+if !File.exist?(LMC_A)
+  puts "toy-eval-lmc: no such file: LMC_A=" + LMC_A +
+       " (pass a from-scratch checkpoint GGUF, e.g. runs/<id>/weights/latest)"
+  exit 1
+end
+if !File.exist?(LMC_B)
+  puts "toy-eval-lmc: no such file: LMC_B=" + LMC_B +
+       " (pass a from-scratch checkpoint GGUF, e.g. runs/<id>/weights/latest)"
   exit 1
 end
 
@@ -81,10 +93,10 @@ end
 ggA = TinyNN.tnn_gguf_load(LMC_A)
 ggB = TinyNN.tnn_gguf_load(LMC_B)
 if ggA == nil || ggA == TinyNN.tnn_null_ptr
-  STDERR.puts "toy-eval-lmc: cannot open LMC_A=" + LMC_A; exit 1
+  puts "toy-eval-lmc: cannot open LMC_A=" + LMC_A; exit 1
 end
 if ggB == nil || ggB == TinyNN.tnn_null_ptr
-  STDERR.puts "toy-eval-lmc: cannot open LMC_B=" + LMC_B; exit 1
+  puts "toy-eval-lmc: cannot open LMC_B=" + LMC_B; exit 1
 end
 
 vocab     = TinyNN.tnn_gguf_get_u32(ggA, "llama.vocab_size")
@@ -158,7 +170,7 @@ def fused_lookup_a(fused_names, fused_a, fused_b, ggA, ggB, fused_name, nel_full
   idx_a = TinyNN.tnn_gguf_find_index(ggA, fused_name)
   idx_b = TinyNN.tnn_gguf_find_index(ggB, fused_name)
   if idx_a < 0 || idx_b < 0
-    STDERR.puts "toy-eval-lmc: missing fused " + fused_name +
+    puts "toy-eval-lmc: missing fused " + fused_name +
                 " in A=" + idx_a.to_s + " B=" + idx_b.to_s
     return -1
   end
@@ -235,7 +247,7 @@ while ai < alphas_arr.length
       idx_a = TinyNN.tnn_gguf_find_index(ggA, name)
       idx_b = TinyNN.tnn_gguf_find_index(ggB, name)
       if idx_a < 0 || idx_b < 0
-        STDERR.puts "toy-eval-lmc: missing " + name +
+        puts "toy-eval-lmc: missing " + name +
                     " in A=" + idx_a.to_s + " B=" + idx_b.to_s
         pi = pi + 1
       else

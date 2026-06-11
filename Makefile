@@ -70,7 +70,14 @@ GGML_DIR    := vendor/ggml
 GGML_REPO   := https://github.com/ggml-org/ggml.git
 # Pinned upstream rev: what the vendor-patches/ set is proven against, and
 # what ships inside the gem (toy#45). Bump deliberately, re-proving patches.
-GGML_REV    := 41e7949
+#
+# MUST be the FULL 40-char SHA (toy#60 item 5): the clone rule does a
+# shallow `git fetch origin $(GGML_REV)`, and GitHub only serves
+# fetch-by-SHA for FULL SHAs (allowReachableSHA1InWant — a short SHA
+# gets "fatal: couldn't find remote ref", which broke every pristine
+# clone during #45). Full-SHA shallow fetch verified cold against
+# github.com/ggml-org/ggml on 2026-06-11.
+GGML_REV    := 41e7949d705fd5dfeac33f3804e1af2a136cebd9
 GGML_CUDA_ARCH ?= 121
 CUDA_DIR    ?= /usr/local/cuda
 
@@ -408,6 +415,17 @@ gate-mixed-precision:
 .PHONY: gate-run-log
 gate-run-log:
 	ruby prep/run_log_gate.rb
+
+# toy#60 item 4 — the COLD-START consumer gate: `toy new` scaffold →
+# hello.rb compiles + runs (default ENV, then D_MODEL override without
+# recompiling) → `toy train` prints losses + writes runs/<id>/ → the
+# missing-corpus guard fails loud; PLUS the `toy new --lib` leg
+# (bundle lock → spinel-compat vendor → ./build.sh cpu → run; skips
+# loudly when bundler/spinel-compat are absent). Structural, not
+# byte-exact. ~4 min (the lib leg builds ggml inside the tmp project).
+.PHONY: gate-consumer
+gate-consumer:
+	ruby prep/consumer_gate.rb
 
 # toy#42 full-API require gate. Builds prep/smokes/smoke_compute_surface (which
 # requires ONLY lib/toy/compute.rb) and asserts it realizes a live engine —
