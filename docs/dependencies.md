@@ -164,6 +164,18 @@ Env knobs honored by `prep/post_vendor_toy.rb`:
 For the full consumer recipe see the worked example at
 `~/sites/tao_transfer`.
 
+**RBS type roots (toy#69 / spinelgems#13).** toy both CONSUMES and
+PRODUCES sig roots. Consuming: `make vendor-tep` re-vendors and, when
+any vendored gem ships `sig/` (spinel_kit does), symlinks the
+aggregated `vendor/spinel/sig` to the gitignored `sig/vendor` so toy's
+own `--rbs sig` compiles (every `$(SPINEL)` invocation; `SPINEL_RBS=`
+disables) seed the vendored gems' types too. Producing: the gemspec
+ships `sig/**/*.rbs`, so consumers' vendor trees get toy's sig
+automatically and their `--rbs vendor/spinel/sig` keeps UNCALLED toy
+methods concretely typed (the spinel-dev#11/#12 poly-widening
+defense). See `docs/consuming-toy.md` for coverage and the two limits
+(no `:ptr` spelling; arity must be exact or absent).
+
 ---
 
 ## `Mat#add` was renamed to `Mat#plus`

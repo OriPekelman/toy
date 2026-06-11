@@ -110,6 +110,43 @@ need `spinel --cc='cc -Wl,-u,tnn_cuda_force_link' …` — without the force-lin
 symbol the linker drops the CUDA backend registration and ggml silently
 computes on CPU (verified: the loss curve flips to the CPU fixture).
 
+## RBS type roots ride along automatically (toy#69)
+
+Toy ships `sig/*.rbs` covering its public surface — the pure-Ruby
+models (`sig/toy.rbs`: Mat, the `Toy::` blocks, SmolLM2, GPT2LM,
+Tokenizer) **and** the Spinel compute surface (`sig/toy_compute.rbs`:
+`RecipeOptions`, `TrainingBatch`, `AdamW`, `Labels`, the recipes'
+`realize!`/`step!`, the engines' scalar config + ptr-free methods,
+`ViTTinyConfig`, the KV decode classes, `GGUFLoad::SmolLM2Flags`).
+
+`spinel-compat vendor` copies each gem's `sig/` and aggregates ONE root
+at `vendor/spinel/sig` (spinelgems#13), advertised in the generated
+`vendor/spinel/deps.rb` header. Compile with it:
+
+```sh
+spinel --rbs vendor/spinel/sig experiment.rb -o experiment
+```
+
+(The `toy new --lib` scaffold's `build.sh` does this automatically when
+the directory exists.) The seeds are **advisory** — Spinel's inference
+runs on top and widens on observed contradiction — but they pin a
+method's param/ivar/return types **without needing a call site**, which
+defends against the uncalled-param poly-widening family (spinel-dev#11/
+#12): a toy method your experiment never calls stays concretely typed
+instead of unioning poly into shared callees.
+
+Two honest limits (probed on spinel a699cf9):
+
+- **FFI `:ptr` has no RBS spelling.** Methods with a ptr param or return
+  (the `realize_for_mmap` family, tensor-handle accessors) can't be
+  declared — sig roots can NOT rescue the lora-in-compute exclusion
+  (toy#52) because `LoRA#realize!`'s leading `gguf_handle` is a ptr and
+  the poison is a CONSTRUCTOR slot (spinel-dev#12).
+- **Arity must be exact or absent.** A truncated declaration against a
+  default-arg method is NOT a no-op: it breaks the C compile with a
+  "too few arguments" error (the one non-advisory failure mode; toy's
+  `Tokenizer#initialize` hit this during adoption).
+
 ## The `sp_Mat undeclared` landmine
 
 If your consumer compile fails with `sp_Mat undeclared` (or a poly-dispatch crash
