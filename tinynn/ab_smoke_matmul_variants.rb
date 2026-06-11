@@ -5,7 +5,7 @@
 #   t_matmul  A^T * B   (attention V backward, embedding backward chain)
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 # matmul_t: (3,4) and (5,4) -> (3,5)
 mata = Mat.new(3, 4)

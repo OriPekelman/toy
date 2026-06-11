@@ -36,7 +36,7 @@
 # :str at class load. Random init via a seeded Ruby LCG.
 
 require_relative "../lib/toy"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 VOCAB    = (ENV["VOCAB"]    || "32").to_i
 D_MODEL  = (ENV["D_MODEL"]  || "16").to_i

@@ -17,7 +17,7 @@
 # (gradient output cols).
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn_cuda"
+require_relative "../lib/toy/ffi/tinynn_cuda"
 
 K       = (ENV["K"]      || "256").to_i      # reduce axis (sequence length in real LoRA bwd)
 M       = (ENV["M"]      || "1536").to_i     # output rows (d_model for LoRA-A grad)

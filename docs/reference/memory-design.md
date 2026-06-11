@@ -102,7 +102,7 @@ The CPU code path lives in `tinynn/tinynn_ggml.c`
 (`tnn_session_attach_weight_mmap` → `ggml_backend_cpu_buffer_from_ptr`)
 and `tinynn/tinynn_gguf.c`; the Ruby side is
 `lib/toy/llm/engine/llama_seq_engine.rb` (`realize_for_mmap`). FFI bindings:
-`lib/tinynn.rb`, `lib/tinynn_cuda.rb`, `lib/tinynn_metal.rb`.
+`lib/toy/ffi/tinynn.rb`, `lib/toy/ffi/tinynn_cuda.rb`, `lib/toy/ffi/tinynn_metal.rb`.
 
 ## CUDA: UVA buffer-from-ptr (landed)
 
@@ -143,4 +143,4 @@ Where it lives:
 
 Metal has no public buffer-from-ptr peer, so the Metal path routes
 `tnn_session_attach_weight_mmap` through the CPU buffer and lets the
-scheduler copy host pages to the device (`lib/tinynn_metal.rb`).
+scheduler copy host pages to the device (`lib/toy/ffi/tinynn_metal.rb`).

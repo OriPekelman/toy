@@ -7,7 +7,7 @@
 #   p -= lr * m_hat / (sqrt(v_hat) + eps)
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 def adam_native(param, grad, m, v, lr, b1, b2, eps, omc1, omc2)
   np = Mat.new(param.nrows, param.ncols)

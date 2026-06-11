@@ -7,7 +7,7 @@
 # logits.
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 vocab_size = 10
 d_model    = 16

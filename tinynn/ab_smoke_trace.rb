@@ -9,7 +9,7 @@
 #
 # Open the output in https://perfetto.dev or chrome://tracing to view.
 
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 require_relative "../lib/toy/models/transformer"
 
 OUT = "/tmp/tnn_smoke.trace.json"

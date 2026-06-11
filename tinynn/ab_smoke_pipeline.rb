@@ -4,7 +4,7 @@
 # matmul as one ggml graph rather than three FFI calls.
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 def gelu_native(x)
   c = 0.7978845608028654

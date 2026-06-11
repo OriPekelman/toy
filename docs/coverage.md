@@ -13,7 +13,7 @@ top of these ops are tracked separately in `docs/models-verified.md`.
 - **30 of 98** ops have a dedicated `tnn_*` wrapper bound on the CPU side (31%).
 - **2** more are composed inside other wrappers (status `via`) — usable in graphs we build but no standalone entry point.
 - **0** bound ops are CPU-only (no CUDA binding) — see "Parity drift" below.
-- **3** bound ops are not bound on Metal — the Metal mirror (`lib/tinynn_metal.rb`) is an intentionally thin smoke surface today, see "Metal mirror" below.
+- **3** bound ops are not bound on Metal — the Metal mirror (`lib/toy/ffi/tinynn_metal.rb`) is an intentionally thin smoke surface today, see "Metal mirror" below.
 - **5** ops with a `*_BACK` enum case have an explicit backward wrapper; **1** more are emitted automatically by ggml's autodiff (`ggml_build_backward_expand`) without needing a wrapper.
 - **62** ops have no wrapper at all (and aren't composed by another).
 - **4** ops are dispatch-internal (no public `ggml_<x>()` constructor — e.g. `UNARY`, `MAP_CUSTOM1`).
@@ -143,7 +143,7 @@ _None — full CPU/CUDA parity on bound ops._
 
 ## Metal mirror
 
-The Metal FFI surface (`lib/tinynn_metal.rb`) is intentionally a thin
+The Metal FFI surface (`lib/toy/ffi/tinynn_metal.rb`) is intentionally a thin
 smoke binding today — just enough to prove `ggml_backend_metal_init`
 + a forward matmul on Apple Silicon. Op count below is *not* a
 regression signal; it's the to-do list for whoever wires real model

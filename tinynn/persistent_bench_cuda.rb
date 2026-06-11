@@ -3,7 +3,7 @@
 # persistent wins because backend buffers are allocated once.
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn_cuda"
+require_relative "../lib/toy/ffi/tinynn_cuda"
 
 T   = 8
 DM  = 16

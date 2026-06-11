@@ -7,7 +7,7 @@
 #   p  = p*(1 - alpha*wd) - alpha * mh / vh    (with wd=0 -> p = p - alpha*mh/vh)
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 def adam_native(param, grad, m, v, lr, b1, b2, eps, omc1, omc2)
   np = Mat.new(param.nrows, param.ncols)

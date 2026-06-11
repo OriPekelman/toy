@@ -190,7 +190,7 @@ patterns deserves a re-test (`make bench-heavy` is the proof gate).
   `out = [TinyNN.tnn_null_ptr]; out.pop` (or `[0.0]; .pop`,
   `[""]; .pop`) to pin the element type. Heaviest in the
   `lib/toy/llm/engine/llama_seq_engine{,_cuda,_metal}.rb` and
-  `lib/toy_smollm2_ffi_kv*.rb` files. Partial upstream fix (issue #688)
+  `lib/toy/llm/engine/llama_kv_engine*.rb` files. Partial upstream fix (issue #688)
   promotes the local but locks the function-parameter type before the
   promotion is observed, so cross-function passes still need the seed.
 - **`has_key?` guards on `IntHash`.** `*IntHash#[]` returns `0` on

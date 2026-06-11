@@ -48,7 +48,7 @@ vendor/spinel/toy/tinynn/libtinynn_ggml.a            # the shim archive
 vendor/spinel/toy/vendor/ggml/build/src/libggml*.a   # 3 CPU archives
 ```
 
-and the vendored `lib/tinynn.rb` carries
+and the vendored `lib/toy/ffi/tinynn.rb` carries
 `-Lvendor/spinel/toy/tinynn -Lvendor/spinel/toy/vendor/ggml/build/src …`.
 You can move the whole project directory and recompile; it keeps working.
 If the vendor step warns that a placeholder matched **no** vendored `.rb`,
@@ -104,7 +104,7 @@ opt-in + variant-build-dir mechanics —
 then, a CUDA consumer replicates what the staged entries declare: configure
 ggml's `build-cuda/` with the entry's cmake args inside
 `vendor/spinel/toy/vendor/ggml/`, `make -C vendor/spinel/toy/tinynn cuda`, and
-substitute the `lib/tinynn_cuda.rb` placeholder with the vendored-relative
+substitute the `lib/toy/ffi/tinynn_cuda.rb` placeholder with the vendored-relative
 `-L` set (see the `link` template in `spinel-ext-gpu.json`). CUDA compiles
 need `spinel --cc='cc -Wl,-u,tnn_cuda_force_link' …` — without the force-link
 symbol the linker drops the CUDA backend registration and ggml silently

@@ -13,7 +13,7 @@
 # If step 4 doesn't see D, persistent buffer didn't survive sched_reset.
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 rows = 3
 cols = 4

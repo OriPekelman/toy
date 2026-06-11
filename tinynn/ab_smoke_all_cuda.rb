@@ -5,7 +5,7 @@
 # produced vendor/ggml/build-cuda.
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn_cuda"
+require_relative "../lib/toy/ffi/tinynn_cuda"
 
 # --- reference helpers ---
 

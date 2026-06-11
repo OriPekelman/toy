@@ -25,9 +25,9 @@ CUDA, or Metal. The Ruby side lives in:
 
 | File | Module / class | Backend |
 | --- | --- | --- |
-| `lib/tinynn.rb` | `TinyNN` | CPU |
-| `lib/tinynn_cuda.rb` | `TinyNNCuda` | CUDA |
-| `lib/tinynn_metal.rb` | `TinyNNMetal` | Metal |
+| `lib/toy/ffi/tinynn.rb` | `TinyNN` | CPU |
+| `lib/toy/ffi/tinynn_cuda.rb` | `TinyNNCuda` | CUDA |
+| `lib/toy/ffi/tinynn_metal.rb` | `TinyNNMetal` | Metal |
 
 The C shim (`tinynn/tinynn_ggml.{c,h}`, `tinynn/tinynn_gguf.{c,h}`) compiles into
 `tinynn/libtinynn_ggml.a` (CPU) and `tinynn/libtinynn_ggml_cuda.a` (CUDA). The

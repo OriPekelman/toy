@@ -25,7 +25,7 @@
 # for the full rationale.
 
 require_relative "../lib/toy/models/arch"
-require_relative "../lib/tinynn_metal"
+require_relative "../lib/toy/ffi/tinynn_metal"
 require_relative "../lib/toy/models/transformer_lm_metal"
 require_relative "../lib/toy/io/tokenizer"
 

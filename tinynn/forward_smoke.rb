@@ -4,7 +4,7 @@
 # Mat#matmul in feed_forward and compare logits with vs. without FFI.
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 # Same dimensions train_minimal uses: vocab=7, d_model=16, d_ff=32,
 # n_heads=2, n_layers=2, context_length=8. (d_head = d_model/n_heads).

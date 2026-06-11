@@ -12,7 +12,7 @@
 
 require_relative "../models/transformer"
 require_relative "../models/gpt2"
-require_relative "../../tinynn"
+require_relative "../ffi/tinynn"
 
 # GPT-2 hyperparameters read from the GGUF's kv metadata. Same shape
 # (50257 vocab, 1024 ctx) across all variants; only d_model / d_ff /

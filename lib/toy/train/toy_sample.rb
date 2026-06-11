@@ -12,7 +12,7 @@
 # inference-table-local; main scope only sees the final String
 # returned from `detokenize`.
 
-require_relative "../../tinynn"
+require_relative "../ffi/tinynn"
 require_relative "../../../vendor/spinel/spinel_kit/lib/spinel_kit/json_builder"
 
 module ToySample

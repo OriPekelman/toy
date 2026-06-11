@@ -5,7 +5,7 @@
 # Usage (from a driver script):
 #
 #   require_relative "lib/transformer"   # defines Mat
-#   require_relative "lib/tinynn"        # adds TinyNN.matmul(a, b)
+#   require_relative "lib/toy/ffi/tinynn"        # adds TinyNN.matmul(a, b)
 #
 # TinyNN.matmul(a, b) computes a ** b and returns a fresh Mat with the
 # same row-major layout. Internally it spins up a one-shot ggml session,

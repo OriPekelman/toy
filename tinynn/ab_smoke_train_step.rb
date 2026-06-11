@@ -8,7 +8,7 @@
 # Expected: loss → 0 as adam learns to drive y → 0.
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 K = 3
 OUT = 2

@@ -231,7 +231,7 @@ data/*.bin
 # build time by prep/gen_cuda_mirror.rb — see Makefile MIRROR_CUDA/MIRROR_METAL
 # rules). Gitignored so the ~19k generated lines never live in git; make/gates
 # regenerate on demand. Hand-written GPU files (tinynn_*, transformer_lm_*,
-# recipe twins, lib/toy/run/*_cuda) stay TRACKED — they are not in this list.
+# lib/toy/run/*_cuda — landmine #16) stay TRACKED — they are not in this list.
 lib/toy/llm/primitives/rms_norm_cuda.rb
 lib/toy/llm/primitives/rms_norm_metal.rb
 lib/toy/llm/primitives/rope_cuda.rb
@@ -248,8 +248,14 @@ lib/toy/llm/engine/llama_seq_engine_cuda.rb
 lib/toy/llm/engine/llama_seq_engine_metal.rb
 lib/toy/llm/engine/gpt2_seq_engine_cuda.rb
 lib/toy/llm/engine/gpt2_seq_engine_metal.rb
-lib/toy_smollm2_ffi_kv_cuda.rb
-lib/toy_smollm2_ffi_kv_metal.rb
+lib/toy/llm/recipes/from_scratch_cuda.rb
+lib/toy/llm/recipes/from_scratch_metal.rb
+lib/toy/llm/recipes/lora_cuda.rb
+lib/toy/llm/recipes/lora_metal.rb
+lib/toy/llm/recipes/warm_start_cuda.rb
+lib/toy/llm/recipes/warm_start_metal.rb
+lib/toy/llm/engine/llama_kv_engine_cuda.rb
+lib/toy/llm/engine/llama_kv_engine_metal.rb
 lib/gpt2_ffi_cuda.rb
 lib/gpt2_ffi_metal.rb
 lib/gpt2_ffi_kv_cuda.rb

@@ -1,8 +1,8 @@
-# GGUF metadata FFI — slim, independent of lib/tinynn.rb / Mat.
+# GGUF metadata FFI — slim, independent of lib/toy/ffi/tinynn.rb / Mat.
 #
 # Exists to work around a Spinel cross-class type-inference issue
 # where loading lib/tokenizer.rb alongside lib/transformer.rb (which
-# pulls in Mat-using FFNFFICache via lib/tinynn.rb) triggers
+# pulls in Mat-using FFNFFICache via lib/toy/ffi/tinynn.rb) triggers
 # polymorphic dispatch widening Mat#nrows to sp_RbVal, producing
 # generated C that fails to compile.
 #
@@ -19,7 +19,7 @@ module GgufKV
   ffi_lib "pthread"
   ffi_lib "m"
 
-  # Keep BYTE-IDENTICAL to lib/tinynn.rb's line — it doubles as the
+  # Keep BYTE-IDENTICAL to lib/toy/ffi/tinynn.rb's line — it doubles as the
   # spinel-ext.json "tinynn" placeholder (toy#45) and the vendor step
   # substitutes every vendored .rb carrying it.
   ffi_cflags "-L. -Ltinynn -Lvendor/ggml/build/src -Wno-int-conversion"

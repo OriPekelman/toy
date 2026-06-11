@@ -3,7 +3,7 @@
 #   @flat[i] -= lr * grad.flat[i]
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 def sgd_native(param, grad, lr)
   out = Mat.new(param.nrows, param.ncols)

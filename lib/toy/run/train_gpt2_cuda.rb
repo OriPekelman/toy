@@ -13,7 +13,7 @@
 # ignored → TinyNNCuda/Mat unloaded → emit-0 → CE=0.
 
 require_relative "../../toy"
-require_relative "../../tinynn_cuda"
+require_relative "../ffi/tinynn_cuda"
 require_relative "../llm/engine/gpt2_seq_engine_cuda"
 
 STEPS    = (ENV["STEPS"]    || "5").to_i

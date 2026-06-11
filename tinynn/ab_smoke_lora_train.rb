@@ -28,7 +28,7 @@
 # Run: ruby tinynn/ab_smoke_lora_train.rb
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 K     = 8       # input dim
 OUT   = 8       # output dim

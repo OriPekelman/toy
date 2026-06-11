@@ -4,14 +4,14 @@
 # Canonical sources:
 #   vendor/ggml/include/ggml.h          : enum ggml_op (all ops in the library)
 #   tinynn/tinynn_ggml.{h,c}            : our C-level wrappers
-#   lib/tinynn.rb / lib/tinynn_cuda.rb  : Ruby FFI bindings on each backend
+#   lib/toy/ffi/tinynn.rb / lib/toy/ffi/tinynn_cuda.rb  : Ruby FFI bindings on each backend
 #
 # For each GGML_OP_X:
 #   1. Derive the natural C name (ggml_<x_lower>).
 #   2. Grep tinynn_ggml.c for calls to ggml_<x_lower>(. The enclosing
 #      function (heuristic: walk back to the previous `^void *tnn_…(` or
 #      `^int tnn_…(` declaration) is the tnn_ wrapper.
-#   3. Look up that wrapper in lib/tinynn.rb and lib/tinynn_cuda.rb
+#   3. Look up that wrapper in lib/toy/ffi/tinynn.rb and lib/toy/ffi/tinynn_cuda.rb
 #      to check FFI binding presence on each backend.
 #   4. Backward: if GGML_OP_X_BACK is in the enum, check whether
 #      ggml_<x>_back appears in any tnn_ wrapper body.
@@ -163,9 +163,9 @@ UNARY_OPS = %w[GELU SILU RELU GELU_QUICK TANH ELU SIGMOID HARDSIGMOID HARDSWISH 
 
 ggml_h          = File.join(ROOT, "vendor/ggml/include/ggml.h")
 tinynn_c        = File.join(ROOT, "tinynn/tinynn_ggml.c")
-tinynn_rb       = File.join(ROOT, "lib/tinynn.rb")
-tinynn_cuda_rb  = File.join(ROOT, "lib/tinynn_cuda.rb")
-tinynn_metal_rb = File.join(ROOT, "lib/tinynn_metal.rb")
+tinynn_rb       = File.join(ROOT, "lib/toy/ffi/tinynn.rb")
+tinynn_cuda_rb  = File.join(ROOT, "lib/toy/ffi/tinynn_cuda.rb")
+tinynn_metal_rb = File.join(ROOT, "lib/toy/ffi/tinynn_metal.rb")
 out_path        = File.join(ROOT, "docs/coverage.md")
 
 ops       = parse_ggml_ops(ggml_h)
@@ -320,7 +320,7 @@ md << <<~MD
   - **#{bound_count} of #{main_rows.size}** ops have a dedicated `tnn_*` wrapper bound on the CPU side (#{(100.0 * bound_count / main_rows.size).round}%).
   - **#{via_count}** more are composed inside other wrappers (status `via`) — usable in graphs we build but no standalone entry point.
   - **#{parity_drift}** bound ops are CPU-only (no CUDA binding) — see "Parity drift" below.
-  - **#{parity_drift_metal}** bound ops are not bound on Metal — the Metal mirror (`lib/tinynn_metal.rb`) is an intentionally thin smoke surface today, see "Metal mirror" below.
+  - **#{parity_drift_metal}** bound ops are not bound on Metal — the Metal mirror (`lib/toy/ffi/tinynn_metal.rb`) is an intentionally thin smoke surface today, see "Metal mirror" below.
   - **#{back_count}** ops with a `*_BACK` enum case have an explicit backward wrapper; **#{back_auto}** more are emitted automatically by ggml's autodiff (`ggml_build_backward_expand`) without needing a wrapper.
   - **#{missing_count}** ops have no wrapper at all (and aren't composed by another).
   - **#{notapp_count}** ops are dispatch-internal (no public `ggml_<x>()` constructor — e.g. `UNARY`, `MAP_CUSTOM1`).
@@ -373,7 +373,7 @@ md << <<~MD
 
   ## Metal mirror
 
-  The Metal FFI surface (`lib/tinynn_metal.rb`) is intentionally a thin
+  The Metal FFI surface (`lib/toy/ffi/tinynn_metal.rb`) is intentionally a thin
   smoke binding today — just enough to prove `ggml_backend_metal_init`
   + a forward matmul on Apple Silicon. Op count below is *not* a
   regression signal; it's the to-do list for whoever wires real model

@@ -22,7 +22,7 @@
 # them as column-major).
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn_cuda"
+require_relative "../lib/toy/ffi/tinynn_cuda"
 
 # Heavy bench shape: Qwen2.5-1.5B at seq=256, r=8 (defaults).
 # Override via env to sweep launch-overhead vs compute-bound regimes.

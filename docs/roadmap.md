@@ -172,7 +172,7 @@ touching kernels.
 2. **Apply the widened RoPE.** The C and Ruby `tnn_rope_ext` binding
    *already* exposes `freq_scale`, `ext_factor`, `attn_factor`,
    `beta_fast`, `beta_slow`, and a `freq_factors` tensor
-   (`tinynn/tinynn_ggml.h`, `lib/tinynn.rb`, consumed by
+   (`tinynn/tinynn_ggml.h`, `lib/toy/ffi/tinynn.rb`, consumed by
    `lib/toy/llm/primitives/rope.rb`). The remaining work is **wiring
    the scaling args through per-arch realize paths** — YaRN
    (Qwen3 long-context), Llama-3 freq-scaling, Phi-3 LongRoPE

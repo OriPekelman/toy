@@ -48,14 +48,14 @@ LOG_PROB_FLOOR = 1.0e-12
 # code rescales or subtracts max.
 NEG_INF_SCORE = -1.0e30
 # tinynn is always required so FFNFFICache is defined (it lives in
-# lib/tinynn.rb). The require itself doesn't run any FFI code; only
+# lib/toy/ffi/tinynn.rb). The require itself doesn't run any FFI code; only
 # feed_forward_ffi's USE_FFI_MATMUL-gated branch does. With
 # USE_FFI_MATMUL=false the FFI methods are dead code that Spinel's
 # DCE drops, but the library libs still get linked.
 
 # tinynn is always required so FFNFFICache is defined (it lives in
-# lib/tinynn.rb). Set USE_FFI_MATMUL=true to enable FFI dispatch.
-require_relative "../../tinynn"
+# lib/toy/ffi/tinynn.rb). Set USE_FFI_MATMUL=true to enable FFI dispatch.
+require_relative "../ffi/tinynn"
 
 # One-shot diagnostic: when MAT_SHAPES_ON=true, every matmul prints
 # its shape triple on stdout (post-process with sort | uniq -c). Off

@@ -1,4 +1,4 @@
-# lib/toy_smollm2_ffi_kv.rb — Toy::SmolLM2 KV-cache decode via ggml FFI.
+# lib/toy/llm/engine/llama_kv_engine.rb (was lib/toy_smollm2_ffi_kv.rb) — Toy::SmolLM2 KV-cache decode via ggml FFI.
 #
 # Mirror of lib/gpt2_ffi_kv.rb but for the llama-family architecture:
 #   - RMSNorm (no beta) instead of LayerNorm
@@ -13,10 +13,10 @@
 # via cpy-into-view (same pattern as the GPT-2 cache). Cost per step:
 # constant in prompt length.
 
-require_relative "toy/models/transformer"
-require_relative "toy"
-require_relative "toy/models/toy_smollm2"
-require_relative "tinynn"
+require_relative "../../models/transformer"
+require_relative "../../../toy"
+require_relative "../../models/toy_smollm2"
+require_relative "../../ffi/tinynn"
 # NOTE: not requiring "toy_smollm2_loader" here. Requiring it from
 # inside this file triggers a Spinel GC mark crash in decode_step
 # (sp_gc_mark / sp_PtrArray_new_scan) for reasons we haven't fully

@@ -7,7 +7,7 @@
 #   dx      = dy * dy/dx
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 def silu_back_native(x, dy)
   out = Mat.new(x.nrows, x.ncols)

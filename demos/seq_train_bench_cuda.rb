@@ -1,6 +1,6 @@
 require_relative "../lib/toy"
 require_relative "../lib/toy/models/toy_smollm2"
-require_relative "../lib/toy/models/toy_smollm2_loader"
+require_relative "../lib/toy/io/loaders/toy_smollm2_loader"
 require_relative "../lib/toy/llm/engine/llama_seq_engine_cuda"
 
 # CUDA sequence-mode training bench (LoRA-Q or full-FT).

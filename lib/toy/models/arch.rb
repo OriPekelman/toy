@@ -9,7 +9,7 @@
 # Spinel-friendly: plain attr_reader fields, no metaprogramming, no
 # nil defaults — the factory must fill every field explicitly.
 
-require_relative "../../tinynn"
+require_relative "../ffi/tinynn"
 
 class Arch
   # Identity — :qwen2, :llama, :smollm. The label comes from tensor-

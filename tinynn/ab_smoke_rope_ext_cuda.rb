@@ -14,8 +14,8 @@
 # mismatch implicates the CUDA kernel.
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
-require_relative "../lib/tinynn_cuda"
+require_relative "../lib/toy/ffi/tinynn"
+require_relative "../lib/toy/ffi/tinynn_cuda"
 
 D_HEAD    = 64       # Llama-family typical
 N_HEADS   = 1        # one head — easier to inspect

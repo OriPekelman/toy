@@ -3,7 +3,7 @@
 # (prep/gpt2_train_min.rb). If CE drops here, the engine class is sound and the
 # runner's corpus/labels are the suspect; if CE is 0/stuck, the engine class is.
 require_relative "../lib/toy"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 require_relative "../lib/toy/llm/labels"
 require_relative "../lib/toy/llm/engine/gpt2_seq_engine"
 

@@ -26,12 +26,12 @@
 # selects its backend by requiring the matching engine variant.
 
 # FFI compute layer (Mat, sessions, tnn_* ops) + the MRI-safe sugar.
-require_relative "../tinynn"
+require_relative "ffi/tinynn"
 require_relative "../toy"
 
 # Models + configs (Llama/SmolLM2, ViT) and the GGUF→engine loader.
 require_relative "models/toy_smollm2"
-require_relative "models/toy_smollm2_loader"
+require_relative "io/loaders/toy_smollm2_loader"
 require_relative "models/toy_vit"
 
 # Engines — the L4 forward/train drivers. Each pulls its L1 primitives,
@@ -41,7 +41,7 @@ require_relative "llm/engine/vit_tiny_engine"
 require_relative "llm/engine/gpt2_seq_engine"
 
 # KV-cache decode engine (inference).
-require_relative "../toy_smollm2_ffi_kv"
+require_relative "llm/engine/llama_kv_engine"
 
 # Recipes — the named training/init compositions. Realize-path orchestration
 # over the engines.

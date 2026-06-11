@@ -6,7 +6,7 @@
 #   [1,0]=139  [1,1]=154
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 a = Mat.new(2, 3)
 a.flat[0] = 1.0;  a.flat[1] = 2.0;  a.flat[2] = 3.0

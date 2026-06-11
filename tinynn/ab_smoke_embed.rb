@@ -6,7 +6,7 @@
 # Tests both ops at toy shapes so we exercise the FFI int32 scratch path.
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 def embed_lookup_native(table, indices)
   d = table.ncols

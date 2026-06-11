@@ -15,7 +15,7 @@
 # rounding accumulates over the inner-product k-dim.
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 def fill_lcg(m, seed)
   # Cheap deterministic LCG to avoid all-equal patterns that hide

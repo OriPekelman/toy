@@ -3,7 +3,7 @@
 # n_layers=2, T=32). 20 iterations each, deterministic weights.
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn_cuda"
+require_relative "../lib/toy/ffi/tinynn_cuda"
 
 VOCAB    = 4096
 D_MODEL  = 384

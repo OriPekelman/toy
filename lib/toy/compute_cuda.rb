@@ -23,12 +23,12 @@
 # compute.rb: Spinel-only, never require from the CRuby CLI.
 
 # FFI compute layer: CUDA TinyNN + the MRI-safe sugar (Mat + Card).
-require_relative "../tinynn_cuda"
+require_relative "ffi/tinynn_cuda"
 require_relative "../toy"
 
 # Models + configs (shared — pure model/config code, no backend calls).
 require_relative "models/toy_smollm2"
-require_relative "models/toy_smollm2_loader"
+require_relative "io/loaders/toy_smollm2_loader"
 require_relative "models/toy_vit"
 
 # Engines — the CUDA mirrors (generated from the CPU files by
@@ -39,7 +39,7 @@ require_relative "llm/engine/llama_seq_engine_cuda"
 require_relative "llm/engine/gpt2_seq_engine_cuda"
 
 # KV-cache decode engine (inference), CUDA mirror.
-require_relative "../toy_smollm2_ffi_kv_cuda"
+require_relative "llm/engine/llama_kv_engine_cuda"
 
 # Recipes — the hand-maintained CUDA twins. Exclusions mirror the CPU
 # entry's where they exist and the backend's gaps where they don't:

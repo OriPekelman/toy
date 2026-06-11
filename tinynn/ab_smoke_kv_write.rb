@@ -11,7 +11,7 @@
 #      remain zero.
 
 require_relative "../lib/toy/models/transformer"
-require_relative "../lib/tinynn"
+require_relative "../lib/toy/ffi/tinynn"
 
 MAX_T  = 4
 D_HEAD = 3
