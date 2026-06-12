@@ -1624,8 +1624,13 @@ demos/smollm2_seq_qlora_cuda: demos/smollm2_seq_qlora_cuda.rb lib/toy/llm/engine
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 
 # Training step-time bench. MODE=lora|ft; STEPS=N; GGUF=path.
+# toy#77: the seq-engine mirror requires the primitives/blocks/archs
+# mirrors; without them in the dep list a FRESH checkout generates only
+# llama_seq_engine_cuda.rb, its require_relatives dangle (Spinel ignores
+# them with a warning), every engine type degrades to int and .new
+# returns nil — the demo then segfaults in the first attr setter.
 seq_train_bench_cuda:        demos/seq_train_bench_cuda
-demos/seq_train_bench_cuda: demos/seq_train_bench_cuda.rb lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS)
+demos/seq_train_bench_cuda: demos/seq_train_bench_cuda.rb lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/llm/primitives/rms_norm_cuda.rb lib/toy/llm/primitives/rope_cuda.rb lib/toy/llm/primitives/swiglu_cuda.rb lib/toy/llm/primitives/gqa_cuda.rb lib/toy/llm/blocks/transformer_block_cuda.rb lib/toy/llm/archs/llama_arch_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS)
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 
 # Per-phase training-step bench (CPU + CUDA). Times graph_reset /

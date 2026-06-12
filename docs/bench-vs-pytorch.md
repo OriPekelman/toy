@@ -20,32 +20,30 @@ make bench-vs-pytorch-update   # re-record the budget after an intended change
 make bench-vs-pytorch-report   # measure + print, no gate
 ```
 
-Latest GB10 (SmolLM2-135M, measured live, same session — 2026-06-11,
-toy `d605aea` / spinel `a699cf9` / ggml `41e7949`, toy#61 pass):
+Latest GB10 (SmolLM2-135M, measured live, same session — 2026-06-12,
+toy `67cf1e3`+toy#77 fix / spinel `a699cf9` / ggml `41e7949`):
 
 | Workload | toy (CUDA) | PyTorch (CUDA) | ratio toy/pt |
 | --- | --- | --- | --- |
-| Full-FT training step (T=4) | 82.05 ms | 82.48 ms | **0.995× (parity)** |
-| KV-cache decode | — see below | 98.9 tok/s | **not measurable** |
+| Full-FT training step (T=4) | 81.90 ms | 76.98 ms | **1.064×** |
+| KV-cache decode | 80.7 tok/s | 112.8 tok/s | **1.399×** |
 
-For a transformer you can read top-to-bottom, parity on the training
-step at 135M is a healthy place to be. (The CPU story is different —
-see "Caveats".)
+For a transformer you can read top-to-bottom, near-parity on the
+training step at 135M and ~1.4× on decode is a healthy place to be.
+(The CPU story is different — see "Caveats".)
 
-> **Known-broken (2026-06-11): the decode leg.** `demos/qwen25_bench_cuda`
-> segfaults at startup (`sp_gc_mark` → `sp_PtrArray_new_scan` inside
-> `SmolLM2KVCuda.decode_step`, right after `ggml_cuda_init`), so the
-> infer ratio cannot be measured at this pin. Not an `a699cf9`
-> regression — a main-tree binary built 2026-05-31 segfaults
-> identically, so the leg has been dead since shortly after the budget
-> was recorded (2026-05-24). Worse, `bench/check_vs_pytorch.rb`
-> silently skips a ratio whose inputs are missing and still prints
-> `ok` — a fail-loud violation. The last good decode numbers (~82 vs
-> ~113 tok/s, 1.38×) are RETIRED until the demo is fixed and the leg
-> re-measured; reported on toy#61.
->
-> The *CPU* decode bench (`make bench`, `bench/inference.rb`) is alive
-> and green: 85.4 tok/s vs a 64.4 baseline on 2026-06-11.
+> **Post-mortem (toy#77, fixed 2026-06-12).** The decode leg was dead
+> 2026-05-31 → 2026-06-12: Spinel compiles `Bool#to_s` to a raw C
+> string literal *without* the `\xff` static-string GC guard byte and
+> registers the temp as a GC root, so two `KV_Q8.to_s`-style calls in
+> one concat chain in `demos/qwen25_bench_cuda` made the next GC
+> collection segfault in `sp_gc_mark` — or not, depending purely on
+> link layout. Sidestepped with ternaries over guarded string
+> literals; spinel-dev issue drafted. The same window also exposed the
+> checker silently printing `ok` when a budgeted ratio had no
+> measurement — `bench/check_vs_pytorch.rb` now prints a SKIPPED line
+> per missing leg and exits non-zero (and `--update` refuses to
+> silently shrink the budget).
 
 ## What it measures
 

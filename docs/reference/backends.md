@@ -229,12 +229,13 @@ tolerance), so there is one mental model for both. A ratio of `1.0×` is parity;
 
 ### GB10 numbers
 
-Latest GB10 light gate (SmolLM2-135M, measured live):
+Latest GB10 light gate (SmolLM2-135M, measured live 2026-06-12, toy
+`67cf1e3`+toy#77 fix / spinel `a699cf9` / ggml `41e7949`):
 
 | Workload | toy (CUDA) | PyTorch (CUDA) | ratio toy/pt |
 | --- | --- | --- | --- |
-| Full-FT training step (T=4) | ~77 ms | ~77 ms | **~1.0× (parity)** |
-| KV-cache decode | ~82 tok/s | ~113 tok/s | **~1.38×** |
+| Full-FT training step (T=4) | ~82 ms | ~77 ms | **~1.06×** |
+| KV-cache decode | ~81 tok/s | ~113 tok/s | **~1.40×** |
 
 ### Heavy mode
 

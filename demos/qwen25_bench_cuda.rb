@@ -42,9 +42,19 @@ FLASH_ATTN = ENV["FLASH_ATTN"] == "1"
 BENCH_TAG = ENV["BENCH_TAG"]  || ""
 
 puts "=== Bench: " + GGUF + " ==="
+# toy#77: do NOT call .to_s on a Bool here. Spinel codegen emits
+# Bool#to_s as a raw C literal ( cond ? "true" : "false" ) WITHOUT the
+# \xff static-string GC guard byte, then registers the temp as a GC
+# root; whether the next collection segfaults in sp_gc_mark depends on
+# what the linker placed before that literal. Two Bool#to_s in this
+# one concat chain + the tinynn_cuda link layout crashed every run
+# since ~May 31 (the bench-vs-pytorch infer leg). Ternary over guarded
+# Ruby string literals sidesteps it deterministically. spinel-dev
+# issue drafted; revert to .to_s once fixed upstream.
 puts "  warmup=" + N_WARMUP.to_s + " prefill_T=" + PREFILL_T.to_s +
      " n_new=" + N_NEW.to_s + " max_T=" + MAX_T.to_s +
-     " kv_q8=" + KV_Q8.to_s + " flash=" + FLASH_ATTN.to_s
+     " kv_q8=" + (KV_Q8 ? "true" : "false") +
+     " flash=" + (FLASH_ATTN ? "true" : "false")
 
 cfg = SmolLM2ConfigLoader.read(GGUF)
 puts "  cfg: vocab=" + cfg.vocab.to_s + " d=" + cfg.d_model.to_s +
@@ -61,7 +71,15 @@ if KV_Q8
 elsif FLASH_ATTN
   kv.enable_flash_attn!
 end
-kv.realize_for_mmap(gguf, cfg, MAX_T, flags.untied, flags.qkv_bias)
+# toy#77: realize_for_mmap grew a 6th arg (qk_norm) for Qwen3/OLMoE
+# QK-norm support; this call site still passed 5. Spinel zero-fills
+# missing call args WITHOUT a diagnostic (spinel-dev#21), which left
+# the engine with a garbage qk_norm slot and crashed decode_step in
+# sp_gc_mark. Mirror the load_cuda call shape in
+# lib/toy/models/transformer_lm_cuda.rb: set qk_norm_kind BEFORE
+# realize, pass qk_norm explicitly.
+kv.qk_norm_kind = flags.qk_norm_kind
+kv.realize_for_mmap(gguf, cfg, MAX_T, flags.untied, flags.qkv_bias, flags.qk_norm)
 t_load_ms = (Time.now - t_load_0) * 1000.0
 puts "  realize+mmap: " + t_load_ms.to_s + " ms"
 puts "  backend: " + TinyNNCuda.tnn_backend_name(kv.sess)
