@@ -148,6 +148,43 @@ deliberately does NOT work around it in its manifest. The CUDA unit pins
 `CMAKE_CUDA_ARCHITECTURES=121` (GB10); other GPUs override the whole link
 line via the `SPINEL_EXT_<PLACEHOLDER>` escape hatch.
 
+## MRI dev-runs: `require "toy/mri"` (toy#71 Stage A)
+
+Plain CRuby can load the **whole compute surface** — no Spinel, no build:
+
+```sh
+ruby -Ilib -e 'require "toy/mri"'        # from a toy checkout
+# or, in a consumer with toy on the load path:
+ruby -e 'require "toy/mri"; ...'
+```
+
+`lib/toy/mri.rb` is the **MRI-only entry**: it gives the Spinel FFI
+intrinsics (`ffi_lib` / `ffi_func` / `ffi_cflags`) a CRuby meaning —
+declaration recorders (`Toy::MRI.declarations`) whose generated methods
+raise a named `Toy::MRI::NativeCallError` — then requires `toy/compute`
+unchanged. It is never compiled by Spinel and must never appear in a
+compiled require chain (compiled code requires `toy/compute*` directly).
+
+**The boundary, honestly:**
+
+- **Pure Ruby — works for real.** Configs (`SmolLM2Config.tiny/.mid`),
+  `RecipeOptions`, cards, `RunLog`, the Mat path, and the whole teaching
+  stack: `TransformerLM` + `Toy::Trainer` genuinely **train** under MRI
+  (slowly — pure-Ruby loops; tiny shapes only). Engine/recipe
+  *construction* also works. This is what livebook / `tao notebook`
+  dev-run cells use.
+- **Native — fails loud, by name.** Anything that reaches ggml
+  (`engine.realize_*`, KV decode, GGUF load, corpus loaders) raises
+  `Toy::MRI::NativeCallError` — "native call `tnn_session_new` requires
+  the Spinel-compiled binary or the fiddle backend — toy#71". Never a
+  bare `NoMethodError`, never a silent wrong answer.
+
+Gated by `make gate-mri` (plain `ruby`; see `gating.md`). **Stage B**
+(toy#71) grows this same entry a Fiddle arm that binds the recorded
+declarations against a shared `libtinynn_ggml.so` — MRI then runs *real*
+training/inference at ggml speed, and MRI-vs-Spinel byte-comparison
+becomes a differential oracle (spinel-dev#6).
+
 ## RBS type roots ride along automatically (toy#69)
 
 Toy ships `sig/*.rbs` covering its public surface — the pure-Ruby

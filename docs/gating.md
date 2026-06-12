@@ -108,6 +108,22 @@ leg (`toy new gatelib --lib` → `bundle lock` → `spinel-compat vendor` →
 absent. Structural assertions (files exist, losses finite, curves react
 to ENV), not byte-exact — numerics are `train_gate`'s job.
 
+### MRI dev-run gate
+
+`make gate-mri` (`prep/mri_gate.rb`, toy#71 Stage A) proves the **plain-CRuby
+entry** works with no Spinel anywhere — plain `ruby`, no `SPINEL_DIR`, no
+build step. It asserts three things: (1) `require "toy/mri"` loads the full
+compute require chain under MRI (the `ffi_lib`/`ffi_func`/`ffi_cflags`
+intrinsics resolve to the shim's declaration recorders; 194 declarations
+land in `Toy::MRI.declarations`); (2) the pure-Ruby teaching surface
+genuinely works — configs, `RecipeOptions`, engine *construction*, and a
+real `Toy::Trainer` + `TransformerLM` loop on the Mat path whose loss
+decreases; (3) crossing the native boundary fails LOUD with the named
+`Toy::MRI::NativeCallError` (never a bare `NoMethodError`), at both a
+direct `TinyNN.tnn_session_new` call and an engine realize. Behavioral,
+not byte-exact — MRI float printing is the Ruby-libm arm; numeric
+byte-equality vs the compiled binaries is Stage B's differential gate.
+
 ### Model-gated regression gates
 
 Some gates exercise a REAL model whose GGUF is a gitignored multi-GB dev

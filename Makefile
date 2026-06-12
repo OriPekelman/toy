@@ -440,6 +440,16 @@ gate-mixed-precision:
 gate-run-log:
 	ruby prep/run_log_gate.rb
 
+# toy#71 Stage A — the MRI dev-run gate (plain `ruby`, NO Spinel build,
+# NO SPINEL_DIR): `require "toy/mri"` loads the full compute surface
+# under CRuby, the pure-Ruby teaching path genuinely trains (Trainer +
+# TransformerLM on the Mat path), and crossing the native boundary
+# raises the NAMED Toy::MRI::NativeCallError. Behavioral, not
+# byte-exact (MRI floats are the Ruby-libm arm).
+.PHONY: gate-mri
+gate-mri:
+	ruby prep/mri_gate.rb
+
 # toy#60 item 4 — the COLD-START consumer gate: `toy new` scaffold →
 # hello.rb compiles + runs (default ENV, then D_MODEL override without
 # recompiling) → `toy train` prints losses + writes runs/<id>/ → the
