@@ -28,15 +28,15 @@ if [ ! -x "$TEP_BIN" ]; then
 fi
 
 # Order matters (dependency chain): tinynn → transformer → gpt2 →
-# {gpt2_ffi_kv, gguf_load, bpe} → app source. The require_relative
+# {gpt2_kv_engine, gguf_load, bpe} → app source. The require_relative
 # lines we strip have no effect at runtime once everything's inlined.
 LIBS=(
   lib/toy/ffi/tinynn.rb
-  lib/transformer.rb
-  lib/gpt2.rb
-  lib/gpt2_ffi_kv.rb
-  lib/gguf_load.rb
-  lib/bpe.rb
+  lib/toy/models/transformer.rb
+  lib/toy/models/gpt2.rb
+  lib/toy/llm/engine/gpt2_kv_engine.rb
+  lib/toy/io/gguf_load.rb
+  lib/toy/io/bpe.rb
 )
 
 {

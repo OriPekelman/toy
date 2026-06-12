@@ -1,6 +1,7 @@
 # lib/toy/llm/engine/llama_kv_engine.rb (was lib/toy_smollm2_ffi_kv.rb) — Toy::SmolLM2 KV-cache decode via ggml FFI.
 #
-# Mirror of lib/gpt2_ffi_kv.rb but for the llama-family architecture:
+# Mirror of lib/toy/llm/engine/gpt2_kv_engine.rb (was lib/gpt2_ffi_kv.rb)
+# but for the llama-family architecture:
 #   - RMSNorm (no beta) instead of LayerNorm
 #   - No biases on Q / K / V / O / FFN projections
 #   - SwiGLU FFN: down( silu(gate(x)) * up(x) )

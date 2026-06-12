@@ -7,7 +7,7 @@
 
 require_relative "../lib/toy/models/transformer"
 require_relative "../lib/toy/models/gpt2"
-require_relative "../lib/gpt2_ffi"
+require_relative "../lib/toy/llm/engine/gpt2_fwd_engine"
 require_relative "../lib/toy/io/gguf_load"
 require_relative "../lib/toy/train/training"   # parse_ids
 

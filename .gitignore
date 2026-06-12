@@ -258,10 +258,10 @@ lib/toy/llm/recipes/warm_start_cuda.rb
 lib/toy/llm/recipes/warm_start_metal.rb
 lib/toy/llm/engine/llama_kv_engine_cuda.rb
 lib/toy/llm/engine/llama_kv_engine_metal.rb
-lib/gpt2_ffi_cuda.rb
-lib/gpt2_ffi_metal.rb
-lib/gpt2_ffi_kv_cuda.rb
-lib/gpt2_ffi_kv_metal.rb
+lib/toy/llm/engine/gpt2_fwd_engine_cuda.rb
+lib/toy/llm/engine/gpt2_fwd_engine_metal.rb
+lib/toy/llm/engine/gpt2_kv_engine_cuda.rb
+lib/toy/llm/engine/gpt2_kv_engine_metal.rb
 examples/legacy/06_train_from_scratch_cuda.rb
 examples/legacy/06_train_from_scratch_metal.rb
 prep/smokes/smoke_projection_lens_cuda.rb

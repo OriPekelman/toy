@@ -1,3 +1,5 @@
+# lib/toy/llm/engine/gpt2_kv_engine.rb (was lib/gpt2_ffi_kv.rb) — GPT-2 KV-cache decode via ggml FFI.
+#
 # GPT2KVFFICache — per-step decode with persistent K/V kv_cache.
 #
 # At each decode step:
@@ -14,9 +16,9 @@
 # ~17 ms per full-T_SEQ forward at T_SEQ=5 (and that grows linearly
 # in T_SEQ; the KV path is flat).
 
-require_relative "toy/models/transformer"
-require_relative "toy/models/gpt2"
-require_relative "toy/ffi/tinynn"
+require_relative "../../models/transformer"
+require_relative "../../models/gpt2"
+require_relative "../../ffi/tinynn"
 
 # Per-block persistent tensor handles. Includes per-head K/V buffers
 # alongside the standard GPT-2 weights.

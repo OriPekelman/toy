@@ -5,7 +5,7 @@
 
 require_relative "../lib/toy/models/transformer"
 require_relative "../lib/toy/models/gpt2"
-require_relative "../lib/gpt2_ffi_kv_cuda"
+require_relative "../lib/toy/llm/engine/gpt2_kv_engine_cuda"
 require_relative "../lib/toy/io/gguf_load"
 require_relative "../lib/toy/train/training"
 

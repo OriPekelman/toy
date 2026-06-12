@@ -1015,7 +1015,7 @@ MIRROR_CUDA := \
   lib/toy/llm/recipes/from_scratch_cuda.rb lib/toy/llm/recipes/lora_cuda.rb \
   lib/toy/llm/recipes/warm_start_cuda.rb \
   lib/toy/llm/engine/llama_kv_engine_cuda.rb \
-  lib/gpt2_ffi_cuda.rb lib/gpt2_ffi_kv_cuda.rb \
+  lib/toy/llm/engine/gpt2_fwd_engine_cuda.rb lib/toy/llm/engine/gpt2_kv_engine_cuda.rb \
   examples/legacy/06_train_from_scratch_cuda.rb prep/smokes/smoke_projection_lens_cuda.rb
 MIRROR_METAL := $(MIRROR_CUDA:_cuda.rb=_metal.rb)
 
@@ -1698,7 +1698,7 @@ tinynn/gpt2_parity: tinynn/gpt2_parity.rb lib/toy/models/transformer.rb lib/toy/
 gpt2-ffi-parity: tinynn/gpt2_ffi_parity
 	./tinynn/gpt2_ffi_parity
 
-tinynn/gpt2_ffi_parity: tinynn/gpt2_ffi_parity.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/gpt2_ffi.rb lib/toy/io/gguf_load.rb lib/toy/train/training.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
+tinynn/gpt2_ffi_parity: tinynn/gpt2_ffi_parity.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/llm/engine/gpt2_fwd_engine.rb lib/toy/io/gguf_load.rb lib/toy/train/training.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) tinynn/gpt2_ffi_parity.rb -o tinynn/gpt2_ffi_parity
 
 # Apples-to-apples bench: native Mat vs FFI on the same forward.
@@ -1706,7 +1706,7 @@ tinynn/gpt2_ffi_parity: tinynn/gpt2_ffi_parity.rb lib/toy/models/transformer.rb 
 gpt2-bench: tinynn/gpt2_bench
 	./tinynn/gpt2_bench
 
-tinynn/gpt2_bench: tinynn/gpt2_bench.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/gpt2_ffi.rb lib/gpt2_ffi_kv.rb lib/toy/io/gguf_load.rb lib/toy/train/training.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
+tinynn/gpt2_bench: tinynn/gpt2_bench.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/llm/engine/gpt2_fwd_engine.rb lib/toy/llm/engine/gpt2_kv_engine.rb lib/toy/io/gguf_load.rb lib/toy/train/training.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) tinynn/gpt2_bench.rb -o tinynn/gpt2_bench
 
 # Ruby BPE smoke: load vocab/merges, encode + roundtrip-decode some
@@ -1722,7 +1722,7 @@ tinynn/bpe_smoke: tinynn/bpe_smoke.rb lib/toy/models/transformer.rb lib/toy/io/b
 gpt2-kv-parity: tinynn/gpt2_kv_parity
 	./tinynn/gpt2_kv_parity
 
-tinynn/gpt2_kv_parity: tinynn/gpt2_kv_parity.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/gpt2_ffi_kv.rb lib/toy/io/gguf_load.rb lib/toy/train/training.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
+tinynn/gpt2_kv_parity: tinynn/gpt2_kv_parity.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/llm/engine/gpt2_kv_engine.rb lib/toy/io/gguf_load.rb lib/toy/train/training.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) tinynn/gpt2_kv_parity.rb -o tinynn/gpt2_kv_parity
 
 # --- CUDA mirrors of the GPT-2 demos / parity / bench --------------
@@ -1737,19 +1737,19 @@ CUDA_GPT2_DEPS = lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io
 gpt2-ffi-parity-cuda: tinynn/gpt2_ffi_parity_cuda
 	./tinynn/gpt2_ffi_parity_cuda
 
-tinynn/gpt2_ffi_parity_cuda: tinynn/gpt2_ffi_parity_cuda.rb lib/gpt2_ffi_cuda.rb $(CUDA_GPT2_DEPS)
+tinynn/gpt2_ffi_parity_cuda: tinynn/gpt2_ffi_parity_cuda.rb lib/toy/llm/engine/gpt2_fwd_engine_cuda.rb $(CUDA_GPT2_DEPS)
 	$(SPINEL) tinynn/gpt2_ffi_parity_cuda.rb -o tinynn/gpt2_ffi_parity_cuda
 
 gpt2-kv-parity-cuda: tinynn/gpt2_kv_parity_cuda
 	./tinynn/gpt2_kv_parity_cuda
 
-tinynn/gpt2_kv_parity_cuda: tinynn/gpt2_kv_parity_cuda.rb lib/gpt2_ffi_kv_cuda.rb $(CUDA_GPT2_DEPS)
+tinynn/gpt2_kv_parity_cuda: tinynn/gpt2_kv_parity_cuda.rb lib/toy/llm/engine/gpt2_kv_engine_cuda.rb $(CUDA_GPT2_DEPS)
 	$(SPINEL) tinynn/gpt2_kv_parity_cuda.rb -o tinynn/gpt2_kv_parity_cuda
 
 gpt2-bench-cuda: tinynn/gpt2_bench_cuda
 	./tinynn/gpt2_bench_cuda
 
-tinynn/gpt2_bench_cuda: tinynn/gpt2_bench_cuda.rb lib/gpt2_ffi_cuda.rb lib/gpt2_ffi_kv_cuda.rb $(CUDA_GPT2_DEPS)
+tinynn/gpt2_bench_cuda: tinynn/gpt2_bench_cuda.rb lib/toy/llm/engine/gpt2_fwd_engine_cuda.rb lib/toy/llm/engine/gpt2_kv_engine_cuda.rb $(CUDA_GPT2_DEPS)
 	$(SPINEL) tinynn/gpt2_bench_cuda.rb -o tinynn/gpt2_bench_cuda
 
 ab-smoke-embed: tinynn/ab_smoke_embed
