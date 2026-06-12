@@ -1,6 +1,49 @@
 # Changelog
 
-## Unreleased
+## v0.8.0 — 2026-06-12
+
+**The first published version** (RubyGems, gem name graciously transferred
+by Ninoslav Milenović — see README acknowledgments). The release of the
+"first form right" arc (#58): toy is now a publishable dual-use framework —
+a playable CLI and a clean library — with every README claim gate-tested.
+
+Highlights of the arc (full trail: issues #58–#87):
+
+- **The experimenter API** (#64/#73): `RecipeOptions` named setters replace
+  the 8-positional `realize!`; validating `TrainingBatch` (+ objectives) and
+  `ClassifyBatch`; `AdamW.for_from_scratch`/`.for_lora` + `hp_for_step`
+  (misuse fails loud); `realize_warm!` owns donor plumbing; `Toy::RunBundle`
+  writer + `Toy::RunLog` reader (`RunLog.scan("runs")` — best run in one
+  line); config profile factories (`SmolLM2Config.tiny/.mid`,
+  `ViTTinyConfig.tiny`); ENV-driven scaffolds (one compile, many runs).
+- **Tree truth** (#65/#68): the layered stack is the whole library —
+  `lib/` is exactly `toy.rb` + `toy/`; tinynn under `toy/ffi/`, loaders
+  under `toy/io/loaders/`, KV decode + the lifted GPT-2 engines under
+  `toy/llm/engine/`; docs teach the real six layers (L4 = Engine).
+- **Compile-time devices** (#64/#70): `toy/compute` ·
+  `toy/compute_cuda` · `toy/compute_metal` entries; `toy new --lib` ships a
+  multi-arch `build.sh`; GPU vendor build-units (opt-in) validated through
+  the consumer front door (CUDA byte-exact on GB10; Metal Mac-verified).
+- **MRI dev-runs + the CRuby oracle** (#71): `require "toy/mri"` loads
+  everything under plain Ruby (teaching surface works pure-Ruby); with
+  `make libtinynn_shared`, the Fiddle arm runs the real compute path —
+  **bit-exact vs the Spinel binaries on both Linux/aarch64 and Apple
+  Silicon** (train curves and decode ids).
+- **Curated examples + tested quickstart** (#60): 7 narrated examples
+  replace the 60-entry sprawl; `make gate-consumer` proves the README
+  cold-start (app + `--lib` legs) on Linux and macOS.
+- **Coverage honesty** (#61/#76/#77): 17-model matrix re-verified with
+  provenance stamps; Qwen3 CUDA fixed (below); Qwen2.5 CUDA-Q8 footnote
+  upgraded; bench-vs-PyTorch legs restored (train 1.064×, infer 1.399×).
+- **sig/*.rbs type roots** (#69): shipped in the gem and consumed at
+  compile (`--rbs sig`) — uncalled-param poly-widening defense for toy and
+  for every consumer.
+- **lora in `toy/compute`** (#52): the exclusion dissolved with the #64
+  reshape; the compute-surface gate carries an uncalled-LoRA tripwire.
+- Upstream: eight Spinel issues filed from this arc (the silent-failure
+  cluster spinel-dev#17/#19/#20/#21/#23 among them), two fixed same-day.
+
+Itemized entries accumulated during the arc:
 
 - **#70: GPU build-units merged into `spinel-ext.json`** (spinelgems#20
   landed: `"default": "disabled"` opt-in + `--with-ext NAME` /

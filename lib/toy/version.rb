@@ -3,9 +3,9 @@
 # Spinel-only `ffi_lib` / `ffi_cflags` directives that don't load
 # under CRuby).
 module Toy
-  # Gem-canonical prerelease form of "v0.7.0-pre-alpha" (RubyGems renders
-  # dots, not dashes). Single source of truth: gemspec + `toy --version`
-  # + `toy --manifest` all read this; README/CHANGELOG display it as
-  # v0.7.0-pre-alpha.
-  VERSION = "0.7.0.pre.alpha".freeze
+  # Single source of truth: gemspec + `toy --version` + `toy --manifest`
+  # all read this; README/CHANGELOG/git tag display it as v0.8.0.
+  # v0.8.0 (2026-06-12) is the first PUBLISHED version (RubyGems).
+  # Pre-1.0: not API-stable.
+  VERSION = "0.8.0".freeze
 end

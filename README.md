@@ -4,7 +4,7 @@
   <img src="toy_logo.png" alt="toy" width="240" />
 </p>
 
-**v0.7.0-pre-alpha** · not API-stable
+**v0.8.0** · first published gem · pre-1.0, not API-stable
 &nbsp;·&nbsp; [CHANGELOG](CHANGELOG.md)
 &nbsp;·&nbsp; [docs](docs/architecture.md)
 &nbsp;·&nbsp; [framework guide](docs/framework.md)
