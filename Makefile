@@ -1252,10 +1252,15 @@ endif
 # mirrors (gitignored; toy.gemspec ships lib/toy/llm/*_cuda.rb explicitly) —
 # without them the gem's compute_cuda.rb requires point at missing files and
 # Spinel silently compiles them to nothing (toy#70 finding).
+# NB: reset to GGML_REV explicitly — NEVER FETCH_HEAD ("whatever was
+# fetched last"): a cold-fetch test moved FETCH_HEAD to ggml master and
+# this target silently staged UNVERIFIED ggml sources into the gem
+# (caught at the v0.8.0 wire). The assert keeps it loud.
 gem-prep: $(GGML_DIR)/CMakeLists.txt gen-mirrors
-	cd $(GGML_DIR) && git reset --hard FETCH_HEAD >/dev/null 2>&1 || git reset --hard HEAD >/dev/null
+	cd $(GGML_DIR) && (git rev-parse --verify -q $(GGML_REV)^{commit} >/dev/null || git fetch -q --depth 1 origin $(GGML_REV)) && git reset --hard $(GGML_REV) >/dev/null
 	rm -f $(GGML_DIR)/.patched
-	@echo "ggml pristine at $$(cd $(GGML_DIR) && git rev-parse --short HEAD); now: gem build toy.gemspec"
+	@test "$$(cd $(GGML_DIR) && git rev-parse HEAD)" = "$(GGML_REV)" || { echo "FATAL: vendor/ggml HEAD != GGML_REV ($(GGML_REV)) after gem-prep"; exit 1; }
+	@echo "ggml pristine at GGML_REV $$(cd $(GGML_DIR) && git rev-parse --short HEAD); now: gem build toy.gemspec"
 .PHONY: gem-prep
 
 smoke: tinynn/smoke
