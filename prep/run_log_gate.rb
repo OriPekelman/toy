@@ -153,6 +153,14 @@ if File.executable?(example_bin)
       log.loss_curve.length == 3 &&
       log.final_loss.is_a?(Float)
   end
+  check("round-trip: run_start stamps backend{kind} (toy#73 A.3)") do
+    # example 01 is the CPU compute entry → Toy::Device.name == "cpu".
+    # git{} is opt-in (bundle.git! — example 01 stays vendor-free) so
+    # its absence here is the documented default.
+    cfgev = Toy::RunLog.open(rt_dir).config
+    cfgev["backend"].is_a?(Hash) && cfgev["backend"]["kind"] == "cpu" &&
+      !cfgev.key?("git")
+  end
   check("round-trip: re-run TRUNCATES (3 steps, not 6)") do
     Toy::RunLog.open(rt_dir).steps.length == 3
   end
@@ -160,6 +168,41 @@ if File.executable?(example_bin)
 else
   puts "  SKIP: examples/example_01_train_tiny not built — RunBundle " \
        "round-trip not exercised (run `make example_01` first)"
+end
+
+# Per-arch run_start round-trip (toy#73 A.3): example 07 writes its
+# bundle through run_start_vit! — the model{} block is the image shape,
+# config{} has no context key. SKIPs loudly when the binary is absent.
+vit_bin = File.expand_path("../examples/example_07_vit_tiny", __dir__)
+if File.executable?(vit_bin)
+  require "open3"
+  vt_id  = "run-log-gate-vit"
+  vt_dir = File.expand_path("../runs/#{vt_id}", __dir__)
+  vt_env = { "RUN_ID" => vt_id, "STEPS" => "2" }
+  vt_root = File.expand_path("..", __dir__)
+  vt_out, vt_st = Open3.capture2e(vt_env, vit_bin, chdir: vt_root)
+  check("vit round-trip: example 07 (run_start_vit!) runs") do
+    puts vt_out unless vt_st.success?
+    vt_st.success?
+  end
+  check("vit round-trip: RunLog parses the ViT-shaped run_start") do
+    vlog = Toy::RunLog.open(vt_dir)
+    vlog.run_id == vt_id &&
+      vlog.config["schema"] == "toy/v1" &&
+      vlog.config["backend"]["kind"] == "cpu" &&
+      vlog.config["model"]["arch"] == "vit" &&
+      vlog.config["model"]["image_size"] == 224 &&
+      vlog.config["model"]["patch_size"] == 16 &&
+      vlog.config["model"]["num_classes"] == 10 &&
+      !vlog.config["config"].key?("context") &&
+      vlog.config["config"]["steps"] == 2 &&
+      vlog.loss_curve.length == 2 &&
+      vlog.final_loss.is_a?(Float)
+  end
+  FileUtils.rm_rf(vt_dir)
+else
+  puts "  SKIP: examples/example_07_vit_tiny not built — per-arch " \
+       "run_start_vit! round-trip not exercised (run `make example_07` first)"
 end
 
 # Integration sniff against real train-gate bundles, when present.

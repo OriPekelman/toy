@@ -81,11 +81,6 @@ require_relative "llm/labels"
 require_relative "llm/training_batch"
 require_relative "llm/classify_batch"
 
-# Run-bundle writer (toy#73 item 1): runs/<id>/events.jsonl in the toy/v1
-# schema + the weights/ checkpoint-dir convention. SHARED (not mirrored):
-# the events C symbols live in libtinynn_ggml.a, linked by every backend.
-require_relative "io/run_bundle"
-
 # ── Toy::Device — the device-agnostic construction seam (toy#64 item 8) ──
 #
 # DEVICE IS CHOSEN AT COMPILE TIME by which compute entry you require:
@@ -130,3 +125,11 @@ module Toy
     end
   end
 end
+
+# Run-bundle writer (toy#73 item 1): runs/<id>/events.jsonl in the toy/v1
+# schema + the weights/ checkpoint-dir convention. SHARED (not mirrored):
+# the events C symbols live in libtinynn_ggml.a, linked by every backend.
+# Required AFTER the Toy::Device module above — run_start! stamps
+# backend{kind: Toy::Device.name} (toy#73 A.3), and Spinel needs the
+# constant defined before a file referencing it compiles.
+require_relative "io/run_bundle"

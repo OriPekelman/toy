@@ -72,16 +72,28 @@ module Toy
   # ---- RunBundle (lib/toy/io/run_bundle.rb) — toy/v1 bundle writer -------
   # Truncate-opens runs/<id>/events.jsonl in the ctor; run_start!/step!/
   # run_end! emit the toy/v1 events; weights_dir is the checkpoint home.
+  # run_start stamps backend{kind: Toy::Device.name} automatically;
+  # git{sha,branch} is opt-in via git! (toy#73 A.3 — see the file header
+  # for why it cannot be automatic).
   class RunBundle
-    attr_accessor rb_root:   String
-    attr_accessor rb_run_id: String
-    attr_accessor rb_dir:    String
-    attr_accessor rb_active: bool
+    attr_accessor rb_root:       String
+    attr_accessor rb_run_id:     String
+    attr_accessor rb_dir:        String
+    attr_accessor rb_active:     bool
+    attr_accessor rb_git_sha:    String
+    attr_accessor rb_git_branch: String
 
     def initialize: (String runs_root, String run_id) -> void
     def active: () -> bool
     def events_path: () -> String
     def weights_dir: () -> String
+    def git!: (String sha, String branch) -> void
+    def run_start_prefix: () -> String
+    # Per-arch starts (toy#73 A.3): model{}/config{} read off the cfg.
+    def run_start_llama!: (Toy::SmolLM2Config lcfg, Integer steps,
+                           Float lr, Integer seed) -> void
+    def run_start_vit!: (ViTTinyConfig vcfg, Integer steps,
+                         Float lr, Integer seed) -> void
     def run_start!: (String arch, Integer vocab, Integer d_model,
                      Integer n_layers, Integer context, Integer steps,
                      Float lr, Integer seed) -> void
@@ -335,6 +347,9 @@ class ViTTinyConfig
                    Integer num_channels, Integer d_model, Integer n_heads,
                    Integer d_ff, Integer n_layers, Integer num_classes,
                    Float ln_eps) -> void
+  # toy#73 A.3 — the canonical timm vit_tiny_patch16_224 shape
+  # (example 07 / train_vit / data/vit_smoke).
+  def self.tiny: () -> ViTTinyConfig
 end
 
 # ============================================================================

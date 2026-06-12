@@ -79,8 +79,7 @@ adamw.lr = LR
 # Toy::RunBundle owns the dirs + the JSON + the sink, and TRUNCATES on
 # open, so a re-run with the same RUN_ID replaces the bundle.
 bundle = Toy::RunBundle.new("runs", RUN_ID)
-bundle.run_start!("llama", cfg.vocab, cfg.d_model, cfg.n_layers,
-                  cfg.ctx, STEPS, LR, SEED)
+bundle.run_start_llama!(cfg, STEPS, LR, SEED)
 
 # Train: stream context-sized windows off the corpus, one step each.
 first_loss  = 0.0

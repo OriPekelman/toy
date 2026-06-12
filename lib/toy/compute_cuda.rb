@@ -69,13 +69,6 @@ require_relative "llm/labels"
 require_relative "llm/training_batch"
 require_relative "llm/classify_batch"
 
-# Run-bundle writer (toy#73 item 1): runs/<id>/events.jsonl in the toy/v1
-# schema + the weights/ checkpoint-dir convention. SHARED (not mirrored):
-# the events C symbols live in libtinynn_ggml.a, linked by every backend
-# (the CPU TinyNN module is defined in this binary too — see the
-# checkpoint-seam note above).
-require_relative "io/run_bundle"
-
 # ── Toy::Device, CUDA arm — see the compute.rb doc block. Same
 # surface, CUDA types; user source stays device-agnostic.
 module Toy
@@ -101,3 +94,11 @@ module Toy
     end
   end
 end
+
+# Run-bundle writer (toy#73 item 1): runs/<id>/events.jsonl in the toy/v1
+# schema + the weights/ checkpoint-dir convention. SHARED (not mirrored):
+# the events C symbols live in libtinynn_ggml.a, linked by every backend
+# (the CPU TinyNN module is defined in this binary too — see the
+# checkpoint-seam note above). Required AFTER the Toy::Device module —
+# run_start! stamps backend{kind: Toy::Device.name} (toy#73 A.3).
+require_relative "io/run_bundle"

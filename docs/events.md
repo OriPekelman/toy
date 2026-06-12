@@ -353,6 +353,11 @@ should not hand-roll the stream at all: `Toy::RunBundle`
 `events.jsonl` via `tnn_events_open_trunc` (truncate, not append), so
 re-running with the same run id replaces the bundle instead of doubling
 it; `weights_dir` returns the `runs/<id>/weights/` checkpoint home.
+Provenance (toy#73 A.3): `run_start` stamps `backend{kind}`
+automatically (`Toy::Device.name` — compile-time known); `git{sha,branch}`
+is opt-in via `bundle.git!(sha, branch)` before `run_start!` (RunBundle
+stays vendor-free, so it cannot require `SpinelKit::Git` itself — the
+file header documents the dual-layout require constraint).
 
 ## Producer guarantees
 
