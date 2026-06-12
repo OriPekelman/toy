@@ -148,9 +148,10 @@ deliberately does NOT work around it in its manifest. The CUDA unit pins
 `CMAKE_CUDA_ARCHITECTURES=121` (GB10); other GPUs override the whole link
 line via the `SPINEL_EXT_<PLACEHOLDER>` escape hatch.
 
-## MRI dev-runs: `require "toy/mri"` (toy#71 Stage A)
+## MRI dev-runs: `require "toy/mri"` (toy#71)
 
-Plain CRuby can load the **whole compute surface** — no Spinel, no build:
+Plain CRuby can load — and, with one `make` target, **run** — the whole
+compute surface; no Spinel:
 
 ```sh
 ruby -Ilib -e 'require "toy/mri"'        # from a toy checkout
@@ -159,31 +160,68 @@ ruby -e 'require "toy/mri"; ...'
 ```
 
 `lib/toy/mri.rb` is the **MRI-only entry**: it gives the Spinel FFI
-intrinsics (`ffi_lib` / `ffi_func` / `ffi_cflags`) a CRuby meaning —
-declaration recorders (`Toy::MRI.declarations`) whose generated methods
-raise a named `Toy::MRI::NativeCallError` — then requires `toy/compute`
-unchanged. It is never compiled by Spinel and must never appear in a
-compiled require chain (compiled code requires `toy/compute*` directly).
+intrinsics (`ffi_lib` / `ffi_func` / `ffi_cflags`) a CRuby meaning, then
+requires `toy/compute` unchanged. It is never compiled by Spinel and
+must never appear in a compiled require chain (compiled code requires
+`toy/compute*` directly). It has **two arms**, selected once at require
+time:
 
-**The boundary, honestly:**
+- **Stub arm (Stage A — the default without a build).** `ffi_func`
+  declarations are recorded (`Toy::MRI.declarations`) and the generated
+  methods raise a named `Toy::MRI::NativeCallError` — "native call
+  `tnn_session_new` requires the Spinel-compiled binary or the fiddle
+  backend (`make libtinynn_shared`) — toy#71". Never a bare
+  `NoMethodError`, never a silent wrong answer. Pure Ruby still works
+  for real: configs (`SmolLM2Config.tiny/.mid`), `RecipeOptions`, cards,
+  `RunLog`, the Mat path, and the whole teaching stack —
+  `TransformerLM` + `Toy::Trainer` genuinely train under MRI (slowly;
+  tiny shapes). This is what livebook / `tao notebook` dev-run cells
+  use out of the box (a one-line stderr hint points at the native arm).
 
-- **Pure Ruby — works for real.** Configs (`SmolLM2Config.tiny/.mid`),
-  `RecipeOptions`, cards, `RunLog`, the Mat path, and the whole teaching
-  stack: `TransformerLM` + `Toy::Trainer` genuinely **train** under MRI
-  (slowly — pure-Ruby loops; tiny shapes only). Engine/recipe
-  *construction* also works. This is what livebook / `tao notebook`
-  dev-run cells use.
-- **Native — fails loud, by name.** Anything that reaches ggml
-  (`engine.realize_*`, KV decode, GGUF load, corpus loaders) raises
-  `Toy::MRI::NativeCallError` — "native call `tnn_session_new` requires
-  the Spinel-compiled binary or the fiddle backend — toy#71". Never a
-  bare `NoMethodError`, never a silent wrong answer.
+- **Native arm (Stage B — the CRuby oracle).** Build the shared
+  library once:
 
-Gated by `make gate-mri` (plain `ruby`; see `gating.md`). **Stage B**
-(toy#71) grows this same entry a Fiddle arm that binds the recorded
-declarations against a shared `libtinynn_ggml.so` — MRI then runs *real*
-training/inference at ggml speed, and MRI-vs-Spinel byte-comparison
-becomes a differential oracle (spinel-dev#6).
+  ```sh
+  make libtinynn_shared      # → tinynn/libtinynn_ggml_shared.so
+                             #   (needs `make setup-ggml` first;
+                             #    Linux/CPU this stage, gitignored)
+  ```
+
+  When that artifact exists, `require "toy/mri"` dlopens it via
+  **Fiddle** and every `ffi_func` declaration binds to the real C
+  function — same 186-symbol surface the Spinel binaries link. MRI then
+  runs *real* training and KV-decode inference at ggml speed:
+  `Toy::LLM::Recipes::FromScratch`, GGUF load, `ToyLM#generate`, corpus
+  loaders, the lot. `TOY_MRI_NATIVE=0` forces the stub arm back.
+  The Stage A off-state carve-outs (`tnn_null_ptr`→nil, trace
+  off-state) disappear in this arm — those functions go through Fiddle
+  like everything else.
+
+**Why "oracle":** the MRI+Fiddle arm and the Spinel-compiled binaries
+run the *same Ruby program* over the *same C library* — only the Ruby
+runtime differs. `make gate-mri`'s native leg pins this: the 5-step
+from-scratch loss curve reproduces the recorded Spinel gate curve
+**bit-exact** (`prep/fixtures/train_baseline.txt` — values *and*
+formatted strings), and smollm2-135m greedy decode ids byte-equal
+`prep/fixtures/infer_baseline.txt`. That makes any future MRI-vs-Spinel
+divergence a **differential bisection oracle for Spinel codegen bugs**
+(spinel-dev#6 phase 1): run the suspect program both ways; if MRI+Fiddle
+agrees with the recorded truth and the compiled binary doesn't, the bug
+is in compilation, by construction — no numerics argument needed.
+
+Type lowering (pinned by probing Spinel's generated C): `:ptr`→`void*`
+(integer-valued handles on the Ruby side), `:int`→`int`, `:long`→`long`,
+`:size_t`→`size_t`, `:double`→`double`, `:str`→`const char*`,
+`:int_array`→`const int64_t*`, `:float_array`→`const double*` (Spinel
+arrays store i64/f64 — *not* f32). The Fiddle arm mirrors Spinel's
+zero-copy array semantics by pack→call→unpack→`Array#replace`, so
+C-filled output arrays (`tnn_read_i32_file`, `tnn_download_to_f64_array`)
+work unchanged.
+
+Gated by `make gate-mri` (plain `ruby`; see `gating.md`): stub leg
+always; native leg when the `.so` exists (loud SKIP otherwise;
+`MRI_GATE_STRICT=1` makes the skip a failure). CUDA/Metal shared
+variants and the macOS dylib are follow-ups.
 
 ## RBS type roots ride along automatically (toy#69)
 
