@@ -1,3 +1,5 @@
+# lib/toy/llm/engine/gpt2_fwd_engine.rb (was lib/gpt2_ffi.rb) — GPT-2 full-forward inference via ggml FFI.
+#
 # Persistent ggml graph for GPT2LM inference. Mirrors the existing
 # FullForwardFFICache in lib/tinynn.rb (which is RMSNorm + no-bias),
 # but with the additions GPT-2 needs:
@@ -16,9 +18,9 @@
 # T_SEQ. The KV-cache version reuses the same persistent weights and
 # only rebuilds the compute graph (cheap — metadata only).
 
-require_relative "toy/models/transformer"
-require_relative "toy/models/gpt2"
-require_relative "toy/ffi/tinynn"
+require_relative "../../models/transformer"
+require_relative "../../models/gpt2"
+require_relative "../../ffi/tinynn"
 
 # Per-block tensor handles. Distinct class from BlockFFICache (in
 # lib/tinynn.rb) to avoid Spinel collapsing :ptr-array ivars across

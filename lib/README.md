@@ -28,8 +28,8 @@ anything:
    are HAND-written (divergent), unlike the generated `_cuda`/`_metal`
    mirrors elsewhere (`prep/gen_cuda_mirror.rb`, gitignored).
 
-Top-level stragglers: `lib/toy.rb` (sugar layer over Mat, Spinel tree)
-and `lib/gpt2_ffi{,_kv}.rb` (GPT-2 full-forward / KV-decode caches —
-retirement blocked on an engine-layer KV-decode replacement, toy#65
-item 1; consumers are `tep_demo/openai_api.rb` and the `tinynn/gpt2_*`
-parity harnesses).
+Top-level straggler: `lib/toy.rb` (sugar layer over Mat, Spinel tree).
+The former `lib/gpt2_ffi{,_kv}.rb` caches live in the engine layer now
+(toy#68): `lib/toy/llm/engine/gpt2_{fwd,kv}_engine.rb` (GPT-2
+full-forward / KV-decode; consumers are `tep_demo/openai_api.rb` and
+the `tinynn/gpt2_*` parity harnesses).

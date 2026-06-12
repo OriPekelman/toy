@@ -24,7 +24,7 @@ remaining Tep+Spinel *framework* demos:
 | Source | Binary | What it does | Status |
 |---|---|---|---|
 | `hello_api.rb` | `tep_demo/hello` | Minimal `GET /` smoke; baseline HTTP throughput | **kept** — the minimal Tep demo |
-| `openai_api.rb` | `tep_demo/openai_api` | DistilGPT2/GPT-2 KV-cache decode behind `POST /v1/chat/completions` (`lib/bpe.rb` server tokenizer; `chat.rb` is a client, `post_smoke.rb` a POST smoke) | **pending** the GPT-2 serve convergence ([toy#30](https://github.com/OriPekelman/toy/issues/30)) |
+| `openai_api.rb` | `tep_demo/openai_api` | DistilGPT2/GPT-2 KV-cache decode behind `POST /v1/chat/completions` (`lib/toy/io/bpe.rb` server tokenizer; `chat.rb` is a client, `post_smoke.rb` a POST smoke) | **pending** the GPT-2 serve convergence ([toy#30](https://github.com/OriPekelman/toy/issues/30)) |
 
 `legacy/inference_api.rb` (toy random-init `FullForwardFFICache`, `/generate?n=N`)
 moved to [`legacy/`](legacy/) — a second serving demo, superseded by `toy serve`
