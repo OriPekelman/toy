@@ -95,21 +95,58 @@ Re-run `bundle lock` → `spinel-compat vendor` → recompile. The vendor step
 rebuilds the native units in your tree (a `path:` dev checkout that is already
 patched is detected; patches are not re-applied).
 
-### CUDA / Metal (opt-in; staged)
+### CUDA / Metal (opt-in build-units)
 
-The GPU backends are authored as **default-disabled** build-units in
-`spinel-ext-gpu.json` (CUDA validated on gx10; Metal structural,
-Mac-validation-pending — toy#27). They stay staged until spinelgems grows the
-opt-in + variant-build-dir mechanics —
-[spinelgems#20](https://github.com/OriPekelman/spinelgems/issues/20). Until
-then, a CUDA consumer replicates what the staged entries declare: configure
-ggml's `build-cuda/` with the entry's cmake args inside
-`vendor/spinel/toy/vendor/ggml/`, `make -C vendor/spinel/toy/tinynn cuda`, and
-substitute the `lib/toy/ffi/tinynn_cuda.rb` placeholder with the vendored-relative
-`-L` set (see the `link` template in `spinel-ext-gpu.json`). CUDA compiles
-need `spinel --cc='cc -Wl,-u,tnn_cuda_force_link' …` — without the force-link
-symbol the linker drops the CUDA backend registration and ggml silently
-computes on CPU (verified: the loss curve flips to the CPU fixture).
+The GPU backends are **default-disabled** build-units in `spinel-ext.json`
+(merged from the staged `spinel-ext-gpu.json` in toy#70, after
+[spinelgems#20](https://github.com/OriPekelman/spinelgems/issues/20) shipped
+the opt-in + variant-build-dir mechanics). A plain `spinel-compat vendor`
+never attempts them — no CUDA cmake configure on a CUDA-less box; the
+vendored `ffi_cflags` GPU lines are left byte-identical to the dev tree
+(`disabled_cflags` = the dev line itself). Enable them at vendor time:
+
+```sh
+# CUDA (both units: the ggml build-cuda/ tree + the tinynn shim archive)
+spinel-compat vendor --with-ext cuda --with-ext cuda-shim
+# Metal (macOS)
+spinel-compat vendor --with-ext metal --with-ext metal-shim
+# or the env form: SPINEL_EXT_ENABLE=cuda,cuda-shim spinel-compat vendor
+```
+
+With the units enabled, `build-cuda/` (or `build-metal/`) artifacts appear
+**alongside** the CPU unit's `build/` (copy-once shared source: the CPU
+archives survive), and the `lib/toy/ffi/tinynn_cuda.rb` /
+`tinynn_metal.rb` placeholder is substituted from the entry's `link`
+template with project-relative `-L` flags. Then build the GPU binary —
+CUDA compiles need `spinel --cc='cc -Wl,-u,tnn_cuda_force_link' …`
+(the `toy new --lib` scaffold's `./build.sh cuda` does this): without the
+force-link symbol the linker drops the CUDA backend registration and ggml
+silently computes on CPU (verified: the loss curve flips to the CPU
+fixture).
+
+> **`path:` consumers — generated CUDA mirrors landmine.** The CUDA
+> engine/recipe files (`*_cuda.rb` under `lib/toy/llm/`) are GENERATED
+> (`make gen-mirrors`, prep/gen_cuda_mirror.rb) and gitignored. A fresh
+> toy clone that never ran make has none on disk, the vendor step copies
+> an incomplete `lib/`, and Spinel **silently compiles the missing
+> `require_relative`s to nothing** — the symptom is a bizarre
+> mis-resolution at the call site (observed: `recipe.step!` resolving to
+> `Toy::RunBundle#step!`, "too many arguments"), NOT a missing-file
+> error. Run `make gen-mirrors` in the toy checkout before vendoring
+> with the CUDA units enabled. Published-gem consumers are unaffected
+> (`make gem-prep` ships the mirrors).
+
+Status: CUDA re-validated end-to-end through `vendor --with-ext` on gx10
+(GB10 sm_121, CUDA 13.0) — toy#70; the loss curve reproduces
+`prep/fixtures/train_cuda_baseline.txt`. Metal is **structural only**,
+Mac-validation-pending (toy#27). Known macOS blocker for ANY cmake
+build-unit (CPU included): the Vendorer's bare-env cmake lacks the SDK
+libc++ include path (`fatal error: 'array' file not found`) — being fixed
+tool-side as
+[spinelgems#21](https://github.com/OriPekelman/spinelgems/issues/21); toy
+deliberately does NOT work around it in its manifest. The CUDA unit pins
+`CMAKE_CUDA_ARCHITECTURES=121` (GB10); other GPUs override the whole link
+line via the `SPINEL_EXT_<PLACEHOLDER>` escape hatch.
 
 ## RBS type roots ride along automatically (toy#69)
 

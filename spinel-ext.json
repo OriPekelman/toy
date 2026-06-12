@@ -21,5 +21,102 @@
     "build": { "tool": "make", "dir": "tinynn", "artifacts": ["libtinynn_ggml.a"] },
     "placeholder": "-L. -Ltinynn -Lvendor/ggml/build/src -Wno-int-conversion",
     "link": ["-L{dir}", "-L{dir:ggml}/build/src", "-Wno-int-conversion"]
+  },
+  {
+    "_comment": [
+      "OPT-IN GPU build-units (toy#45 Phase 3, merged here per toy#70 once",
+      "spinelgems#20 landed: `default: disabled` + --with-ext NAME /",
+      "SPINEL_EXT_ENABLE=...; cmake `build_dir` variants + copy-once shared",
+      "source dirs). A plain `vendor` substitutes `disabled_cflags` and never",
+      "attempts these builds. Enable: --with-ext cuda --with-ext cuda-shim",
+      "(CUDA) / --with-ext metal --with-ext metal-shim (macOS).",
+      "disabled_cflags DECISION (toy#70): the literal dev line itself — a",
+      "non-GPU vendor leaves the vendored ffi_cflags line byte-identical to",
+      "the dev tree (greppable, and still usable with hand-built archives);",
+      "the vendored GPU runner is unusable without the unit either way.",
+      "CUDA entries: re-validated end-to-end through `vendor --with-ext` on",
+      "gx10 (GB10 sm_121, CUDA 13.0) — see toy#70.",
+      "Metal entries: STRUCTURAL ONLY, Mac-validation-pending (toy#27);",
+      "artifact paths mirror the CUDA unit's layout symmetrically and the",
+      "root Makefile's build-metal configure; they fail loud on drift.",
+      "CMAKE_CUDA_ARCHITECTURES=121 mirrors the dev Makefile's GGML_CUDA_ARCH",
+      "default (GB10); other GPUs override via the SPINEL_EXT_<PLACEHOLDER>",
+      "full-replacement escape hatch. CMAKE_CUDA_COMPILER is pinned because",
+      "build-units run with the consumer's bare env — no PATH prepend like",
+      "the dev Makefile; /usr/local/cuda is the toolkit's default symlink."
+    ]
+  },
+  {
+    "name": "cuda",
+    "optional": true,
+    "default": "disabled",
+    "build": {
+      "tool": "cmake",
+      "dir": "vendor/ggml",
+      "build_dir": "build-cuda",
+      "patches": ["vendor-patches/*.patch"],
+      "args": ["-DBUILD_SHARED_LIBS=OFF", "-DGGML_STATIC=ON",
+               "-DGGML_CUDA=ON", "-DGGML_METAL=OFF", "-DGGML_VULKAN=OFF",
+               "-DGGML_OPENCL=OFF", "-DGGML_BLAS=OFF", "-DGGML_OPENMP=OFF",
+               "-DGGML_ACCELERATE=OFF", "-DGGML_BUILD_EXAMPLES=OFF",
+               "-DGGML_BUILD_TESTS=OFF", "-DCMAKE_BUILD_TYPE=Release",
+               "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
+               "-DCMAKE_CUDA_ARCHITECTURES=121", "-DGGML_NATIVE=OFF",
+               "-DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc"],
+      "artifacts": ["build-cuda/src/libggml.a",
+                    "build-cuda/src/libggml-base.a",
+                    "build-cuda/src/libggml-cpu.a",
+                    "build-cuda/src/ggml-cuda/libggml-cuda.a"]
+    }
+  },
+  {
+    "name": "cuda-shim",
+    "optional": true,
+    "default": "disabled",
+    "build": { "tool": "make", "dir": "tinynn", "targets": ["cuda"],
+               "artifacts": ["libtinynn_ggml_cuda.a"] },
+    "placeholder": "-L. -Ltinynn -Lvendor/ggml/build-cuda/src -Lvendor/ggml/build-cuda/src/ggml-cuda -L/usr/local/cuda/lib64 -Wno-int-conversion",
+    "disabled_cflags": "-L. -Ltinynn -Lvendor/ggml/build-cuda/src -Lvendor/ggml/build-cuda/src/ggml-cuda -L/usr/local/cuda/lib64 -Wno-int-conversion",
+    "link": ["-L{dir}", "-L{dir:cuda}/build-cuda/src",
+             "-L{dir:cuda}/build-cuda/src/ggml-cuda",
+             "-L/usr/local/cuda/lib64", "-Wno-int-conversion"]
+  },
+  {
+    "name": "metal",
+    "optional": true,
+    "default": "disabled",
+    "build": {
+      "tool": "cmake",
+      "dir": "vendor/ggml",
+      "build_dir": "build-metal",
+      "patches": ["vendor-patches/*.patch"],
+      "args": ["-DBUILD_SHARED_LIBS=OFF", "-DGGML_STATIC=ON",
+               "-DGGML_CUDA=OFF", "-DGGML_METAL=ON",
+               "-DGGML_METAL_EMBED_LIBRARY=ON",
+               "-DGGML_VULKAN=OFF", "-DGGML_OPENCL=OFF", "-DGGML_BLAS=OFF",
+               "-DGGML_OPENMP=OFF", "-DGGML_ACCELERATE=OFF",
+               "-DGGML_BUILD_EXAMPLES=OFF", "-DGGML_BUILD_TESTS=OFF",
+               "-DCMAKE_BUILD_TYPE=Release",
+               "-DCMAKE_POSITION_INDEPENDENT_CODE=ON"],
+      "artifacts": ["build-metal/src/libggml.a",
+                    "build-metal/src/libggml-base.a",
+                    "build-metal/src/libggml-cpu.a",
+                    "build-metal/src/ggml-metal/libggml-metal.a"]
+    }
+  },
+  {
+    "name": "metal-shim",
+    "optional": true,
+    "default": "disabled",
+    "build": { "tool": "make", "dir": "tinynn", "targets": ["metal"],
+               "artifacts": ["libtinynn_ggml_metal.a"] },
+    "placeholder": "-L. -Ltinynn -Lvendor/ggml/build-metal/src -Lvendor/ggml/build-metal/src/ggml-cpu -Lvendor/ggml/build-metal/src/ggml-metal -Wno-int-conversion -framework Foundation -framework Metal -framework MetalKit",
+    "disabled_cflags": "-L. -Ltinynn -Lvendor/ggml/build-metal/src -Lvendor/ggml/build-metal/src/ggml-cpu -Lvendor/ggml/build-metal/src/ggml-metal -Wno-int-conversion -framework Foundation -framework Metal -framework MetalKit",
+    "link": ["-L{dir}", "-L{dir:metal}/build-metal/src",
+             "-L{dir:metal}/build-metal/src/ggml-cpu",
+             "-L{dir:metal}/build-metal/src/ggml-metal",
+             "-Wno-int-conversion",
+             "-framework", "Foundation", "-framework", "Metal",
+             "-framework", "MetalKit"]
   }
 ]

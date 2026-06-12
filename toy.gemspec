@@ -76,12 +76,10 @@ Gem::Specification.new do |s|
     "tinynn/tinynn_backend_metal.m",
     "tinynn/tinynn_backend_cuda.c",
     # spinel-ext.json build-units (toy#45): consumers' `spinel-compat vendor`
-    # builds ggml + the tinynn archive INSIDE their vendor tree.
+    # builds ggml + the tinynn archive INSIDE their vendor tree. Includes the
+    # default-disabled CUDA/Metal units (toy#70, spinelgems#20 opt-in:
+    # `vendor --with-ext cuda --with-ext cuda-shim` / SPINEL_EXT_ENABLE=...).
     "spinel-ext.json",
-    # spinel-ext-gpu.json: STAGED default-disabled CUDA/Metal build-unit
-    # entries (inert until spinelgems#20; shipped for transparency + the
-    # manual CUDA recipe in docs/consuming-toy.md).
-    "spinel-ext-gpu.json",
     "tinynn/Makefile",
     # Pristine pinned ggml source (GGML_REV), shipped IN the gem so vendoring
     # is hermetic (nokogiri-vendoring-libxml2 precedent). It is NOT in toy's
@@ -91,7 +89,16 @@ Gem::Specification.new do |s|
     "vendor/ggml/**/*",
   ].reject { |f| File.directory?(f) || f =~ /\.(o|so|a|dylib|bundle)$/ ||
                  f =~ %r{\Avendor/ggml/(build|\.git|\.patched)} }
-   .select { |f| tracked.empty? || tracked.include?(f) || f.start_with?("vendor/ggml/") }
+   .select { |f| tracked.empty? || tracked.include?(f) ||
+                 f.start_with?("vendor/ggml/") ||
+                 # Generated CUDA/Metal mirrors (prep/gen_cuda_mirror.rb,
+                 # gitignored in the repo, materialized by `make gem-prep` →
+                 # gen-mirrors). Without them compute_cuda.rb's /
+                 # compute_metal.rb's require_relatives point at MISSING files
+                 # and Spinel silently compiles them to nothing — the consumer
+                 # GPU build then mis-resolves call sites instead of failing
+                 # (toy#70 finding). Ship them.
+                 f =~ %r{\Alib/toy/llm/.*_(cuda|metal)\.rb\z} }
 
   # bin/toy is a plain-MRI binstub (the CRuby CLI shell under
   # lib/toy/core/). RubyGems ships it from bin/. (Was a stale exe/[]
