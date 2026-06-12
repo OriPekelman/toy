@@ -41,6 +41,12 @@ the recipes, the GGUF loader and tokenizer, AdamW and label helpers.
 It is the entry point for **library consumers** — anything that isn't
 the toy CLI itself.
 
+For **MRI dev-runs** (notebook cells, REPL pokes — no Spinel build),
+`require "toy/mri"` loads the same surface under plain CRuby: pure-Ruby
+paths (configs, Mat, `TransformerLM` + `Toy::Trainer`) work for real;
+native calls raise a named `Toy::MRI::NativeCallError` instead of dying
+in a `NoMethodError`. See `consuming-toy.md` § MRI dev-runs (toy#71).
+
 ## A training run in one screen
 
 The recipe surface is deliberately flat: `realize!` builds the whole
