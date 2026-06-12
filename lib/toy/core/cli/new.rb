@@ -327,6 +327,14 @@ module Toy
           for dev in $devs; do
             entry="main_$dev.rb"
             out="experiment_$dev"
+            # GPU units are OPT-IN at vendor time (spinelgems#20): a plain
+            # `spinel-compat vendor` skips them. Fail loud here instead of
+            # at the linker (toy#70).
+            if [ "$dev" != cpu ] && [ ! -f "vendor/spinel/toy/tinynn/libtinynn_ggml_$dev.a" ]; then
+              echo "build.sh: no vendored $dev archive — re-vendor with" >&2
+              echo "  spinel-compat vendor --with-ext $dev --with-ext $dev-shim" >&2
+              exit 2
+            fi
             case "$dev" in
               cpu)
                 spinel $rbs "$entry" -o "$out" ;;
@@ -351,10 +359,17 @@ module Toy
           ## Build & run
           ```sh
           bundle lock              # resolve toy + spinel_kit
-          spinel-compat vendor     # copy + build toy into vendor/spinel/
+          spinel-compat vendor     # copy + build toy into vendor/spinel/ (CPU)
           ./build.sh               # cpu binary: ./experiment_cpu
-          ./build.sh cpu cuda      # one binary per device
           STEPS=50 ./experiment_cpu   # hyper-params are runtime ENV knobs
+          ```
+
+          GPU backends are OPT-IN build-units (default-disabled,
+          spinelgems#20) — enable them at VENDOR time, then build:
+          ```sh
+          spinel-compat vendor --with-ext cuda --with-ext cuda-shim
+          ./build.sh cpu cuda      # one binary per device
+          # macOS: --with-ext metal --with-ext metal-shim, ./build.sh metal
           ```
 
           > Until `toy` is published to RubyGems, point the Gemfile at a

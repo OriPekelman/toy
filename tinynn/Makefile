@@ -14,7 +14,8 @@ libtinynn_ggml.a: $(OBJS)
 
 # Optional backend shims (toy#45 Phase 3). NOT in the default target —
 # they are separate build-unit targets ("targets": ["cuda"] / ["metal"]
-# in the staged spinel-ext-gpu.json entries), opt-in per spinelgems#20.
+# in spinel-ext.json's default-disabled cuda-shim / metal-shim entries),
+# opt-in per spinelgems#20 (`vendor --with-ext NAME` / SPINEL_EXT_ENABLE).
 cuda: libtinynn_ggml_cuda.a
 .PHONY: cuda
 

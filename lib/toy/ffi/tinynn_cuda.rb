@@ -90,8 +90,9 @@ module TinyNNCuda
   ffi_lib "rt"
   ffi_lib "dl"
 
-  # NOTE: this literal line doubles as the spinel-ext-gpu.json "tinynn-cuda"
-  # placeholder (toy#45 Phase 3, staged) — change them in lockstep. Fresh
+  # NOTE: this literal line doubles as the spinel-ext.json "cuda-shim"
+  # placeholder AND its disabled_cflags (toy#45 Phase 3, merged per toy#70)
+  # — change them in lockstep. Fresh
   # ggml (GGML_REV 41e7949) puts the CPU archives at build-cuda/src/ — the
   # only subdir archive is ggml-cuda/libggml-cuda.a.
   ffi_cflags "-L. -Ltinynn -Lvendor/ggml/build-cuda/src -Lvendor/ggml/build-cuda/src/ggml-cuda -L/usr/local/cuda/lib64 -Wno-int-conversion"

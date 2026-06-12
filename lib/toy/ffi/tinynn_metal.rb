@@ -83,6 +83,9 @@ module TinyNNMetal
   ffi_lib "pthread"
   ffi_lib "m"
 
+  # NOTE: this literal line doubles as the spinel-ext.json "metal-shim"
+  # placeholder AND its disabled_cflags (toy#70; Mac-validation-pending,
+  # toy#27) — change them in lockstep.
   ffi_cflags "-L. -Ltinynn -Lvendor/ggml/build-metal/src -Lvendor/ggml/build-metal/src/ggml-cpu -Lvendor/ggml/build-metal/src/ggml-metal -Wno-int-conversion -framework Foundation -framework Metal -framework MetalKit"
 
   ffi_func :tnn_session_new,      [:int],                   :ptr

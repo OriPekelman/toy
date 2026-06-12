@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **#70: GPU build-units merged into `spinel-ext.json`** (spinelgems#20
+  landed: `"default": "disabled"` opt-in + `--with-ext NAME` /
+  `SPINEL_EXT_ENABLE`, cmake `build_dir` variants, copy-once shared source
+  dirs). The staged `spinel-ext-gpu.json` is retired. CUDA re-validated
+  end-to-end through the consumer front door on the GB10 (plain `vendor`
+  skips the units; `--with-ext cuda --with-ext cuda-shim` builds
+  `build-cuda/` alongside the CPU `build/`; vendored `train_cuda`
+  reproduces `prep/fixtures/train_cuda_baseline.txt` byte-for-byte on GPU).
+  Metal entries ride along structurally (Mac validation pending, toy#27;
+  macOS cmake build-units also need spinelgems#21 tool-side). Findings
+  hardened: the gem now ships the generated `lib/toy/llm/*_{cuda,metal}.rb`
+  mirrors (`gem-prep` runs `gen-mirrors`) — without them Spinel silently
+  compiles the missing requires to nothing and consumer GPU builds
+  mis-resolve call sites; the `toy new --lib` `build.sh` fails loud when a
+  GPU archive is missing (re-vendor hint) and its README documents the
+  enable flags.
+
 - **Fixed #76: Qwen3 CUDA F32 degenerate decode.** The hand-written CUDA
   loader (`transformer_lm_cuda.rb`) never wired the detected QK-norm flags
   into the engine — it called `realize_for_mmap` with 5 of 6 args (Spinel

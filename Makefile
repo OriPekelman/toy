@@ -1195,8 +1195,11 @@ tinynn/libtinynn_ggml.a: tinynn/tinynn_ggml.o tinynn/tinynn_gguf.o tinynn/tinynn
 # --- gem release prep (toy#45) ----------------------------------------------
 # The gem ships PRISTINE pinned ggml (patches apply at the consumer's vendor
 # step), so reset the working tree's ggml before `gem build`. Re-run setup-ggml
-# afterwards to restore the dev build.
-gem-prep: $(GGML_DIR)/CMakeLists.txt
+# afterwards to restore the dev build. Also materialize the generated CUDA
+# mirrors (gitignored; toy.gemspec ships lib/toy/llm/*_cuda.rb explicitly) —
+# without them the gem's compute_cuda.rb requires point at missing files and
+# Spinel silently compiles them to nothing (toy#70 finding).
+gem-prep: $(GGML_DIR)/CMakeLists.txt gen-mirrors
 	cd $(GGML_DIR) && git reset --hard FETCH_HEAD >/dev/null 2>&1 || git reset --hard HEAD >/dev/null
 	rm -f $(GGML_DIR)/.patched
 	@echo "ggml pristine at $$(cd $(GGML_DIR) && git rev-parse --short HEAD); now: gem build toy.gemspec"
