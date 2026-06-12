@@ -357,10 +357,10 @@ step only `token_ids` cross FFI.
 
 | Class | File | Backend | Models proven |
 |---|---|---|---|
-| `Toy::GPT2KVFFI`             | `lib/gpt2_ffi_kv.rb`         | CPU  | DistilGPT2, GPT-2-small/medium |
-| `Toy::GPT2KVFFICuda`         | `lib/gpt2_ffi_kv_cuda.rb`    | CUDA | DistilGPT2, GPT-2-small |
-| `Toy::SmolLM2KVFFICache`     | `lib/toy_smollm2_ffi_kv.rb`     | CPU  | SmolLM2-135M, -360M (f32 + Q8_0) |
-| `Toy::SmolLM2KVFFICacheCuda` | `lib/toy_smollm2_ffi_kv_cuda.rb`| CUDA | SmolLM2-135M, -360M (f32) |
+| `Toy::GPT2KVFFI`             | `lib/toy/llm/engine/gpt2_kv_engine.rb`         | CPU  | DistilGPT2, GPT-2-small/medium |
+| `Toy::GPT2KVFFICuda`         | `lib/toy/llm/engine/gpt2_kv_engine_cuda.rb`    | CUDA | DistilGPT2, GPT-2-small |
+| `Toy::SmolLM2KVFFICache`     | `lib/toy/llm/engine/llama_kv_engine.rb`     | CPU  | SmolLM2-135M, -360M (f32 + Q8_0) |
+| `Toy::SmolLM2KVFFICacheCuda` | `lib/toy/llm/engine/llama_kv_engine_cuda.rb`| CUDA | SmolLM2-135M, -360M (f32) |
 
 KV decode primitives added for the Llama-family path: `tnn_silu`,
 `tnn_mul`, `tnn_rope_ext`, `tnn_input_1d_i32_ctx`. SwiGLU lands as

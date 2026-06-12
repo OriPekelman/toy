@@ -75,6 +75,8 @@ classes with no taxonomy of their own — one engine per execution shape:
   retired monolith).
 - `llama_kv_engine.rb` — KV-cache decode (was `lib/toy_smollm2_ffi_kv.rb`).
 - `gpt2_seq_engine.rb` — GPT-2 from-scratch training (self-contained).
+- `gpt2_fwd_engine.rb` — GPT-2 full-forward inference (was `lib/gpt2_ffi.rb`; toy#68).
+- `gpt2_kv_engine.rb` — GPT-2 KV-cache decode (was `lib/gpt2_ffi_kv.rb`; toy#68).
 - `vit_tiny_engine.rb` — ViT-tiny training.
 
 The exact tree (verified):
@@ -85,7 +87,8 @@ lib/toy/llm/
 ├── blocks/       transformer_block.rb                      (+ _cuda / _metal mirrors)
 ├── archs/        llama_arch.rb                             (+ _cuda / _metal mirrors)
 ├── engine/       llama_seq_engine.rb  llama_kv_engine.rb
-│                 gpt2_seq_engine.rb  vit_tiny_engine.rb    (+ _cuda / _metal mirrors;
+│                 gpt2_seq_engine.rb  gpt2_fwd_engine.rb
+│                 gpt2_kv_engine.rb  vit_tiny_engine.rb     (+ _cuda / _metal mirrors;
 │                                                            vit_tiny_engine is CPU-only)
 └── recipes/      from_scratch.rb  lora.rb  warm_start.rb   (+ _cuda / _metal mirrors)
                   vit_tiny.rb                               (CPU-only)
