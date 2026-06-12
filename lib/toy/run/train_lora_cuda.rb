@@ -162,18 +162,21 @@ if EVENTS.length > 0
   end
 end
 
-# --- Training loop (1-indexed; per-step bias-corrected hp). ---
+# --- Training loop (0-indexed like every other recipe loop; hp_for_step
+# applies the lora 1-indexed bias-correction convention internally —
+# hp_for_step(k) == hp(k + 1) byte-for-byte, so the gated stdout is
+# unchanged; toy#73 A.3 seed d retired the last raw-hp(step) callers). ---
 final_loss = 0.0
-step = 1
-while step <= STEPS
+step = 0
+while step < STEPS
   step_wall_start = TinyNNCuda.tnn_events_now_seconds
-  # 1-indexed step; bias_correct=true → slots 5/6 = 1/(1-0.9^t),
-  # 1/(1-0.999^t). Byte-identical to the historical inline `** step.to_f`.
-  m_hp = adamw_lora.hp(step)
-  loss = recipe_lora.step!(TOKENS, positions, m_labels, m_hp, step == 1)
+  # bias_correct=true → slots 5/6 = 1/(1-0.9^t), 1/(1-0.999^t) at
+  # t = step + 1. Byte-identical to the historical inline `** t.to_f`.
+  m_hp = adamw_lora.hp_for_step(step)
+  loss = recipe_lora.step!(TOKENS, positions, m_labels, m_hp, step == 0)
   final_loss = loss
-  # The byte-gated line — to STDOUT.
-  puts "step " + step.to_s + ": loss=" + loss.to_s
+  # The byte-gated line — to STDOUT (1-indexed, as recorded).
+  puts "step " + (step + 1).to_s + ": loss=" + loss.to_s
 
   if EVENTS.length > 0
     step_wall_us = ((TinyNNCuda.tnn_events_now_seconds - step_wall_start) * 1.0e6).to_i
@@ -181,7 +184,7 @@ while step <= STEPS
     es.add_str("kind",  "step")
     es.add_str("phase", "train")
     es.add_num("t",       TinyNNCuda.tnn_events_now_seconds)
-    es.add_num("step",    step)
+    es.add_num("step",    step + 1)
     es.add_num("loss",    loss)
     es.add_raw("lr",      "0.001")
     es.add_num("tokens",  TOKENS.length)
