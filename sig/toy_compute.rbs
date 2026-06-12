@@ -335,6 +335,9 @@ class ViTTinyConfig
                    Integer num_channels, Integer d_model, Integer n_heads,
                    Integer d_ff, Integer n_layers, Integer num_classes,
                    Float ln_eps) -> void
+  # toy#73 A.3 — the canonical timm vit_tiny_patch16_224 shape
+  # (example 07 / train_vit / data/vit_smoke).
+  def self.tiny: () -> ViTTinyConfig
 end
 
 # ============================================================================

@@ -35,6 +35,19 @@ class ViTTinyConfig
     @num_classes  = num_classes
     @ln_eps       = ln_eps
   end
+
+  # The canonical ViT-Tiny shape (toy#73 A.3) — timm
+  # vit_tiny_patch16_224 with the 10-class smoke head: image 224,
+  # patch 16 (→ 196 patches), 3 channels, d=192, 3 heads (d_head 64
+  # derives in initialize), d_ff 768, 12 layers, ln_eps 1e-5. This is
+  # the exact shape example 07 / lib/toy/run/train_vit.rb train and
+  # the one data/vit_smoke is preprocessed for. Additive sugar over
+  # .new — byte-identical to the equivalent 9-positional call. (The
+  # vit smoke's 16/4/64-dim block is a DIFFERENT, env-driven shape —
+  # it stays on .new.)
+  def self.tiny
+    ViTTinyConfig.new(224, 16, 3, 192, 3, 768, 12, 10, 1.0e-5)
+  end
 end
 
 module ToyVit

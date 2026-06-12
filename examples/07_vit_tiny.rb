@@ -20,6 +20,7 @@
 #   IMG_DIR=…     your own corpus (prep/preprocess_images.py writes one)
 #
 # THE API — Toy::LLM::Recipes::VitTiny:
+#   ViTTinyConfig.tiny                 — the model shape (no 9-arg soup)
 #   realize!(cfg, opts)                — random-init ViT + training graph
 #   step!(m_image, cls_idx, m_labels, m_hp, is_first)
 # The per-step inputs are an image Mat ([patch_flat x n_patches]) and a
@@ -32,21 +33,14 @@ STEPS   = (ENV["STEPS"] || "20").to_i
 SEED    = (ENV["SEED"]  || "0").to_i
 IMG_DIR = ENV["IMG_DIR"] || "data/vit_smoke"
 
-# The timm ViT-Tiny shape data/vit_smoke matches (224/16 -> 196 patches).
-IMAGE_SIZE  = 224
-PATCH_SIZE  = 16
-NUM_CHAN    = 3
-D_MODEL     = 192
-N_HEADS     = 3
-D_FF        = 768
-N_LAYERS    = 12
-NUM_CLASSES = 10
-
-cfg = ViTTinyConfig.new(IMAGE_SIZE, PATCH_SIZE, NUM_CHAN, D_MODEL,
-                        N_HEADS, D_FF, N_LAYERS, NUM_CLASSES, 1.0e-5)
-puts "model: image=" + IMAGE_SIZE.to_s + " patch=" + PATCH_SIZE.to_s +
-     " d=" + D_MODEL.to_s + " heads=" + N_HEADS.to_s +
-     " L=" + N_LAYERS.to_s + " classes=" + NUM_CLASSES.to_s
+# The timm ViT-Tiny shape data/vit_smoke matches (224/16 -> 196
+# patches): image 224, patch 16, 3 channels, d=192, 3 heads, d_ff 768,
+# 12 layers, 10 classes — the same factory pattern as 01's
+# SmolLM2Config.tiny.
+cfg = ViTTinyConfig.tiny
+puts "model: image=" + cfg.image_size.to_s + " patch=" + cfg.patch_size.to_s +
+     " d=" + cfg.d_model.to_s + " heads=" + cfg.n_heads.to_s +
+     " L=" + cfg.n_layers.to_s + " classes=" + cfg.num_classes.to_s
 
 opts = Toy::LLM::RecipeOptions.new
 opts.seed = SEED          # the ViT path consumes seed + init_scale only
@@ -59,8 +53,8 @@ recipe.realize!(cfg, opts)
 # a short read would otherwise silently train on zeros (never-mask).
 images_path = IMG_DIR + "/images.bin"
 labels_path = IMG_DIR + "/labels.bin"
-n_patches   = (IMAGE_SIZE / PATCH_SIZE) * (IMAGE_SIZE / PATCH_SIZE)
-patch_flat  = NUM_CHAN * PATCH_SIZE * PATCH_SIZE
+n_patches   = (cfg.image_size / cfg.patch_size) * (cfg.image_size / cfg.patch_size)
+patch_flat  = cfg.num_channels * cfg.patch_size * cfg.patch_size
 record_f    = patch_flat * n_patches
 if !File.exist?(images_path) || !File.exist?(labels_path)
   puts "07_vit_tiny: corpus missing under " + IMG_DIR +
@@ -80,7 +74,7 @@ end
 # The validating batch (the ClassifyBatch sibling of 01's
 # TrainingBatch): fill! checks the record length + label range and
 # rebuilds the image Mat + one-hot labels — a torn corpus fails loud.
-batch = Toy::LLM::ClassifyBatch.new(NUM_CLASSES, patch_flat, n_patches)
+batch = Toy::LLM::ClassifyBatch.new(cfg.num_classes, patch_flat, n_patches)
 adamw = Toy::AdamW.for_from_scratch
 
 first_loss = 0.0
