@@ -76,9 +76,12 @@ multi-GB models pay the copy cost — and the copy-load path has no
 QK-norm support, so QK-norm models (Qwen3, OLMoE) abort loudly on
 Metal rather than decode degenerate (#76).
 
-◇ The SmolLM2-135M Metal ✓ is Mac-gated (#27) and was not re-run in the
-2026-06-11 gx10 pass; it stands from the 2026-05-31 Mac validation
-(`9b5131a`).
+◇ The SmolLM2-135M Metal ✓ is Mac-gated (#27). Re-confirmed on
+2026-06-12 on Apple M2 (toy `d5ffbc5` / spinel `a699cf9`, pinned per
+the toy#27 brief; vendored ggml `57ea0bc`): `make
+example_inference_metal` builds + runs end-to-end (Metal kernels JIT,
+fusion/concurrency on), F32, deterministic ids — identical to the
+prior 2026-05-31 Mac validation (`9b5131a`).
 
 ## Tokenizer / RoPE coverage
 
