@@ -153,6 +153,14 @@ if File.executable?(example_bin)
       log.loss_curve.length == 3 &&
       log.final_loss.is_a?(Float)
   end
+  check("round-trip: run_start stamps backend{kind} (toy#73 A.3)") do
+    # example 01 is the CPU compute entry → Toy::Device.name == "cpu".
+    # git{} is opt-in (bundle.git! — example 01 stays vendor-free) so
+    # its absence here is the documented default.
+    cfgev = Toy::RunLog.open(rt_dir).config
+    cfgev["backend"].is_a?(Hash) && cfgev["backend"]["kind"] == "cpu" &&
+      !cfgev.key?("git")
+  end
   check("round-trip: re-run TRUNCATES (3 steps, not 6)") do
     Toy::RunLog.open(rt_dir).steps.length == 3
   end
