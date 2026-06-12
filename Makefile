@@ -1222,9 +1222,18 @@ libtinynn_shared: tinynn/libtinynn_ggml_shared.so
 
 tinynn/libtinynn_ggml_shared.so: tinynn/tinynn_ggml.o tinynn/tinynn_gguf.o tinynn/tinynn_trace.o tinynn/tinynn_events.o $(GGML_DIR)/build/src/libggml.a
 ifeq ($(UNAME_S),Darwin)
-	@echo "libtinynn_shared: Linux-only this stage (toy#71 Stage B is the gx10 CPU oracle;"
-	@echo "  the macOS -dynamiclib/-force_load variant is a follow-up — needs Mac verification)"
-	@exit 1
+	# macOS variant (toy#71 Stage B follow-up, Mac-verified 2026-06-12):
+	# -dynamiclib for -shared; -force_load per archive for GNU ld's
+	# --whole-archive (pulls every ggml object so the Fiddle backend
+	# resolves all tnn_* symbols); -lc++ for libc++ (not libstdc++); no
+	# -Bsymbolic (macOS two-level namespace already binds internally).
+	# Output keeps the .so name the gate/Fiddle loader expects.
+	$(CC) -dynamiclib -o $@ \
+	  tinynn/tinynn_ggml.o tinynn/tinynn_gguf.o tinynn/tinynn_trace.o tinynn/tinynn_events.o \
+	  -Wl,-force_load,$(GGML_DIR)/build/src/libggml.a \
+	  -Wl,-force_load,$(GGML_DIR)/build/src/libggml-cpu.a \
+	  -Wl,-force_load,$(GGML_DIR)/build/src/libggml-base.a \
+	  -lc++ -lpthread -lm
 else
 	$(CC) -shared -Wl,-Bsymbolic -o $@ \
 	  tinynn/tinynn_ggml.o tinynn/tinynn_gguf.o tinynn/tinynn_trace.o tinynn/tinynn_events.o \
