@@ -29,14 +29,20 @@ puts "config: vocab=" + cfg.vocab.to_s +
      " L=" + cfg.n_layers.to_s
 
 flags = GGUFLoad.detect_smollm2_flags(GGUF)
-puts "flags: untied=" + flags.untied.to_s +
-     " qkv_bias=" + flags.qkv_bias.to_s
+# toy#77: ternaries, not Bool#to_s — Spinel emits Bool#to_s as a raw
+# unguarded C literal and GC-roots it; two in one concat chain can
+# segfault sp_gc_mark depending on link layout (see qwen25_bench_cuda).
+puts "flags: untied=" + (flags.untied ? "true" : "false") +
+     " qkv_bias=" + (flags.qkv_bias ? "true" : "false")
 
 gguf = TinyNNCuda.tnn_gguf_load(GGUF)
 
 kv = SmolLM2KVFFICacheCuda.new
 t0 = Time.now
-kv.realize_for_mmap(gguf, cfg, MAX_T, flags.untied, flags.qkv_bias)
+# toy#77: realize_for_mmap is 6-arg now (qk_norm); Spinel zero-fills
+# under-arity calls with NO diagnostic. Pass qk_norm explicitly.
+kv.qk_norm_kind = flags.qk_norm_kind
+kv.realize_for_mmap(gguf, cfg, MAX_T, flags.untied, flags.qkv_bias, flags.qk_norm)
 puts "  CUDA realize + mmap in " + ((Time.now - t0) * 1000.0).to_s + " ms"
 puts "  backend: " + TinyNNCuda.tnn_backend_name(kv.sess)
 

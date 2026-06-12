@@ -127,25 +127,38 @@ end
 
 ratios = heavy ? run_heavy(PT_BASE) : run_light(PT_BASE)
 
+budget = {}
+if File.exist?(BUDGET_PATH)
+  CSV.foreach(BUDGET_PATH, headers: true) do |r|
+    budget[r["metric"]] = { value: r["value"].to_f, tol: r["tolerance_pct"].to_f }
+  end
+end
+
+# toy#77 fail-loud: every budgeted metric MUST have a freshly measured
+# ratio. The old gate iterated over `ratios` only, so a leg that died
+# (e.g. the infer demo segfaulting) simply vanished from the loop and
+# the script printed "ok" — which masked a dead bench for ~10 days.
+missing = budget.keys - ratios.keys
+
 if ratios.empty?
   puts "\nFAIL: no ratios computed — a sub-bench did not produce a number (see above)."
   exit 2
 end
 
 if update
+  if missing.length > 0
+    puts "\nFAIL (--update refused): these budgeted metrics produced no measurement:"
+    missing.each { |m| puts "  SKIPPED #{m} — leg ran but yielded no parseable number (see above)" }
+    puts "Rewriting #{BUDGET_PATH} now would silently shrink the budget. Fix the"
+    puts "dead leg first (or deliberately delete its row from the CSV)."
+    exit 2
+  end
   CSV.open(BUDGET_PATH, "w", write_headers: true,
            headers: %w[metric value unit direction tolerance_pct]) do |csv|
     ratios.each { |m, v| csv << [m, sprintf("%.4f", v), "x", "lower", "25.0"] }
   end
   puts "\nwrote #{BUDGET_PATH} (#{ratios.length} ratios)"
   exit 0
-end
-
-budget = {}
-if File.exist?(BUDGET_PATH)
-  CSV.foreach(BUDGET_PATH, headers: true) do |r|
-    budget[r["metric"]] = { value: r["value"].to_f, tol: r["tolerance_pct"].to_f }
-  end
 end
 
 puts "\n== ratios (toy / PyTorch — lower is better) =="
@@ -162,7 +175,17 @@ ratios.each do |metric, v|
   puts sprintf("  %-40s = %6.3f×  (budget %.3f×, %+5.1f %%, tol +%.0f %%)  [%s]",
                metric, v, b[:value], rel, b[:tol], bad ? "REGRESS" : "ok")
 end
+missing.each do |metric|
+  puts sprintf("  %-40s = SKIPPED — no measurement (budget %.3f×)  [FAIL]",
+               metric, budget[metric][:value])
+end
 
+if missing.length > 0
+  # Loud even in --report mode: missing data is an error, not a gate
+  # judgement, so it must never exit 0.
+  puts "\nFAIL: #{missing.length} budgeted ratio(s) had no measurement — a bench leg is dead (see above)"
+  exit 3
+end
 if report
   puts "\n(report mode — not gating)"; exit 0
 end

@@ -29,7 +29,12 @@ flags = GGUFLoad.detect_smollm2_flags(GGUF)
 t_load_0 = Time.now
 gguf = TinyNN.tnn_gguf_load(GGUF)
 kv = SmolLM2KVFFICache.new
-kv.realize_for_mmap(gguf, cfg, MAX_T, flags.untied, flags.qkv_bias)
+# toy#77: realize_for_mmap is 6-arg now (qk_norm); Spinel zero-fills
+# under-arity calls with NO diagnostic, so the old 5-arg call compiled
+# silently. Pass qk_norm explicitly + set qk_norm_kind first (same
+# call shape as lib/toy/models/transformer_lm.rb#load_cpu).
+kv.qk_norm_kind = flags.qk_norm_kind
+kv.realize_for_mmap(gguf, cfg, MAX_T, flags.untied, flags.qkv_bias, flags.qk_norm)
 t_load_ms = (Time.now - t_load_0) * 1000.0
 puts "  realize+mmap: " + t_load_ms.to_s + " ms"
 puts "  backend: " + TinyNN.tnn_backend_name(kv.sess)
