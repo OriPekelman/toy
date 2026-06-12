@@ -12,6 +12,21 @@ OBJS := tinynn_ggml.o tinynn_gguf.o tinynn_trace.o tinynn_events.o
 libtinynn_ggml.a: $(OBJS)
 	ar rcs $@ $(OBJS)
 
+# toy#71 Stage B — the CRuby-oracle shared object (MRI dlopens it via
+# Fiddle; see lib/toy/mri.rb). Self-contained: tinynn objects + the static
+# CPU ggml archives, -Wl,-Bsymbolic for the aarch64 vtable relocations,
+# --whole-archive so the backend registry survives, -lm trailing. Linux/
+# CPU only this stage (macOS dylib + CUDA/Metal variants are follow-ups).
+# Mirrors the root Makefile's libtinynn_shared rule — keep both in sync.
+shared: libtinynn_ggml_shared.so
+.PHONY: shared
+
+libtinynn_ggml_shared.so: $(OBJS)
+	$(CC) -shared -Wl,-Bsymbolic -o $@ $(OBJS) \
+	  -L../vendor/ggml/build/src \
+	  -Wl,--whole-archive -lggml -lggml-cpu -lggml-base -Wl,--no-whole-archive \
+	  -lstdc++ -lpthread -lm
+
 # Optional backend shims (toy#45 Phase 3). NOT in the default target —
 # they are separate build-unit targets ("targets": ["cuda"] / ["metal"]
 # in spinel-ext.json's default-disabled cuda-shim / metal-shim entries),

@@ -440,12 +440,15 @@ gate-mixed-precision:
 gate-run-log:
 	ruby prep/run_log_gate.rb
 
-# toy#71 Stage A — the MRI dev-run gate (plain `ruby`, NO Spinel build,
-# NO SPINEL_DIR): `require "toy/mri"` loads the full compute surface
-# under CRuby, the pure-Ruby teaching path genuinely trains (Trainer +
-# TransformerLM on the Mat path), and crossing the native boundary
-# raises the NAMED Toy::MRI::NativeCallError. Behavioral, not
-# byte-exact (MRI floats are the Ruby-libm arm).
+# toy#71 — the MRI dev-run gate, BOTH arms (plain `ruby`, NO Spinel
+# build, NO SPINEL_DIR). Stub leg (Stage A): `require "toy/mri"` loads
+# the full compute surface under CRuby, the pure-Ruby teaching path
+# genuinely trains, and crossing the native boundary raises the NAMED
+# Toy::MRI::NativeCallError. Native leg (Stage B, the CRuby oracle;
+# needs `make libtinynn_shared`, loud SKIP otherwise — MRI_GATE_STRICT=1
+# turns the skip into a failure): MRI+Fiddle reproduces the recorded
+# Spinel from-scratch gate curve BIT-EXACT (train_baseline.txt) and the
+# smollm2-135m greedy decode ids byte-equal infer_baseline.txt.
 .PHONY: gate-mri
 gate-mri:
 	ruby prep/mri_gate.rb
@@ -1198,6 +1201,37 @@ tinynn/tinynn_events.o: tinynn/tinynn_events.c tinynn/tinynn_events.h
 
 tinynn/libtinynn_ggml.a: tinynn/tinynn_ggml.o tinynn/tinynn_gguf.o tinynn/tinynn_trace.o tinynn/tinynn_events.o
 	ar $(ARFLAGS) $@ tinynn/tinynn_ggml.o tinynn/tinynn_gguf.o tinynn/tinynn_trace.o tinynn/tinynn_events.o
+
+# --- toy#71 Stage B: the CRuby-oracle shared library ------------------------
+# tinynn objects + the static CPU ggml archives linked into ONE self-
+# contained shared object that plain MRI dlopens via Fiddle (lib/toy/mri.rb
+# native arm). PIC is already on everywhere (CFLAGS -fPIC for tinynn,
+# -DCMAKE_POSITION_INDEPENDENT_CODE=ON for ggml). -Wl,-Bsymbolic binds
+# ggml's intra-library references locally — without it the aarch64 link
+# rejects adrp relocations against ggml's C++ vtables ("may bind
+# externally"); no interposition is wanted anyway. --whole-archive keeps
+# every backend-registry object alive. Link order mirrors the Spinel
+# ffi_lib list in lib/toy/ffi/tinynn.rb (stdc++/pthread, -lm TRAILING; no
+# gomp — the CPU ggml build is -DGGML_OPENMP=OFF). CPU ONLY this stage:
+# the CUDA/Metal shims stay static-archive-only (follow-up — a
+# libtinynn_ggml_cuda_shared.so would whole-archive build-cuda/ + the CUDA
+# stub libs; Metal additionally needs a Mac to verify -dynamiclib +
+# -force_load). Artifact is gitignored (rebuild: make libtinynn_shared).
+.PHONY: libtinynn_shared
+libtinynn_shared: tinynn/libtinynn_ggml_shared.so
+
+tinynn/libtinynn_ggml_shared.so: tinynn/tinynn_ggml.o tinynn/tinynn_gguf.o tinynn/tinynn_trace.o tinynn/tinynn_events.o $(GGML_DIR)/build/src/libggml.a
+ifeq ($(UNAME_S),Darwin)
+	@echo "libtinynn_shared: Linux-only this stage (toy#71 Stage B is the gx10 CPU oracle;"
+	@echo "  the macOS -dynamiclib/-force_load variant is a follow-up — needs Mac verification)"
+	@exit 1
+else
+	$(CC) -shared -Wl,-Bsymbolic -o $@ \
+	  tinynn/tinynn_ggml.o tinynn/tinynn_gguf.o tinynn/tinynn_trace.o tinynn/tinynn_events.o \
+	  -L$(GGML_DIR)/build/src \
+	  -Wl,--whole-archive -lggml -lggml-cpu -lggml-base -Wl,--no-whole-archive \
+	  -lstdc++ -lpthread -lm
+endif
 
 # --- smoke test -------------------------------------------------------------
 # Builds tinynn/smoke.rb against the CPU shim. Requires `setup-ggml` to have
