@@ -10,6 +10,29 @@ into toy's tree.
 > which is clean and self-contained. See [`cli.md`](cli.md). This doc is the
 > *library-composition* surface.
 
+## Recommended Spinel revision (v0.8.0)
+
+toy v0.8.0 is verified against the **union of two Spinel fix branches**
+(both on [`OriPekelman/spinel`](https://github.com/OriPekelman/spinel),
+both submitted upstream):
+
+```sh
+git clone https://github.com/OriPekelman/spinel && cd spinel
+git fetch origin fix/array-literal-ctor-element-pin fix/poly-array-concrete-array-boundary
+git checkout --detach ddee073        # serve fix (spinel-dev#14)
+git merge a699cf9 --no-edit          # eval fix (spinel-dev#13); merges clean
+make deps && make
+```
+
+At that union (verified 2026-06-12, gx10/GB10, toy `f7361eb`): the full
+gate matrix passes — 26 gates, byte-exact where gated so, including serve
+(full-size binary, live HTTP) and the MRI oracle — and the compile is the
+cleanest on record (zero poly-degrade warnings). When Spinel master
+contains both fixes (matz/spinel PR 1385 + follow-ups), prefer master and
+this section will move to a plain rev pin. Known residual at any current
+rev: the `tinynn/gpt2_*` parity harnesses need `f6d5eef`
+(spinel-dev#22) — internal tooling only, no library surface affected.
+
 ## The recipe (toy#45: Gemfile + vendor — that's it)
 
 Toy ships `spinel-ext.json` **build-units** (spinelgems#14): `spinel-compat
