@@ -151,11 +151,58 @@ module Toy
       s
     end
 
+    # PER-ARCH STARTS (toy#73 A.3 seed a). The generic run_start! below
+    # is llama-shaped — 8 positionals whose vocab/context slots a ViT
+    # consumer has nothing to put in. These two read the model{} block
+    # straight off the config object instead (NO default args —
+    # landmine #4; one method per arch, not a poly cfg param).
+
+    # run_start for a llama-shaped run: model{} + config{} come from
+    # the Toy::SmolLM2Config. Byte-identical to
+    # run_start!("llama", cfg.vocab, cfg.d_model, cfg.n_layers,
+    # cfg.ctx, steps, lr, seed). Returns nil.
+    def run_start_llama!(lcfg, steps, lr, seed)
+      if @rb_active
+        TinyNN.tnn_events_emit(run_start_prefix +
+          ",\"model\":{\"arch\":\"llama\"" +
+          ",\"vocab\":" + lcfg.vocab.to_s +
+          ",\"d_model\":" + lcfg.d_model.to_s +
+          ",\"n_layers\":" + lcfg.n_layers.to_s + "}" +
+          ",\"config\":{\"context\":" + lcfg.ctx.to_s +
+          ",\"steps\":" + steps.to_s +
+          ",\"lr\":" + lr.to_s +
+          ",\"seed\":" + seed.to_s + "}}")
+      end
+      nil
+    end
+
+    # run_start for a ViT run: model{} carries the image shape
+    # (image_size/patch_size/d_model/n_layers/num_classes from the
+    # ViTTinyConfig) and config{} drops the token-context key (a ViT
+    # has none — the patch count derives from the model block).
+    # Returns nil.
+    def run_start_vit!(vcfg, steps, lr, seed)
+      if @rb_active
+        TinyNN.tnn_events_emit(run_start_prefix +
+          ",\"model\":{\"arch\":\"vit\"" +
+          ",\"image_size\":" + vcfg.image_size.to_s +
+          ",\"patch_size\":" + vcfg.patch_size.to_s +
+          ",\"d_model\":" + vcfg.d_model.to_s +
+          ",\"n_layers\":" + vcfg.n_layers.to_s +
+          ",\"num_classes\":" + vcfg.num_classes.to_s + "}" +
+          ",\"config\":{\"steps\":" + steps.to_s +
+          ",\"lr\":" + lr.to_s +
+          ",\"seed\":" + seed.to_s + "}}")
+      end
+      nil
+    end
+
     # Emit the toy/v1 run_start (exactly one per bundle, first):
     # schema + t + started_at + run_id + phase:"train" + host{} +
     # backend{} + [git{} if injected] + model{arch,vocab,d_model,
     # n_layers} + config{context,steps,lr,seed}.
-    # arch is e.g. "llama" / "gpt2" / "vit". Returns nil.
+    # arch is e.g. "llama" / "gpt2" / "vit"; for llama/vit configs the
+    # per-arch starts above read these fields off the cfg for you.
     def run_start!(arch, vocab, d_model, n_layers, context, steps, lr, seed)
       if @rb_active
         TinyNN.tnn_events_emit(run_start_prefix +

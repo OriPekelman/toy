@@ -89,6 +89,11 @@ module Toy
     def weights_dir: () -> String
     def git!: (String sha, String branch) -> void
     def run_start_prefix: () -> String
+    # Per-arch starts (toy#73 A.3): model{}/config{} read off the cfg.
+    def run_start_llama!: (Toy::SmolLM2Config lcfg, Integer steps,
+                           Float lr, Integer seed) -> void
+    def run_start_vit!: (ViTTinyConfig vcfg, Integer steps,
+                         Float lr, Integer seed) -> void
     def run_start!: (String arch, Integer vocab, Integer d_model,
                      Integer n_layers, Integer context, Integer steps,
                      Float lr, Integer seed) -> void

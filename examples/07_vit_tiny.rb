@@ -18,6 +18,7 @@
 #   STEPS=50      watch it actually memorize (loss -> ~0)
 #   SEED=1        a different random init
 #   IMG_DIR=…     your own corpus (prep/preprocess_images.py writes one)
+#   RUN_ID=vit-a  label the runs/<RUN_ID>/ bundle (for 06's table)
 #
 # THE API — Toy::LLM::Recipes::VitTiny:
 #   ViTTinyConfig.tiny                 — the model shape (no 9-arg soup)
@@ -25,13 +26,23 @@
 #   step!(m_image, cls_idx, m_labels, m_hp, is_first)
 # The per-step inputs are an image Mat ([patch_flat x n_patches]) and a
 # one-hot class label — where the LLM recipes take token ids and
-# shift-by-one labels. No CLI surface for ViT yet; this file is it.
+# shift-by-one labels. The run bundle rides Toy::RunBundle like 01's —
+# run_start_vit! reads the model{} block straight off the cfg (a ViT
+# has no vocab/context to feed the llama-shaped run_start!). No CLI
+# surface for ViT yet; this file is it.
 
 require_relative "../lib/toy/compute"
 
 STEPS   = (ENV["STEPS"] || "20").to_i
 SEED    = (ENV["SEED"]  || "0").to_i
 IMG_DIR = ENV["IMG_DIR"] || "data/vit_smoke"
+RUN_ID  = ENV["RUN_ID"] || "example-07-vit"
+
+# The cosine LR schedule (max, min, warmup steps) — shared between the
+# per-step ToyLR.cosine call and the run_start config{} echo.
+LR_MAX = 0.003
+LR_MIN = 0.0001
+WARMUP = 10
 
 # The timm ViT-Tiny shape data/vit_smoke matches (224/16 -> 196
 # patches): image 224, patch 16, 3 channels, d=192, 3 heads, d_ff 768,
@@ -77,11 +88,16 @@ end
 batch = Toy::LLM::ClassifyBatch.new(cfg.num_classes, patch_flat, n_patches)
 adamw = Toy::AdamW.for_from_scratch
 
+# Run bundle, the ViT way: same runs/<RUN_ID>/events.jsonl as 01, but
+# run_start_vit! stamps the image shape (no vocab/context slots to fake).
+bundle = Toy::RunBundle.new("runs", RUN_ID)
+bundle.run_start_vit!(cfg, STEPS, LR_MAX, SEED)
+
 first_loss = 0.0
 final_loss = 0.0
 step = 0
 while step < STEPS
-  adamw.lr = ToyLR.cosine(step, STEPS, 0.003, 0.0001, 10)
+  adamw.lr = ToyLR.cosine(step, STEPS, LR_MAX, LR_MIN, WARMUP)
 
   # One image per step (the smoke corpus has a single record; a real
   # corpus would advance the index).
@@ -96,12 +112,19 @@ while step < STEPS
   end
   final_loss = loss
   puts "step " + (step + 1).to_s + ": loss=" + loss.to_s
+  bundle.step!(step + 1, loss)
   step = step + 1
 end
+
+wrote_bundle = bundle.active
+bundle.run_end!(STEPS, final_loss)
 
 puts ""
 puts "vit-tiny: " + STEPS.to_s + " steps, loss " + first_loss.to_s +
      " -> " + final_loss.to_s
+if wrote_bundle
+  puts "bundle: " + bundle.events_path + "  (toy/v1 events)"
+end
 if final_loss < first_loss
   puts "VERDICT: learning"
 else
