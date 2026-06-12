@@ -50,6 +50,9 @@ vendor/ggml/*.build.log
 # tinynn shim build artifacts
 tinynn/*.o
 tinynn/*.a
+# toy#71 Stage B: the CRuby-oracle shared object (make libtinynn_shared)
+tinynn/*.so
+tinynn/*.dylib
 # tinynn smoke / bench binaries (all built by `make ab-smoke-*` etc.)
 tinynn/smoke
 tinynn/ab_smoke

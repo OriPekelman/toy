@@ -110,19 +110,32 @@ to ENV), not byte-exact — numerics are `train_gate`'s job.
 
 ### MRI dev-run gate
 
-`make gate-mri` (`prep/mri_gate.rb`, toy#71 Stage A) proves the **plain-CRuby
+`make gate-mri` (`prep/mri_gate.rb`, toy#71) proves the **plain-CRuby
 entry** works with no Spinel anywhere — plain `ruby`, no `SPINEL_DIR`, no
-build step. It asserts three things: (1) `require "toy/mri"` loads the full
-compute require chain under MRI (the `ffi_lib`/`ffi_func`/`ffi_cflags`
-intrinsics resolve to the shim's declaration recorders; 194 declarations
-land in `Toy::MRI.declarations`); (2) the pure-Ruby teaching surface
-genuinely works — configs, `RecipeOptions`, engine *construction*, and a
-real `Toy::Trainer` + `TransformerLM` loop on the Mat path whose loss
-decreases; (3) crossing the native boundary fails LOUD with the named
-`Toy::MRI::NativeCallError` (never a bare `NoMethodError`), at both a
-direct `TinyNN.tnn_session_new` call and an engine realize. Behavioral,
-not byte-exact — MRI float printing is the Ruby-libm arm; numeric
-byte-equality vs the compiled binaries is Stage B's differential gate.
+Spinel build. Two subprocess legs:
+
+**Stub leg** (Stage A, forced `TOY_MRI_NATIVE=0`): (1) `require
+"toy/mri"` loads the full compute require chain under MRI (the
+`ffi_lib`/`ffi_func`/`ffi_cflags` intrinsics resolve to the shim's
+declaration recorders; 194 declarations land in `Toy::MRI.declarations`);
+(2) the pure-Ruby teaching surface genuinely works — configs,
+`RecipeOptions`, engine *construction*, and a real `Toy::Trainer` +
+`TransformerLM` loop on the Mat path whose loss decreases; (3) crossing
+the native boundary fails LOUD with the named `Toy::MRI::NativeCallError`
+(never a bare `NoMethodError`).
+
+**Native leg** (Stage B, the CRuby oracle; needs `make libtinynn_shared`
+— loud SKIP when the `.so` is absent, `MRI_GATE_STRICT=1` turns the skip
+into a failure): (4) the Fiddle arm binds and a real cpu session opens;
+(5) **differential train** — the exact from-scratch gate shape run under
+MRI+Fiddle must reproduce `prep/fixtures/train_baseline.txt` (the same
+recorded curve `train_gate` holds the Spinel runner to) with losses
+**bit-exact** (`pack("G")` comparison; formatted lines additionally
+byte-compared, string-only drift reported not failed); (6) **KV decode**
+— smollm2-135m greedy ids byte-equal `prep/fixtures/infer_baseline.txt`
+(model-gated: loud SKIP without the gitignored GGUF). One program, two
+Ruby runtimes, same C library — divergence isolates Spinel codegen
+(spinel-dev#6 phase 1).
 
 ### Model-gated regression gates
 
