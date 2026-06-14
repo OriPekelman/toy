@@ -284,6 +284,14 @@ module Toy
             step = step + 1
           end
           puts "experiment: ok (device=" + Toy::Device.name + ")"
+
+          # toy#90 — release backend resources before exit. REQUIRED on
+          # Metal: ggml-metal asserts at device-free that its residency
+          # set is empty, and a directly-run experiment_metal gets no
+          # GGML_METAL_NO_RESIDENCY=1 (that env is injected only by toy's
+          # own CLI). No-op on cpu/cuda. Spinel has no at_exit, so this
+          # explicit call is the teardown seam.
+          Toy::Device.shutdown
         RUBY
 
         # Per-device entry shims — device chosen at COMPILE time by

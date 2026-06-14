@@ -90,6 +90,68 @@ static tnn_engine *g_engine_cpu   = NULL;
 static tnn_engine *g_engine_cuda[TNN_MAX_CUDA_DEVICES] = { NULL };
 static tnn_engine *g_engine_metal = NULL;
 
+/* toy#90 — Metal residency-set teardown drain.
+ *
+ * The ggml-metal backend keeps a process-lifetime residency-set
+ * collection on its (singleton) device. Each live Metal buffer adds
+ * itself to that collection on alloc and removes itself on free
+ * (vendor/ggml/src/ggml-metal/ggml-metal-device.m:1491/1594). The
+ * device is freed ONLY by a C++ static destructor at process exit
+ * (ggml-metal-device.cpp:12-26), at which point ggml asserts the
+ * collection is empty (ggml-metal-device.m:618 — a deliberate "you
+ * leaked GPU resources" guard). toy's Metal runners (lib/toy/run/)
+ * and the consumer scaffold (Toy::Device, lib/toy/compute_metal.rb)
+ * historically rely on process exit to reclaim everything and never
+ * call tnn_session_free, so a session's weights_buf is still alive at
+ * exit → the residency set is non-empty → SIGABRT (exit 134), AFTER
+ * compute already produced correct output. The CLI subprocess paths
+ * mask this with GGML_METAL_NO_RESIDENCY=1, but a directly-run
+ * consumer binary gets no such env (toy#27 runs 3-4).
+ *
+ * Fix: track every live Metal session so tnn_shutdown_engines can free
+ * them (draining their weights_buf, hence the residency set) before the
+ * static destructor runs. The registry is METAL-ONLY by construction —
+ * tnn_session_register is called only when s->engine == g_engine_metal
+ * — so CPU and CUDA session/teardown semantics are byte-for-byte
+ * unchanged (their sessions are never registered, never drained here). */
+#define TNN_MAX_METAL_SESSIONS 256
+static void *g_metal_sessions[TNN_MAX_METAL_SESSIONS] = { NULL };
+static int   g_metal_session_count = 0;
+
+static void tnn_metal_session_register(void *sess)
+{
+    if (g_metal_session_count >= TNN_MAX_METAL_SESSIONS) {
+        /* Fail loud (never silently drop): an undrained session leaks a
+         * residency set and re-trips the device-free assert. */
+        fprintf(stderr,
+                "[tnn] WARNING: more than %d live Metal sessions; "
+                "tnn_shutdown_engines cannot track this one and the "
+                "ggml-metal device-free residency assert may fire at "
+                "exit. Bump TNN_MAX_METAL_SESSIONS or free sessions "
+                "explicitly with tnn_session_free.\n",
+                TNN_MAX_METAL_SESSIONS);
+        return;
+    }
+    g_metal_sessions[g_metal_session_count++] = sess;
+}
+
+static void tnn_metal_session_unregister(void *sess)
+{
+    for (int i = 0; i < g_metal_session_count; ++i) {
+        if (g_metal_sessions[i] == sess) {
+            /* compact: move the tail entry into the hole */
+            g_metal_sessions[i] = g_metal_sessions[g_metal_session_count - 1];
+            g_metal_sessions[g_metal_session_count - 1] = NULL;
+            --g_metal_session_count;
+            return;
+        }
+    }
+}
+
+/* Forward decl: tnn_session_free is defined further down; the drain in
+ * tnn_shutdown_engines needs it. */
+void tnn_session_free(void *sess);
+
 /* CUDA backend init with device selection. Weak stub returns NULL;
  * strong override lives in tinynn_backend_cuda.c. */
 __attribute__((weak))
@@ -199,6 +261,24 @@ static tnn_engine *tnn_engine_get_on(int backend_kind, int device)
  * GPU between phases. */
 void tnn_shutdown_engines(void)
 {
+    /* toy#90 — drain any live Metal sessions FIRST. Each session_free
+     * frees s->weights_buf, whose ggml-metal buffer removes itself from
+     * the device's residency-set collection; only once every Metal
+     * buffer is freed is the device-free assert (ggml-metal-device.m:618)
+     * satisfied. tnn_session_free unregisters as it goes, so we always
+     * drain index 0 until the list is empty (no iterator invalidation).
+     * Metal-only: CPU/CUDA sessions are never registered. */
+    while (g_metal_session_count > 0) {
+        void *sess = g_metal_sessions[0];
+        if (!sess) { /* defensive: drop a stale NULL slot */
+            g_metal_sessions[0] = g_metal_sessions[g_metal_session_count - 1];
+            g_metal_sessions[g_metal_session_count - 1] = NULL;
+            --g_metal_session_count;
+            continue;
+        }
+        tnn_session_free(sess);
+    }
+
     /* CPU + Metal: single slot each. */
     tnn_engine **scalar_slots[] = { &g_engine_cpu, &g_engine_metal };
     for (int i = 0; i < 2; ++i) {
@@ -387,6 +467,13 @@ void *tnn_session_new_on(int backend_kind, int device)
     s->weights_map_base  = NULL;
     s->weights_map_size  = 0;
     s->last_graph        = 0;
+    /* toy#90 — register Metal sessions so tnn_shutdown_engines can drain
+     * their residency-set-carrying buffers before the ggml-metal static
+     * destructor runs. Gated to the Metal engine: CPU/CUDA sessions are
+     * never tracked, keeping their lifecycle unchanged. */
+    if (e == g_engine_metal) {
+        tnn_metal_session_register((void *)s);
+    }
     return (void *)s;
 }
 
@@ -394,6 +481,9 @@ void tnn_session_free(void *sess)
 {
     if (!sess) return;
     tnn_session *s = (tnn_session *)sess;
+    /* toy#90 — drop from the Metal drain registry (no-op for CPU/CUDA
+     * sessions, which were never registered). Idempotent. */
+    tnn_metal_session_unregister(sess);
     if (s->weights_buf)      ggml_backend_buffer_free(s->weights_buf);
     if (s->weights_buf_mmap) ggml_backend_buffer_free(s->weights_buf_mmap);
     if (s->ctx)        ggml_free(s->ctx);

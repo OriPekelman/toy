@@ -123,6 +123,15 @@ module Toy
     def self.warm_start_recipe
       Toy::LLM::Recipes::WarmStart.new
     end
+
+    # toy#90 — device teardown hook. CPU has no GPU-resource lifecycle to
+    # drain, so this is a deliberate no-op; it exists only so a
+    # device-agnostic experiment body can call Toy::Device.shutdown
+    # portably before exit (the Metal entry's override is the one that
+    # actually matters — see compute_metal.rb).
+    def self.shutdown
+      nil
+    end
   end
 end
 

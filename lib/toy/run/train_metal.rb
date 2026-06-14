@@ -225,3 +225,13 @@ if EVENTS.length > 0 && TinyNNMetal.tnn_events_active == 1
   TinyNNMetal.tnn_events_emit(re.dump)
   TinyNNMetal.tnn_events_close
 end
+
+# toy#90 — Metal teardown drain. The training session (recipe.fs_cache.sess)
+# is never explicitly freed (the runner relies on process exit), so without
+# this the ggml-metal device-free assert (ggml-metal-device.m:618,
+# [rsets->data count]==0) fires AFTER a correct run, exiting 134. Spinel has
+# no at_exit (lib/toy/run/serve.rb:123) so we drain explicitly here.
+# tnn_shutdown_engines frees every live Metal session's weights_buf
+# (removing it from the residency set) and the CPU write session too.
+# RUNTIME-UNVERIFIED on gx10 (Linux) — Mac gate proves the exit-0.
+TinyNNMetal.tnn_shutdown_engines

@@ -29,6 +29,16 @@
 require_relative "../models/arch"
 require_relative "../models/transformer_lm_metal"
 require_relative "../dev/toy_logprobs"
+require_relative "../ffi/tinynn_metal"
+
+# toy#90 — Metal teardown drain. See lib/toy/run/infer_metal.rb for the
+# full rationale: ggml-metal asserts at exit (ggml-metal-device.m:618) if
+# a Metal buffer outlives its device, and Spinel has no at_exit, so we
+# call tnn_shutdown_engines explicitly before exit. METAL-ONLY no-op
+# elsewhere. RUNTIME-UNVERIFIED on gx10 (Linux) — Mac gate proves exit-0.
+def toy_metal_teardown
+  TinyNNMetal.tnn_shutdown_engines
+end
 
 GGUF  = ENV["GGUF"] || "data/smollm2-135m-f32.gguf"
 TOP_K = (ENV["TOP_K"] || "5").to_i
@@ -65,3 +75,5 @@ while k < top_ids.length
   puts "logprob: " + top_ids[k].to_s + " " + top_vals[k].to_s
   k = k + 1
 end
+
+toy_metal_teardown     # toy#90: drain Metal residency sets before exit 0

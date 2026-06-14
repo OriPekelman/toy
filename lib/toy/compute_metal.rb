@@ -85,6 +85,23 @@ module Toy
     def self.from_scratch_recipe
       Toy::LLM::Recipes::FromScratchMetal.new
     end
+
+    # toy#90 — device teardown hook (THE one that matters). ggml-metal
+    # keeps a process-lifetime residency-set collection on its singleton
+    # device and asserts at the C++ static-destructor device-free that the
+    # collection is empty (vendor/ggml/src/ggml-metal/ggml-metal-device.m
+    # :618). A consumer that builds experiment_metal (toy new --lib) runs
+    # the binary directly — it gets NO GGML_METAL_NO_RESIDENCY=1 (that env
+    # is injected only by toy's own CLI subprocesses), so any Metal buffer
+    # still alive at exit aborts the process (exit 134) AFTER correct
+    # compute (toy#27 runs 3-4). Spinel has no at_exit, so a device-
+    # agnostic body MUST call Toy::Device.shutdown before returning;
+    # tnn_shutdown_engines frees every live Metal session's weights_buf
+    # (removing it from the residency set), satisfying the assert.
+    # RUNTIME-UNVERIFIED on gx10 (Linux) — Mac gate proves the exit-0.
+    def self.shutdown
+      TinyNNMetal.tnn_shutdown_engines
+    end
   end
 end
 
