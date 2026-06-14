@@ -92,6 +92,14 @@ module Toy
     def self.warm_start_recipe
       Toy::LLM::Recipes::WarmStartCuda.new
     end
+
+    # toy#90 — device teardown hook. CUDA frees its GPU allocations on
+    # process exit without a residency-set assert (unlike Metal), so this
+    # is a deliberate no-op; it exists for parity so a device-agnostic
+    # experiment body can call Toy::Device.shutdown portably.
+    def self.shutdown
+      nil
+    end
   end
 end
 

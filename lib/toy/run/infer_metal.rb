@@ -29,6 +29,22 @@
 require_relative "../models/arch"
 require_relative "../models/transformer_lm_metal"
 require_relative "../io/tokenizer"
+require_relative "../ffi/tinynn_metal"
+
+# toy#90 — Metal teardown. ggml-metal asserts at process exit
+# (ggml-metal-device.m:618, [rsets->data count]==0) if any Metal buffer is
+# still alive when its singleton device is freed by the C++ static
+# destructor. This runner never frees its session (it relies on process
+# exit), so without an explicit drain it exits 134 AFTER printing correct
+# output. tnn_shutdown_engines frees every live Metal session's
+# weights_buf (removing it from the residency set), satisfying the assert.
+# Spinel has no at_exit (lib/toy/run/serve.rb:123), so this MUST be called
+# explicitly before every exit that follows lm.load. METAL-ONLY: on
+# CPU/CUDA the registry is empty and this is a no-op-equivalent.
+# RUNTIME-UNVERIFIED on gx10 (Linux) — Mac gate proves the exit-0.
+def toy_metal_teardown
+  TinyNNMetal.tnn_shutdown_engines
+end
 
 GGUF  = ENV["GGUF"] || "data/smollm2-135m-f32.gguf"
 PROMPT = ENV["PROMPT"] || "Once upon a time"
@@ -115,5 +131,8 @@ else
   puts "toy-infer: model has no embedded tokenizer; a string prompt cannot " +
        "be tokenized. Pass numeric token IDs via --prompt-ids (PROMPT_IDS=...) " +
        "or re-convert with --with-tokenizer."
+  toy_metal_teardown   # toy#90: lm.load already allocated Metal buffers
   exit 1
 end
+
+toy_metal_teardown     # toy#90: drain Metal residency sets before exit 0

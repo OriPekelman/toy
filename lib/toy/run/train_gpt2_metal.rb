@@ -83,3 +83,10 @@ while step < STEPS
   puts "step " + (step + 1).to_s + ": loss=" + loss.to_s
   step = step + 1
 end
+
+# toy#90 — Metal teardown drain. The GPT-2 Metal training session is never
+# explicitly freed; without this the ggml-metal device-free residency assert
+# (ggml-metal-device.m:618) aborts the process (exit 134) AFTER a correct
+# run. Spinel has no at_exit (lib/toy/run/serve.rb:123) so drain explicitly.
+# METAL-ONLY no-op for non-Metal. RUNTIME-UNVERIFIED on gx10 — Mac proves it.
+TinyNNMetal.tnn_shutdown_engines
