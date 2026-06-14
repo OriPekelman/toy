@@ -13,16 +13,16 @@ into toy's tree.
 ## Recommended Spinel revision (v0.8.0)
 
 toy v0.8.0 is verified against the **union of two Spinel fix branches**
-(both on [`OriPekelman/spinel`](https://github.com/OriPekelman/spinel),
-both submitted upstream):
+(spinel-dev#13 + #14), published as a single ready-to-build branch:
 
 ```sh
-git clone https://github.com/OriPekelman/spinel && cd spinel
-git fetch origin fix/array-literal-ctor-element-pin fix/poly-array-concrete-array-boundary
-git checkout --detach ddee073        # serve fix (spinel-dev#14)
-git merge a699cf9 --no-edit          # eval fix (spinel-dev#13); merges clean
+git clone -b toy-v0.8.0-pin https://github.com/OriPekelman/spinel && cd spinel
 make deps && make
 ```
+
+`toy-v0.8.0-pin` (`fbb9beb`) is `ddee073` (fix/array-literal-ctor-element-pin,
+the serve fix #14) merged with `a699cf9` (fix/poly-array-concrete-array-boundary,
+the eval fix #13) — the exact tree the gate matrix below was verified against.
 
 At that union (verified 2026-06-12, gx10/GB10, toy `f7361eb`): the full
 gate matrix passes — 26 gates, byte-exact where gated so, including serve
