@@ -16,6 +16,28 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+/* toy#94 — DURABLE GUARD against an int-truncated BYO-pointer.
+ *
+ * ggml_backend_cuda_buffer_from_ptr is the vendored BYO-pointer entry
+ * (vendor-patches/0001-cuda-buffer_from_ptr.patch, which patches BOTH
+ * src/ggml-cuda/ggml-cuda.cu AND include/ggml-cuda.h). The SYMBOL is
+ * defined in libggml-cuda.a, but `make gem-prep` resets vendor/ggml to
+ * GGML_REV (Makefile $(GGML_DIR)/.patched / commit 312fae9) — which
+ * silently drops the *header* declaration while a previously-built
+ * archive still carries the symbol. With no prototype in scope, C
+ * treats the call as an implicit declaration returning `int`: on
+ * aarch64 (GB10) the 64-bit ggml_backend_buffer_t is TRUNCATED to 32
+ * bits. The truncated pointer is non-NULL, so the !buf check passes,
+ * and the next ggml_backend_buffer_get_base() dereferences garbage →
+ * SIGSEGV in the Phase-2 mmap weight-attach (the toy#94 stack:
+ * ggml_backend_buffer_get_base <- tnn_session_attach_weight_mmap <-
+ * realize_for_mmap). Declaring it here keeps a correct 64-bit prototype
+ * in scope REGARDLESS of the vendored header's post-reset state, so the
+ * pointer can never be truncated. (Identical to the header decl when
+ * the patch is applied; harmless redundancy.) */
+GGML_BACKEND_API ggml_backend_buffer_t
+ggml_backend_cuda_buffer_from_ptr(void *host_ptr, size_t size, int device);
+
 ggml_backend_t tnn_backend_cuda_init_internal(void)
 {
     return ggml_backend_cuda_init(0);
