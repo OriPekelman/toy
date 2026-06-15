@@ -874,7 +874,7 @@ class SmolLM2KVFFICache
     if is_native
       wtype = GGUFLoad.detect_weight_type(gguf_path)
       set_weight_type(wtype)
-      realize_for_mmap(gguf, cfg, max_T, flags.untied, flags.qkv_bias)
+      realize_for_mmap(gguf, cfg, max_T, flags.untied, flags.qkv_bias, flags.qk_norm)
       puts "  BYO-pointer mmap (weight_type=" + wtype.to_s + ")"
       gguf
     else
