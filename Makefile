@@ -120,10 +120,16 @@ CUDA_DIR    ?= /usr/local/cuda
 # /var/lib/gems), `bundle lock` can't write the git cache without sudo —
 # that's an env-setup concern, not a toy bug.
 #
-# SPINEL_EXT_DISABLE=pg: tep's optional pg C-ext currently fails to
-# compile under spinel-compat (its libpq pkg-config cflags aren't wired
-# to the source .o compile — spinelgems#8). toy only uses tep for HTTP
-# serving, not its pg adapter, so we opt out. Drop this once #8 lands.
+# tep's pg C-ext is now built + linked (libpq). We previously
+# SPINEL_EXT_DISABLE=pg'd it (libpq pkg-config cflags weren't wired —
+# spinelgems#8), relying on the legacy backend DCE'ing the unused PG
+# surface. On spinelc/master tep's PG-integration (broadcast/presence-
+# over-PG, pulled in by tep.rb's unconditional `require "tep/pg"`) is
+# reachable, so serve emits the `tep_pg_*` externs and must link the
+# shim + libpq. spinelgems#8 has landed (libpq cflags wired), so we no
+# longer disable it. (serve doesn't use PG at runtime — the clean fix is
+# tep making the PG battery opt-in: tep#216. Drop the libpq dep here once
+# that lands.)
 vendor-tep:
 	@if [ ! -d ../spinelgems ]; then \
 	    echo ""; \
@@ -138,7 +144,7 @@ vendor-tep:
 	    exit 1; \
 	fi
 	bundle lock
-	SPINEL_EXT_DISABLE=pg SPINEL_DIR=$(HOME)/sites/spinel ../spinelgems/exe/spinel-compat vendor
+	SPINEL_DIR=$(HOME)/sites/spinel ../spinelgems/exe/spinel-compat vendor
 	@# toy#69 — fold the vendored gems' aggregated sig root (advertised
 	@# by vendor/spinel/deps.rb, spinelgems#13) into toy's own --rbs
 	@# root via a gitignored symlink: spinel accepts ONE --rbs dir and
