@@ -59,7 +59,11 @@ endif
 # .a in tinynn/ combined with newer Spinel C codegen can produce
 # misaligned binaries that segfault at init (Tao hit this 2026-05-26
 # after pulling Spinel 2183a92 — the lib archives weren't rebuilt).
-SPINEL_DEPS := $(SPINEL_DIR)/spinel_analyze $(SPINEL_DIR)/spinel_codegen
+# Track the compiler BINARY: post the Ruby→C rewrite there is no
+# spinel_analyze/spinel_codegen at the checkout root (the Ruby backend
+# moved to legacy/, oracle-only), just the single `spinel` binary —
+# which is the right rebuild trigger and exists on both layouts.
+SPINEL_DEPS := $(SPINEL_BIN)
 
 CC          ?= cc
 CFLAGS      ?= -O2 -fPIC -Wall -Wextra
