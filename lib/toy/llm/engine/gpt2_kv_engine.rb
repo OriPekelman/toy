@@ -153,6 +153,17 @@ class GPT2KVFFICache
   # Build the compute graph for one decode position. Returns the logits
   # tensor handle. Caller calls tnn_compute then download_row_major.
   def build_decode_step(pos)
+    # The per-head K/V buffers are sized for @max_T positions. Writing /
+    # reading slot `pos` requires pos < @max_T; at pos == @max_T the
+    # cpy-into-view and history views overrun the cache allocation and
+    # ggml aborts deep inside ggml_view_2d. Fail loud here with a
+    # toy-level message instead (see toy#99).
+    if pos >= @max_T
+      raise "GPT2KVFFICache: decode pos=" + pos.to_s +
+            " exceeds KV cache capacity max_T=" + @max_T.to_s +
+            " (size the cache >= prompt_len + n_generate via realize_for)"
+    end
+
     eps   = 1.0e-5
     scale = 1.0 / Math.sqrt(@d_head.to_f)
     d_model = @d_model

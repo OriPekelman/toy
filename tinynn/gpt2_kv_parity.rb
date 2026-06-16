@@ -9,7 +9,7 @@ require_relative "../lib/toy/llm/engine/gpt2_kv_engine"
 require_relative "../lib/toy/io/gguf_load"
 require_relative "../lib/toy/train/training"
 
-MAX_T    = 32          # KV-cache capacity (≥ prompt + generation)
+GEN_HEADROOM = 8       # extra slots beyond the prompt for generation
 IDS_PATH = "data/prompt_ids.txt"
 # Swap to point at any GPT-2-shape GGUF; hyperparams come from its
 # kv metadata.
@@ -27,6 +27,11 @@ end
 
 ids = read_ids(IDS_PATH)
 puts "prompt: " + ids.length.to_s + " tokens"
+
+# KV-cache capacity MUST be >= prompt length (we decode one token per
+# prompt position) + any generation headroom. Sizing it smaller than
+# the prompt overruns the per-head K/V buffers (toy#99).
+MAX_T = ids.length + GEN_HEADROOM
 
 cfg = GPT2ConfigLoader.read(GGUF)
 puts "config: vocab=" + cfg.vocab_size.to_s + " d=" + cfg.d_model.to_s +
