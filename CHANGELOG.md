@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+- **toy#30 spike — tep OpenAI Backend adoption (SPIKE ONLY, not collapsed):**
+  Verified at the toy-v0.8.0 union Spinel pin (`fbb9beb`, the #13+#14 union)
+  whether `Tep::Llm::OpenAI::Server.use(ToyBackend.new) + serve!` produces
+  correct JSON. **Result: the "Bug B" JSON-key blanking
+  (`Tep::Json.encode_pair_str` → `{"":"","":""}`) NO LONGER reproduces at this
+  pin** — `/v1/models`, `/v1/completions`, `/v1/embeddings` all encode
+  byte-correct keys+values, and the cross-repo `Server.use` dispatch into a
+  `ToyBackend` authored in toy's compilation unit works live (embeddings
+  vector byte-identical to the hand-rolled handler). Bug B was a Spinel
+  regression cleared by the union, not a tep defect (tep#205 clean at this pin).
+  **The collapse did NOT ship:** tep's battery `CompletionsHandler` emits a
+  `text` field, but `prep/serve_gate.rb` + `prep/serve_events_gate.rb`
+  hard-require `choices[0].ids` (toy speaks token IDs, not text). The battery
+  has no `ids` field and the vendored tep is generated (no hand-edits), so a
+  straight `Server.use + serve!` swap would change the wire bytes and fail both
+  serve gates — which the "never change serve JSON" rule forbids. Toy keeps its
+  hand-rolled handlers. Spike harness: `prep/serve_spike_tepbackend.rb`. Next
+  step is tep-side: a battery completion shape that can carry `ids` (or a
+  toy-owned `CompletionsHandler` override on top of the Backend), tracked on
+  toy#30.
+
 ## v0.8.0 — 2026-06-12
 
 **The first published version** (RubyGems, gem name graciously transferred
