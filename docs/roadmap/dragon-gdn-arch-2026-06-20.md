@@ -92,6 +92,21 @@ call site monomorphic. Unlocks Gemma-2 alternating-SWA, per-layer MoE, and
 Dragon uniformly — the reusable payoff that justifies "first form" over a
 Dragon-only arch.
 
+## Progress
+
+- **Phase 1 — DONE** (branch `feat/dragon-gdn`): `tnn_gated_delta_net` +
+  `tnn_conv_1d` wired; `smoke_gdn_forward` + `gate-gdn-forward` green on the
+  union pin; train gate 4/4.
+- **Phase 2 — DONE**: 8 elementwise ggml ops wired (`sigmoid, exp, log, neg,
+  sub, l2_norm, softplus, scale_bias`); L1 primitives `GDN` (l2/decay_gate/
+  update_gate/recur/gated_out), `DiffAttention` (lambda_scalar/combine/subln),
+  `ScalableSoftmax`, `DepthScale`. `gate-gdn-primitive` + `gate-dragon-attn-prims`
+  green; train gate 4/4. (Detour lesson, captured in the smoke:
+  `tnn_input_2d_f32_persistent(rows, cols)` → `ne0=cols, ne1=rows`, and
+  `rms_norm` is over `ne0` — a per-head norm needs `rows=T, cols=F, gamma=[F]`.)
+- **Phase 3+ — not started.** GDN/diff-attn primitives are CPU-only (not yet in
+  `MIRRORABLE`; CUDA/Metal mirrors are a later pass).
+
 ## Build order (phased; each phase independently verifiable)
 
 **Phase 1 — GDN forward through toy (foundational, de-risks the kernel).**
