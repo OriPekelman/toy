@@ -776,6 +776,20 @@ gate-gdn-forward: prep/smokes/smoke_gdn_forward
 prep/smokes/smoke_gdn_forward: prep/smokes/smoke_gdn_forward.rb lib/toy.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
+# Dragon/GDN Phase 2: the Toy::LLM::Primitives::GDN L1 composition (l2-norm,
+# log-decay + sigmoid gates, recurrence, gated output norm). The gate+l2+recur
+# chain is computed end-to-end; gated_out is shape-checked.
+.PHONY: gate-gdn-primitive
+gate-gdn-primitive: prep/smokes/smoke_gdn_primitive
+	@out="$$(./prep/smokes/smoke_gdn_primitive 2>&1)"; \
+	echo "$$out" | tail -2; \
+	echo "$$out" | grep -q "GDN primitive smoke PASS" \
+	  && echo "GATE PASS [gdn-primitive]: Toy::LLM::Primitives::GDN composes + computes" \
+	  || { echo "GATE FAIL [gdn-primitive]"; exit 1; }
+
+prep/smokes/smoke_gdn_primitive: prep/smokes/smoke_gdn_primitive.rb lib/toy.rb lib/toy/ffi/tinynn.rb lib/toy/llm/primitives/gdn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+
 # toy#64 item 8 — the CUDA compute entry (lib/toy/compute_cuda.rb), the
 # consumer-ish device-at-compile-time gate. Same shape as the CPU
 # compute-surface gate but requires compute_cuda + links the CUDA

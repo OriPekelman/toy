@@ -396,6 +396,17 @@ module TinyNN
   # in ggml — see docs/roadmap/dragon-gdn-arch-2026-06-20.md.
   ffi_func :tnn_gated_delta_net,  [:ptr, :ptr, :ptr, :ptr, :ptr, :ptr, :ptr], :ptr
   ffi_func :tnn_conv_1d,          [:ptr, :ptr, :ptr, :int, :int, :int],     :ptr
+  # Elementwise ops for GDN gate math / differential attention / gated output
+  # norm (GDN Phase 2). sigmoid(beta), exp/log (log-decay + softplus), sub
+  # (A1-λA2), neg, l2_norm(q,k for the delta rule). See dragon-gdn doc.
+  ffi_func :tnn_sigmoid,          [:ptr, :ptr],             :ptr
+  ffi_func :tnn_exp,              [:ptr, :ptr],             :ptr
+  ffi_func :tnn_log,              [:ptr, :ptr],             :ptr
+  ffi_func :tnn_neg,              [:ptr, :ptr],             :ptr
+  ffi_func :tnn_sub,              [:ptr, :ptr, :ptr],       :ptr
+  ffi_func :tnn_l2_norm,          [:ptr, :ptr, :double],    :ptr
+  ffi_func :tnn_softplus,         [:ptr, :ptr],             :ptr
+  ffi_func :tnn_scale_bias,       [:ptr, :ptr, :double, :double], :ptr
   ffi_func :tnn_rms_norm,         [:ptr, :ptr, :ptr, :double], :ptr
   ffi_func :tnn_softmax,          [:ptr, :ptr],             :ptr
   ffi_func :tnn_diag_mask_inf,    [:ptr, :ptr, :int],       :ptr

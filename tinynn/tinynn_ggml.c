@@ -947,6 +947,68 @@ void *tnn_gelu(void *sess, void *a)
     return (void *)ggml_gelu(s->ctx, (struct ggml_tensor *)a);
 }
 
+/* Unary/binary elementwise ops used to compose the GDN gate math, differential
+ * attention, and gated output norm (Dragon/GDN Phase 2). All thin ggml wraps. */
+void *tnn_sigmoid(void *sess, void *a)
+{
+    if (!sess || !a) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_sigmoid(s->ctx, (struct ggml_tensor *)a);
+}
+
+void *tnn_exp(void *sess, void *a)
+{
+    if (!sess || !a) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_exp(s->ctx, (struct ggml_tensor *)a);
+}
+
+void *tnn_log(void *sess, void *a)
+{
+    if (!sess || !a) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_log(s->ctx, (struct ggml_tensor *)a);
+}
+
+void *tnn_neg(void *sess, void *a)
+{
+    if (!sess || !a) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_neg(s->ctx, (struct ggml_tensor *)a);
+}
+
+void *tnn_sub(void *sess, void *a, void *b)
+{
+    if (!sess || !a || !b) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_sub(s->ctx, (struct ggml_tensor *)a, (struct ggml_tensor *)b);
+}
+
+/* L2-normalise rows along ne0 (q/k normalisation for the delta rule). */
+void *tnn_l2_norm(void *sess, void *a, double eps)
+{
+    if (!sess || !a) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_l2_norm(s->ctx, (struct ggml_tensor *)a, (float)eps);
+}
+
+/* softplus(x) = log(1 + exp(x)) — the GDN log-decay gate. */
+void *tnn_softplus(void *sess, void *a)
+{
+    if (!sess || !a) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_softplus(s->ctx, (struct ggml_tensor *)a);
+}
+
+/* scale + bias: s*x + b (compile-time scalars). Used for SSMax (s*log n + b)
+ * and depth scaling. */
+void *tnn_scale_bias(void *sess, void *a, double s, double b)
+{
+    if (!sess || !a) return NULL;
+    tnn_session *sx = (tnn_session *)sess;
+    return (void *)ggml_scale_bias(sx->ctx, (struct ggml_tensor *)a, (float)s, (float)b);
+}
+
 void *tnn_rms_norm(void *sess, void *x, void *gamma_row, double eps)
 {
     if (!sess || !x || !gamma_row) return NULL;
