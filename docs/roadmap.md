@@ -5,10 +5,18 @@ the live deferred list, the modern-LLM-primitives priorities, and the
 known issues we're carrying. This is "what's done, what's next, what
 we've decided not to chase."
 
-For the backends/scale future-directions trio (batched/grad-accum
+For the **scaling story** — the API-first design where one toy program
+runs from a single laptop CPU to a multi-arch WAN cluster via a single
+"coupling" dial (`Toy::Topology`), consolidating the trio below — see
+[`roadmap/scaling-story-2026-06-18.md`](roadmap/scaling-story-2026-06-18.md).
+For the backends/scale future-directions trio it builds on (batched/grad-accum
 training, multi-GPU, DiLoCo, non-ggml backend options) see
-[`roadmap/backends-and-scale-2026-05-27.md`](roadmap/backends-and-scale-2026-05-27.md)
+[`roadmap/backends-and-scale-2026-05-27.md`](roadmap/backends-and-scale-2026-05-27.md),
+[`roadmap/training-backends-2026-05-27.md`](roadmap/training-backends-2026-05-27.md),
 and [`roadmap/decoupled-diloco-research-2026-05-27.md`](roadmap/decoupled-diloco-research-2026-05-27.md).
+For the **Dragon / Gated-DeltaNet trainable hybrid arch** (per-layer
+layer-type descriptor, GDN forward already wired, phased build order) see
+[`roadmap/dragon-gdn-arch-2026-06-20.md`](roadmap/dragon-gdn-arch-2026-06-20.md).
 For the op/backend coverage matrix see
 [`reference/coverage.md`](coverage.md).
 
