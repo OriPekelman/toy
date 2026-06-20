@@ -392,6 +392,10 @@ module TinyNN
   # C-SSM (#114): state-space model primitives.
   ffi_func :tnn_ssm_conv,         [:ptr, :ptr, :ptr],       :ptr
   ffi_func :tnn_ssm_scan,         [:ptr, :ptr, :ptr, :ptr, :ptr, :ptr, :ptr, :ptr], :ptr
+  # Gated DeltaNet recurrence core (Dragon/Qwen3-Next; GDN Phase 1). Forward-only
+  # in ggml — see docs/roadmap/dragon-gdn-arch-2026-06-20.md.
+  ffi_func :tnn_gated_delta_net,  [:ptr, :ptr, :ptr, :ptr, :ptr, :ptr, :ptr], :ptr
+  ffi_func :tnn_conv_1d,          [:ptr, :ptr, :ptr, :int, :int, :int],     :ptr
   ffi_func :tnn_rms_norm,         [:ptr, :ptr, :ptr, :double], :ptr
   ffi_func :tnn_softmax,          [:ptr, :ptr],             :ptr
   ffi_func :tnn_diag_mask_inf,    [:ptr, :ptr, :int],       :ptr

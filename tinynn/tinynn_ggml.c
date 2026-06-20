@@ -905,6 +905,38 @@ void *tnn_ssm_scan(void *sess, void *state, void *x, void *dt,
                                   (struct ggml_tensor *)ids);
 }
 
+/* Gated DeltaNet recurrence core (Dragon / Qwen3-Next family). The q/k/v/g/beta
+ * projections + the short causal conv are built by the Ruby GDN primitive; this
+ * is the fused recurrence op only. Shapes (all F32): v=[S_v,H,T,B];
+ * q,k contiguous-rows; g=[1|S_v,H,T,B]; beta ne0==1; state=[S_v*S_v*H,K,B,1].
+ * out=[S_v*H, T*B + K*S_v*B, 1, 1] (token outputs then trailing state snapshots).
+ * Forward only in ggml — training backward is a separate hand-written kernel. */
+void *tnn_gated_delta_net(void *sess, void *q, void *k, void *v,
+                          void *g, void *beta, void *state)
+{
+    if (!sess || !q || !k || !v || !g || !beta || !state) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_gated_delta_net(s->ctx,
+                                        (struct ggml_tensor *)q,
+                                        (struct ggml_tensor *)k,
+                                        (struct ggml_tensor *)v,
+                                        (struct ggml_tensor *)g,
+                                        (struct ggml_tensor *)beta,
+                                        (struct ggml_tensor *)state);
+}
+
+/* 1-D convolution (kernel a, data b) with stride/pad/dilation — the short
+ * causal conv inside a GDN block (also generally useful). */
+void *tnn_conv_1d(void *sess, void *a, void *b, int s0, int p0, int d0)
+{
+    if (!sess || !a || !b) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_conv_1d(s->ctx,
+                                (struct ggml_tensor *)a,
+                                (struct ggml_tensor *)b,
+                                s0, p0, d0);
+}
+
 void *tnn_gelu(void *sess, void *a)
 {
     if (!sess || !a) return NULL;

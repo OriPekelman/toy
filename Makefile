@@ -761,6 +761,21 @@ prep/smokes/smoke_projection_lens: prep/smokes/smoke_projection_lens.rb lib/toy/
 prep/smokes/smoke_compute_surface: prep/smokes/smoke_compute_surface.rb lib/toy/compute.rb lib/toy/llm/training_batch.rb lib/toy/llm/recipe_options.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
+# Dragon/GDN Phase 1 (docs/roadmap/dragon-gdn-arch-2026-06-20.md): prove the
+# newly-wired tnn_gated_delta_net + tnn_conv_1d FFI ops compute through toy's
+# stack on the in-tree ggml. Forward-only shape gate (the recurrence runs and
+# emits the documented output shape).
+.PHONY: gate-gdn-forward
+gate-gdn-forward: prep/smokes/smoke_gdn_forward
+	@out="$$(./prep/smokes/smoke_gdn_forward 2>&1)"; \
+	echo "$$out" | tail -2; \
+	echo "$$out" | grep -q "GDN smoke PASS" \
+	  && echo "GATE PASS [gdn-forward]: tnn_gated_delta_net computes through the FFI" \
+	  || { echo "GATE FAIL [gdn-forward]"; exit 1; }
+
+prep/smokes/smoke_gdn_forward: prep/smokes/smoke_gdn_forward.rb lib/toy.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+
 # toy#64 item 8 — the CUDA compute entry (lib/toy/compute_cuda.rb), the
 # consumer-ish device-at-compile-time gate. Same shape as the CPU
 # compute-surface gate but requires compute_cuda + links the CUDA
