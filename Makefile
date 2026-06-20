@@ -790,6 +790,19 @@ gate-gdn-primitive: prep/smokes/smoke_gdn_primitive
 prep/smokes/smoke_gdn_primitive: prep/smokes/smoke_gdn_primitive.rb lib/toy.rb lib/toy/ffi/tinynn.rb lib/toy/llm/primitives/gdn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
+# Dragon/GDN Phase 2: the Dragon attention-side L1 primitives (DiffAttention,
+# ScalableSoftmax, DepthScale).
+.PHONY: gate-dragon-attn-prims
+gate-dragon-attn-prims: prep/smokes/smoke_dragon_attn_prims
+	@out="$$(./prep/smokes/smoke_dragon_attn_prims 2>&1)"; \
+	echo "$$out" | tail -2; \
+	echo "$$out" | grep -q "Dragon attn prims smoke PASS" \
+	  && echo "GATE PASS [dragon-attn-prims]: diff-attn / ssmax / depth-scale compose" \
+	  || { echo "GATE FAIL [dragon-attn-prims]"; exit 1; }
+
+prep/smokes/smoke_dragon_attn_prims: prep/smokes/smoke_dragon_attn_prims.rb lib/toy.rb lib/toy/ffi/tinynn.rb lib/toy/llm/primitives/diff_attention.rb lib/toy/llm/primitives/scalable_softmax.rb lib/toy/llm/primitives/depth_scale.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+
 # toy#64 item 8 — the CUDA compute entry (lib/toy/compute_cuda.rb), the
 # consumer-ish device-at-compile-time gate. Same shape as the CPU
 # compute-surface gate but requires compute_cuda + links the CUDA
