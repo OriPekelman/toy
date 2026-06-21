@@ -104,8 +104,17 @@ Dragon-only arch.
   green; train gate 4/4. (Detour lesson, captured in the smoke:
   `tnn_input_2d_f32_persistent(rows, cols)` → `ne0=cols, ne1=rows`, and
   `rms_norm` is over `ne0` — a per-head norm needs `rows=T, cols=F, gamma=[F]`.)
-- **Phase 3+ — not started.** GDN/diff-attn primitives are CPU-only (not yet in
-  `MIRRORABLE`; CUDA/Metal mirrors are a later pass).
+- **Phase 3 — DONE** (commit `ca8c204`): `Toy::LLM::Archs::LayerSpec` (flat-int
+  `kind`: `KIND_ATTENTION`/`KIND_GDN`) + `LlamaArch#seq_layer_specs` array seeded
+  parallel to `seq_blocks_ffi`; the forward loop branches on `spec.kind` with
+  each arm calling a concrete typed block method (monomorphic call sites; unknown
+  kind fails loud). Refactor gate byte-exact on the union pin: from-scratch (5/5
+  + deterministic), warm-start (5/5), lora (5/5) vs `prep/fixtures/*_baseline.txt`
+  — a pure no-op on homogeneous Llama. KIND_GDN reserved, not yet wired into a
+  branch (Phase 5).
+- **Phase 4+ — not started.** GDN backward is the hard gate next. GDN/diff-attn
+  primitives are CPU-only (not yet in `MIRRORABLE`; CUDA/Metal arch mirrors —
+  incl. the LayerSpec loop — are a later pass).
 
 ## Build order (phased; each phase independently verifiable)
 
