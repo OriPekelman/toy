@@ -67,6 +67,11 @@ module Toy; module LLM; module Archs
   class LlamaArch
     attr_accessor :t_seq_token_embed, :t_seq_final_norm_gamma, :t_seq_output,
                   :t_seq_w_proj, :seq_blocks_ffi,
+                  # Phase 3 — per-layer descriptor array, parallel to
+                  # seq_blocks_ffi (same length == n_layers). The forward loop
+                  # reads spec.kind to pick the per-layer build. All-attention
+                  # today (byte-exact refactor gate); GDN kinds arrive Phase 5.
+                  :seq_layer_specs,
                   # Orchestration-gating carriers — bare cache ivars with
                   # no accessor before P2.5. The lens-branch guard reads
                   # seq_donor_d_in; the shared ctx reads seq_rope_cfg.
@@ -81,6 +86,8 @@ module Toy; module LLM; module Archs
       @t_seq_w_proj           = TinyNN.tnn_null_ptr
       # Seed with one block — matches the former cache init (L112).
       @seq_blocks_ffi         = [Toy::LLM::Blocks::TransformerBlock.new]
+      # Phase 3 — parallel seed: one attention spec for the seed block.
+      @seq_layer_specs        = [Toy::LLM::Archs::LayerSpec.new(Toy::LLM::Archs::LayerSpec::KIND_ATTENTION)]
       @seq_donor_d_in         = 0
       # The cache overwrites seq_rope_cfg with the real RoPE::Cfg before
       # build_forward runs (each realize prologue rebuilds it).
@@ -99,9 +106,14 @@ module Toy; module LLM; module Archs
     # via the cache's seq_blocks_ffi delegator chain (self.seq_arch).
     def seed_blocks!(n_layers)
       @seq_blocks_ffi = [Toy::LLM::Blocks::TransformerBlock.new]
+      # Phase 3 — seed the parallel spec array in lockstep. Every layer is
+      # KIND_ATTENTION for now (the homogeneous-Llama refactor gate); Phase 5
+      # overwrites individual entries with KIND_GDN for Dragon's pattern.
+      @seq_layer_specs = [Toy::LLM::Archs::LayerSpec.new(Toy::LLM::Archs::LayerSpec::KIND_ATTENTION)]
       li_init = 1
       while li_init < n_layers
         @seq_blocks_ffi.push(Toy::LLM::Blocks::TransformerBlock.new)
+        @seq_layer_specs.push(Toy::LLM::Archs::LayerSpec.new(Toy::LLM::Archs::LayerSpec::KIND_ATTENTION))
         li_init = li_init + 1
       end
     end
@@ -213,7 +225,18 @@ module Toy; module LLM; module Archs
       end
       li_g = 0
       while li_g < seq_n_layers
-        t_cur = self.seq_blocks_ffi[li_g].build_forward(sess, t_cur, ctx)
+        # Phase 3 — per-layer descriptor dispatch. The branch compares a FLAT
+        # INT (spec.kind) and each arm calls a CONCRETE typed block method, so
+        # every .build_forward call site stays monomorphic (one receiver
+        # class). KIND_ATTENTION is the only arm wired today; KIND_GDN gets its
+        # own arm + its own typed block array in Phase 5. Unknown kinds fail
+        # loud rather than silently building the wrong graph (never-mask rule).
+        spec_kind = self.seq_layer_specs[li_g].kind
+        if spec_kind == Toy::LLM::Archs::LayerSpec::KIND_ATTENTION
+          t_cur = self.seq_blocks_ffi[li_g].build_forward(sess, t_cur, ctx)
+        else
+          raise "LlamaArch#build_forward: unsupported layer kind #{spec_kind} at layer #{li_g} (only KIND_ATTENTION is wired pre-Phase-5)"
+        end
         li_g = li_g + 1
       end
 

@@ -25,6 +25,7 @@ require_relative "../primitives/rope"
 require_relative "../primitives/swiglu"
 require_relative "../primitives/gqa"
 require_relative "../blocks/transformer_block"
+require_relative "../archs/layer_spec"
 require_relative "../archs/llama_arch"
 
 module Toy; module LLM; module Engine
