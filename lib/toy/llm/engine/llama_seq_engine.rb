@@ -1007,6 +1007,14 @@ class LlamaSeqEngine
       @t_seq_attn_mask = TinyNN.tnn_input_2d_f32_persistent(@sess, tb_alloc, tb_alloc)
     end
 
+    # #1449: pre-create the token-id index leaf in ctx_w (galloc-external) before
+    # finalize, so galloc can't free its compute-arena slot and reuse it for the
+    # loss output (-> backward get_rows reads loss bits -> wild index -> OOB
+    # abort, layout-flaky on the C backend). build_forward reuses this handle;
+    # it's re-uploaded each step. Positions stay in the compute ctx (the loss
+    # aliases off=0 = token_ids, not positions). See tnn_input_1d_i32_persistent.
+    @t_seq_token_ids = TinyNN.tnn_input_1d_i32_persistent(@sess, @seq_t * @seq_b)
+
     TinyNN.tnn_finalize_weights(@sess)
 
     # Upload llama3-style RoPE freq_factors once the backend buffer
@@ -1056,7 +1064,11 @@ class LlamaSeqEngine
     # that ordering); RoPE applies per-batch positional encoding
     # because rope_ext reads positions[k] for each ne[2] slot.
     tb = @seq_t * @seq_b
-    @t_seq_token_ids = TinyNN.tnn_input_1d_i32(@sess, tb)
+    # #1449: token_ids is pre-created persistent (ctx_w) in finalize and survives
+    # reset_for_rebuild — reuse it. Only allocate here as a fallback for any path
+    # that builds the forward without the finalize pre-creation (then it lands in
+    # the compute ctx, the legacy behaviour).
+    @t_seq_token_ids = TinyNN.tnn_input_1d_i32(@sess, tb) if @t_seq_token_ids == TinyNN.tnn_null_ptr
     @t_seq_positions = TinyNN.tnn_input_1d_i32_ctx(@sess, tb)
 
     # The arch reads seq_rope_cfg / seq_donor_d_in off itself; the cache

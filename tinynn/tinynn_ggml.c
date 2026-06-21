@@ -1406,6 +1406,20 @@ void *tnn_input_1d_i32(void *sess, int n)
     return (void *)ggml_new_tensor_1d(s->ctx, GGML_TYPE_I32, (int64_t)n);
 }
 
+/* Persistent i32 input in ctx_w (#1449): a graph INPUT read across the
+ * forward->backward boundary must not live in the galloc compute arena, where
+ * galloc (seeing it as dead after the forward gather) frees its offset and
+ * reuses it for the loss output -> backward get_rows reads loss bits as a wild
+ * index. ctx_w is galloc-external and survives reset_for_rebuild. Allocated
+ * before tnn_finalize_weights; re-uploaded each step. */
+void *tnn_input_1d_i32_persistent(void *sess, int n)
+{
+    if (!sess || n <= 0) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    if (s->weights_finalized) return NULL;
+    return (void *)ggml_new_tensor_1d(s->ctx_w, GGML_TYPE_I32, (int64_t)n);
+}
+
 void tnn_gelu_back_scratch(void *sess, int n)
 {
     if (!sess || n <= 0) return;

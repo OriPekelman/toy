@@ -481,6 +481,7 @@ module TinyNN
   ffi_func :tnn_input_3d_persistent_mmap, [:ptr, :int, :int, :int, :int, :size_t], :ptr
   ffi_func :tnn_input_1d_persistent_mmap, [:ptr, :int, :int, :size_t], :ptr
   ffi_func :tnn_input_1d_f32_persistent, [:ptr, :int],         :ptr
+  ffi_func :tnn_input_1d_i32_persistent, [:ptr, :int],         :ptr
   ffi_func :tnn_finalize_weights, [:ptr],                   :int
   ffi_func :tnn_zero_tensor,      [:ptr, :ptr],             :int
   ffi_func :tnn_realize_b,        [:ptr, :ptr],             :int
