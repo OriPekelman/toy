@@ -68,9 +68,15 @@ module Toy; module LLM; module Archs
     attr_accessor :t_seq_token_embed, :t_seq_final_norm_gamma, :t_seq_output,
                   :t_seq_w_proj, :seq_blocks_ffi,
                   # Phase 3 — per-layer descriptor array, parallel to
-                  # seq_blocks_ffi (same length == n_layers). The forward loop
-                  # reads spec.kind to pick the per-layer build.
+                  # seq_blocks_ffi (same length == n_layers).
                   :seq_layer_specs,
+                  # Phase 5 — the dispatch key is a plain INT array (one kind per
+                  # layer), NOT LayerSpec.kind reads: constructing/mutating
+                  # LayerSpec objects on a realize path trips a Spinel codegen
+                  # miscompile (corrupts the token-id finalize). Mutating a plain
+                  # int array element is proven-safe. build_forward dispatches on
+                  # this; LayerSpec stays the descriptor type/constants home.
+                  :seq_layer_kinds,
                   # Phase 5 — parallel GDN-block array (same length; entry is a
                   # GDNBlock at KIND_GDN positions, null elsewhere). The KIND_GDN
                   # dispatch arm calls into THIS array — a concrete typed call,
@@ -92,6 +98,8 @@ module Toy; module LLM; module Archs
       @seq_blocks_ffi         = [Toy::LLM::Blocks::TransformerBlock.new]
       # Phase 3 — parallel seed: one attention spec for the seed block.
       @seq_layer_specs        = [Toy::LLM::Archs::LayerSpec.new(Toy::LLM::Archs::LayerSpec::KIND_ATTENTION)]
+      # Phase 5 — parallel int dispatch keys (KIND_ATTENTION for the seed).
+      @seq_layer_kinds        = [Toy::LLM::Archs::LayerSpec::KIND_ATTENTION]
       # Phase 5 — parallel GDN-block slots. Seeded with GDNBlock placeholders so
       # the array is MONOMORPHIC (all GDNBlock) — the seam's KIND_GDN call site
       # never sees a mixed null/object array (Spinel poly-array landmine). At
@@ -113,6 +121,19 @@ module Toy; module LLM; module Archs
     # already constructs TransformerBlock.new there, so no new class /
     # Struct / FFI :str at class load. Each realize path now calls this
     # via the cache's seq_blocks_ffi delegator chain (self.seq_arch).
+    # Phase 5 hybrid — rebuild the per-layer spec array from a per-layer GDN
+    # bool flag, using the LayerSpec CTOR (never the .kind= setter: mutating
+    # LayerSpec.kind elsewhere while build_forward reads it trips a Spinel
+    # codegen miscompile that corrupts the token-id finalize). Called after
+    # seed_blocks!, before alloc.
+    # Mark ONE layer as GDN. Takes an INT index (never an array param — a
+    # function-parameter array trips the Spinel #688 type-lock landmine, which
+    # here manifests as a token-id-finalize codegen miscompile). Mutates the
+    # plain int dispatch array element (proven-safe).
+    def set_gdn_layer!(idx)
+      @seq_layer_kinds[idx] = Toy::LLM::Archs::LayerSpec::KIND_GDN
+    end
+
     def seed_blocks!(n_layers)
       @seq_blocks_ffi = [Toy::LLM::Blocks::TransformerBlock.new]
       # Phase 3 — seed the parallel spec array in lockstep. Every layer is
@@ -120,11 +141,13 @@ module Toy; module LLM; module Archs
       # overwrites individual entries with KIND_GDN for Dragon's pattern.
       @seq_layer_specs = [Toy::LLM::Archs::LayerSpec.new(Toy::LLM::Archs::LayerSpec::KIND_ATTENTION)]
       @seq_gdn_blocks_ffi = [Toy::LLM::Blocks::GDNBlock.new]
+      @seq_layer_kinds = [Toy::LLM::Archs::LayerSpec::KIND_ATTENTION]
       li_init = 1
       while li_init < n_layers
         @seq_blocks_ffi.push(Toy::LLM::Blocks::TransformerBlock.new)
         @seq_layer_specs.push(Toy::LLM::Archs::LayerSpec.new(Toy::LLM::Archs::LayerSpec::KIND_ATTENTION))
         @seq_gdn_blocks_ffi.push(Toy::LLM::Blocks::GDNBlock.new)
+        @seq_layer_kinds.push(Toy::LLM::Archs::LayerSpec::KIND_ATTENTION)
         li_init = li_init + 1
       end
     end
@@ -242,7 +265,7 @@ module Toy; module LLM; module Archs
         # class). KIND_ATTENTION is the only arm wired today; KIND_GDN gets its
         # own arm + its own typed block array in Phase 5. Unknown kinds fail
         # loud rather than silently building the wrong graph (never-mask rule).
-        spec_kind = self.seq_layer_specs[li_g].kind
+        spec_kind = self.seq_layer_kinds[li_g]
         if spec_kind == Toy::LLM::Archs::LayerSpec::KIND_ATTENTION
           t_cur = self.seq_blocks_ffi[li_g].build_forward(sess, t_cur, ctx)
         elsif spec_kind == Toy::LLM::Archs::LayerSpec::KIND_GDN
