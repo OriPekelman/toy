@@ -134,10 +134,16 @@ smoke. Pure compositions of existing FFI ops.
 First validate it reproduces the *existing* homogeneous Llama byte-exact (all
 layers = same attention spec) — a pure refactor gate before adding GDN layers.
 
-**Phase 4 — GDN backward (the hard training gate).** ggml has no GDN backward;
-hand-write it (toy's vendored-backward pattern: concat-back, gelu-back,
-rms-norm-back precedent). Finite-difference validate against the forward. This
-is the largest single risk and what makes "trainable" expensive.
+**Phase 4 — GDN backward (the hard training gate).** ~~ggml has no GDN backward;
+hand-write it.~~ **DECISION 2026-06-22 (user): Path B — composition + autograd,
+NOT a hand-written fused-kernel backward.** The gated delta rule (decay by
+`exp(g)`, `delta=beta*(v - Sᵀk)`, `S += k⊗delta`, `out=scale*Sᵀq`) is expressed
+as an UNROLLED graph of existing ops (`mul/mul_mat/sub/scale/exp/add`), every one
+of which already has a ggml backward — so training-backward comes free, with NO
+new C kernel. The fused `ggml_gated_delta_net` kernel is reserved for INFERENCE
+only. Gate = unrolled-forward vs fused-forward parity (byte/eps). This is how
+flash-linear-attention trains in practice; it dissolves the original hard gate
+(the fused-kernel BPTT) into a numeric-parity problem instead.
 
 **Phase 5 — hybrid forward + train.** Assemble Dragon's layer pattern as a
 `LayerSpec` array; from-scratch train smoke (tiny shape) → byte-exact gate.

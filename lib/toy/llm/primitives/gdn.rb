@@ -66,6 +66,72 @@ module Toy
           TinyNN.tnn_gated_delta_net(sess, q, k, v, g, beta, state)
         end
 
+        # Path-B TRAINABLE recurrence: the gated delta rule expressed as an
+        # UNROLLED graph of ops that EACH have a ggml backward (mul / mul_mat /
+        # sub / scale / exp / add / reshape) — so training backward comes free
+        # and NO fused-kernel backward is needed (ggml has none for
+        # GATED_DELTA_NET). The fused `recur` above stays the fast INFERENCE
+        # path; this is its train-time twin, gated for numeric parity.
+        #
+        # Reproduces the fused kernel's token outputs for the SCALAR-decay path
+        # (g->ne0 == 1, the Dragon/Qwen3-Next per-head gate). Single seq (B=1),
+        # single head per call — the block loops heads/seqs around it in Phase 5.
+        # Inputs are the packed projection tensors (q,k,v = [S_v,1,T,1]; g,beta =
+        # [1,1,T,1]; state0 = [S_v,S_v]); per-token vectors are sliced via views
+        # internally (no ptr-array params → no Spinel IntArray-lock landmine).
+        # q/k must be pre-L2-normed and beta pre-sigmoid'd by the caller (the
+        # kernel contract). Returns [S_v, T] — token outputs concat'd along ne1.
+        #
+        #   per token t (matching ops.cpp:10731 exactly):
+        #     S = S * exp(g_t)                  decay  (scalar [1,1] broadcast)
+        #     u = matmul(S, k_t)                u[j] = sum_i S[i,j] k[i]
+        #     d = (v_t - u) * beta_t            delta
+        #     S = S + matmul(k_row, d_row)      outer  (k⊗d)[i,j] = k[i] d[j]
+        #     o_t = matmul(S, q_t)              o[j] = sum_i S[i,j] q[i]
+        #
+        # The kernel's 1/√S_v output scale is folded into a SINGLE pre-scale of q
+        # (q enters only the output read, never the state, so o[j] = sum_i S[i,j]
+        # (scale·q[i]) is exact). Done once on the contiguous q — NOT per-token on
+        # o — because a per-token ggml_scale's BACKWARD receives a view-shaped grad
+        # from the concat and asserts ggml_is_padded_1d (ggml.c:3392). One scale on
+        # the whole tensor keeps the backward grad contiguous.
+        def self.recur_unrolled(sess, q, k, v, g, beta, state0, s_v, n_tokens)
+          scale = 1.0 / Math.sqrt(s_v.to_f)
+          fbytes = 4                       # sizeof(f32)
+          vstride = s_v * fbytes           # bytes per token column in q/k/v
+          q_s = TinyNN.tnn_scale(sess, q, scale)   # pre-scaled q (contiguous)
+          s_mat = state0
+          t_out = TinyNN.tnn_null_ptr
+          t = 0
+          while t < n_tokens
+            # Per-token slices (B=1, single head): [S_v,1] vectors, [1,1] scalars.
+            q_t = TinyNN.tnn_view_2d(sess, q_s, s_v, 1, vstride, t * vstride)
+            k_t = TinyNN.tnn_view_2d(sess, k, s_v, 1, vstride, t * vstride)
+            v_t = TinyNN.tnn_view_2d(sess, v, s_v, 1, vstride, t * vstride)
+            g_t = TinyNN.tnn_view_2d(sess, g, 1, 1, fbytes, t * fbytes)
+            b_t = TinyNN.tnn_view_2d(sess, beta, 1, 1, fbytes, t * fbytes)
+
+            eg    = TinyNN.tnn_exp(sess, g_t)              # [1,1]
+            s_dec = TinyNN.tnn_mul(sess, s_mat, eg)        # [S_v,S_v] * [1,1] bcast
+            u     = TinyNN.tnn_matmul(sess, s_dec, k_t)    # [S_v,1]  u[j]
+            diff  = TinyNN.tnn_sub(sess, v_t, u)           # [S_v,1]
+            d     = TinyNN.tnn_mul(sess, diff, b_t)        # [S_v,1] * [1,1] bcast
+            k_row = TinyNN.tnn_reshape_2d(sess, k_t, 1, s_v)  # [1,S_v]
+            d_row = TinyNN.tnn_reshape_2d(sess, d, 1, s_v)    # [1,S_v]
+            outer = TinyNN.tnn_matmul(sess, k_row, d_row)  # [S_v,S_v] [i,j]=k[i]d[j]
+            s_mat = TinyNN.tnn_add(sess, s_dec, outer)     # state update
+            o_t   = TinyNN.tnn_matmul(sess, s_mat, q_t)    # [S_v,1]  o[j] (already scaled)
+
+            if t == 0
+              t_out = o_t
+            else
+              t_out = TinyNN.tnn_concat(sess, t_out, o_t, 1)  # stack along ne1
+            end
+            t = t + 1
+          end
+          t_out
+        end
+
         # Gated output norm: GatedRMSNorm(o, z) = rms_norm(o) * gamma *
         # silu(z). o is the per-head token output (block-sliced from
         # recur); z the output-gate stream; gamma the block's norm weight;

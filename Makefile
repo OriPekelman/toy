@@ -803,6 +803,36 @@ gate-dragon-attn-prims: prep/smokes/smoke_dragon_attn_prims
 prep/smokes/smoke_dragon_attn_prims: prep/smokes/smoke_dragon_attn_prims.rb lib/toy.rb lib/toy/ffi/tinynn.rb lib/toy/llm/primitives/diff_attention.rb lib/toy/llm/primitives/scalable_softmax.rb lib/toy/llm/primitives/depth_scale.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
+# Dragon/GDN Phase 4 (Path B): numeric-parity gate — the UNROLLED,
+# autograd-differentiable recurrence (GDN.recur_unrolled) reproduces the FUSED
+# tnn_gated_delta_net token outputs within eps. This is what lets training use
+# the composition (every op has a ggml backward) while inference keeps the fused
+# kernel. See docs/roadmap/dragon-gdn-arch-2026-06-20.md (Phase 4).
+.PHONY: gate-gdn-unrolled-parity
+gate-gdn-unrolled-parity: prep/smokes/smoke_gdn_unrolled_parity
+	@out="$$(./prep/smokes/smoke_gdn_unrolled_parity 2>&1)"; \
+	echo "$$out" | tail -2; \
+	echo "$$out" | grep -q "GDN unrolled-parity smoke PASS" \
+	  && echo "GATE PASS [gdn-unrolled-parity]: recur_unrolled == fused kernel (eps)" \
+	  || { echo "GATE FAIL [gdn-unrolled-parity]"; exit 1; }
+
+prep/smokes/smoke_gdn_unrolled_parity: prep/smokes/smoke_gdn_unrolled_parity.rb lib/toy.rb lib/toy/ffi/tinynn.rb lib/toy/llm/primitives/gdn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+
+# Dragon/GDN Phase 4 (Path B): the differentiability proof — ggml builds + runs
+# a backward graph through recur_unrolled and yields finite non-zero dL/dq,k,v
+# with NO hand-written fused-kernel backward. This is what makes GDN trainable.
+.PHONY: gate-gdn-unrolled-backward
+gate-gdn-unrolled-backward: prep/smokes/smoke_gdn_unrolled_backward
+	@out="$$(./prep/smokes/smoke_gdn_unrolled_backward 2>&1)"; \
+	echo "$$out" | tail -2; \
+	echo "$$out" | grep -q "GDN unrolled-backward smoke PASS" \
+	  && echo "GATE PASS [gdn-unrolled-backward]: recur_unrolled is differentiable" \
+	  || { echo "GATE FAIL [gdn-unrolled-backward]"; exit 1; }
+
+prep/smokes/smoke_gdn_unrolled_backward: prep/smokes/smoke_gdn_unrolled_backward.rb lib/toy.rb lib/toy/ffi/tinynn.rb lib/toy/llm/primitives/gdn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+
 # toy#64 item 8 — the CUDA compute entry (lib/toy/compute_cuda.rb), the
 # consumer-ish device-at-compile-time gate. Same shape as the CPU
 # compute-surface gate but requires compute_cuda + links the CUDA
