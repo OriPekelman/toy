@@ -984,6 +984,39 @@ void *tnn_sub(void *sess, void *a, void *b)
     return (void *)ggml_sub(s->ctx, (struct ggml_tensor *)a, (struct ggml_tensor *)b);
 }
 
+void *tnn_sqrt(void *sess, void *a)
+{
+    /* elementwise sqrt; has ggml backward (GGML_OP_SQRT). Used to compose a
+     * backward-friendly L2 norm (L2_NORM itself has no ggml backward). */
+    if (!sess || !a) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_sqrt(s->ctx, (struct ggml_tensor *)a);
+}
+
+void *tnn_repeat(void *sess, void *a, void *b)
+{
+    /* ggml_repeat: broadcast `a` up to the shape of `b`. Has ggml backward
+     * (GGML_OP_REPEAT → repeat_back, which SUMS the grad back down to a's
+     * shape). Used to materialise a broadcast operand explicitly so a later
+     * same-shape op (e.g. DIV, whose backward does NOT reduce a broadcast
+     * src1) sees matching shapes and the grad reduction happens through the
+     * well-formed REPEAT backward instead. */
+    if (!sess || !a || !b) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_repeat(s->ctx, (struct ggml_tensor *)a,
+                                (struct ggml_tensor *)b);
+}
+
+void *tnn_div(void *sess, void *a, void *b)
+{
+    /* elementwise a/b with ggml broadcast (b repeats into a); has ggml backward
+     * (GGML_OP_DIV). The divisor in the composed L2 is [1,H,T] broadcasting over
+     * the [S_v,H,T] numerator. */
+    if (!sess || !a || !b) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_div(s->ctx, (struct ggml_tensor *)a, (struct ggml_tensor *)b);
+}
+
 /* L2-normalise rows along ne0 (q/k normalisation for the delta rule). */
 void *tnn_l2_norm(void *sess, void *a, double eps)
 {

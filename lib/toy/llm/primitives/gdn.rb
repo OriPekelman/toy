@@ -37,6 +37,23 @@ module Toy
           TinyNN.tnn_l2_norm(sess, x, eps)
         end
 
+        # TRAINABLE L2 norm over ne0 — composed from ops that each have a ggml
+        # backward (mul / sum_rows / scale_bias / sqrt / div), because the fused
+        # `tnn_l2_norm` (GGML_OP_L2_NORM) has NO backward. Used by the trainable
+        # GDN block; the fused `l2` above stays the inference path.
+        #   y = x / sqrt(sum_ne0(x^2) + eps)
+        def self.l2_train(sess, x, eps)
+          sq     = TinyNN.tnn_mul(sess, x, x)            # x^2
+          ss     = TinyNN.tnn_sum_rows(sess, sq)         # sum over ne0 -> [1,...]
+          ss_eps = TinyNN.tnn_scale_bias(sess, ss, 1.0, eps)  # + eps
+          denom  = TinyNN.tnn_sqrt(sess, ss_eps)         # [1,...]
+          # DIV backward does NOT reduce a broadcast src1, so materialise denom to
+          # x's full shape first (REPEAT backward sums the grad back correctly);
+          # the div is then same-shape.
+          denom_full = TinyNN.tnn_repeat(sess, denom, x)
+          TinyNN.tnn_div(sess, x, denom_full)
+        end
+
         # Log-decay gate: g = -exp(A_log) * softplus(a + dt_bias). a is
         # the projected decay stream [1,H,T,B]; dt_bias and A_log are the
         # block's per-v-head weights ([1,H,1,1], broadcast). Returned g is
@@ -56,6 +73,16 @@ module Toy
         # here. Returns beta.
         def self.update_gate(sess, b)
           TinyNN.tnn_sigmoid(sess, b)
+        end
+
+        # TRAINABLE update gate — sigmoid(b) composed as exp(b)/(1+exp(b)) from
+        # ops that each have a ggml backward, because GGML_UNARY_OP_SIGMOID has
+        # none. Same-shape throughout (no broadcast). The fused `update_gate`
+        # above (tnn_sigmoid) stays the inference path.
+        def self.update_gate_train(sess, b)
+          e = TinyNN.tnn_exp(sess, b)                    # exp(b)
+          d = TinyNN.tnn_scale_bias(sess, e, 1.0, 1.0)   # 1 + exp(b)
+          TinyNN.tnn_div(sess, e, d)
         end
 
         # The recurrence core. q,k must be L2-normed; beta sigmoid'd; g the

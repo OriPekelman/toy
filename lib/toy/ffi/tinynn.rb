@@ -404,6 +404,9 @@ module TinyNN
   ffi_func :tnn_log,              [:ptr, :ptr],             :ptr
   ffi_func :tnn_neg,              [:ptr, :ptr],             :ptr
   ffi_func :tnn_sub,              [:ptr, :ptr, :ptr],       :ptr
+  ffi_func :tnn_sqrt,             [:ptr, :ptr],             :ptr
+  ffi_func :tnn_repeat,           [:ptr, :ptr, :ptr],       :ptr
+  ffi_func :tnn_div,              [:ptr, :ptr, :ptr],       :ptr
   ffi_func :tnn_l2_norm,          [:ptr, :ptr, :double],    :ptr
   ffi_func :tnn_softplus,         [:ptr, :ptr],             :ptr
   ffi_func :tnn_scale_bias,       [:ptr, :ptr, :double, :double], :ptr

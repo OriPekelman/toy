@@ -846,6 +846,20 @@ gate-gdn-unrolled-parity-mh: prep/smokes/smoke_gdn_unrolled_parity_mh
 prep/smokes/smoke_gdn_unrolled_parity_mh: prep/smokes/smoke_gdn_unrolled_parity_mh.rb lib/toy.rb lib/toy/ffi/tinynn.rb lib/toy/llm/primitives/gdn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
+# Dragon/GDN Phase 5 (end-of-flow): a from-scratch model whose mixer is a
+# trainable GDNBlock trains — CE loss decreases. Proves the GDN layer is an
+# end-to-end trainable residual unit (no hand-written kernel backward).
+.PHONY: gate-gdn-train
+gate-gdn-train: prep/smokes/smoke_gdn_train
+	@out="$$(./prep/smokes/smoke_gdn_train 2>&1)"; \
+	echo "$$out" | tail -3; \
+	echo "$$out" | grep -q "GDN train smoke PASS" \
+	  && echo "GATE PASS [gdn-train]: from-scratch GDN-layer model trains (loss decreases)" \
+	  || { echo "GATE FAIL [gdn-train]"; exit 1; }
+
+prep/smokes/smoke_gdn_train: prep/smokes/smoke_gdn_train.rb lib/toy.rb lib/toy/ffi/tinynn.rb lib/toy/llm/primitives/rms_norm.rb lib/toy/llm/primitives/gdn.rb lib/toy/llm/blocks/gdn_block.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+
 # toy#64 item 8 — the CUDA compute entry (lib/toy/compute_cuda.rb), the
 # consumer-ish device-at-compile-time gate. Same shape as the CPU
 # compute-surface gate but requires compute_cuda + links the CUDA
