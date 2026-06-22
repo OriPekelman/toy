@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.9.0 — Unreleased
+
+**The Dragon / Gated-DeltaNet trainable hybrid arc.** toy grows a second block
+type and the seam to stack it heterogeneously with attention — built phase by
+phase, each independently gated.
+
+- **Trainable GDN (Path B)**: the gated delta rule expressed as an *unrolled
+  autograd composition* (`GDN.recur_unrolled`) of ops that each have a ggml
+  backward — so a Gated-DeltaNet layer trains with **no hand-written kernel
+  backward** (ggml has none for `GATED_DELTA_NET`); the fused kernel is kept for
+  inference. Gated by forward-parity (`recur_unrolled` == fused kernel to 1e-6,
+  incl. multi-head) + a differentiability proof.
+- **L1 Dragon primitives**: `gdn` (l2/decay-gate/update-gate/recur/gated-out),
+  `diff_attention`, `scalable_softmax`, `depth_scale`; 8 elementwise ggml ops +
+  `tnn_gated_delta_net`/`tnn_conv_1d` wired (CPU-only this arc).
+- **Per-layer `LayerSpec` seam**: a flat-int `seq_layer_kinds` dispatch (one arch
+  loop, monomorphic per-kind block call) — byte-exact on homogeneous Llama
+  (from-scratch / warm-start / lora unchanged).
+- **`GDNBlock`** (L2) + **`libexec/toy-train-hybrid`**: a self-contained
+  from-scratch **attention+GDN hybrid** trains (CE loss decreases). Folding it
+  into the shared `toy train` engine is deferred behind a union-pin Spinel
+  codegen block — re-apply protocol in `docs/roadmap/gdn-hybrid-engine-reintegration.md`.
+- **Fixes**: `#1449` whole-program training abort (backward `get_rows` index OOB)
+  root-caused as a latent ggml-alloc liveness bug and fixed toy-side
+  (`tnn_input_1d_i32_persistent`, a galloc-external token-id index) — *not* a
+  spinel codegen bug (matz closed it resolved); CUDA/Metal training restored by
+  mirroring that FFI decl into the CUDA/Metal siblings. New backward-friendly
+  shims `tnn_sqrt`/`tnn_div`/`tnn_repeat`.
+- **Performance**: CPU inference ~+27% tok/s and LoRA steady-state ~−24% vs the
+  v0.8.0-era baselines (heavy CUDA bench stable).
+
 ## v0.8.0 — 2026-06-12
 
 **The first published version** (RubyGems, gem name graciously transferred

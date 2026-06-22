@@ -58,9 +58,9 @@ unit is one file under `lib/toy/llm/`. Layer N composes Layer N-1.
 
 | Layer | Unit | Stdlib files | What practitioners vary |
 | --- | --- | --- | --- |
-| **L1 Primitive** | A single named op | `primitives/{rope,swiglu,rms_norm,gqa}.rb` | Implementation of one op |
-| **L2 Block** | One state-threading unit | `blocks/transformer_block.rb` | Which primitives, with what cfg |
-| **L3 Arch** | Stack of blocks + embedding + head | `archs/llama_arch.rb` | Block count, per-layer overrides, embedding/head choice |
+| **L1 Primitive** | A single named op | `primitives/{rope,swiglu,rms_norm,gqa,gdn,…}.rb` | Implementation of one op |
+| **L2 Block** | One state-threading unit | `blocks/{transformer_block,gdn_block}.rb` | Which primitives, with what cfg |
+| **L3 Arch** | Stack of blocks + embedding + head | `archs/llama_arch.rb` (+ `archs/layer_spec.rb`) | Block count, per-layer *type* (`seq_layer_kinds` int dispatch), embedding/head choice |
 | **L4 Engine** | A realized session: graph + weights + step/decode driver | `engine/{llama_seq_engine,llama_kv_engine,gpt2_seq_engine,vit_tiny_engine}.rb` | Execution mode (seq-train vs KV-decode), weight residency, backend session |
 | **L5 Recipe** | A training plan (one or more stages) | `recipes/{from_scratch,lora,warm_start,vit_tiny}.rb` | Stage sequence, optimizer, schedule, dataset progression |
 
@@ -84,8 +84,9 @@ The exact tree (verified):
 ```
 lib/toy/llm/
 ├── primitives/   rope.rb  swiglu.rb  rms_norm.rb  gqa.rb   (+ _cuda / _metal mirrors)
-├── blocks/       transformer_block.rb                      (+ _cuda / _metal mirrors)
-├── archs/        llama_arch.rb                             (+ _cuda / _metal mirrors)
+│                 gdn.rb  diff_attention.rb  scalable_softmax.rb  depth_scale.rb  (Dragon; CPU-only)
+├── blocks/       transformer_block.rb  gdn_block.rb        (+ _cuda / _metal mirrors)
+├── archs/        llama_arch.rb  layer_spec.rb             (+ _cuda / _metal mirrors)
 ├── engine/       llama_seq_engine.rb  llama_kv_engine.rb
 │                 gpt2_seq_engine.rb  gpt2_fwd_engine.rb
 │                 gpt2_kv_engine.rb  vit_tiny_engine.rb     (+ _cuda / _metal mirrors;
@@ -152,7 +153,11 @@ end
 
 **State is the abstraction** that lets a Block be a transformer block
 (state = KV cache), a Mamba block (state = SSM hidden), diffusion
-(state = timestep), and so on: `(input, state) → (output, state)`.
+(state = timestep), and so on: `(input, state) → (output, state)`. The
+`GDNBlock` (Dragon Gated-DeltaNet) is a realized second block type — its state
+is the `[S_v, S_v]` per-head recurrence matrix; an `archs/layer_spec.rb`
+flat-int kind lets one arch loop stack attention and GDN layers heterogeneously
+(monomorphic per-kind dispatch on `seq_layer_kinds`).
 
 Shapes are explicit, not optional. They drive: compatibility checks
 before realize (does this Arch fit this Block?), shape annotations in

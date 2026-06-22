@@ -14,9 +14,17 @@ training, multi-GPU, DiLoCo, non-ggml backend options) see
 [`roadmap/backends-and-scale-2026-05-27.md`](roadmap/backends-and-scale-2026-05-27.md),
 [`roadmap/training-backends-2026-05-27.md`](roadmap/training-backends-2026-05-27.md),
 and [`roadmap/decoupled-diloco-research-2026-05-27.md`](roadmap/decoupled-diloco-research-2026-05-27.md).
-For the **Dragon / Gated-DeltaNet trainable hybrid arch** (per-layer
-layer-type descriptor, GDN forward already wired, phased build order) see
+For the **Dragon / Gated-DeltaNet trainable hybrid arch** see
 [`roadmap/dragon-gdn-arch-2026-06-20.md`](roadmap/dragon-gdn-arch-2026-06-20.md).
+Phases 1–5 are **done**: the GDN forward + 4 L1 primitives, the trainable
+recurrence (Path B — an unrolled autograd composition, no hand-written kernel
+backward), the per-layer `LayerSpec` int-kind dispatch seam, a trainable
+`GDNBlock`, and a self-contained from-scratch **attention+GDN hybrid runner**
+(`libexec/toy-train-hybrid`, `gate-gdn-hybrid`). Folding the hybrid into the
+shared llama engine for plain `toy train` is deferred behind a union-pin Spinel
+codegen block — the mechanical re-apply is in
+[`roadmap/gdn-hybrid-engine-reintegration.md`](roadmap/gdn-hybrid-engine-reintegration.md).
+P6 (a Dragon→toy converter for real weights) has no known path yet.
 For the op/backend coverage matrix see
 [`reference/coverage.md`](coverage.md).
 
