@@ -95,7 +95,7 @@ ubeta   = TinyNN.tnn_input_4d_f32_persistent(sess_u, 1,   H, T, B)
 ustate0 = TinyNN.tnn_input_2d_f32_persistent(sess_u, S_V, S_V)   # [S_v,S_v] state[i,j]
 TinyNN.tnn_finalize_weights(sess_u)   # real buffers before the view-heavy graph
 
-t_unroll = Toy::LLM::Primitives::GDN.recur_unrolled(sess_u, uq, uk, uv, ug, ubeta, ustate0, S_V, T)
+t_unroll = Toy::LLM::Primitives::GDN.recur_unrolled(sess_u, uq, uk, uv, ug, ubeta, ustate0, S_V, 1, 0, T)
 if t_unroll == TinyNN.tnn_null_ptr
   STDERR.puts "FATAL: recur_unrolled returned NULL"
   exit 1

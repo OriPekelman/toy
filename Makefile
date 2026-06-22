@@ -833,6 +833,19 @@ gate-gdn-unrolled-backward: prep/smokes/smoke_gdn_unrolled_backward
 prep/smokes/smoke_gdn_unrolled_backward: prep/smokes/smoke_gdn_unrolled_backward.rb lib/toy.rb lib/toy/ffi/tinynn.rb lib/toy/llm/primitives/gdn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
+# Dragon/GDN Phase 5: multi-head parity — the per-head recur_unrolled looped over
+# H heads + concat'd matches the fused kernel's head packing (strided slicing).
+.PHONY: gate-gdn-unrolled-parity-mh
+gate-gdn-unrolled-parity-mh: prep/smokes/smoke_gdn_unrolled_parity_mh
+	@out="$$(./prep/smokes/smoke_gdn_unrolled_parity_mh 2>&1)"; \
+	echo "$$out" | tail -2; \
+	echo "$$out" | grep -q "GDN unrolled-parity-mh smoke PASS" \
+	  && echo "GATE PASS [gdn-unrolled-parity-mh]: H-head recur_unrolled == fused kernel" \
+	  || { echo "GATE FAIL [gdn-unrolled-parity-mh]"; exit 1; }
+
+prep/smokes/smoke_gdn_unrolled_parity_mh: prep/smokes/smoke_gdn_unrolled_parity_mh.rb lib/toy.rb lib/toy/ffi/tinynn.rb lib/toy/llm/primitives/gdn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+
 # toy#64 item 8 — the CUDA compute entry (lib/toy/compute_cuda.rb), the
 # consumer-ish device-at-compile-time gate. Same shape as the CPU
 # compute-surface gate but requires compute_cuda + links the CUDA

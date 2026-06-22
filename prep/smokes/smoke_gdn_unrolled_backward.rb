@@ -103,7 +103,7 @@ TinyNN.tnn_set_param(tk)
 TinyNN.tnn_set_param(tv)
 TinyNN.tnn_finalize_weights(sess)
 
-t_out = Toy::LLM::Primitives::GDN.recur_unrolled(sess, tq, tk, tv, tg, tbeta, tstate0, S_V, T)
+t_out = Toy::LLM::Primitives::GDN.recur_unrolled(sess, tq, tk, tv, tg, tbeta, tstate0, S_V, 1, 0, T)
 if t_out == TinyNN.tnn_null_ptr
   puts "FAIL: recur_unrolled returned NULL"
   exit 0

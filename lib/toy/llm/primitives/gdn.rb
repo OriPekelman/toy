@@ -95,21 +95,32 @@ module Toy
         # o — because a per-token ggml_scale's BACKWARD receives a view-shaped grad
         # from the concat and asserts ggml_is_padded_1d (ggml.c:3392). One scale on
         # the whole tensor keeps the backward grad contiguous.
-        def self.recur_unrolled(sess, q, k, v, g, beta, state0, s_v, n_tokens)
+        #
+        # ONE head of the recurrence. q,k,v are the packed [S_v, n_heads, T, 1]
+        # projections; g,beta the packed [1, n_heads, T, 1] gates; state0 this
+        # head's [S_v,S_v] carry. `head` selects the head; per-token vectors are
+        # strided views into the packed tensors (token stride = S_v·n_heads, head
+        # base = S_v·head — the ggml [S_v,H,T,B] layout). Returns [S_v, T] for this
+        # head; the block concats heads along ne0. n_heads=1/head=0 is the plain
+        # single-head case (contiguous per-token, the Phase-4 gate shape).
+        def self.recur_unrolled(sess, q, k, v, g, beta, state0, s_v, n_heads, head, n_tokens)
           scale = 1.0 / Math.sqrt(s_v.to_f)
-          fbytes = 4                       # sizeof(f32)
-          vstride = s_v * fbytes           # bytes per token column in q/k/v
+          fbytes = 4                          # sizeof(f32)
+          tok_stride  = s_v * n_heads * fbytes # bytes between this head's tokens
+          head_base   = s_v * head * fbytes    # byte offset to this head's col 0
+          gtok_stride = n_heads * fbytes       # g/beta [1,H,T,1]: token stride
+          ghead_base  = head * fbytes
           q_s = TinyNN.tnn_scale(sess, q, scale)   # pre-scaled q (contiguous)
           s_mat = state0
           t_out = TinyNN.tnn_null_ptr
           t = 0
           while t < n_tokens
-            # Per-token slices (B=1, single head): [S_v,1] vectors, [1,1] scalars.
-            q_t = TinyNN.tnn_view_2d(sess, q_s, s_v, 1, vstride, t * vstride)
-            k_t = TinyNN.tnn_view_2d(sess, k, s_v, 1, vstride, t * vstride)
-            v_t = TinyNN.tnn_view_2d(sess, v, s_v, 1, vstride, t * vstride)
-            g_t = TinyNN.tnn_view_2d(sess, g, 1, 1, fbytes, t * fbytes)
-            b_t = TinyNN.tnn_view_2d(sess, beta, 1, 1, fbytes, t * fbytes)
+            # Per-token slices: [S_v,1] vectors (S_v contiguous), [1,1] scalars.
+            q_t = TinyNN.tnn_view_2d(sess, q_s, s_v, 1, tok_stride, head_base + t * tok_stride)
+            k_t = TinyNN.tnn_view_2d(sess, k,   s_v, 1, tok_stride, head_base + t * tok_stride)
+            v_t = TinyNN.tnn_view_2d(sess, v,   s_v, 1, tok_stride, head_base + t * tok_stride)
+            g_t = TinyNN.tnn_view_2d(sess, g,    1, 1, gtok_stride, ghead_base + t * gtok_stride)
+            b_t = TinyNN.tnn_view_2d(sess, beta, 1, 1, gtok_stride, ghead_base + t * gtok_stride)
 
             eg    = TinyNN.tnn_exp(sess, g_t)              # [1,1]
             s_dec = TinyNN.tnn_mul(sess, s_mat, eg)        # [S_v,S_v] * [1,1] bcast
