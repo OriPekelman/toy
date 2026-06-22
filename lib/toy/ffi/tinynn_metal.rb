@@ -225,6 +225,11 @@ module TinyNNMetal
   ffi_func :tnn_input_2d_persistent_typed, [:ptr, :int, :int, :int], :ptr
   ffi_func :tnn_row_size,                  [:int, :int],              :long
   ffi_func :tnn_input_1d_f32_persistent, [:ptr, :int],         :ptr
+  # #1449 fix — galloc-external token-id index leaf (ctx_w). Mirrors the CPU/CUDA
+  # decl; C function lives in the shared tinynn_ggml.c. Without it the mirrored
+  # Metal engine's finalize aborts (undefined method), same as the CUDA gap the
+  # heavy bench caught 2026-06-22. (Metal is Mac-only; not runnable here.)
+  ffi_func :tnn_input_1d_i32_persistent, [:ptr, :int],         :ptr
   # Phase 2 BYO-pointer mmap. On Metal the buffer-from-ptr path falls
   # through to ggml_backend_cpu_buffer_from_ptr (no public Metal
   # buffer_from_ptr API); the scheduler then copies host pages to
