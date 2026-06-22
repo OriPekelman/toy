@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.9.0 — Unreleased
+## v0.9.0 — 2026-06-22
 
 **The Dragon / Gated-DeltaNet trainable hybrid arc.** toy grows a second block
 type and the seam to stack it heterogeneously with attention — built phase by
