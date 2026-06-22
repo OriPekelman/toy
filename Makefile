@@ -848,6 +848,28 @@ gate-gdn-unrolled-parity-mh: prep/smokes/smoke_gdn_unrolled_parity_mh
 prep/smokes/smoke_gdn_unrolled_parity_mh: prep/smokes/smoke_gdn_unrolled_parity_mh.rb lib/toy.rb lib/toy/ffi/tinynn.rb lib/toy/llm/primitives/gdn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
+# Dragon/GDN Phase 5 capstone: a SELF-CONTAINED from-scratch HYBRID runner (one
+# attention layer + one GDN layer, dispatched by the int-kind seam pattern) in
+# its OWN compilation unit — CE loss decreases. Proves a heterogeneous
+# attention+GDN stack trains from scratch. Separate unit so it can't corrupt the
+# byte-exact llama engine (landmine #16). Reintegration into `toy train` waits on
+# the union-pin Spinel codegen fix (master/spinelc).
+.PHONY: gate-gdn-hybrid
+gate-gdn-hybrid: libexec/toy-train-hybrid
+	@out="$$(./libexec/toy-train-hybrid 2>&1)"; \
+	echo "$$out" | tail -3; \
+	echo "$$out" | grep -q "HYBRID train smoke PASS" \
+	  && echo "GATE PASS [gdn-hybrid]: attention+GDN from-scratch hybrid trains" \
+	  || { echo "GATE FAIL [gdn-hybrid]"; exit 1; }
+
+libexec/toy-train-hybrid: lib/toy/run/train_hybrid.rb lib/toy.rb lib/toy/ffi/tinynn.rb \
+		lib/toy/llm/primitives/rms_norm.rb lib/toy/llm/primitives/gdn.rb \
+		lib/toy/llm/blocks/gdn_block.rb lib/toy/llm/archs/layer_spec.rb \
+		tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) $< -o $@
+.PHONY: toy-train-hybrid
+toy-train-hybrid: libexec/toy-train-hybrid
+
 # Dragon/GDN Phase 5 (end-of-flow): a from-scratch model whose mixer is a
 # trainable GDNBlock trains — CE loss decreases. Proves the GDN layer is an
 # end-to-end trainable residual unit (no hand-written kernel backward).
