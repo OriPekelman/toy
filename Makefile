@@ -569,7 +569,8 @@ libexec/toy-train: lib/toy/run/train.rb lib/toy/dev/toy_describe_flow.rb lib/toy
 		lib/toy/train/toy_gguf_writer.rb lib/toy/train/toy_drift_grad.rb lib/toy/models/transformer.rb \
 		lib/toy/llm/primitives/rms_norm.rb lib/toy/llm/primitives/rope.rb \
 		lib/toy/llm/primitives/swiglu.rb lib/toy/llm/primitives/gqa.rb \
-		lib/toy/llm/blocks/transformer_block.rb lib/toy/llm/archs/layer_spec.rb lib/toy/llm/archs/llama_arch.rb \
+		lib/toy/llm/blocks/transformer_block.rb lib/toy/llm/primitives/gdn.rb lib/toy/llm/blocks/gdn_block.rb \
+		lib/toy/llm/archs/layer_spec.rb lib/toy/llm/archs/llama_arch.rb \
 		lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a | libexec
 	$(SPINEL) $< -o $@
 toy-train: libexec/toy-train
@@ -584,7 +585,8 @@ libexec/toy-train-lora: lib/toy/run/train_lora.rb lib/toy/dev/toy_describe_flow.
 		lib/toy/train/toy_gguf_writer.rb lib/toy/train/toy_drift_grad.rb lib/toy/models/transformer.rb \
 		lib/toy/llm/primitives/rms_norm.rb lib/toy/llm/primitives/rope.rb \
 		lib/toy/llm/primitives/swiglu.rb lib/toy/llm/primitives/gqa.rb \
-		lib/toy/llm/blocks/transformer_block.rb lib/toy/llm/archs/layer_spec.rb lib/toy/llm/archs/llama_arch.rb \
+		lib/toy/llm/blocks/transformer_block.rb lib/toy/llm/primitives/gdn.rb lib/toy/llm/blocks/gdn_block.rb \
+		lib/toy/llm/archs/layer_spec.rb lib/toy/llm/archs/llama_arch.rb \
 		lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a | libexec
 	$(SPINEL) $< -o $@
 toy-train-lora: libexec/toy-train-lora

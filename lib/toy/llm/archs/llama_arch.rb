@@ -69,9 +69,13 @@ module Toy; module LLM; module Archs
                   :t_seq_w_proj, :seq_blocks_ffi,
                   # Phase 3 — per-layer descriptor array, parallel to
                   # seq_blocks_ffi (same length == n_layers). The forward loop
-                  # reads spec.kind to pick the per-layer build. All-attention
-                  # today (byte-exact refactor gate); GDN kinds arrive Phase 5.
+                  # reads spec.kind to pick the per-layer build.
                   :seq_layer_specs,
+                  # Phase 5 — parallel GDN-block array (same length; entry is a
+                  # GDNBlock at KIND_GDN positions, null elsewhere). The KIND_GDN
+                  # dispatch arm calls into THIS array — a concrete typed call,
+                  # so the seam stays monomorphic per call site.
+                  :seq_gdn_blocks_ffi,
                   # Orchestration-gating carriers — bare cache ivars with
                   # no accessor before P2.5. The lens-branch guard reads
                   # seq_donor_d_in; the shared ctx reads seq_rope_cfg.
@@ -88,6 +92,11 @@ module Toy; module LLM; module Archs
       @seq_blocks_ffi         = [Toy::LLM::Blocks::TransformerBlock.new]
       # Phase 3 — parallel seed: one attention spec for the seed block.
       @seq_layer_specs        = [Toy::LLM::Archs::LayerSpec.new(Toy::LLM::Archs::LayerSpec::KIND_ATTENTION)]
+      # Phase 5 — parallel GDN-block slots. Seeded with GDNBlock placeholders so
+      # the array is MONOMORPHIC (all GDNBlock) — the seam's KIND_GDN call site
+      # never sees a mixed null/object array (Spinel poly-array landmine). At
+      # KIND_ATTENTION layers the placeholder is simply never invoked.
+      @seq_gdn_blocks_ffi     = [Toy::LLM::Blocks::GDNBlock.new]
       @seq_donor_d_in         = 0
       # The cache overwrites seq_rope_cfg with the real RoPE::Cfg before
       # build_forward runs (each realize prologue rebuilds it).
@@ -110,10 +119,12 @@ module Toy; module LLM; module Archs
       # KIND_ATTENTION for now (the homogeneous-Llama refactor gate); Phase 5
       # overwrites individual entries with KIND_GDN for Dragon's pattern.
       @seq_layer_specs = [Toy::LLM::Archs::LayerSpec.new(Toy::LLM::Archs::LayerSpec::KIND_ATTENTION)]
+      @seq_gdn_blocks_ffi = [Toy::LLM::Blocks::GDNBlock.new]
       li_init = 1
       while li_init < n_layers
         @seq_blocks_ffi.push(Toy::LLM::Blocks::TransformerBlock.new)
         @seq_layer_specs.push(Toy::LLM::Archs::LayerSpec.new(Toy::LLM::Archs::LayerSpec::KIND_ATTENTION))
+        @seq_gdn_blocks_ffi.push(Toy::LLM::Blocks::GDNBlock.new)
         li_init = li_init + 1
       end
     end
@@ -234,8 +245,12 @@ module Toy; module LLM; module Archs
         spec_kind = self.seq_layer_specs[li_g].kind
         if spec_kind == Toy::LLM::Archs::LayerSpec::KIND_ATTENTION
           t_cur = self.seq_blocks_ffi[li_g].build_forward(sess, t_cur, ctx)
+        elsif spec_kind == Toy::LLM::Archs::LayerSpec::KIND_GDN
+          # Concrete typed call into the parallel GDN array — the GDN block reads
+          # its own dims (set at alloc); seq_t/eps come from the shared ctx.
+          t_cur = self.seq_gdn_blocks_ffi[li_g].build_forward(sess, t_cur, seq_t, eps)
         else
-          raise "LlamaArch#build_forward: unsupported layer kind #{spec_kind} at layer #{li_g} (only KIND_ATTENTION is wired pre-Phase-5)"
+          raise "LlamaArch#build_forward: unsupported layer kind #{spec_kind} at layer #{li_g}"
         end
         li_g = li_g + 1
       end

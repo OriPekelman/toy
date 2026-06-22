@@ -32,12 +32,17 @@ module Toy; module LLM; module Blocks
                   :t_w_q, :t_w_k, :t_w_v, :t_w_z, :t_w_a, :t_w_b,
                   :t_a_log, :t_dt_bias, :t_go_gamma, :t_w_o,
                   :t_state0,
+                  # Block dims (set at alloc) so build_forward can take the same
+                  # (sess, t_x, ctx) signature as TransformerBlock — the seam's
+                  # KIND_GDN dispatch arm stays a single concrete typed call.
+                  :gdn_d_model, :gdn_s_v, :gdn_n_heads,
                   # F3 full-finetune parallel arrays (weight, m, v) — same
                   # convention as TransformerBlock so the engine's opt_step
                   # walker reaches them by name.
                   :ft_weights, :ft_m, :ft_v
 
     def initialize
+      @gdn_d_model = 0; @gdn_s_v = 0; @gdn_n_heads = 0
       @t_rn_gamma = TinyNN.tnn_null_ptr
       @t_w_q = TinyNN.tnn_null_ptr; @t_w_k = TinyNN.tnn_null_ptr; @t_w_v = TinyNN.tnn_null_ptr
       @t_w_z = TinyNN.tnn_null_ptr; @t_w_a = TinyNN.tnn_null_ptr; @t_w_b = TinyNN.tnn_null_ptr
@@ -56,6 +61,7 @@ module Toy; module LLM; module Blocks
     # constant carry (one [s_v,s_v] block per head), NOT a param. Each weight's
     # m/v match its shape (opt_step_adamw asserts same-shape).
     def alloc_trainable_f32_weights!(sess, d_model, s_v, n_heads)
+      @gdn_d_model = d_model; @gdn_s_v = s_v; @gdn_n_heads = n_heads
       inner = s_v * n_heads
       # W : [d_model, out]  (matmul(W, h) contracts ne0=d_model -> [out, T]).
       # input_2d_f32_persistent(rows, cols) -> ne0=cols, ne1=rows, so pass
@@ -118,8 +124,13 @@ module Toy; module LLM; module Blocks
     end
 
     # Forward: residual update for x [d_model, T] (B=1). Returns [d_model, T].
-    def build_forward(sess, t_x, d_model, s_v, n_heads, seq_t, eps)
-      fbytes = 4
+    # Dims (d_model/s_v/n_heads) come from self (set at alloc) so this matches the
+    # seam's per-layer call shape; seq_t/eps arrive from the forward ctx.
+    def build_forward(sess, t_x, seq_t, eps)
+      d_model = @gdn_d_model
+      s_v     = @gdn_s_v
+      n_heads = @gdn_n_heads
+      fbytes  = 4
       h = Toy::LLM::Primitives::RMSNorm.build(sess, t_x, @t_rn_gamma, eps)
 
       q2 = TinyNN.tnn_matmul(sess, @t_w_q, h)   # [S_v*H, T]

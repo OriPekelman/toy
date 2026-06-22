@@ -96,7 +96,7 @@ end
 # --- forward graph ---
 t_tok = TinyNN.tnn_input_1d_i32(sess, T)
 x = TinyNN.tnn_get_rows(sess, t_embed, t_tok)             # [DM, T]
-x = blk.build_forward(sess, x, DM, S_V, H, T, EPS)        # [DM, T]
+x = blk.build_forward(sess, x, T, EPS)                    # [DM, T]
 xf = Toy::LLM::Primitives::RMSNorm.build(sess, x, t_fnorm, EPS)
 lgt = TinyNN.tnn_matmul(sess, t_embed, xf)                # [VOCAB, T] tied
 
