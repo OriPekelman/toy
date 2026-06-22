@@ -130,9 +130,18 @@ Dragon-only arch.
     dispatches KIND_GDN to a monomorphic `seq_gdn_blocks_ffi`. Inert + byte-exact
     for all-attention runners (from-scratch/warm/lora). The seam now carries a
     heterogeneous attention+GDN stack.
-  - *Remaining capstone*: engine realize surgery (`realize_for_random_init`
-    allocates GDNBlock weights for KIND_GDN layers + sets specs) → a full hybrid
-    train through `toy train`.
+  - *5.4* (`9bd242f`): seam dispatch moved to a flat int array (`seq_layer_kinds`)
+    + `set_gdn_layer!(idx)` — Spinel-robust (3 codegen landmines dodged: LayerSpec
+    setter / LayerSpec construction on a realize path / #688 array-param).
+  - *5.5 — CAPSTONE* (`b79934d`): `libexec/toy-train-hybrid` — a SELF-CONTAINED
+    from-scratch attention+GDN hybrid runner (own compilation unit), dispatched by
+    the int-kind seam. `gate-gdn-hybrid`: CE loss 3.04 → 1.67 over 16 steps. The
+    heterogeneous trainable stack works.
+  - *Deferred (blocked on union pin)*: folding the hybrid into the SHARED llama
+    engine so plain `toy train` runs it — pulling GDN alloc/train code into that
+    compilation unit corrupts the byte-exact attention path (landmine #16). The
+    seam is reintegration-ready; the mechanical re-apply + Spinel re-test protocol
+    is in `gdn-hybrid-engine-reintegration.md` (apply on master/spinelc).
 - GDN/diff-attn primitives are CPU-only (not yet in `MIRRORABLE`; CUDA/Metal arch
   mirrors — incl. the LayerSpec loop — are a later pass).
 - **Phase 6 — Dragon bit-match converter: deferred by decision** (revisit after
