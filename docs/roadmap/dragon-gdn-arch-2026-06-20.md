@@ -117,11 +117,27 @@ Dragon-only arch.
   fused-kernel backward). `gate-gdn-unrolled-parity` (forward == fused kernel to
   1e-6) + `gate-gdn-unrolled-backward` (finite non-zero dL/dq,k,v end-to-end)
   green on the union pin. The hard gate is dissolved.
-- **Phase 5+ — not started.** Next: wire KIND_GDN into the LayerSpec dispatch
-  (the GDN block: q/k/v/z/b/a projections + conv + recur_unrolled + gated_out),
-  assemble Dragon's hybrid layer pattern, from-scratch train smoke. GDN/diff-attn
-  primitives are CPU-only (not yet in `MIRRORABLE`; CUDA/Metal arch mirrors —
-  incl. the LayerSpec loop — are a later pass).
+- **Phase 5 — IN PROGRESS** (3 slices shipped):
+  - *5.1* (`a22a00d`): multi-head `recur_unrolled` (per-head strided slicing) +
+    H=2 parity gate.
+  - *5.2* (`c9d0f6b`): `Toy::LLM::Blocks::GDNBlock` (rms_norm → q/k/v/z/b/a proj
+    → l2 → gates → per-head recur_unrolled → gated_out → out-proj → residual);
+    `gate-gdn-train` — a from-scratch embed→GDN→tied-logits→CE model trains,
+    CE loss 2.99→1.94. Trainable-op gaps composed around: L2_NORM→`l2_train`
+    (mul/sum_rows/sqrt/div+repeat), SIGMOID→`update_gate_train` (exp/÷). Short
+    causal conv DEFERRED (Dragon bit-match concern).
+  - *5.3* (`32bcb0f`): KIND_GDN dispatch arm LIVE — `LlamaArch#build_forward`
+    dispatches KIND_GDN to a monomorphic `seq_gdn_blocks_ffi`. Inert + byte-exact
+    for all-attention runners (from-scratch/warm/lora). The seam now carries a
+    heterogeneous attention+GDN stack.
+  - *Remaining capstone*: engine realize surgery (`realize_for_random_init`
+    allocates GDNBlock weights for KIND_GDN layers + sets specs) → a full hybrid
+    train through `toy train`.
+- GDN/diff-attn primitives are CPU-only (not yet in `MIRRORABLE`; CUDA/Metal arch
+  mirrors — incl. the LayerSpec loop — are a later pass).
+- **Phase 6 — Dragon bit-match converter: deferred by decision** (revisit after
+  the flow's end). No known Dragon→toy path; the short conv + exact stream
+  layouts + the L2/sigmoid exactness are the fidelity gaps to close then.
 
 ## Build order (phased; each phase independently verifiable)
 
