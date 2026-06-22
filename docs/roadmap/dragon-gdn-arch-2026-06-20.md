@@ -112,7 +112,14 @@ Dragon-only arch.
   + deterministic), warm-start (5/5), lora (5/5) vs `prep/fixtures/*_baseline.txt`
   — a pure no-op on homogeneous Llama. KIND_GDN reserved, not yet wired into a
   branch (Phase 5).
-- **Phase 4+ — not started.** GDN backward is the hard gate next. GDN/diff-attn
+- **Phase 4 — DONE** (commit `6f36012`, Path B): `GDN.recur_unrolled` —
+  the gated delta rule as an unrolled autograd-differentiable graph (no
+  fused-kernel backward). `gate-gdn-unrolled-parity` (forward == fused kernel to
+  1e-6) + `gate-gdn-unrolled-backward` (finite non-zero dL/dq,k,v end-to-end)
+  green on the union pin. The hard gate is dissolved.
+- **Phase 5+ — not started.** Next: wire KIND_GDN into the LayerSpec dispatch
+  (the GDN block: q/k/v/z/b/a projections + conv + recur_unrolled + gated_out),
+  assemble Dragon's hybrid layer pattern, from-scratch train smoke. GDN/diff-attn
   primitives are CPU-only (not yet in `MIRRORABLE`; CUDA/Metal arch mirrors —
   incl. the LayerSpec loop — are a later pass).
 
