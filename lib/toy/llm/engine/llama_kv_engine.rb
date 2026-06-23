@@ -1584,7 +1584,15 @@ module SmolLM2KV
     TinyNN.tnn_reset_for_rebuild(kv_cache.sess)
     step = kv_cache.build_decode_step(pos)
     TinyNN.tnn_realize(kv_cache.sess, step.kv_step_logits)
-    TinyNN.upload_int_array(kv_cache.sess, step.t_token_id, [token_id])
+    # Spinel landmine: in whole-program inference contexts where `token_id`
+    # poly-collapses to sp_RbVal (e.g. the eval runner, where generate's
+    # sampler-fed `last_id` unifies decode_step's param to RbVal), the literal
+    # `[token_id]` compiles to a PolyArray. upload_int_array takes :int_array
+    # (sp_IntArray), so the PolyArray is then mis-read as an IntArray → garbage
+    # length → ggml "tensor write out of bounds" abort. Narrowing to a clean
+    # mrb_int via `.to_i` forces the IntArray codegen (as `[pos]` already gets).
+    tid = token_id.to_i
+    TinyNN.upload_int_array(kv_cache.sess, step.t_token_id, [tid])
     TinyNN.upload_int_array(kv_cache.sess, step.t_pos,      [pos])
     TinyNN.tnn_compute(kv_cache.sess)
     kv_cache.dump_trace

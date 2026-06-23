@@ -2093,6 +2093,37 @@ bench-update: tinynn/libtinynn_ggml.a
 bench-report: tinynn/libtinynn_ggml.a
 	ruby bench/check.rb --report
 
+# Metal perf leg (macOS only; #104 part C). Times the metal-vs-cpu infer
+# runners via N-differencing — steady-state decode ms/token plus the
+# metal-vs-cpu ratio on THIS machine. The baseline (bench/baselines_metal.csv)
+# is Mac-pinned, like the metal_gate float baseline; capture it with
+# `make bench-metal-update` on a QUIESCED machine (desktop load skews the
+# numbers badly). Skips green off macOS, exactly like gate-metal.
+.PHONY: bench-metal bench-metal-update bench-metal-report
+bench-metal:
+ifneq ($(UNAME_S),Darwin)
+	@echo "bench-metal: Metal is macOS-only (uname -s = $(UNAME_S)) — skipping"; exit 0
+else
+	$(MAKE) libexec/toy-infer-metal libexec/toy-infer
+	ruby bench/check_metal.rb
+endif
+
+bench-metal-update:
+ifneq ($(UNAME_S),Darwin)
+	@echo "bench-metal-update: Metal is macOS-only (uname -s = $(UNAME_S)) — skipping"; exit 0
+else
+	$(MAKE) libexec/toy-infer-metal libexec/toy-infer
+	ruby bench/check_metal.rb --update
+endif
+
+bench-metal-report:
+ifneq ($(UNAME_S),Darwin)
+	@echo "bench-metal-report: Metal is macOS-only (uname -s = $(UNAME_S)) — skipping"; exit 0
+else
+	$(MAKE) libexec/toy-infer-metal libexec/toy-infer
+	ruby bench/check_metal.rb --report
+endif
+
 # Routine comparison vs PyTorch — the "old-stable" yardstick — in the
 # single-machine single-GPU case. Runs ON gx10: toy CUDA benches run
 # native, the PyTorch reference (bench/ref_pytorch.py) runs in the
