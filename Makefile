@@ -360,6 +360,16 @@ endif
 	$(SPINEL) --cc='cc -Wl,-u,_tnn_metal_force_link -framework Foundation -framework Metal -framework MetalKit' $< -o $@
 toy-eval-metal: libexec/toy-eval-metal
 
+# Convenience: run both functional gates on the pure CPU path (no parity arm).
+# These are the byte-exact infer/eval baselines. Until this target existed the
+# CPU eval gate only ran behind gate-cuda's TOY_GATE_CUDA=1, so a CPU-only eval
+# regression could reach main unnoticed — and did once (the decode_step
+# PolyArray OOB, #104/#105). Self-builds the runners via bin/toy.
+.PHONY: gate-cpu
+gate-cpu:
+	ruby prep/infer_gate.rb
+	ruby prep/eval_gate.rb
+
 # Convenience: run both functional gates with the CUDA parity arm enabled.
 .PHONY: gate-cuda
 gate-cuda:
