@@ -10,10 +10,12 @@ into toy's tree.
 > which is clean and self-contained. See [`cli.md`](cli.md). This doc is the
 > *library-composition* surface.
 
-## Recommended Spinel revision (v0.8.0)
+## Recommended Spinel revision
 
-toy v0.8.0 is verified against the **union of two Spinel fix branches**
-(spinel-dev#13 + #14), published as a single ready-to-build branch:
+toy (v0.8.0 through v0.9.0) is verified against the **union of two Spinel fix
+branches** (spinel-dev#13 + #14), published as a single ready-to-build branch.
+v0.9.0 (the Dragon / Gated-DeltaNet arc) runs on the same pin — the union
+backend is unchanged:
 
 ```sh
 git clone -b toy-v0.8.0-pin https://github.com/OriPekelman/spinel && cd spinel

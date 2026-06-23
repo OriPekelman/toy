@@ -67,11 +67,20 @@ runner (`metal` is macOS-only). Defaults: `--prompt "Once upon a time"`, `--n 16
 `--device cpu`.
 
 ### `train <recipe> [--steps N] [--seed S] [--arch llama|gpt2] [--device cpu|cuda|metal] [--out DIR] [--json]`
-Train a model from scratch and record a run bundle.
-`<recipe>` is required; `from-scratch` is the accepted recipe (other recipes are
-rejected with a bad-input error). `--arch gpt2` trains the from-scratch GPT-2
-arch (CPU); `--device cuda|metal` selects the per-device runner (`metal` is
-macOS-only; GPT-2 is CPU-only).
+Train a model and record a run bundle. `<recipe>` is required; the accepted
+recipes are:
+
+| recipe | what it does | recipe-specific flags |
+| --- | --- | --- |
+| `from-scratch` | train a tiny Llama-shape model from random init (the default) | — |
+| `lora` | LoRA adapters over a frozen base GGUF | `--model <gguf>` (base, default `data/smollm2-135m-native.gguf`), `--rank N` (default 8) |
+| `warm-start` | fine-tune from donor embeddings over a streamed corpus | `--corpus <path>` (default `data/ts_seqs.bin`), `--init <mode>` (default `scratch`) |
+| `vit-tiny` | ViT-Tiny image classifier on the committed smoke corpus (CPU-only) | — |
+
+An unknown recipe is rejected loud (`supported: 'from-scratch', 'lora',
+'warm-start', 'vit-tiny'`). `--arch gpt2` trains the from-scratch GPT-2 arch
+(`from-scratch` only, CPU-only); `--device cuda|metal` selects the per-device
+runner (`metal` is macOS-only; GPT-2 and ViT-Tiny are CPU-only).
 Defaults: `--steps 5`, `--seed 0`, `--arch llama`, `--device cpu`, `--out runs/<id>`.
 Writes the run bundle (see [Run bundle layout](#run-bundle-layout)) and echoes
 the byte-deterministic loss curve to stdout.
@@ -169,7 +178,7 @@ run many).
 | `examples/04_generate.rb` (or `toy infer`) | GGUF → KV-cache decode → text. |
 | `examples/05_eval_logprobs.rb` (or `toy eval`) | Per-token top-K logprobs at a decode position. |
 | `examples/06_runlog_compare.rb` | CRuby: `Toy::RunLog.scan` comparison table over `runs/`. |
-| `examples/07_vit_tiny.rb` | ViT-Tiny classifier on the committed smoke corpus (no CLI surface yet). |
+| `examples/07_vit_tiny.rb` | ViT-Tiny classifier on the committed smoke corpus (or `toy train vit-tiny`). |
 | `examples/legacy/*` | Superseded tutorials (instrumented trainer, pure-Ruby GPT, …) — still build; see [examples/legacy/README.md](../examples/legacy/README.md). |
 | `prep/smokes/smoke_*.rb` | Single-purpose wire smokes — the gate fixtures, not tutorials (see [gating.md](gating.md)). |
 

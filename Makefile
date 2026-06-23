@@ -501,6 +501,34 @@ gate-compute-surface-cuda: prep/smokes/smoke_compute_surface_cuda
 	  && echo "GATE PASS [compute-surface-cuda]: lib/toy/compute_cuda.rb device entry is live" \
 	  || { echo "GATE FAIL [compute-surface-cuda]"; exit 1; }
 
+# Projection-lens gate: train through W_proj only (token_embd frozen) and
+# assert the loss drops (the smoke's own "is learning" verdict). The CPU
+# smoke was an ungated diagnostic; this wires it into the gate surface.
+.PHONY: gate-projection-lens
+gate-projection-lens: prep/smokes/smoke_projection_lens
+	@out="$$(STEPS=20 ./prep/smokes/smoke_projection_lens 2>&1)"; \
+	echo "$$out" | tail -2; \
+	echo "$$out" | grep -q "projection-lens training is learning" \
+	  && echo "GATE PASS [projection-lens]: W_proj-only training learns (token_embd frozen)" \
+	  || { echo "GATE FAIL [projection-lens]"; exit 1; }
+
+# Metal twin of the projection-lens gate. The _metal smoke is an auto-
+# generated mirror (MIRROR_METAL) that previously built but was reachable
+# from no gate; this de-orphans it. macOS-only, skips green off Darwin
+# exactly like gate-metal.
+.PHONY: gate-projection-lens-metal
+gate-projection-lens-metal:
+ifneq ($(UNAME_S),Darwin)
+	@echo "gate-projection-lens-metal: Metal is macOS-only (uname -s = $(UNAME_S)) — skipping"; exit 0
+else
+	$(MAKE) prep/smokes/smoke_projection_lens_metal
+	@out="$$(STEPS=20 ./prep/smokes/smoke_projection_lens_metal 2>&1)"; \
+	echo "$$out" | tail -2; \
+	echo "$$out" | grep -q "projection-lens training is learning" \
+	  && echo "GATE PASS [projection-lens-metal]: W_proj-only training learns on Metal" \
+	  || { echo "GATE FAIL [projection-lens-metal]"; exit 1; }
+endif
+
 # K-quant MoE attention regression gate (the bug long misfiled as ggml#1506):
 # head_nbytes returned 0 for K-quant attention weights → per-head mmap stride
 # collapsed every head onto head 0 → degenerate repeating decode on OLMoE
@@ -996,7 +1024,12 @@ examples/example_07_vit_tiny: examples/07_vit_tiny.rb lib/toy/compute.rb lib/toy
 example_07: examples/example_07_vit_tiny
 .PHONY: example_07
 
-examples-curated: example_01 example_02 example_03 example_04 example_05 example_07
+examples/example_08_gdn_block: examples/08_gdn_block.rb lib/toy.rb lib/toy/ffi/tinynn.rb lib/toy/llm/primitives/rms_norm.rb lib/toy/llm/primitives/gdn.rb lib/toy/llm/blocks/gdn_block.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+example_08: examples/example_08_gdn_block
+.PHONY: example_08
+
+examples-curated: example_01 example_02 example_03 example_04 example_05 example_07 example_08
 .PHONY: examples-curated
 
 # L4 LoRA recipe gate. Drives the same LoRA fine-tune config as the

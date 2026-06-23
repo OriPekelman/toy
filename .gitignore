@@ -212,6 +212,10 @@ toy-*.gem
 # (incl. the ~680 MB CUDA binaries) into a commit.
 examples/example_*
 examples/gpt2_train
+# Stray smoke builds: the gate smokes live in (and build into) prep/smokes/,
+# but older builds dropped binaries here too. Guard so a 680 MB CUDA smoke can
+# never be swept in from examples/ (the .rb sources, if any, stay via the rule below).
+examples/smoke_*
 !examples/*.rb
 # Gate-smoke binaries (prep/smokes/): .rb sources tracked, Spinel builds ignored.
 prep/smokes/smoke_*

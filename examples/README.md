@@ -1,12 +1,13 @@
 # examples/ — the narrated teaching set
 
-Seven single-file examples, curated (toy#60) onto the current API: the
+Eight single-file examples, curated (toy#60) onto the current API: the
 one-require compute surface, the L5 recipes, and the named value
 objects (`SmolLM2Config` / `RecipeOptions` / `TrainingBatch` / `AdamW`
 — the tour is [`docs/framework.md`](../docs/framework.md)). Each file
 opens with a narrated header: **what you'll see, how long it takes,
 what to tweak**. Each compiles to one native binary via one `make`
-target (06 is plain CRuby — no build).
+target (06 is plain CRuby — no build; 08 drops to the FFI graph since the
+Dragon/GDN block has no recipe yet).
 
 Most day-to-day tasks are the `toy` CLI (`toy train|infer|eval|serve`,
 see [`docs/cli.md`](../docs/cli.md)); these examples are the
@@ -24,6 +25,7 @@ of Ruby each.
 | 05 | [`05_eval_logprobs.rb`](05_eval_logprobs.rb) | Per-token top-K log-probabilities at a decode position — the perplexity/calibration building block. | ~3 s | any llama-family GGUF |
 | 06 | [`06_runlog_compare.rb`](06_runlog_compare.rb) | **CRuby, no build**: `Toy::RunLog.scan` over `runs/` → a comparison table, best final loss first. | instant | runs from 01 / `toy train` |
 | 07 | [`07_vit_tiny.rb`](07_vit_tiny.rb) | The same recipe contract for IMAGES: ViT-Tiny memorizes the bundled smoke image (CE 2.30 → ~0.001). | ~20 s | nothing (committed corpus) |
+| 08 | [`08_gdn_block.rb`](08_gdn_block.rb) | **v0.9.0 / Dragon.** A from-scratch model whose mixer is a trainable Gated-DeltaNet block (not attention); CE 2.99 → 1.94 in 14 steps. The one example that builds the train graph by hand (GDN has no L5 recipe yet). | <1 s | nothing (bundled) |
 
 ## Build + run
 
@@ -55,6 +57,12 @@ convert with `./prep/convert_smollm2_to_gguf.py --ggml-native`.
 - **Gates** (`smoke_*.rb`) are not examples — they live in
   [`prep/smokes/`](../prep/README.md) and are indexed by
   [`docs/gating.md`](../docs/gating.md).
+- **The full interleaved attention+GDN hybrid** (v0.9.0 / Dragon) has no
+  numbered example — example 08 trains the GDN block on its own; the full
+  hybrid stack drives the engine directly in its own runner: `make
+  gate-gdn-hybrid` (`libexec/toy-train-hybrid`). The design and the
+  `LlamaArch#set_gdn_layer!` seam are written up in
+  [`../docs/roadmap/dragon-gdn-arch-2026-06-20.md`](../docs/roadmap/dragon-gdn-arch-2026-06-20.md).
 - **Superseded tutorials** live in [`legacy/`](legacy/README.md) — the
   pure-Ruby teaching GPT, the full-knobs instrumented trainer
   (events/checkpoints/CKA — still built by the mixed-precision gate),

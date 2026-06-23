@@ -32,8 +32,10 @@ They run pure-Ruby CPU, SEED=0, F32 weights — deterministic by construction.
 reference loss curve:
 
 - `prep/smokes/smoke_projection_lens` (+ `_cuda`, `_metal`) — the frozen
-  reference forward+backward loss curve; the CUDA/Metal mirrors gate the
-  generated backends against it.
+  reference forward+backward loss curve (train through `W_proj` only, token
+  embeddings frozen). `make gate-projection-lens` runs it standalone and
+  asserts the loss drops; `make gate-projection-lens-metal` is the skip-green
+  Metal twin (de-orphans the generated `_metal` mirror).
 - `prep/smokes/smoke_recipe_from_scratch` — drives the same random-init config
   through `Toy::LLM::Recipes::FromScratch`; its `step N: loss=` lines must
   byte-equal the projection-lens reference.

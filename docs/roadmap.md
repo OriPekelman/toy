@@ -26,7 +26,7 @@ codegen block — the mechanical re-apply is in
 [`roadmap/gdn-hybrid-engine-reintegration.md`](roadmap/gdn-hybrid-engine-reintegration.md).
 P6 (a Dragon→toy converter for real weights) has no known path yet.
 For the op/backend coverage matrix see
-[`reference/coverage.md`](coverage.md).
+[`coverage.md`](coverage.md).
 
 ---
 
