@@ -179,11 +179,37 @@ The key insight: **most "missing" primitives aren't missing in ggml —
 they're missing in our FFI surface.** Widening bindings is cheaper than
 touching kernels.
 
-1. **Bind `MUL_MAT_ID` + `ADD_ID` + `TOP_K` + `ARGSORT`** (sparse MoE
-   expert dispatch + router). All exist in ggml; we have zero bindings.
-   Unblocks **five families**: Mixtral, Qwen3-MoE, DeepSeek-V3 FFN,
-   Llama-4-MoE, GLM-MoE. (K-quant experts work — the OLMoE corruption was
-   the `head_nbytes` attention-stride bug above, now fixed.)
+1. **MoE expert dispatch — binding DONE; the work now is routing variants.**
+   The four ops (`MUL_MAT_ID` / `ADD_ID` / `TOP_K` / `ARGSORT`) are bound
+   across CPU + CUDA + Metal (`lib/toy/ffi/tinynn{,_cuda,_metal}.rb`,
+   shims `tinynn/tinynn_ggml.c`, landed `15cdeb3`), and a full **softmax-gated
+   top-k routed FFN** runs in the decode path
+   (`SmolLM2KVFFICache#build_moe_ffn`, `llama_kv_engine.rb:1333`: router →
+   softmax → top_k → 3× `mul_mat_id` → silu·up → weighted sum). OLMoE-Q4_K_M
+   decodes coherently (`make gate-moe-kquant`); **Mixtral / Qwen3-MoE-shape
+   already work** (softmax, top-k, no shared expert, no bias).
+
+   What's left is **completing the routing variants** for the newer families
+   (the metadata is parsed in `arch.rb` but the forward hardcodes softmax /
+   0 shared / no bias):
+   - **P1 — gating variants + renorm + loader keys** (highest leverage):
+     branch `build_moe_ffn` on `expert_gating` (softmax vs **sigmoid**), add
+     optional top-k weight renormalization, and actually *read*
+     `*.expert_gating_func` / `*.expert_weights_norm` / `*.expert_shared_count`
+     (stop hardcoding `:softmax`/`0` at `arch.rb:249`) + add `qwen3moe.*` /
+     `deepseek2.*` arch prefixes. → **Qwen3-MoE** (`norm_topk_prob`) + the
+     sigmoid-gated FFN of **DeepSeek-V2 / GLM-MoE / Llama-4**.
+   - **P2 — shared experts**: load `*_shexp` weights when
+     `n_shared_experts > 0`, build a plain SwiGLU on them, add to the routed
+     output. → **DeepSeek-V2 / Qwen3-Next / GLM-MoE** FFN.
+   - **P3 — DeepSeek-V3 routing** (hardest): aux-loss-free bias on router
+     logits before top-k + node-limited **grouped top-k**. → **DeepSeek-V3**
+     FFN (its MLA attention is a separate milestone below).
+
+   All decode-path / coherence-gated (not byte-exact), so union-pin-safe and
+   clear of the `:int_array` master bug. Each new family gets its own decode
+   gate modelled on `gate-moe-kquant`. Training MoE (the seq engine has no
+   MoE block) is a separate, later effort.
 
 2. **Apply the widened RoPE.** The C and Ruby `tnn_rope_ext` binding
    *already* exposes `freq_scale`, `ext_factor`, `attn_factor`,
