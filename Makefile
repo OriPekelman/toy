@@ -1042,6 +1042,11 @@ examples-curated: example_01 example_02 example_03 example_04 example_05 example
 prep/smokes/smoke_recipe_lora: prep/smokes/smoke_recipe_lora.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/llm/adamw.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/lora.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
+# spinel-dev#33 diagnostic — same deps as smoke_recipe_lora; dumps per-node
+# value checksums after one LoRA step so master-vs-union can be diffed.
+prep/smokes/lora_node_dump: prep/smokes/lora_node_dump.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/llm/adamw.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/lora.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+
 # L4 WarmStart recipe gate. Drives the same warm-start config as the
 # frozen reference 09_warm_start_train (INIT=scratch) THROUGH
 # Toy::LLM::Recipes::WarmStart; its loss curve must byte-equal 09's at
