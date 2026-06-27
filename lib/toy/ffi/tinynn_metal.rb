@@ -131,6 +131,7 @@ module TinyNNMetal
   ffi_func :tnn_tanh,             [:ptr, :ptr],             :ptr
   ffi_func :tnn_mul,              [:ptr, :ptr, :ptr],       :ptr
   ffi_func :tnn_div,              [:ptr, :ptr, :ptr],       :ptr
+  ffi_func :tnn_sigmoid,          [:ptr, :ptr],             :ptr
   ffi_func :tnn_rope_ext,         [:ptr, :ptr, :ptr, :int,
                                    :double, :double, :double, :double,
                                    :double, :double, :ptr], :ptr

@@ -57,6 +57,10 @@ class SmolLM2KVBlockFFI
                 # Set by realize_for_mmap when GGUF carries
                 # blk.0.ffn_gate_inp.weight (the MoE-presence sentinel).
                 :t_w_router, :t_w_gate_exps, :t_w_up_exps, :t_w_down_exps,
+                # P2: always-on shared experts (Qwen2-MoE / DeepSeek-V2 / GLM-MoE).
+                # Loaded when blk carries ffn_gate_shexp; t_w_shexp_gate is the
+                # optional Qwen-style sigmoid gate (ffn_gate_inp_shexp), null otherwise.
+                :t_w_gate_shexp, :t_w_up_shexp, :t_w_down_shexp, :t_w_shexp_gate,
                 :t_K, :t_V,
                 # F1.2: optional LoRA adapters on Q projection (one
                 # rank-R pair per Q head). t_w_lora_a_q[hq] has shape
@@ -98,6 +102,10 @@ class SmolLM2KVBlockFFI
     @t_w_gate_exps = TinyNN.tnn_null_ptr
     @t_w_up_exps   = TinyNN.tnn_null_ptr
     @t_w_down_exps = TinyNN.tnn_null_ptr
+    @t_w_gate_shexp = TinyNN.tnn_null_ptr
+    @t_w_up_shexp   = TinyNN.tnn_null_ptr
+    @t_w_down_shexp = TinyNN.tnn_null_ptr
+    @t_w_shexp_gate = TinyNN.tnn_null_ptr
     @t_w_lora_a_q = [TinyNN.tnn_null_ptr]
     @t_w_lora_b_q = [TinyNN.tnn_null_ptr]
     @t_w_lora_a_q_m = [TinyNN.tnn_null_ptr]
@@ -719,6 +727,39 @@ class SmolLM2KVFFICache
                               moe_d_ff, @d_model, @n_experts,
                               TinyNN.tnn_gguf_tensor_type(gguf_handle, down_exps_idx),
                               TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, down_exps_idx))
+
+        # P2: always-on shared experts — present when the block carries
+        # ffn_gate_shexp (Qwen2-MoE / DeepSeek-V2 / GLM-MoE). A plain SwiGLU
+        # of intermediate size sh_ff = gate_shexp ne[1] (Qwen1.5-MoE: 5632).
+        # gguf ne: gate/up_shexp [d_model, sh_ff] → mmap(rows=sh_ff, cols=d_model);
+        # down_shexp [sh_ff, d_model] → mmap(rows=d_model, cols=sh_ff).
+        gate_shexp_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_gate_shexp.weight")
+        if gate_shexp_idx >= 0
+          up_shexp_idx   = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_up_shexp.weight")
+          down_shexp_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_down_shexp.weight")
+          sh_ff = TinyNN.tnn_gguf_tensor_ne(gguf_handle, gate_shexp_idx, 1)
+          blk.t_w_gate_shexp = TinyNN.tnn_input_2d_persistent_mmap(@sess,
+                                 sh_ff, @d_model,
+                                 TinyNN.tnn_gguf_tensor_type(gguf_handle, gate_shexp_idx),
+                                 TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, gate_shexp_idx))
+          blk.t_w_up_shexp   = TinyNN.tnn_input_2d_persistent_mmap(@sess,
+                                 sh_ff, @d_model,
+                                 TinyNN.tnn_gguf_tensor_type(gguf_handle, up_shexp_idx),
+                                 TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, up_shexp_idx))
+          blk.t_w_down_shexp = TinyNN.tnn_input_2d_persistent_mmap(@sess,
+                                 @d_model, sh_ff,
+                                 TinyNN.tnn_gguf_tensor_type(gguf_handle, down_shexp_idx),
+                                 TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, down_shexp_idx))
+          # Optional Qwen-style sigmoid gate on the shared output (1D [d_model]).
+          # Absent in DeepSeek-V2 (ungated shared experts) → stays null.
+          shexp_gate_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_gate_inp_shexp.weight")
+          if shexp_gate_idx >= 0
+            blk.t_w_shexp_gate = TinyNN.tnn_input_1d_persistent_mmap(@sess,
+                                   @d_model,
+                                   TinyNN.tnn_gguf_tensor_type(gguf_handle, shexp_gate_idx),
+                                   TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, shexp_gate_idx))
+          end
+        end
       else
         gate_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_gate.weight")
         up_idx   = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".ffn_up.weight")
@@ -1373,6 +1414,23 @@ class SmolLM2KVFFICache
     t_weighted_T  = TinyNN.tnn_transpose(@sess, t_weighted_2d)
     t_summed_T    = TinyNN.tnn_sum_rows(@sess, t_weighted_T)             # ne=[1, d_model]
     t_dn          = TinyNN.tnn_reshape_2d(@sess, t_summed_T, @d_model, 1)
+
+    # P2: add the always-on shared expert (Qwen2-MoE / DeepSeek-V2 / GLM-MoE).
+    # A plain SwiGLU on the *_shexp weights; Qwen2-MoE further scales it by a
+    # per-token sigmoid gate (ffn_gate_inp_shexp). Null handles → skipped.
+    if blk.t_w_gate_shexp != TinyNN.tnn_null_ptr
+      t_sh_gate  = TinyNN.tnn_matmul(@sess, blk.t_w_gate_shexp, t_h2)    # [sh_ff, 1]
+      t_sh_up    = TinyNN.tnn_matmul(@sess, blk.t_w_up_shexp,   t_h2)    # [sh_ff, 1]
+      t_sh_silu  = TinyNN.tnn_silu(@sess, t_sh_gate)
+      t_sh_gated = TinyNN.tnn_mul(@sess, t_sh_silu, t_sh_up)
+      t_sh_dn    = TinyNN.tnn_matmul(@sess, blk.t_w_down_shexp, t_sh_gated)  # [d_model, 1]
+      if blk.t_w_shexp_gate != TinyNN.tnn_null_ptr
+        t_sh_logit = TinyNN.tnn_matmul(@sess, blk.t_w_shexp_gate, t_h2)  # [1, 1]
+        t_sh_g     = TinyNN.tnn_sigmoid(@sess, t_sh_logit)
+        t_sh_dn    = TinyNN.tnn_mul(@sess, t_sh_dn, t_sh_g)              # broadcast scalar
+      end
+      t_dn = TinyNN.tnn_add(@sess, t_dn, t_sh_dn)
+    end
     trace_tap(tag + "moe_out", t_dn)
   end
 

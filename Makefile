@@ -551,6 +551,12 @@ gate-moe-kquant:
 gate-qwen3moe:
 	ruby prep/qwen3moe_gate.rb
 
+# Shared-expert MoE gate — Phase 2 (Qwen1.5-MoE / qwen2moe: routed top-k +
+# always-on gated shared expert). Model-gated (~9 GB, gitignored); SKIPs loudly.
+.PHONY: gate-qwen2moe-shexp
+gate-qwen2moe-shexp:
+	ruby prep/qwen2moe_shexp_gate.rb
+
 # Silent poly-degradation gate (#32): compiles the canonical compute entrypoints
 # with spinel and fails if a NEW `cannot resolve … on poly … (emitting 0)` warning
 # appears vs the frozen baseline — i.e. a refactor just silently compiled a literal

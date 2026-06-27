@@ -197,13 +197,13 @@ module GGUFLoad
   end
 
   # norm_topk_prob: whether the routed-expert combine weights are renormalized
-  # to sum 1 over the selected top-k. GGUFs usually omit the key; llama.cpp
-  # hardcodes it true per-arch for qwen2moe / qwen3moe / deepseek2 (Mixtral and
-  # OLMoE use raw softmax-of-top-k, so false → byte-identical to today). Until a
-  # model ships the explicit `*.expert_weights_norm` key, default by arch.
+  # to sum 1 over the selected top-k. GGUFs usually omit the explicit
+  # `*.expert_weights_norm` key, so default by arch to match llama.cpp:
+  # qwen3moe renormalizes; qwen2moe (Qwen1.5-MoE), Mixtral and OLMoE use raw
+  # softmax-of-top-k (false → byte-identical to before). deepseek2 has its own
+  # routed-scaling scheme — left false here (revisit with the MLA milestone).
   def self.moe_norm_topk?(handle)
-    ap = detect_arch_prefix(handle)
-    ap == "qwen3moe" || ap == "qwen2moe" || ap == "deepseek2"
+    detect_arch_prefix(handle) == "qwen3moe"
   end
 
   def self.detect_smollm2_flags(path)
