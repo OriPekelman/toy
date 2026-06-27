@@ -229,7 +229,11 @@ touching kernels.
    Llama-4 chunked attention.
 
 After the three: **DeepSeek MLA (multi-head latent attention) is the
-biggest single-family delta remaining** and the natural next milestone.
+biggest single-family delta remaining** and the natural next milestone —
+designed in [`deepseek-mla-arch.md`](roadmap/deepseek-mla-arch.md) (a second
+attention engine: latent KV cache + per-head up-projection + decoupled YaRN
+RoPE; DeepSeek-V2-Lite is the test model, also needing per-layer dense/MoE
+dispatch and the shared experts shipped in MoE-P2).
 Gemma adds a logit soft-cap (bind `GGML_UNARY_OP_TANH`); Qwen3 dense is
 small additional work (QK-norm + bias-off).
 

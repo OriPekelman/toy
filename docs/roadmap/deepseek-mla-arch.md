@@ -1,0 +1,105 @@
+# DeepSeek MLA (Multi-head Latent Attention) — design
+
+Status: **design** (2026-06-27). Grounds the implementation of `deepseek2`
+inference (DeepSeek-V2-Lite first) in the real GGUF structure. MLA is the
+roadmap's "biggest single-family delta" and a *second attention engine* —
+fundamentally different from toy's per-head MHA — so it is designed before it
+is built.
+
+Test model (downloaded, gitignored): `data/DeepSeek-V2-Lite-Chat.Q4_K_M.gguf`
+(`mradermacher/DeepSeek-V2-Lite-Chat-GGUF`, ~9.7 GB). 27 layers, d_model 2048.
+
+## What MLA is
+
+Standard MHA caches per-head K and V (`n_heads · d_head` each). MLA instead
+projects the hidden state to a small **latent** `c_kv` (`kv_lora_rank`) plus a
+**decoupled RoPE key** `k_rope` (`qk_rope_head_dim`, shared across heads), and
+caches *those*. At attention time the latent is up-projected to per-head
+`k_nope` and `v`. The cache shrinks from `n_heads·(192+128)=5120`/token to
+`512+64=576`/token — the headline DeepSeek win.
+
+## DeepSeek-V2-Lite structure (from the GGUF)
+
+Config (`deepseek2.*`): `head_count=16`, `key_length=192`, `value_length=128`,
+`kv_lora_rank=512`, **`q_lora_rank=None`** (Lite has *no* Q compression — the
+simplest MLA), `rope.dimension_count=64` (= qk_rope_head_dim), so
+`qk_nope_head_dim = 192-64 = 128`. `rope.scaling.type="yarn"`.
+MoE: `expert_count=64`, `expert_used_count=6`, `expert_shared_count=2`,
+**`leading_dense_block_count=1`** (layer 0 is dense, layers 1–26 are MoE).
+
+Per-block attention tensors (gguf ne):
+```
+attn_q        [2048, 3072]   d_model → n_heads·qk_head_dim   (16·192=3072)
+attn_kv_a_mqa [2048,  576]   d_model → kv_lora_rank+qk_rope  (512+64=576)
+attn_kv_a_norm[ 512]         RMSNorm over the latent
+attn_kv_b     [ 512, 4096]   kv_lora_rank → n_heads·(qk_nope+v_head) (16·256)
+attn_output   [2048, 2048]   n_heads·v_head_dim → d_model    (16·128=2048)
+```
+
+## Forward (decode, single token, no q_lora)
+
+Given hidden `x` [2048] at position `pos`:
+1. `q = attn_q·x` → [3072] → per head [16, 192]; split `q_nope`[128], `q_rope`[64].
+2. `kv_a = attn_kv_a_mqa·x` → [576]; split `c_kv`[512], `k_rope`[64] (shared).
+3. `c_kv ← RMSNorm(c_kv, attn_kv_a_norm)`.
+4. RoPE (YaRN) applied to `q_rope` (per head) and `k_rope` (shared) at `pos`.
+5. **Cache** `c_kv`[512] and `k_rope`[64] for `pos`.
+6. Attention over cached `j ≤ pos`:
+   - `kvb = attn_kv_b·c_kv[j]` → [4096] → [16, 256]; split `k_nope[j]`[16,128], `v[j]`[16,128].
+   - `k[j][h] = concat(k_nope[j][h], k_rope[j])` → [16, 192].
+   - `q[h] = concat(q_nope[h], q_rope[h])` → [192].
+   - `score[h,j] = (q[h]·k[j][h]) · softmax_scale` (YaRN mscale-adjusted).
+   - `attn[h] = Σ_j softmax_j(score[h,:]) · v[j][h]` → [128].
+7. `out = attn_output · concat_h(attn[h])` → [2048].
+
+## Integration into toy's KV engine
+
+Dispatch on `is_mla` (detect by `deepseek2` arch / presence of
+`blk.0.attn_kv_a_mqa.weight`). Two phases:
+
+- **MLA-A — correctness first (reuse the cache).** New projection path
+  (`attn_q`, `attn_kv_a_mqa`→`kv_a_norm`→`attn_kv_b`, decoupled RoPE) that emits
+  per-head K[192]/V[128], then reuse toy's existing per-head attention +
+  KV cache. Requires the cache to support **asymmetric K/V head dims**
+  (`t_K` uses `qk_head_dim=192`, `t_V` uses `v_head_dim=128`) — today `t_K`/`t_V`
+  share `@d_head`, so add `@d_head_k`/`@d_head_v`. No memory win yet; correct
+  output. This is the milestone to land + gate first.
+- **MLA-B — latent cache (the memory win).** Cache `c_kv`[512]+`k_rope`[64];
+  up-project per cached position at attention time (or the llama.cpp "absorbed"
+  form folding `attn_kv_b` into `attn_q`/`attn_output`). Optimization, separate.
+
+## Prerequisites (land before/with MLA)
+
+1. **Per-layer dense/MoE dispatch.** `@is_moe` is engine-wide; DeepSeek has a
+   dense layer 0 then MoE. Make FFN dispatch per-block (a `blk.is_moe` flag set
+   by `ffn_gate_inp` presence at load), honoring `leading_dense_block_count`.
+2. **Decoupled / partial RoPE.** RoPE applies only to the `qk_rope_head_dim=64`
+   slice, not the full head. toy's `tnn_rope_ext` already takes a rope dim; the
+   work is slicing `q_rope`/`k_rope` and applying RoPE to just those.
+3. **YaRN scaling.** `rope.scaling.type="yarn"`; the `tnn_rope_ext` binding
+   already exposes `ext_factor`/`attn_factor`/`beta_fast`/`beta_slow` — wire the
+   `deepseek2.rope.scaling.*` keys through (overlaps roadmap priority #2). The
+   YaRN `mscale` also adjusts `softmax_scale`.
+4. **Routing.** 64 experts top-6 + 2 shared (shared experts already shipped,
+   P2). DeepSeek-V2-Lite is softmax-scored, `n_group=1` (no grouping); the
+   grouped/bias routing is V3 (a later P3).
+
+## Validation
+
+- New `deepseek2` arch prefix in `detect_arch_prefix` (gives dims/experts).
+- Decode-coherence gate `gate-deepseek-mla` (model-gated, ~10 GB), greedy,
+  factual-completion assertion like `gate-qwen3moe`.
+- Regression: `gate-cpu` byte-exact, `gate-moe-kquant`/`gate-qwen3moe`/
+  `gate-qwen2moe-shexp` unchanged (the MLA path is null-gated for non-MLA).
+- Mirror to CUDA/Metal via `gen_cuda_mirror.rb`; bind any new FFI op in both.
+
+## Order of work
+
+1. `detect_arch_prefix` + dims for `deepseek2`; per-layer dense/MoE dispatch.
+2. MLA-A projection path + asymmetric K/V cache + decoupled RoPE (CPU), gate.
+3. YaRN wiring (shared with roadmap #2).
+4. MLA-B latent cache (memory win).
+5. Mirrors + commit per milestone.
+
+DeepSeek-V3 adds grouped top-k + the aux-loss-free expert bias (MoE P3) on top
+of this MLA; out of scope here.
