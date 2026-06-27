@@ -464,8 +464,12 @@ gate-run-log:
 # turns the skip into a failure): MRI+Fiddle reproduces the recorded
 # Spinel from-scratch gate curve BIT-EXACT (train_baseline.txt) and the
 # smollm2-135m greedy decode ids byte-equal infer_baseline.txt.
+# Prereq on the shared .so so a NEW FFI symbol (e.g. the #1449
+# tnn_input_1d_i32_persistent) can't leave a STALE .so behind that
+# fails the native leg with a missing-symbol NativeCallError — make
+# rebuilds it from the .o's automatically.
 .PHONY: gate-mri
-gate-mri:
+gate-mri: tinynn/libtinynn_ggml_shared.so
 	ruby prep/mri_gate.rb
 
 # toy#60 item 4 — the COLD-START consumer gate: `toy new` scaffold →
