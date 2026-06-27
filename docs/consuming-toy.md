@@ -290,13 +290,23 @@ Two honest limits (probed on spinel a699cf9):
 If your consumer compile fails with `sp_Mat undeclared` (or a poly-dispatch crash
 around an `Array<Mat>`), you've hand-pathed a `require_relative` into toy's tree
 instead of using the vendored layout. Root cause: Spinel's whole-program
-inference is **require-path/layout sensitive** — loading `transformer.rb` (where
-`Mat` lives) via a non-vendored path fragments the type table differently than
-toy's own build. The vendored layout (same tree shape for every consumer) keeps
-inference monomorphic the way toy's build expects. This layout-sensitivity is the
-deeper root of *why* vendoring has to exist — filed as **matz/spinel#1367**.
-toy's `make gate-poly-degrade` guards regressions of the related emit-0 class but
-not this root.
+inference was **require-path/layout sensitive** — `spinel-flatten` deduplicated
+inlined files by exact resolved-path *string*, so loading `transformer.rb` (where
+`Mat` lives) via a non-canonical path (`.../models/../models/transformer`) compared
+unequal to toy's own canonical require and got inlined **twice**, fragmenting the
+type table differently than toy's own build. The vendored layout (same tree shape
+for every consumer) sidesteps this by giving every consumer one canonical path.
+Filed as **matz/spinel#1367**.
+
+**Fixed on current Spinel master (≥ `cbde0f88`, fix #1601):** `spinel-flatten` now
+canonicalizes `.`/`..` segments in `resolve`, so a file always maps to one string
+and is inlined once regardless of the require path it's reached through. On master
+the hand-path consumer flattens to a single `class Mat` and emits a fully-declared
+`sp_Mat` — no `undeclared`, no poly-dispatch crash. (The name-collision axis is
+covered separately by #1425.) If you're on an engine at or past that fix, the
+landmine is gone; the vendored layout is still the recommended path for the native
+archive / `-L` flag wiring, not for inference correctness. toy's
+`make gate-poly-degrade` guards regressions of the related emit-0 class.
 
 ## History
 
