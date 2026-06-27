@@ -174,11 +174,44 @@ module GGUFLoad
     end
   end
 
+  # Detect the GGUF arch-metadata prefix by probing <arch>.embedding_length
+  # (present in every arch; the general.architecture key is unreliable). Each
+  # family uses a unique prefix, so order only disambiguates. Extend this list
+  # as MoE/other families are added (roadmap: qwen3moe / deepseek2 / …).
+  def self.detect_arch_prefix(handle)
+    ap = "llama"
+    if TinyNN.tnn_gguf_get_u32(handle, "llama.embedding_length") < 0
+      if TinyNN.tnn_gguf_get_u32(handle, "olmoe.embedding_length") >= 0
+        ap = "olmoe"
+      elsif TinyNN.tnn_gguf_get_u32(handle, "gemma2.embedding_length") >= 0
+        ap = "gemma2"
+      elsif TinyNN.tnn_gguf_get_u32(handle, "qwen3moe.embedding_length") >= 0
+        ap = "qwen3moe"
+      elsif TinyNN.tnn_gguf_get_u32(handle, "qwen2moe.embedding_length") >= 0
+        ap = "qwen2moe"
+      elsif TinyNN.tnn_gguf_get_u32(handle, "deepseek2.embedding_length") >= 0
+        ap = "deepseek2"
+      end
+    end
+    ap
+  end
+
+  # norm_topk_prob: whether the routed-expert combine weights are renormalized
+  # to sum 1 over the selected top-k. GGUFs usually omit the key; llama.cpp
+  # hardcodes it true per-arch for qwen2moe / qwen3moe / deepseek2 (Mixtral and
+  # OLMoE use raw softmax-of-top-k, so false → byte-identical to today). Until a
+  # model ships the explicit `*.expert_weights_norm` key, default by arch.
+  def self.moe_norm_topk?(handle)
+    ap = detect_arch_prefix(handle)
+    ap == "qwen3moe" || ap == "qwen2moe" || ap == "deepseek2"
+  end
+
   def self.detect_smollm2_flags(path)
     handle = TinyNN.tnn_gguf_load(path)
     if handle == nil
       return SmolLM2Flags.new(false, false, false, 0, false, 0, 0, 0)
     end
+    ap = detect_arch_prefix(handle)
     # Gemma 2 ties embeddings (no separate output.weight), but the
     # convention varies. We detect tie via tensor presence, not arch.
     untied   = TinyNN.tnn_gguf_find_index(handle, "output.weight")       >= 0
@@ -202,16 +235,7 @@ module GGUFLoad
     qk_norm_kind = 0
     if qk_norm
       gamma_ne0 = TinyNN.tnn_gguf_tensor_ne(handle, qn_idx, 0)
-      # Probe d_model and the head count to derive d_head. Multi-arch
-      # prefix logic — try each known arch in order.
-      ap = "llama"
-      if TinyNN.tnn_gguf_get_u32(handle, "llama.embedding_length") < 0
-        if TinyNN.tnn_gguf_get_u32(handle, "olmoe.embedding_length") >= 0
-          ap = "olmoe"
-        elsif TinyNN.tnn_gguf_get_u32(handle, "gemma2.embedding_length") >= 0
-          ap = "gemma2"
-        end
-      end
+      # ap (arch prefix) computed once at the top of detect_smollm2_flags.
       d_model_v = TinyNN.tnn_gguf_get_u32(handle, ap + ".embedding_length")
       n_heads_v = TinyNN.tnn_gguf_get_u32(handle, ap + ".attention.head_count")
       head_dim  = TinyNN.tnn_gguf_get_u32(handle, ap + ".attention.key_length")
@@ -285,12 +309,10 @@ module GGUFLoad
     n_experts      = 0
     n_experts_used = 0
     if is_moe
-      ne_v = TinyNN.tnn_gguf_get_u32(handle, "llama.expert_count")
-      nu_v = TinyNN.tnn_gguf_get_u32(handle, "llama.expert_used_count")
-      if ne_v < 0
-        ne_v = TinyNN.tnn_gguf_get_u32(handle, "olmoe.expert_count")
-        nu_v = TinyNN.tnn_gguf_get_u32(handle, "olmoe.expert_used_count")
-      end
+      # <arch>.expert_count / .expert_used_count via the detected prefix
+      # (llama for Mixtral, olmoe, qwen3moe, deepseek2, …).
+      ne_v = TinyNN.tnn_gguf_get_u32(handle, ap + ".expert_count")
+      nu_v = TinyNN.tnn_gguf_get_u32(handle, ap + ".expert_used_count")
       n_experts      = ne_v > 0 ? ne_v : 0
       n_experts_used = nu_v > 0 ? nu_v : 0
     end
@@ -706,16 +728,9 @@ module SmolLM2ConfigLoader
       puts "SmolLM2ConfigLoader: failed to open " + path
       return Toy::SmolLM2Config.new(0, 0, 0, 0, 0, 0, 0, 10000.0, 1.0e-5)
     end
-    # M2.3 + I-Gemma: arch-prefix probe (llama.* / olmoe.* / gemma2.* / …).
-    # embedding_length is in every arch; vocab_size isn't (OLMoE omits it).
-    ap = "llama"
-    if TinyNN.tnn_gguf_get_u32(handle, "llama.embedding_length") < 0
-      if TinyNN.tnn_gguf_get_u32(handle, "olmoe.embedding_length") >= 0
-        ap = "olmoe"
-      elsif TinyNN.tnn_gguf_get_u32(handle, "gemma2.embedding_length") >= 0
-        ap = "gemma2"
-      end
-    end
+    # M2.3 + I-Gemma: arch-prefix probe (llama.* / olmoe.* / gemma2.* /
+    # qwen3moe.* / deepseek2.* / …). vocab_size isn't in every arch (OLMoE omits).
+    ap = GGUFLoad.detect_arch_prefix(handle)
     vocab     = TinyNN.tnn_gguf_get_u32(handle, ap + ".vocab_size")
     if vocab < 0
       vocab = TinyNN.tnn_gguf_arr_n(handle, "tokenizer.ggml.tokens")

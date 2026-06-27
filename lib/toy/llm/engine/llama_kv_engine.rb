@@ -242,6 +242,7 @@ class SmolLM2KVFFICache
     @is_moe         = false
     @n_experts      = 0
     @n_experts_used = 0
+    @moe_norm_topk  = false   # norm_topk_prob; set in realize_for_mmap (per-arch)
     @gguf_handle_keepalive = TinyNN.tnn_null_ptr  # set by realize_for_mmap
     @lora_q_enabled = false
     @lora_q_rank    = 0
@@ -695,20 +696,27 @@ class SmolLM2KVFFICache
         # collapsing every head onto head 0 — fixed there. K-quant expert
         # stacks (gate/up/down, including OLMoE's mixed q4_K+q6_K down_exps)
         # load and run coherently. See docs/notes/mul_mat_id_quants.md.
+        # Expert intermediate size = the gate_exps tensor's ne[1], read
+        # straight from the GGUF rather than the dense feed_forward_length:
+        # MoE models (Qwen3-30B-A3B: expert_ff=768 vs dense d_ff=6144) size
+        # experts independently. OLMoE's expert_ff == its d_ff, so this is
+        # byte-identical there; robust for any family without a metadata key.
+        moe_d_ff = TinyNN.tnn_gguf_tensor_ne(gguf_handle, gate_exps_idx, 1)
+        @moe_norm_topk = GGUFLoad.moe_norm_topk?(gguf_handle)
         blk.t_w_router    = TinyNN.tnn_input_2d_persistent_mmap(@sess,
                               @n_experts, @d_model,
                               TinyNN.tnn_gguf_tensor_type(gguf_handle, router_idx),
                               TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, router_idx))
         blk.t_w_gate_exps = TinyNN.tnn_input_3d_persistent_mmap(@sess,
-                              @d_model, @d_ff, @n_experts,
+                              @d_model, moe_d_ff, @n_experts,
                               TinyNN.tnn_gguf_tensor_type(gguf_handle, gate_exps_idx),
                               TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, gate_exps_idx))
         blk.t_w_up_exps   = TinyNN.tnn_input_3d_persistent_mmap(@sess,
-                              @d_model, @d_ff, @n_experts,
+                              @d_model, moe_d_ff, @n_experts,
                               TinyNN.tnn_gguf_tensor_type(gguf_handle, up_exps_idx),
                               TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, up_exps_idx))
         blk.t_w_down_exps = TinyNN.tnn_input_3d_persistent_mmap(@sess,
-                              @d_ff, @d_model, @n_experts,
+                              moe_d_ff, @d_model, @n_experts,
                               TinyNN.tnn_gguf_tensor_type(gguf_handle, down_exps_idx),
                               TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, down_exps_idx))
       else
@@ -1337,6 +1345,16 @@ class SmolLM2KVFFICache
     t_top_idx    = TinyNN.tnn_top_k(@sess, t_probs, @n_experts_used)     # ne=[K, 1]
     t_probs_3d   = TinyNN.tnn_reshape_3d(@sess, t_probs, 1, @n_experts, 1)
     t_w_route    = TinyNN.tnn_get_rows(@sess, t_probs_3d, t_top_idx)     # ne=[1, K, 1]
+
+    # norm_topk_prob (Qwen3-MoE / DeepSeek): renormalize the K selected weights
+    # to sum 1. Mixtral/OLMoE leave this false → byte-identical to before. Sum
+    # over K via reshape→sum_rows (ne0-only reduce), then broadcast-divide.
+    if @moe_norm_topk
+      t_w_flat   = TinyNN.tnn_reshape_2d(@sess, t_w_route, @n_experts_used, 1)  # [K, 1]
+      t_w_ssum   = TinyNN.tnn_sum_rows(@sess, t_w_flat)                         # [1, 1]
+      t_w_ssum3  = TinyNN.tnn_reshape_3d(@sess, t_w_ssum, 1, 1, 1)              # [1, 1, 1]
+      t_w_route  = TinyNN.tnn_div(@sess, t_w_route, t_w_ssum3)                  # broadcast over K
+    end
 
     t_e_gate     = TinyNN.tnn_mul_mat_id(@sess, blk.t_w_gate_exps, t_h2, t_top_idx)
     t_e_up       = TinyNN.tnn_mul_mat_id(@sess, blk.t_w_up_exps,   t_h2, t_top_idx)

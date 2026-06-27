@@ -544,6 +544,13 @@ endif
 gate-moe-kquant:
 	ruby prep/moe_kquant_gate.rb
 
+# Qwen3-MoE (qwen3moe arch) inference gate — Phase 1 routing variants
+# (arch-prefix load + separate expert_ff + norm_topk renorm). Model-gated
+# (~18 GB Qwen3-30B-A3B Q4_K_M, gitignored); SKIPs loudly when absent.
+.PHONY: gate-qwen3moe
+gate-qwen3moe:
+	ruby prep/qwen3moe_gate.rb
+
 # Silent poly-degradation gate (#32): compiles the canonical compute entrypoints
 # with spinel and fails if a NEW `cannot resolve … on poly … (emitting 0)` warning
 # appears vs the frozen baseline — i.e. a refactor just silently compiled a literal
