@@ -102,6 +102,12 @@ class ToyLM
     if (ENV["FLASH_ATTN"] || "") == "1"
       kv.enable_flash_attn!
     end
+    # MLA-B: KV_MLA_LATENT=1 caches the compressed latent (c_kv + shared
+    # k_rope) instead of the expanded per-head K/V — the DeepSeek memory
+    # win. Only effective for deepseek2 (is_mla); inert otherwise.
+    if (ENV["KV_MLA_LATENT"] || "") == "1"
+      kv.enable_mla_latent!
+    end
     # M2.3: MoE — detected by GGUF tensor presence; enables the routed
     # FFN graph (router → softmax → top_k → 3× mul_mat_id → silu·up
     # → weighted sum). Must come BEFORE realize_for_mmap.

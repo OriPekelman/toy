@@ -49,25 +49,45 @@ unless File.exist?(GGUF)
   exit 0
 end
 
-out, st = Open3.capture2e(TOY, "infer", GGUF,
-                          "--prompt", PROMPT, "--n", N.to_s, chdir: ROOT)
-unless st.success?
-  puts "GATE FAIL [deepseek-mla]: `toy infer` exited #{st.exitstatus}"
-  puts out
-  exit 1
+# Run a decode under a given env (MLA-A = expanded cache; MLA-B = latent
+# cache via KV_MLA_LATENT). Returns the generated-text line.
+def decode(toy, gguf, prompt, n, root, env)
+  out, st = Open3.capture2e(env, toy, "infer", gguf,
+                            "--prompt", prompt, "--n", n.to_s, chdir: root)
+  unless st.success?
+    puts "GATE FAIL [deepseek-mla]: `toy infer` exited #{st.exitstatus}"
+    puts out
+    exit 1
+  end
+  out.lines.map(&:rstrip).reject(&:empty?).last.to_s
 end
 
-# Last non-build line is the generated text (build chatter precedes it).
-text = out.lines.map(&:rstrip).reject(&:empty?).last.to_s
-puts "[deepseek-mla] decode: #{text}"
-
-unless text.downcase.include?(EXPECT.downcase)
-  puts "GATE FAIL [deepseek-mla]: expected the decode to contain #{EXPECT.inspect}"
+# MLA-A (expanded per-head K/V cache — the default path).
+text_a = decode(TOY, GGUF, PROMPT, N, ROOT, {})
+puts "[deepseek-mla] MLA-A decode: #{text_a}"
+unless text_a.downcase.include?(EXPECT.downcase)
+  puts "GATE FAIL [deepseek-mla]: expected MLA-A decode to contain #{EXPECT.inspect}"
   puts "  (MLA projection / asymmetric KV / decoupled YaRN RoPE / per-layer MoE"
-  puts "   / add_bos regressed — got: #{text.inspect})"
+  puts "   / add_bos regressed — got: #{text_a.inspect})"
   exit 1
 end
 
-puts "GATE PASS [deepseek-mla]: coherent DeepSeek-V2 MLA decode " +
-     "(latent-attention + decoupled YaRN RoPE + per-layer MoE)."
+# MLA-B (latent cache — the memory win). Must recall the same fact AND
+# match MLA-A's greedy decode exactly (same math, different cache layout).
+text_b = decode(TOY, GGUF, PROMPT, N, ROOT, { "KV_MLA_LATENT" => "1" })
+puts "[deepseek-mla] MLA-B decode: #{text_b}"
+unless text_b.downcase.include?(EXPECT.downcase)
+  puts "GATE FAIL [deepseek-mla]: expected MLA-B (latent cache) decode to contain #{EXPECT.inspect}"
+  puts "  (latent-cache up-projection regressed — got: #{text_b.inspect})"
+  exit 1
+end
+unless text_a == text_b
+  puts "GATE FAIL [deepseek-mla]: MLA-A and MLA-B greedy decodes diverged"
+  puts "  A: #{text_a.inspect}"
+  puts "  B: #{text_b.inspect}"
+  exit 1
+end
+
+puts "GATE PASS [deepseek-mla]: coherent DeepSeek-V2 MLA decode, MLA-A == MLA-B " +
+     "(latent-attention + decoupled YaRN RoPE + per-layer MoE; expanded & latent cache)."
 exit 0

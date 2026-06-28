@@ -65,6 +65,19 @@ class ToyLMCuda
     if (ENV["FLASH_ATTN"] || "") == "1"
       kv.enable_flash_attn!
     end
+    # MoE — parity with load_cpu. Enables the routed expert FFN. MoE GGUFs
+    # (incl. DeepSeek-V2) are standard ggml-native layout but may lack the
+    # toy.ggml_native flag, so force the mmap path when MoE is detected.
+    if flags.is_moe
+      kv.enable_moe!(flags.n_experts, flags.n_experts_used)
+      is_native = true
+      puts "MoE detected: n_experts=" + flags.n_experts.to_s +
+           " top_k=" + flags.n_experts_used.to_s
+    end
+    # MLA-B: KV_MLA_LATENT=1 caches the compressed latent (deepseek2 only).
+    if (ENV["KV_MLA_LATENT"] || "") == "1"
+      kv.enable_mla_latent!
+    end
     # #76 fix: wire QK-norm through to the engine, parity with
     # load_cpu in lib/toy/models/transformer_lm.rb. This call site
     # previously passed only 5 of realize_for_mmap's 6 args; Spinel

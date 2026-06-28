@@ -1,15 +1,29 @@
 # DeepSeek MLA (Multi-head Latent Attention) — design
 
-Status: **MLA-A SHIPPED** (2026-06-27; CPU). Grounds the implementation of
-`deepseek2` inference (DeepSeek-V2-Lite first) in the real GGUF structure. MLA
+Status: **MLA-A + MLA-B SHIPPED** (2026-06-28; CPU). Grounds the implementation
+of `deepseek2` inference (DeepSeek-V2-Lite first) in the real GGUF structure. MLA
 is the roadmap's "biggest single-family delta" and a *second attention engine* —
 fundamentally different from toy's per-head MHA.
 
-MLA-A landed on CPU: `gate-deepseek-mla` greedy-decodes "The capital of France
-is" → "Paris." (matches llama.cpp's reference continuation). The correctness-
-first path (reuse the per-head cache; no memory win yet) is live in
-`SmolLM2KVFFICache#build_mla_block_step`. MLA-B (latent cache, the memory win)
-and the CUDA/Metal mirrors remain TODO.
+`gate-deepseek-mla` greedy-decodes "The capital of France is" → "Paris." (matches
+llama.cpp's reference continuation), and asserts **MLA-A == MLA-B** (identical
+greedy decode).
+- **MLA-A** (`SmolLM2KVFFICache#build_mla_block_step`, default): correctness-
+  first, caches the expanded per-head K(192)/V(128).
+- **MLA-B** (`#build_mla_b_block_step`, opt-in `KV_MLA_LATENT=1`): caches the
+  compressed latent c_kv[512] + shared k_rope[64] and up-projects the history
+  through `attn_kv_b` at attention time — **8.89× smaller KV cache**
+  (`prep/deepseek_mla_bench.rb`: 5120 → 576 floats/token/layer; at 32K context
+  18.1 GB → 2.0 GB), at ~29% more decode time in this naive (non-absorbed) form.
+  The **absorbed** form (fold `attn_kv_b` into `attn_q`/`attn_output`, attend in
+  latent space) would recover the speed — the natural next optimization.
+
+CUDA/Metal: the engine is mechanically mirrored (`gen_cuda_mirror.rb`; both have
+`build_mla_block_step` + `build_mla_b_block_step`, `--verify` clean) and the CUDA
+driver is wired (MoE + MLA-B), and `libexec/toy-infer-cuda` compiles. End-to-end
+CUDA DeepSeek is blocked by a **pre-existing CUDA MoE-FFN crash** (illegal memory
+access — reproduces on qwen3moe with NO MLA, so it is independent of this work);
+non-MoE CUDA decode (SmolLM2) is unaffected. CPU is the verified MLA backend.
 
 Test model (downloaded, gitignored): `data/DeepSeek-V2-Lite-Chat.Q4_K_M.gguf`
 (`mradermacher/DeepSeek-V2-Lite-Chat-GGUF`, ~9.7 GB). 27 layers, d_model 2048.
@@ -110,10 +124,15 @@ Dispatch on `is_mla` (detect by `deepseek2` arch / presence of
    `n_ctx_orig`. `RopeScaling.deepseek_yarn` folds the mscale into the softmax
    `kq_scale = mscale²/√d_head_k`, with the rope `attn_factor` back-compensated
    so the rotation magnitude stays 1.0.
-4. MLA-B latent cache (memory win) — TODO.
-5. CUDA/Metal mirrors — TODO. `tnn_rope_ext_yarn` is already declared in the
-   CUDA/Metal FFI mirrors (the symbol is in the shared `libtinynn_ggml.a`); only
-   the engine's `build_mla_block_step` still needs mirroring.
+4. ✅ MLA-B latent cache (the memory win) — `#build_mla_b_block_step`, opt-in
+   `KV_MLA_LATENT=1`; caches c_kv[512]+k_rope[64], up-projects the history at
+   read time. 8.89× smaller cache, numerically == MLA-A. Naive (non-absorbed);
+   the absorbed form is the next optimization to recover the ~29% speed cost.
+5. ✅ CUDA/Metal engine mirror — `gen_cuda_mirror.rb` regenerates both with the
+   MLA methods (`--verify` clean); CUDA driver wired (MoE + MLA-B);
+   `libexec/toy-infer-cuda` compiles. **Blocked at runtime by a pre-existing
+   CUDA MoE-FFN crash** (independent of MLA — reproduces on qwen3moe). Metal is
+   unverifiable off-Darwin. CPU is the verified MLA backend.
 
 ## Bring-up notes (gotchas hit during MLA-A)
 
