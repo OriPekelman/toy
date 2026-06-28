@@ -305,7 +305,12 @@ module GGUFLoad
     # metadata keys; we try llama.* then fall back to olmoe.* (and
     # any future arch the same way). We don't *need* to know the arch
     # name itself — just the values.
-    is_moe = TinyNN.tnn_gguf_find_index(handle, "blk.0.ffn_gate_inp.weight") >= 0
+    # blk.0 is the usual sentinel, but DeepSeek-V2's leading_dense_block_count
+    # makes layer 0 a plain dense FFN — its first MoE block is layer 1. Probe
+    # blk.1 too so deepseek2 (and any leading-dense MoE) is detected. The
+    # engine dispatches dense-vs-MoE per layer via cfg.leading_dense.
+    is_moe = (TinyNN.tnn_gguf_find_index(handle, "blk.0.ffn_gate_inp.weight") >= 0) ||
+             (TinyNN.tnn_gguf_find_index(handle, "blk.1.ffn_gate_inp.weight") >= 0)
     n_experts      = 0
     n_experts_used = 0
     if is_moe
@@ -681,23 +686,23 @@ module SmolLM2ConfigLoader
   # Returns Toy::RopeScaling.none when the type key is missing (gguf
   # accessors return -1/0 sentinels). LongRoPE not yet supported —
   # falls back to .none with a warning.
-  def self.read_rope_scaling(handle)
-    kind_str = TinyNN.tnn_gguf_get_str(handle, "llama.rope.scaling.type")
+  def self.read_rope_scaling(handle, ap)
+    kind_str = TinyNN.tnn_gguf_get_str(handle, ap + ".rope.scaling.type")
     if kind_str == nil
       return Toy::RopeScaling.none
     end
     if kind_str == "linear"
-      f = TinyNN.tnn_gguf_get_f32(handle, "llama.rope.scaling.factor")
+      f = TinyNN.tnn_gguf_get_f32(handle, ap + ".rope.scaling.factor")
       puts "rope_scaling: linear (factor=" + f.to_s + ")"
       return Toy::RopeScaling.linear(f)
     end
     if kind_str == "llama3"
-      f    = TinyNN.tnn_gguf_get_f32(handle, "llama.rope.scaling.factor")
-      lo   = TinyNN.tnn_gguf_get_f32(handle, "llama.rope.scaling.low_freq_factor")
-      hi   = TinyNN.tnn_gguf_get_f32(handle, "llama.rope.scaling.high_freq_factor")
-      omp  = TinyNN.tnn_gguf_get_u32(handle, "llama.rope.scaling.original_context_length")
+      f    = TinyNN.tnn_gguf_get_f32(handle, ap + ".rope.scaling.factor")
+      lo   = TinyNN.tnn_gguf_get_f32(handle, ap + ".rope.scaling.low_freq_factor")
+      hi   = TinyNN.tnn_gguf_get_f32(handle, ap + ".rope.scaling.high_freq_factor")
+      omp  = TinyNN.tnn_gguf_get_u32(handle, ap + ".rope.scaling.original_context_length")
       if omp < 0
-        omp = TinyNN.tnn_gguf_get_u32(handle, "llama.context_length")
+        omp = TinyNN.tnn_gguf_get_u32(handle, ap + ".context_length")
       end
       puts "rope_scaling: llama3 (factor=" + f.to_s +
            " low=" + lo.to_s + " high=" + hi.to_s +
@@ -705,11 +710,24 @@ module SmolLM2ConfigLoader
       return Toy::RopeScaling.llama3(f, lo, hi, omp)
     end
     if kind_str == "yarn"
-      f   = TinyNN.tnn_gguf_get_f32(handle, "llama.rope.scaling.factor")
-      omp = TinyNN.tnn_gguf_get_u32(handle, "llama.rope.scaling.original_context_length")
-      af  = TinyNN.tnn_gguf_get_f32(handle, "llama.rope.scaling.attn_factor")
-      bf  = TinyNN.tnn_gguf_get_f32(handle, "llama.rope.scaling.beta_fast")
-      bs  = TinyNN.tnn_gguf_get_f32(handle, "llama.rope.scaling.beta_slow")
+      f   = TinyNN.tnn_gguf_get_f32(handle, ap + ".rope.scaling.factor")
+      omp = TinyNN.tnn_gguf_get_u32(handle, ap + ".rope.scaling.original_context_length")
+      if omp < 0
+        omp = TinyNN.tnn_gguf_get_u32(handle, ap + ".context_length")
+      end
+      # DeepSeek-V2 carries yarn_log_multiplier (no explicit attn_factor);
+      # the mscale-bearing softmax scale is derived from it in the engine,
+      # and attn_factor is back-compensated in the factory. Other yarn
+      # models read attn_factor/beta directly.
+      ylm = TinyNN.tnn_gguf_get_f32(handle, ap + ".rope.scaling.yarn_log_multiplier")
+      if ylm > 0.0
+        puts "rope_scaling: yarn/deepseek (factor=" + f.to_s + " orig_max=" + omp.to_s +
+             " yarn_log_mul=" + ylm.to_s + ")"
+        return Toy::RopeScaling.deepseek_yarn(f, omp, ylm)
+      end
+      af  = TinyNN.tnn_gguf_get_f32(handle, ap + ".rope.scaling.attn_factor")
+      bf  = TinyNN.tnn_gguf_get_f32(handle, ap + ".rope.scaling.beta_fast")
+      bs  = TinyNN.tnn_gguf_get_f32(handle, ap + ".rope.scaling.beta_slow")
       if af == 0.0; af = 1.0; end
       if bf == 0.0; bf = 32.0; end
       if bs == 0.0; bs = 1.0; end
@@ -756,13 +774,38 @@ module SmolLM2ConfigLoader
     # that as "use the default" (d_model / n_heads, computed in
     # SmolLM2Config.initialize).
     head_dim = TinyNN.tnn_gguf_get_u32(handle, ap + ".attention.key_length")
-    scaling   = read_rope_scaling(handle)
+    scaling   = read_rope_scaling(handle, ap)
+    # DeepSeek-V2 MLA dims (only meaningful for deepseek2; harmless
+    # otherwise — guarded by the prefix below). key_length=192 is the
+    # qk head dim, value_length=128 the v head dim, kv_lora_rank=512 the
+    # latent width, rope.dimension_count=64 the decoupled-RoPE width,
+    # leading_dense_block_count the # of dense layers before MoE starts.
+    is_mla        = (ap == "deepseek2")
+    kv_lora_rank  = 0
+    d_head_v      = 0
+    rope_dim      = 0
+    leading_dense = 0
+    if is_mla
+      kv_lora_rank  = TinyNN.tnn_gguf_get_u32(handle, ap + ".attention.kv_lora_rank")
+      d_head_v      = TinyNN.tnn_gguf_get_u32(handle, ap + ".attention.value_length")
+      rope_dim      = TinyNN.tnn_gguf_get_u32(handle, ap + ".rope.dimension_count")
+      leading_dense = TinyNN.tnn_gguf_get_u32(handle, ap + ".leading_dense_block_count")
+      if leading_dense < 0; leading_dense = 0; end
+    end
     TinyNN.tnn_gguf_free(handle)
     cfg = Toy::SmolLM2Config.new(vocab, d_model, n_head, n_kv, d_ff, n_layer,
                                  ctx, rope_base, rms_eps)
     cfg.rope_scaling = scaling
     if head_dim > 0
       cfg.head_dim = head_dim
+    end
+    if is_mla
+      cfg.is_mla        = true
+      cfg.kv_lora_rank  = kv_lora_rank
+      cfg.d_head_k      = head_dim       # qk_head_dim (key_length)
+      cfg.d_head_v      = d_head_v       # v_head_dim  (value_length)
+      cfg.rope_dim      = rope_dim       # decoupled-RoPE width
+      cfg.leading_dense = leading_dense
     end
     cfg
   end

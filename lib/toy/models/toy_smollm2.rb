@@ -35,7 +35,14 @@ module Toy
     attr_accessor :kind,
                   :freq_scale, :orig_max_pos,
                   :factor, :low_freq_factor, :high_freq_factor,
-                  :ext_factor, :attn_factor, :beta_fast, :beta_slow
+                  :ext_factor, :attn_factor, :beta_fast, :beta_slow,
+                  # DeepSeek-V2 YaRN: the log-multiplier (gguf
+                  # rope.scaling.yarn_log_multiplier, e.g. 0.0707 =
+                  # 0.1·mscale_all_dim). 0.0 for every non-deepseek
+                  # scaling. The engine uses it to derive the attention
+                  # softmax mscale: mscale = 1 + yarn_log_mul·ln(factor),
+                  # and kq_scale = mscale²/√d_head_k.
+                  :yarn_log_mul
 
     def initialize(kind,
                    freq_scale, orig_max_pos,
@@ -51,6 +58,7 @@ module Toy
       @attn_factor      = attn_factor
       @beta_fast        = beta_fast
       @beta_slow        = beta_slow
+      @yarn_log_mul     = 0.0
     end
 
     # No-scaling — used by SmolLM2, GPT-2, Qwen2-short-context, and any
@@ -74,6 +82,22 @@ module Toy
       Toy::RopeScaling.new(:llama3, 1.0, orig_max_pos,
                            factor, low_freq, high_freq,
                            0.0, 1.0, 32.0, 1.0)
+    end
+
+    # DeepSeek-V2 decoupled-RoPE YaRN. ext_factor=1 enables the YaRN
+    # ramp (the engine routes the pe slice through tnn_rope_ext_yarn
+    # with n_ctx_orig=orig_max_pos). attn_factor is back-compensated so
+    # the NET rope magnitude scale is 1.0: ggml's rope_yarn multiplies
+    # cos/sin by attn_factor·(1+0.1·ln(1/freq_scale)), but DeepSeek puts
+    # no magnitude scaling on the rotation — the mscale lives in the
+    # softmax kq_scale instead (derived from yarn_log_mul in the engine).
+    def self.deepseek_yarn(factor, orig_max_pos, yarn_log_mul)
+      fs = 1.0 / factor
+      af = 1.0 / (1.0 + 0.1 * Math.log(factor))
+      rs = Toy::RopeScaling.new(:yarn, fs, orig_max_pos,
+                                factor, 1.0, 4.0, 1.0, af, 32.0, 1.0)
+      rs.yarn_log_mul = yarn_log_mul
+      rs
     end
 
     # Compute the (d_head/2)-element per-dim freq_factors array for
@@ -129,7 +153,20 @@ module Toy
                   # donor GGUF) and a Linear(donor_d_in, d_model) is
                   # inserted after embed lookup. 0 disables (default
                   # path = embed table has d_model columns).
-                  :donor_d_in
+                  :donor_d_in,
+                  # DeepSeek-V2 MLA (Multi-head Latent Attention). All
+                  # default inert (is_mla=false) so non-deepseek models
+                  # are byte-identical. When is_mla:
+                  #   kv_lora_rank  — latent c_kv width (512)
+                  #   d_head_k      — qk_head_dim = key_length (192)
+                  #   d_head_v      — v_head_dim  = value_length (128)
+                  #   rope_dim      — decoupled-RoPE width = rope.dim (64)
+                  #   leading_dense — # dense layers before MoE starts
+                  #                   (deepseek2.leading_dense_block_count=1)
+                  # @head_dim carries the qk dim (192); the engine reads
+                  # d_head_v for the attention-output / o_proj width.
+                  :is_mla, :kv_lora_rank, :d_head_k, :d_head_v,
+                  :rope_dim, :leading_dense
 
     def initialize(vocab, d_model, n_heads, n_kv, d_ff, n_layers,
                    ctx, rope_base, rms_eps)
@@ -149,6 +186,13 @@ module Toy
       # (the GGUF loader does this in SmolLM2ConfigLoader.read).
       @rope_scaling = Toy::RopeScaling.none
       @donor_d_in   = 0   # E2.3 — projection-lens disabled by default
+      # DeepSeek-V2 MLA — inert by default (loader sets these for deepseek2).
+      @is_mla        = false
+      @kv_lora_rank  = 0
+      @d_head_k      = @head_dim
+      @d_head_v      = @head_dim
+      @rope_dim      = @head_dim
+      @leading_dense = 0
     end
 
     # Convenience: the default that matches SmolLM2-135M on HF.

@@ -557,6 +557,14 @@ gate-qwen3moe:
 gate-qwen2moe-shexp:
 	ruby prep/qwen2moe_shexp_gate.rb
 
+# DeepSeek-V2 MLA-A (deepseek2 arch) inference gate — Multi-head Latent
+# Attention: latent c_kv + shared decoupled-RoPE key, asymmetric K(192)/V(128)
+# cache, YaRN-mscale softmax, per-layer dense/MoE dispatch. Model-gated
+# (~9.7 GB DeepSeek-V2-Lite-Chat Q4_K_M, gitignored); SKIPs loudly when absent.
+.PHONY: gate-deepseek-mla
+gate-deepseek-mla:
+	ruby prep/deepseek_mla_gate.rb
+
 # Silent poly-degradation gate (#32): compiles the canonical compute entrypoints
 # with spinel and fails if a NEW `cannot resolve … on poly … (emitting 0)` warning
 # appears vs the frozen baseline — i.e. a refactor just silently compiled a literal

@@ -285,6 +285,14 @@ class Tokenizer
     build_byte_tables
     ids = [0]
     ids.pop
+    # Honor tokenizer.ggml.add_bos_token on the byte-level BPE path too
+    # (DeepSeek-V2 sets it; without BOS at pos 0 the model degenerates —
+    # the attention sink lives on the BOS token). Gated on @add_bos, which
+    # is false for every toy-converted fixture (they don't emit the key),
+    # so canonical SmolLM2/Qwen/Llama tokenization stays bit-identical.
+    if @add_bos && @bos_id != nil && @bos_id >= 0
+      ids.push(@bos_id)
+    end
     # Pre-tokenizer regex (Llama-3 / cl100k_base style, ASCII fallback).
     pre_re = /'s|'t|'re|'ve|'m|'ll|'d|'S|'T|'RE|'VE|'M|'LL|'D|[^\r\na-zA-Z0-9]?[a-zA-Z]+|[0-9]{1,3}| ?[^\sa-zA-Z0-9]+[\r\n]*|\s+/
     chunks = text.scan(pre_re)

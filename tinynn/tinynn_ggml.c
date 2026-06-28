@@ -1368,6 +1368,40 @@ void *tnn_rope_ext(void *sess, void *a, void *pos, int n_dims,
                                   (float)beta_slow);
 }
 
+/* Like tnn_rope_ext but with an explicit n_ctx_orig. Real YaRN
+ * (DeepSeek-V2 MLA, long-context Qwen) needs the original training
+ * context length to compute ggml's correction dims — without it the
+ * yarn ramp degenerates to plain linear/NTK scaling (n_ctx_orig=0 makes
+ * the corr-dim log blow up), which garbles short-context decode. The
+ * decoupled-RoPE pe slice in MLA routes through here. NEOX mode, same
+ * as tnn_rope_ext. */
+void *tnn_rope_ext_yarn(void *sess, void *a, void *pos, int n_dims,
+                        int mode, int n_ctx_orig,
+                        double freq_base, double freq_scale,
+                        double ext_factor, double attn_factor,
+                        double beta_fast, double beta_slow,
+                        void *freq_factors)
+{
+    if (!sess || !a || !pos) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    /* mode: 0 = GGML_ROPE_TYPE_NORM (GPT-J interleaved pairs (2i,2i+1)),
+     * 2 = GGML_ROPE_TYPE_NEOX (rotate_half). DeepSeek-V2's decoupled-RoPE
+     * GGUFs are laid out for NORM; the standard tnn_rope_ext hardcodes NEOX. */
+    return (void *)ggml_rope_ext(s->ctx,
+                                  (struct ggml_tensor *)a,
+                                  (struct ggml_tensor *)pos,
+                                  (struct ggml_tensor *)freq_factors,
+                                  n_dims,
+                                  mode,
+                                  n_ctx_orig,
+                                  (float)freq_base,
+                                  (float)freq_scale,
+                                  (float)ext_factor,
+                                  (float)attn_factor,
+                                  (float)beta_fast,
+                                  (float)beta_slow);
+}
+
 /* Allocate a persistent (n_dims/2)-element F32 tensor in ctx_w to hold
  * RoPE freq_factors for llama3-style or LongRoPE scaling. Must be
  * called BEFORE tnn_finalize_weights, like any other persistent.

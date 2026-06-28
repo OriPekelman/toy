@@ -288,6 +288,12 @@ void  *tnn_rope_ext(void *sess, void *a, void *pos, int n_dims,
                     double ext_factor, double attn_factor,
                     double beta_fast, double beta_slow,
                     void *freq_factors);
+void  *tnn_rope_ext_yarn(void *sess, void *a, void *pos, int n_dims,
+                    int mode, int n_ctx_orig,
+                    double freq_base, double freq_scale,
+                    double ext_factor, double attn_factor,
+                    double beta_fast, double beta_slow,
+                    void *freq_factors);   /* YaRN: explicit mode + n_ctx_orig */
                                                          /* RoPE (NEOX/rotate_half mode); pos is int32[T].
                                                           * freq_factors is a (n_dims/2) f32 tensor or NULL.
                                                           * For linear/dynamic: freq_scale = 1/factor, others default.

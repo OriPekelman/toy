@@ -176,6 +176,12 @@ class Arch
         arch_prefix = "olmoe"
       elsif TinyNN.tnn_gguf_get_u32(handle, "gemma2.embedding_length") >= 0
         arch_prefix = "gemma2"
+      elsif TinyNN.tnn_gguf_get_u32(handle, "qwen3moe.embedding_length") >= 0
+        arch_prefix = "qwen3moe"
+      elsif TinyNN.tnn_gguf_get_u32(handle, "qwen2moe.embedding_length") >= 0
+        arch_prefix = "qwen2moe"
+      elsif TinyNN.tnn_gguf_get_u32(handle, "deepseek2.embedding_length") >= 0
+        arch_prefix = "deepseek2"
       end
     end
     vocab    = TinyNN.tnn_gguf_get_u32(handle, arch_prefix + ".vocab_size")
@@ -193,7 +199,11 @@ class Arch
     end
     rope_base = TinyNN.tnn_gguf_get_f32(handle, arch_prefix + ".rope.freq_base")
     rms_eps   = TinyNN.tnn_gguf_get_f32(handle, arch_prefix + ".attention.layer_norm_rms_epsilon")
-    d_head    = d_model / n_q
+    # Prefer explicit key_length (MLA / Qwen3 set head_dim ≠ d_model/n_q).
+    d_head    = TinyNN.tnn_gguf_get_u32(handle, arch_prefix + ".attention.key_length")
+    if d_head <= 0
+      d_head = d_model / n_q
+    end
 
     # Tensor-presence flags. Per-head bias (toy from-scratch ckpts, #153)
     # carries blk.0.attn_q.head_0.bias instead of the fused name.
@@ -201,12 +211,13 @@ class Arch
                    (TinyNN.tnn_gguf_find_index(handle, "blk.0.attn_q.head_0.bias") >= 0)
     untied       = TinyNN.tnn_gguf_find_index(handle, "output.weight")     >= 0
     # M2.3 MoE detection — same sentinel as detect_smollm2_flags.
-    is_moe       = TinyNN.tnn_gguf_find_index(handle, "blk.0.ffn_gate_inp.weight") >= 0
+    is_moe       = (TinyNN.tnn_gguf_find_index(handle, "blk.0.ffn_gate_inp.weight") >= 0) ||
+                   (TinyNN.tnn_gguf_find_index(handle, "blk.1.ffn_gate_inp.weight") >= 0)
     moe_n_exp    = 0
     moe_n_used   = 0
     if is_moe
-      ne_v = TinyNN.tnn_gguf_get_u32(handle, "llama.expert_count")
-      nu_v = TinyNN.tnn_gguf_get_u32(handle, "llama.expert_used_count")
+      ne_v = TinyNN.tnn_gguf_get_u32(handle, arch_prefix + ".expert_count")
+      nu_v = TinyNN.tnn_gguf_get_u32(handle, arch_prefix + ".expert_used_count")
       moe_n_exp  = ne_v > 0 ? ne_v : 0
       moe_n_used = nu_v > 0 ? nu_v : 0
     end

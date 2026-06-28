@@ -61,6 +61,14 @@ class SmolLM2KVBlockFFI
                 # Loaded when blk carries ffn_gate_shexp; t_w_shexp_gate is the
                 # optional Qwen-style sigmoid gate (ffn_gate_inp_shexp), null otherwise.
                 :t_w_gate_shexp, :t_w_up_shexp, :t_w_down_shexp, :t_w_shexp_gate,
+                # DeepSeek-V2 MLA (Multi-head Latent Attention). Allocated
+                # only when cache.is_mla. Replaces the per-head t_w_q/k/v:
+                #   t_w_q_mla        : full attn_q [d_model → n_heads·d_head_k]
+                #   t_w_kv_a         : attn_kv_a_mqa [d_model → kv_lora_rank+rope_dim]
+                #   t_kv_a_norm_gamma: RMSNorm over the latent c_kv [kv_lora_rank]
+                #   t_w_kv_b         : attn_kv_b [kv_lora_rank → n_heads·(d_head_nope+d_head_v)]
+                # attn_output reuses t_w_o (sized n_heads·d_head_v → d_model).
+                :t_w_q_mla, :t_w_kv_a, :t_kv_a_norm_gamma, :t_w_kv_b,
                 :t_K, :t_V,
                 # F1.2: optional LoRA adapters on Q projection (one
                 # rank-R pair per Q head). t_w_lora_a_q[hq] has shape
@@ -106,6 +114,10 @@ class SmolLM2KVBlockFFI
     @t_w_up_shexp   = TinyNN.tnn_null_ptr
     @t_w_down_shexp = TinyNN.tnn_null_ptr
     @t_w_shexp_gate = TinyNN.tnn_null_ptr
+    @t_w_q_mla        = TinyNN.tnn_null_ptr
+    @t_w_kv_a         = TinyNN.tnn_null_ptr
+    @t_kv_a_norm_gamma = TinyNN.tnn_null_ptr
+    @t_w_kv_b         = TinyNN.tnn_null_ptr
     @t_w_lora_a_q = [TinyNN.tnn_null_ptr]
     @t_w_lora_b_q = [TinyNN.tnn_null_ptr]
     @t_w_lora_a_q_m = [TinyNN.tnn_null_ptr]
@@ -186,6 +198,15 @@ class SmolLM2KVFFICache
                 # → silu·up → weighted sum). Set by detect_smollm2_flags
                 # when GGUF carries blk.0.ffn_gate_inp.weight.
                 :is_moe, :n_experts, :n_experts_used,
+                # DeepSeek-V2 MLA. is_mla flips the attention path to the
+                # latent-projection builder (build_mla_block_step). dims:
+                #   kv_lora_rank, d_head_k (qk=192), d_head_v (v=128),
+                #   rope_dim (decoupled-RoPE width=64). leading_dense is
+                #   the # of dense layers before MoE starts (per-layer FFN
+                #   dispatch). mla_kq_scale is the YaRN-mscale-adjusted
+                #   softmax scale precomputed at realize.
+                :is_mla, :kv_lora_rank, :d_head_k, :d_head_v,
+                :rope_dim, :leading_dense, :mla_kq_scale,
                 :gguf_handle_keepalive,
                 # F1.2: LoRA on Q projection. enable_lora_q!(r) sets
                 # both flags BEFORE realize. When enabled, each block
@@ -251,6 +272,14 @@ class SmolLM2KVFFICache
     @n_experts      = 0
     @n_experts_used = 0
     @moe_norm_topk  = false   # norm_topk_prob; set in realize_for_mmap (per-arch)
+    # DeepSeek-V2 MLA — inert by default (realize_for_mmap sets from cfg).
+    @is_mla         = false
+    @kv_lora_rank   = 0
+    @d_head_k       = 0
+    @d_head_v       = 0
+    @rope_dim       = 0
+    @leading_dense  = 0
+    @mla_kq_scale   = 0.0
     @gguf_handle_keepalive = TinyNN.tnn_null_ptr  # set by realize_for_mmap
     @lora_q_enabled = false
     @lora_q_rank    = 0
@@ -376,6 +405,26 @@ class SmolLM2KVFFICache
     @rope_scaling = cfg.rope_scaling
     @rms_eps      = cfg.rms_eps
 
+    # DeepSeek-V2 MLA. d_head_k (qk=192) / d_head_v (v=128) make the K and
+    # V caches ASYMMETRIC; the attention output width is n_heads·d_head_v.
+    # mla_kq_scale folds the YaRN mscale into the softmax scale:
+    #   mscale   = 1 + yarn_log_mul·ln(factor)
+    #   kq_scale = mscale² / √d_head_k
+    @is_mla        = cfg.is_mla
+    if @is_mla
+      @kv_lora_rank  = cfg.kv_lora_rank
+      @d_head_k      = cfg.d_head_k
+      @d_head_v      = cfg.d_head_v
+      @rope_dim      = cfg.rope_dim
+      @leading_dense = cfg.leading_dense
+      mscale         = 1.0 + @rope_scaling.yarn_log_mul * Math.log(@rope_scaling.factor)
+      @mla_kq_scale  = mscale * mscale / Math.sqrt(@d_head_k.to_f)
+      puts "MLA detected: kv_lora_rank=" + @kv_lora_rank.to_s +
+           " d_head_k=" + @d_head_k.to_s + " d_head_v=" + @d_head_v.to_s +
+           " rope_dim=" + @rope_dim.to_s + " leading_dense=" + @leading_dense.to_s +
+           " kq_scale=" + @mla_kq_scale.to_s
+    end
+
     @gguf_handle_keepalive = gguf_handle   # prevent GC; mmap must outlive @sess
     @sess              = TinyNN.tnn_session_new(0)
     @has_untied_output = untied
@@ -469,6 +518,53 @@ class SmolLM2KVFFICache
                                        TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, pf_idx))
       end
 
+      if @is_mla
+        # --- DeepSeek-V2 MLA attention weights (whole tensors) ---
+        # attn_q [d_model → n_heads·d_head_k]; per-head split into
+        # q_nope(d_head_k-rope_dim) + q_rope(rope_dim) happens in the graph.
+        q_idx  = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_q.weight")
+        blk.t_w_q_mla = TinyNN.tnn_input_2d_persistent_mmap(@sess,
+                          @n_heads * @d_head_k, @d_model,
+                          TinyNN.tnn_gguf_tensor_type(gguf_handle, q_idx),
+                          TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, q_idx))
+        # attn_kv_a_mqa [d_model → kv_lora_rank + rope_dim]; the latent
+        # c_kv(kv_lora_rank) + the shared decoupled-RoPE key k_rope(rope_dim).
+        kva_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_kv_a_mqa.weight")
+        blk.t_w_kv_a = TinyNN.tnn_input_2d_persistent_mmap(@sess,
+                         @kv_lora_rank + @rope_dim, @d_model,
+                         TinyNN.tnn_gguf_tensor_type(gguf_handle, kva_idx),
+                         TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, kva_idx))
+        # attn_kv_a_norm: RMSNorm over the latent [kv_lora_rank] (F32).
+        kvan_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_kv_a_norm.weight")
+        blk.t_kv_a_norm_gamma = TinyNN.tnn_input_1d_persistent_mmap(@sess,
+                                  @kv_lora_rank, 0,
+                                  TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, kvan_idx))
+        # attn_kv_b [kv_lora_rank → n_heads·(d_head_nope + d_head_v)];
+        # up-projects the latent to per-head k_nope(d_head_k-rope_dim) + v(d_head_v).
+        kvb_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_kv_b.weight")
+        d_head_nope = @d_head_k - @rope_dim
+        blk.t_w_kv_b = TinyNN.tnn_input_2d_persistent_mmap(@sess,
+                         @n_heads * (d_head_nope + @d_head_v), @kv_lora_rank,
+                         TinyNN.tnn_gguf_tensor_type(gguf_handle, kvb_idx),
+                         TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, kvb_idx))
+        # attn_output [n_heads·d_head_v → d_model].
+        o_idx = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_output.weight")
+        blk.t_w_o = TinyNN.tnn_input_2d_persistent_mmap(@sess,
+                      @d_model, @n_heads * @d_head_v,
+                      TinyNN.tnn_gguf_tensor_type(gguf_handle, o_idx),
+                      TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, o_idx))
+        # Asymmetric per-(query-)head K(d_head_k) / V(d_head_v) cache.
+        # MLA-A reuses the existing per-head attention by caching the
+        # expanded K/V (no memory win; that is MLA-B). F32 only.
+        blk.t_K = [TinyNN.tnn_input_2d_f32_persistent(@sess, max_T, @d_head_k)]
+        blk.t_V = [TinyNN.tnn_input_2d_f32_persistent(@sess, max_T, @d_head_v)]
+        hmla = 1
+        while hmla < @n_heads
+          blk.t_K.push(TinyNN.tnn_input_2d_f32_persistent(@sess, max_T, @d_head_k))
+          blk.t_V.push(TinyNN.tnn_input_2d_f32_persistent(@sess, max_T, @d_head_v))
+          hmla = hmla + 1
+        end
+      else
       # M1 + #110: QK-norm gammas. Two flavors detected via shape:
       #   kind=1: Qwen3 — gamma shape [d_head], shared across heads.
       #   kind=2: OLMoE / Granite — gamma shape [d_model], applied to
@@ -673,17 +769,22 @@ class SmolLM2KVFFICache
         end
       end
 
-      # O / FFN — full 2D weights, no per-head slicing.
-      o_idx    = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_output.weight")
+      # O — full 2D weight, no per-head slicing.
       # M1.1: o_proj maps [n_heads * d_head] → [d_model]. For models
       # where d_head = d_model / n_heads (SmolLM2 / Llama / Qwen2.5)
       # these are equal; for Qwen3 with explicit head_dim=128 they
       # differ (n_heads * d_head = 2048, d_model = 1024).
+      o_idx    = TinyNN.tnn_gguf_find_index(gguf_handle, prefix + ".attn_output.weight")
       blk.t_w_o    = TinyNN.tnn_input_2d_persistent_mmap(@sess, @d_model, @n_heads * @d_head,
                        TinyNN.tnn_gguf_tensor_type(gguf_handle, o_idx),
                        TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, o_idx))
+      end   # !is_mla (MLA allocated its own q/kv_a/kv_b/o + K/V cache above)
 
-      if @is_moe
+      # FFN: per-layer dispatch. DeepSeek-V2's leading_dense_block_count
+      # makes the first @leading_dense layers dense even though the model
+      # is MoE; @leading_dense=0 for every non-deepseek model, so the
+      # condition is unchanged there.
+      if @is_moe && li >= @leading_dense
         # M2.3: MoE FFN. Per-expert weight matrices are stacked along
         # ne2 in the GGUF (llama.cpp convention):
         #   ffn_gate_inp.weight : ne=[d_model, n_experts]
@@ -849,17 +950,27 @@ class SmolLM2KVFFICache
     # to skip for Q8. P5.2 flipped V to mirror K's layout, so V's
     # zero-init Mat now has the same shape as K's, and the same Q8
     # skip rule applies.
-    kv_zero = Mat.new(max_T, @d_head)
+    # MLA caches are asymmetric (K=d_head_k, V=d_head_v) and span
+    # n_heads buffers; non-MLA caches are symmetric (@d_head) over @n_kv.
+    if @is_mla
+      kv_zero_k = Mat.new(max_T, @d_head_k)
+      kv_zero_v = Mat.new(max_T, @d_head_v)
+      n_kv_buf  = @n_heads
+    else
+      kv_zero_k = Mat.new(max_T, @d_head)
+      kv_zero_v = kv_zero_k
+      n_kv_buf  = @n_kv
+    end
     li = 0
     while li < @n_layers
       blk_f = @kv_blocks_ffi[li]
       hkv = 0
-      while hkv < @n_kv
+      while hkv < n_kv_buf
         if @kv_type_k != 8
-          TinyNN.upload_row_major(@sess, blk_f.t_K[hkv], kv_zero)
+          TinyNN.upload_row_major(@sess, blk_f.t_K[hkv], kv_zero_k)
         end
         if @kv_type_v != 8
-          TinyNN.upload_row_major(@sess, blk_f.t_V[hkv], kv_zero)
+          TinyNN.upload_row_major(@sess, blk_f.t_V[hkv], kv_zero_v)
         end
         hkv = hkv + 1
       end
@@ -1190,9 +1301,13 @@ class SmolLM2KVFFICache
 
     li = 0
     while li < @n_layers
-      t_x = build_block_step(t_x, @kv_blocks_ffi[li], t_pos, pos,
-                              scale, eps, bytes_d_head, bytes_d_head_k,
-                              bytes_d_head_v, bytes_max_T, li)
+      if @is_mla
+        t_x = build_mla_block_step(t_x, @kv_blocks_ffi[li], t_pos, pos, eps, li)
+      else
+        t_x = build_block_step(t_x, @kv_blocks_ffi[li], t_pos, pos,
+                                scale, eps, bytes_d_head, bytes_d_head_k,
+                                bytes_d_head_v, bytes_max_T, li)
+      end
       li = li + 1
     end
 
@@ -1362,6 +1477,115 @@ class SmolLM2KVFFICache
     if @has_post_norms
       t_dn = TinyNN.tnn_rms_norm(@sess, t_dn, blk.t_post_ffn_norm_gamma, eps)
       t_dn = trace_tap(tag + "post_ffn_norm", t_dn)
+    end
+    t_post_ffn = TinyNN.tnn_add(@sess, t_x_attn, t_dn)
+    trace_tap(tag + "post_ffn", t_post_ffn)
+  end
+
+  # DeepSeek-V2 MLA (Multi-head Latent Attention) decode block. Same
+  # residual structure as build_block_step (rn1 → attention → +residual →
+  # rn2 → FFN → +residual) but the attention sublayer projects the hidden
+  # state to a small latent c_kv + a shared decoupled-RoPE key, up-projects
+  # the latent per head to k_nope/v, and runs per-head attention with the
+  # YaRN-mscale softmax scale (@mla_kq_scale). MLA-A reuses the per-head
+  # KV cache (expanded K[d_head_k]/V[d_head_v]) — no memory win yet.
+  # FFN: dense for the first @leading_dense layers, MoE otherwise.
+  def build_mla_block_step(t_x, blk, t_pos, pos, eps, layer_idx)
+    tag = "L" + layer_idx.to_s + "."
+    bf  = 4                              # f32 bytes
+    d_head_nope    = @d_head_k - @rope_dim          # 192 - 64 = 128
+    head_kv_stride = d_head_nope + @d_head_v         # 128 + 128 = 256
+
+    t_h = TinyNN.tnn_rms_norm(@sess, t_x, blk.t_rn1_gamma, eps)
+    t_h = trace_tap(tag + "rn1", t_h)
+
+    # Q: full projection; per-head split into q_nope/q_rope in the loop.
+    t_q_all = TinyNN.tnn_matmul(@sess, blk.t_w_q_mla, t_h)    # [n_heads*d_head_k, 1]
+
+    # KV-a: latent c_kv (RMSNorm'd) + the shared decoupled-RoPE key k_rope.
+    t_kv_a   = TinyNN.tnn_matmul(@sess, blk.t_w_kv_a, t_h)    # [kv_lora_rank+rope_dim, 1]
+    t_c_kv   = TinyNN.tnn_view_1d(@sess, t_kv_a, @kv_lora_rank, 0)
+    t_c_kv   = TinyNN.tnn_rms_norm(@sess, t_c_kv, blk.t_kv_a_norm_gamma, eps)
+    t_k_rope = TinyNN.tnn_view_1d(@sess, t_kv_a, @rope_dim, @kv_lora_rank * bf)
+    # DeepSeek-V2 decoupled-RoPE uses NORM mode (0; GPT-J interleaved pairs),
+    # NOT the NEOX (2) the rest of toy uses — the GGUF q_pe/k_pe slices are
+    # laid out for it. Empirically NEOX garbles fact recall; NORM matches
+    # llama.cpp's reference top-1 token.
+    t_k_rope_rot = TinyNN.tnn_rope_ext_yarn(@sess, t_k_rope, t_pos, @rope_dim,
+                     0, @rope_scaling.orig_max_pos,
+                     @rope_base, @rope_scaling.freq_scale,
+                     @rope_scaling.ext_factor, @rope_scaling.attn_factor,
+                     @rope_scaling.beta_fast, @rope_scaling.beta_slow,
+                     TinyNN.tnn_null_ptr)
+
+    # KV-b: up-project the normed latent to per-head k_nope + v.
+    t_kv_b = TinyNN.tnn_matmul(@sess, blk.t_w_kv_b, t_c_kv)   # [n_heads*256, 1]
+
+    bytes_dk = @d_head_k * bf
+    bytes_dv = @d_head_v * bf
+    t_head_outs = [TinyNN.tnn_null_ptr]; t_head_outs.pop
+    h = 0
+    while h < @n_heads
+      q_base   = h * @d_head_k
+      t_q_nope = TinyNN.tnn_view_1d(@sess, t_q_all, d_head_nope, q_base * bf)
+      t_q_rope = TinyNN.tnn_view_1d(@sess, t_q_all, @rope_dim, (q_base + d_head_nope) * bf)
+      t_q_rope_rot = TinyNN.tnn_rope_ext_yarn(@sess, t_q_rope, t_pos, @rope_dim,
+                       0, @rope_scaling.orig_max_pos,
+                       @rope_base, @rope_scaling.freq_scale,
+                       @rope_scaling.ext_factor, @rope_scaling.attn_factor,
+                       @rope_scaling.beta_fast, @rope_scaling.beta_slow,
+                       TinyNN.tnn_null_ptr)
+      t_q = TinyNN.tnn_concat(@sess, t_q_nope, t_q_rope_rot, 0)   # [d_head_k, 1]
+
+      kv_base  = h * head_kv_stride
+      t_k_nope = TinyNN.tnn_view_1d(@sess, t_kv_b, d_head_nope, kv_base * bf)
+      t_v      = TinyNN.tnn_view_1d(@sess, t_kv_b, @d_head_v, (kv_base + d_head_nope) * bf)
+      t_k = TinyNN.tnn_concat(@sess, t_k_nope, t_k_rope_rot, 0)   # [d_head_k, 1]
+
+      # Cache writes (K=d_head_k, V=d_head_v) at this position.
+      t_K_slot = TinyNN.tnn_view_2d(@sess, blk.t_K[h], @d_head_k, 1, bytes_dk, pos * bytes_dk)
+      TinyNN.tnn_add_to_graph(@sess, TinyNN.tnn_cpy(@sess, t_k, t_K_slot))
+      t_V_slot = TinyNN.tnn_view_2d(@sess, blk.t_V[h], @d_head_v, 1, bytes_dv, pos * bytes_dv)
+      TinyNN.tnn_add_to_graph(@sess, TinyNN.tnn_cpy(@sess, t_v, t_V_slot))
+
+      # Attention over cached positions [0, pos].
+      hist     = pos + 1
+      t_K_hist = TinyNN.tnn_view_2d(@sess, blk.t_K[h], @d_head_k, hist, bytes_dk, 0)
+      t_V_hist = TinyNN.tnn_view_2d(@sess, blk.t_V[h], @d_head_v, hist, bytes_dv, 0)
+      t_scores = TinyNN.tnn_matmul(@sess, t_K_hist, t_q)          # [hist, 1]
+      t_scaled = TinyNN.tnn_scale(@sess, t_scores, @mla_kq_scale)
+      t_attn   = TinyNN.tnn_softmax(@sess, t_scaled)
+      if layer_idx == 0 && h == 0
+        t_scaled = trace_tap(tag + "scores", t_scaled)
+        t_attn   = trace_tap(tag + "softmax", t_attn)
+      end
+      t_V_T    = TinyNN.tnn_transpose(@sess, t_V_hist)            # [hist, d_head_v]
+      t_head   = TinyNN.tnn_matmul(@sess, t_V_T, t_attn)          # [d_head_v, 1]
+      t_head_outs.push(t_head)
+      h = h + 1
+    end
+
+    t_concat = t_head_outs[0]
+    h = 1
+    while h < @n_heads
+      t_concat = TinyNN.tnn_concat(@sess, t_concat, t_head_outs[h], 0)
+      h = h + 1
+    end
+    t_concat   = trace_tap(tag + "concat", t_concat)
+    t_out_proj = TinyNN.tnn_matmul(@sess, blk.t_w_o, t_concat)    # [d_model, 1]
+    t_x_attn   = TinyNN.tnn_add(@sess, t_x, t_out_proj)
+    t_x_attn   = trace_tap(tag + "post_attn", t_x_attn)
+
+    # FFN: dense for the leading dense layers, MoE otherwise.
+    t_h2 = TinyNN.tnn_rms_norm(@sess, t_x_attn, blk.t_rn2_gamma, eps)
+    if @is_moe && layer_idx >= @leading_dense
+      t_dn = build_moe_ffn(blk, t_h2, tag)
+    else
+      t_gate  = TinyNN.tnn_matmul(@sess, blk.t_w_gate, t_h2)
+      t_up    = TinyNN.tnn_matmul(@sess, blk.t_w_up,   t_h2)
+      t_silug = TinyNN.tnn_silu(@sess, t_gate)
+      t_gated = TinyNN.tnn_mul(@sess, t_silug, t_up)
+      t_dn    = TinyNN.tnn_matmul(@sess, blk.t_w_down, t_gated)
     end
     t_post_ffn = TinyNN.tnn_add(@sess, t_x_attn, t_dn)
     trace_tap(tag + "post_ffn", t_post_ffn)

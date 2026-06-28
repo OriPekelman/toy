@@ -135,6 +135,11 @@ module TinyNNMetal
   ffi_func :tnn_rope_ext,         [:ptr, :ptr, :ptr, :int,
                                    :double, :double, :double, :double,
                                    :double, :double, :ptr], :ptr
+  # YaRN variant with explicit n_ctx_orig (DeepSeek-V2 MLA decoupled RoPE).
+  # Symbol lives in the shared libtinynn_ggml.a linked into every backend.
+  ffi_func :tnn_rope_ext_yarn,    [:ptr, :ptr, :ptr, :int, :int, :int,
+                                   :double, :double, :double, :double,
+                                   :double, :double, :ptr], :ptr
   ffi_func :tnn_rope_freq_factors_alloc, [:ptr, :int], :ptr
   ffi_func :tnn_input_1d_i32_ctx, [:ptr, :int],             :ptr
   ffi_func :tnn_concat,           [:ptr, :ptr, :ptr, :int], :ptr

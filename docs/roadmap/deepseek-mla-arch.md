@@ -1,10 +1,15 @@
 # DeepSeek MLA (Multi-head Latent Attention) — design
 
-Status: **design** (2026-06-27). Grounds the implementation of `deepseek2`
-inference (DeepSeek-V2-Lite first) in the real GGUF structure. MLA is the
-roadmap's "biggest single-family delta" and a *second attention engine* —
-fundamentally different from toy's per-head MHA — so it is designed before it
-is built.
+Status: **MLA-A SHIPPED** (2026-06-27; CPU). Grounds the implementation of
+`deepseek2` inference (DeepSeek-V2-Lite first) in the real GGUF structure. MLA
+is the roadmap's "biggest single-family delta" and a *second attention engine* —
+fundamentally different from toy's per-head MHA.
+
+MLA-A landed on CPU: `gate-deepseek-mla` greedy-decodes "The capital of France
+is" → "Paris." (matches llama.cpp's reference continuation). The correctness-
+first path (reuse the per-head cache; no memory win yet) is live in
+`SmolLM2KVFFICache#build_mla_block_step`. MLA-B (latent cache, the memory win)
+and the CUDA/Metal mirrors remain TODO.
 
 Test model (downloaded, gitignored): `data/DeepSeek-V2-Lite-Chat.Q4_K_M.gguf`
 (`mradermacher/DeepSeek-V2-Lite-Chat-GGUF`, ~9.7 GB). 27 layers, d_model 2048.
@@ -95,11 +100,39 @@ Dispatch on `is_mla` (detect by `deepseek2` arch / presence of
 
 ## Order of work
 
-1. `detect_arch_prefix` + dims for `deepseek2`; per-layer dense/MoE dispatch.
-2. MLA-A projection path + asymmetric K/V cache + decoupled RoPE (CPU), gate.
-3. YaRN wiring (shared with roadmap #2).
-4. MLA-B latent cache (memory win).
-5. Mirrors + commit per milestone.
+1. ✅ `detect_arch_prefix` + dims for `deepseek2`; per-layer dense/MoE dispatch
+   (`cfg.leading_dense`; FFN dispatches dense for `li < leading_dense`).
+2. ✅ MLA-A projection path + asymmetric K(192)/V(128) cache + decoupled RoPE
+   (CPU), `gate-deepseek-mla`.
+3. ✅ YaRN wiring — `tnn_rope_ext_yarn` (new C shim: the old `tnn_rope_ext`
+   hardcodes `n_ctx_orig=0`, which degenerates the YaRN ramp to plain linear
+   scaling, AND hardcodes NEOX mode). The shim takes an explicit `mode` +
+   `n_ctx_orig`. `RopeScaling.deepseek_yarn` folds the mscale into the softmax
+   `kq_scale = mscale²/√d_head_k`, with the rope `attn_factor` back-compensated
+   so the rotation magnitude stays 1.0.
+4. MLA-B latent cache (memory win) — TODO.
+5. CUDA/Metal mirrors — TODO. `tnn_rope_ext_yarn` is already declared in the
+   CUDA/Metal FFI mirrors (the symbol is in the shared `libtinynn_ggml.a`); only
+   the engine's `build_mla_block_step` still needs mirroring.
+
+## Bring-up notes (gotchas hit during MLA-A)
+
+- **add_bos_token.** DeepSeek-V2 sets `tokenizer.ggml.add_bos_token=1` and the
+  attention sink lives on BOS (100000). Without it the decode degenerates to
+  "is is is". The byte-level BPE encode path now honors `@add_bos` (gated, so
+  every toy-converted fixture — which omits the key — stays bit-identical).
+- **RoPE mode = NORM, not NEOX.** The decoupled-RoPE pe slices in these GGUFs
+  (llama.cpp `convert_hf_to_gguf.py` output) are laid out for `GGML_ROPE_TYPE_NORM`
+  (0; GPT-J interleaved pairs), not the NEOX (2) the rest of toy uses. With NEOX,
+  fact recall garbles ("The opposite of hot is is") and the full-logit Pearson r
+  vs llama.cpp is only 0.94; with NORM it is 0.999 and the argmax matches. This
+  was THE bring-up bug — found by sweeping `mode` against the llama.cpp reference.
+- **Massive activation.** Layer-3's routed-expert `down` output spikes the
+  residual to ±1130 (DeepSeek's known early-layer "super weight"); it is stable
+  and not a bug.
+- **Splits.** Per head, attn_q = [q_nope(128), q_rope(64)] and attn_kv_b =
+  [k_nope(128), v(128)], both head-major; kv_a = [c_kv(512), k_rope(64)] with
+  k_rope shared across heads and RoPE'd once.
 
 DeepSeek-V3 adds grouped top-k + the aux-loss-free expert bias (MoE P3) on top
 of this MLA; out of scope here.
