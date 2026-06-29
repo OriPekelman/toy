@@ -160,3 +160,32 @@ Dispatch on `is_mla` (detect by `deepseek2` arch / presence of
 
 DeepSeek-V3 adds grouped top-k + the aux-loss-free expert bias (MoE P3) on top
 of this MLA; out of scope here.
+
+## Future work (designed, deferred)
+
+### Absorbed-form MLA-B (speed) — DEFERRED on union-pin hazard
+Recovers naive MLA-B's ~29% decode cost by attending in the latent [512] space
+instead of up-projecting the [4096,hist] history every step:
+- score[h,j] = q_absorbed[h]·c_kv[j] + q_rope[h]·k_rope[j], where
+  `q_absorbed[h] = Wk_b[h]ᵀ · q_nope[h]` (a [128→512] matvec, hist-independent).
+- ctx[h] = c_kv_histᵀ · attn[h]  (shared transpose of c_kv_hist across heads);
+  out[h] = Wv_b[h] · ctx[h]  (the v-half of attn_kv_b, used Q4_K-direct).
+The only precompute: `Wk_b[h]` = the k_nope half of attn_kv_b, **dequantized
+(tnn_cast Q4_K→F32) and transposed** to contiguous [128,512] per head (~110 MB
+F32). Wv_b stays the Q4_K view (matmul dequants on the fly).
+BLOCKER: the dequant precompute needs a compute pass, and adding compute to the
+engine's realize path is the documented union-pin Spinel codegen hazard
+(Landmine #16 family — corrupts the proven byte-exact attention path). Two ways
+out, both gated on the same migration the Spinel probe tracks: (a) do it after
+the master/spinelc migration removes the hazard; (b) lazily materialize Wk_b on
+the `pos==0` decode graph via cpy-into-persistent (the proven KV-cache pattern,
+no realize-compute) — subtler (read-after-write same graph) but union-pin-safe.
+
+### DeepSeek-V3 grouped-top-k routing (MoE P3) — DEFERRED on test model
+V3 replaces V2's plain softmax-top-k with: sigmoid expert scores, n_group/
+topk_group group-limited selection, and an aux-loss-free per-expert bias added
+to the scores for selection (but NOT for the combine weight). It is a pure
+`build_moe_ffn` routing change — inert for n_group=1 (V2-Lite, every current
+MoE model), so it composes cleanly as an additive extension. Deferred because no
+DeepSeek-V3-shaped model fits the box (V3 is 671B; there is no V3-Lite), so the
+path can't be coherence-verified — adding it now would ship unverified routing.
