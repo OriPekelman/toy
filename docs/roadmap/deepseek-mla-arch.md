@@ -18,12 +18,17 @@ greedy decode).
   The **absorbed** form (fold `attn_kv_b` into `attn_q`/`attn_output`, attend in
   latent space) would recover the speed — the natural next optimization.
 
-CUDA/Metal: the engine is mechanically mirrored (`gen_cuda_mirror.rb`; both have
-`build_mla_block_step` + `build_mla_b_block_step`, `--verify` clean) and the CUDA
-driver is wired (MoE + MLA-B), and `libexec/toy-infer-cuda` compiles. End-to-end
-CUDA DeepSeek is blocked by a **pre-existing CUDA MoE-FFN crash** (illegal memory
-access — reproduces on qwen3moe with NO MLA, so it is independent of this work);
-non-MoE CUDA decode (SmolLM2) is unaffected. CPU is the verified MLA backend.
+CUDA: **DeepSeek MLA-A + MLA-B decode coherently on GPU** ("Paris.", "cold."),
+via the mechanically-mirrored engine (`gen_cuda_mirror.rb`; `--verify` clean) and
+the CUDA driver wired for MoE + MLA-B. Getting there required fixing a CUDA
+buffer bug (NOT MLA-specific — it also blocked Qwen3-MoE/Qwen2-MoE on CUDA):
+`ggml_backend_cuda_buffer_from_ptr`'s init_tensor zeroed quantized row-padding
+with a `cudaMemset` into the **read-only mmap**, an illegal write for any
+quantized tensor with `ne0 % 512 != 0` (DeepSeek/Qwen3 `down_exps`,
+ne0=expert_ff=1408/768; OLMoE's 1024 was exempt — which is why only some MoE
+models crashed). Fixed by `vendor-patches/0010-*` (override init_tensor=NULL on
+the BYO buffer; the zeroing is redundant since matmul zero-pads the input). Metal
+is unverifiable off-Darwin but mirrored identically.
 
 Test model (downloaded, gitignored): `data/DeepSeek-V2-Lite-Chat.Q4_K_M.gguf`
 (`mradermacher/DeepSeek-V2-Lite-Chat-GGUF`, ~9.7 GB). 27 layers, d_model 2048.
@@ -129,10 +134,10 @@ Dispatch on `is_mla` (detect by `deepseek2` arch / presence of
    read time. 8.89× smaller cache, numerically == MLA-A. Naive (non-absorbed);
    the absorbed form is the next optimization to recover the ~29% speed cost.
 5. ✅ CUDA/Metal engine mirror — `gen_cuda_mirror.rb` regenerates both with the
-   MLA methods (`--verify` clean); CUDA driver wired (MoE + MLA-B);
-   `libexec/toy-infer-cuda` compiles. **Blocked at runtime by a pre-existing
-   CUDA MoE-FFN crash** (independent of MLA — reproduces on qwen3moe). Metal is
-   unverifiable off-Darwin. CPU is the verified MLA backend.
+   MLA methods (`--verify` clean); CUDA driver wired (MoE + MLA-B). DeepSeek
+   MLA-A + MLA-B decode coherently on CUDA after fixing the BYO-buffer
+   init_tensor padding-memset crash (`vendor-patches/0010-*`; also unblocked
+   Qwen3-MoE/Qwen2-MoE on CUDA). Metal unverifiable off-Darwin.
 
 ## Bring-up notes (gotchas hit during MLA-A)
 

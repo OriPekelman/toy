@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ori Pekelman <ori@pekelman.com>
+Date: Mon, 29 Jun 2026 08:10:00 +0000
+Subject: [PATCH] ggml-cuda buffer_from_ptr: skip init_tensor row-padding memset
+
+The BYO read-only mmap has no per-tensor padding bytes, so the standard
+init_tensor's cudaMemset(data+original_size, 0, padded-original) writes
+past the tensor into the read-only mapping -> illegal memory access for
+any quantized tensor with ne0 % MATRIX_ROW_PADDING(512) != 0 (DeepSeek /
+qwen3moe down_exps, ne0 = expert_ff = 1408/768; OLMoE's 1024 is exempt).
+The zeroing is only a NaN-safety belt: matmul kernels zero-pad the input
+vector, so weight_padding * 0 = 0 regardless. Override init_tensor=NULL
+on the from_ptr buffer (already done for free_buffer). Unblocks every
+quantized MoE model on CUDA (DeepSeek-V2 MLA, Qwen3-MoE, Qwen2-MoE).
+---
+--- a/src/ggml-cuda/ggml-cuda.cu	2026-06-29 08:08:12.351368534 +0000
++++ b/src/ggml-cuda/ggml-cuda.cu	2026-06-29 08:08:12.303346904 +0000
+@@ -1078,6 +1078,16 @@
+     // device buffer.
+     if (buf) {
+         buf->iface.free_buffer = ggml_backend_cuda_buffer_from_ptr_free;
++        // Skip the standard init_tensor's row-padding cudaMemset. For a
++        // BYO read-only mmap, the file has no per-tensor padding bytes, so
++        // the memset writes past the tensor's data into the read-only
++        // mapping (or the next tensor) → illegal memory access for any
++        // quantized tensor with ne0 % MATRIX_ROW_PADDING != 0 (e.g.
++        // DeepSeek/qwen3moe down_exps, ne0 = expert_ff = 1408/768). The
++        // zeroing is only a NaN-safety belt: matmul kernels zero-pad the
++        // INPUT vector, so weight_padding * 0 = 0 regardless of the
++        // padding bytes' contents. Caller owns the bytes.
++        buf->iface.init_tensor = NULL;
+     }
+     return buf;
+ }
+--
+2.43.0

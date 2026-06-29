@@ -1262,7 +1262,8 @@ GGML_PATCHES := \
 	vendor-patches/0006-getrows-back-large-vocab.patch \
 	vendor-patches/0007-gpt2-backward-kernels.patch \
 	vendor-patches/0008-mul-mat-backward-mixed-precision.patch \
-	vendor-patches/0009-sched-unsupported-node-diagnostic.patch
+	vendor-patches/0009-sched-unsupported-node-diagnostic.patch \
+	vendor-patches/0010-cuda-buffer_from_ptr-skip-init_tensor-padding-memset.patch
 
 # Sentinel file marking that all $(GGML_PATCHES) have been applied to
 # the vendored tree. Build targets depend on it through CMakeLists.txt
