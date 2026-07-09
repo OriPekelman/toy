@@ -11,18 +11,13 @@
 # Callers requiring just metadata access load this module standalone.
 
 module GgufKV
-  ffi_lib "tinynn_ggml"
-  ffi_lib "ggml"
-  ffi_lib "ggml-cpu"
-  ffi_lib "ggml-base"
+  # feat/spin-build: archives come in as `--link ${build.out}/*.a` from
+  # spin.toml [native] libs — no ffi_lib/-L for them (see ffi/tinynn.rb).
   ffi_lib "stdc++"
   ffi_lib "pthread"
   ffi_lib "m"
 
-  # Keep BYTE-IDENTICAL to lib/toy/ffi/tinynn.rb's line — it doubles as the
-  # spinel-ext.json "tinynn" placeholder (toy#45) and the vendor step
-  # substitutes every vendored .rb carrying it.
-  ffi_cflags "-L. -Ltinynn -Lvendor/ggml/build/src -Wno-int-conversion"
+  ffi_cflags "-Wno-int-conversion"
 
   ffi_func :tnn_gguf_load,     [:str],            :ptr
   ffi_func :tnn_gguf_free,     [:ptr],            :void
