@@ -623,7 +623,7 @@ gate-serve:
 # pulls (the recipe → llama_seq_engine → transformer + toy + smollm2 +
 # tinynn + the L1-L3 primitives/blocks/archs; plus gguf_writer + drift_grad
 # for the checkpoint). CPU-only; NOT in MIRRORABLE (see prep/gen_cuda_mirror.rb).
-libexec/toy-train: lib/toy/run/train.rb lib/toy/dev/toy_describe_flow.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \ $(SPINEL_DEPS)
+libexec/toy-train: lib/toy/run/train.rb lib/toy/dev/toy_describe_flow.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
 		vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
 		lib/toy/io/toy_corpus_loader.rb lib/toy/train/toy_lr_schedule.rb \
 		lib/toy/llm/engine/llama_seq_engine.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/from_scratch.rb \
@@ -634,7 +634,7 @@ libexec/toy-train: lib/toy/run/train.rb lib/toy/dev/toy_describe_flow.rb lib/toy
 		lib/toy/llm/primitives/swiglu.rb lib/toy/llm/primitives/gqa.rb \
 		lib/toy/llm/blocks/transformer_block.rb lib/toy/llm/primitives/gdn.rb lib/toy/llm/blocks/gdn_block.rb \
 		lib/toy/llm/archs/layer_spec.rb lib/toy/llm/archs/llama_arch.rb \
-		lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a | libexec
+		lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
 	$(SPINEL) $< -o $@
 toy-train: libexec/toy-train
 
@@ -642,7 +642,7 @@ toy-train: libexec/toy-train
 # LoRA realize_for_mmap path cannot share a Spinel compilation unit with the
 # random-init path (cfg type-merge miscompile; see lib/toy/run/train_lora.rb
 # header). CPU-only; NOT in MIRRORABLE.
-libexec/toy-train-lora: lib/toy/run/train_lora.rb lib/toy/dev/toy_describe_flow.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \ $(SPINEL_DEPS)
+libexec/toy-train-lora: lib/toy/run/train_lora.rb lib/toy/dev/toy_describe_flow.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb lib/toy.rb lib/toy/models/toy_smollm2.rb \
 		lib/toy/llm/engine/llama_seq_engine.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/lora.rb \
 		lib/toy/llm/adamw.rb \
 		lib/toy/train/toy_gguf_writer.rb lib/toy/train/toy_drift_grad.rb lib/toy/models/transformer.rb \
@@ -650,7 +650,7 @@ libexec/toy-train-lora: lib/toy/run/train_lora.rb lib/toy/dev/toy_describe_flow.
 		lib/toy/llm/primitives/swiglu.rb lib/toy/llm/primitives/gqa.rb \
 		lib/toy/llm/blocks/transformer_block.rb lib/toy/llm/primitives/gdn.rb lib/toy/llm/blocks/gdn_block.rb \
 		lib/toy/llm/archs/layer_spec.rb lib/toy/llm/archs/llama_arch.rb \
-		lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a | libexec
+		lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
 	$(SPINEL) $< -o $@
 toy-train-lora: libexec/toy-train-lora
 
@@ -658,9 +658,9 @@ toy-train-lora: libexec/toy-train-lora
 # toy-train (landmine #16: the GPT-2 realize path can't share a Spinel unit with
 # the llama random-init path). Self-contained GPT2SeqEngine (no llama engine /
 # primitives dep), so it also can't churn the llama gates. CPU-only this slice.
-libexec/toy-train-gpt2: lib/toy/run/train_gpt2.rb lib/toy.rb \ $(SPINEL_DEPS)
+libexec/toy-train-gpt2: lib/toy/run/train_gpt2.rb lib/toy.rb \
 		lib/toy/llm/engine/gpt2_seq_engine.rb lib/toy/llm/labels.rb lib/toy/llm/adamw.rb \
-		lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a | libexec
+		lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
 	$(SPINEL) $< -o $@
 toy-train-gpt2: libexec/toy-train-gpt2
 .PHONY: toy-train-gpt2
@@ -697,7 +697,7 @@ toy-train-gpt2-metal: libexec/toy-train-gpt2-metal
 # trains random-init on the COMMITTED data/vit_smoke corpus. NO toy_gguf_writer
 # dep (cfg.vocab/d_ff poly-collide with ViTTinyConfig — #169 checkpoint
 # follow-up). CPU-only; absent from MIRRORABLE (no CUDA/Metal twin this slice).
-libexec/toy-train-vit: lib/toy/run/train_vit.rb lib/toy/dev/toy_describe_flow.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/vit_tiny.rb \ $(SPINEL_DEPS)
+libexec/toy-train-vit: lib/toy/run/train_vit.rb lib/toy/dev/toy_describe_flow.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb lib/toy/llm/recipe_options.rb lib/toy/llm/recipes/vit_tiny.rb \
 		lib/toy/llm/engine/vit_tiny_engine.rb lib/toy/models/toy_vit.rb lib/toy/models/toy_smollm2.rb \
 		lib/toy/io/toy_image_loader.rb lib/toy/train/toy_lr_schedule.rb lib/toy/train/toy_drift_grad.rb \
 		lib/toy/llm/adamw.rb \
@@ -781,12 +781,12 @@ toy-train-metal: libexec/toy-train-metal
 # on a fresh tree; needs ../tep + ../spinelgems siblings). Deps mirror the
 # tep_demo recipe (Makefile:486) + the KV stack. CPU-only; NOT in
 # MIRRORABLE (see prep/gen_cuda_mirror.rb).
-libexec/toy-serve: lib/toy/run/serve.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \ $(SPINEL_DEPS)
+libexec/toy-serve: lib/toy/run/serve.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
 		lib/toy/serve/openai/server.rb \
 		lib/toy/serve/openai/handlers.rb lib/toy/serve/openai/embeddings_handler.rb \
 		vendor/spinel/tep/lib/tep.rb \
 		lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb \
-		tinynn/libtinynn_ggml.a | libexec
+		tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
 	$(SPINEL) $< -o $@
 toy-serve: libexec/toy-serve
 
@@ -925,7 +925,7 @@ gate-gdn-hybrid: libexec/toy-train-hybrid
 	  && echo "GATE PASS [gdn-hybrid]: attention+GDN from-scratch hybrid trains" \
 	  || { echo "GATE FAIL [gdn-hybrid]"; exit 1; }
 
-libexec/toy-train-hybrid: lib/toy/run/train_hybrid.rb lib/toy.rb lib/toy/ffi/tinynn.rb \ $(SPINEL_DEPS)
+libexec/toy-train-hybrid: lib/toy/run/train_hybrid.rb lib/toy.rb lib/toy/ffi/tinynn.rb \
 		lib/toy/llm/primitives/rms_norm.rb lib/toy/llm/primitives/gdn.rb \
 		lib/toy/llm/blocks/gdn_block.rb lib/toy/llm/archs/layer_spec.rb \
 		tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
