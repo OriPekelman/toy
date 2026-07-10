@@ -12,28 +12,28 @@ into toy's tree.
 
 ## Recommended Spinel revision
 
-toy (v0.8.0 through v0.9.0) is verified against the **union of two Spinel fix
-branches** (spinel-dev#13 + #14), published as a single ready-to-build branch.
-v0.9.0 (the Dragon / Gated-DeltaNet arc) runs on the same pin — the union
-backend is unchanged:
+toy is verified against **Spinel master**, plain rev pin:
 
 ```sh
-git clone -b toy-v0.8.0-pin https://github.com/OriPekelman/spinel && cd spinel
+git clone https://github.com/matz/spinel && cd spinel
+git checkout f6a189e86636
 make deps && make
 ```
 
-`toy-v0.8.0-pin` (`fbb9beb`) is `ddee073` (fix/array-literal-ctor-element-pin,
-the serve fix #14) merged with `a699cf9` (fix/poly-array-concrete-array-boundary,
-the eval fix #13) — the exact tree the gate matrix below was verified against.
+At `f6a189e8` (verified 2026-07-10, gx10/GB10): the full gate matrix
+passes — 28 gates including all four training recipes byte-exact (also
+under `SPINEL_GC_STRESS=1`), infer/eval, GPT-2 minimal + engine trainers
+(CPU and CUDA), compute-surface, the 8 GDN/Dragon gates, the 4 MLA/MoE
+gates, and the CUDA legs. Newer master revs are expected to work (this
+pin advances with each verified sweep; toy#95 records the protocol) —
+pin exactly this rev for byte-reproducibility.
 
-At that union (verified 2026-06-12, gx10/GB10, toy `f7361eb`): the full
-gate matrix passes — 26 gates, byte-exact where gated so, including serve
-(full-size binary, live HTTP) and the MRI oracle — and the compile is the
-cleanest on record (zero poly-degrade warnings). When Spinel master
-contains both fixes (matz/spinel PR 1385 + follow-ups), prefer master and
-this section will move to a plain rev pin. Known residual at any current
-rev: the `tinynn/gpt2_*` parity harnesses need `f6d5eef`
-(spinel-dev#22) — internal tooling only, no library surface affected.
+Historical note: v0.8.0–v0.9.0 were verified against the
+`toy-v0.8.0-pin` union branch (`fbb9beb` = spinel-dev#13 + #14 fixes,
+26 gates, 2026-06-12). Master absorbed everything that branch carried;
+the closing arc — matz/spinel#1855 (`:int_array` poly marshalling),
+#1845 (`[[build]]` mechanics), #1867 (object-array narrowing across
+instance-method edges) — is recorded on toy#95 and toy#107.
 
 ## The recipe (toy#45: Gemfile + vendor — that's it)
 
