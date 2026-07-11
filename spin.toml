@@ -30,8 +30,18 @@ default = []
 # --- ggml: vendored tree (pristine GGML_REV 41e7949), cmake, patched ---------
 # Header artifacts ride along so later entries (tinynn) and any dependent
 # can compile against ${build.out}/include without seeing this workdir.
+#
+# PRISTINE-WORKDIR CONTRACT: spin applies vendor-patches/ to a scratch
+# copy, so vendor/ggml must be an UNPATCHED checkout at GGML_REV. The dev
+# Makefile path (`make setup-ggml`) patches the tree IN PLACE — a tree it
+# has touched makes this entry fail loud ("Reversed patch detected").
+# Dev boxes use the Makefile; spin is the consumer/CI shape (fresh fetch).
 [[build]]
 workdir   = "vendor/ggml"
+# The dev tree's Makefile-path cmake output (build/ + build-cuda/, ~174MB)
+# is not a build input: keep it out of the content key and the scratch
+# copy (matz/spinel#2010).
+exclude   = ["build*"]
 patches   = ["vendor-patches/*.patch"]
 command   = "cmake -B build -DBUILD_SHARED_LIBS=OFF -DGGML_STATIC=ON -DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_VULKAN=OFF -DGGML_OPENCL=OFF -DGGML_BLAS=OFF -DGGML_OPENMP=OFF -DGGML_ACCELERATE=OFF -DGGML_BUILD_EXAMPLES=OFF -DGGML_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON && cmake --build build -j"
 artifacts = ["build/src/libggml.a", "build/src/libggml-base.a", "build/src/libggml-cpu.a", "include/ggml.h", "include/ggml-alloc.h", "include/ggml-backend.h", "include/ggml-cpu.h", "include/gguf.h"]
