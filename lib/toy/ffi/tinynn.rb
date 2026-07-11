@@ -331,6 +331,10 @@ class AdamStepResult
 end
 
 module TinyNN
+  # Under `spin build` these archives arrive as `--link ${build.out}/…`
+  # inputs ([native] libs in spin.toml) and the matching ffi_lib names are
+  # satisfied/suppressed (matz/spinel 2a4a3a6e) — same source serves the
+  # Makefile world and the spin world.
   ffi_lib "tinynn_ggml"
   ffi_lib "ggml"
   ffi_lib "ggml-cpu"
