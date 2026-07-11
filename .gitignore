@@ -278,6 +278,3 @@ prep/smokes/smoke_projection_lens_metal.rb
 # --rbs sig root by `make vendor-tep` (machine-generated; spinelgems#13).
 /sig/vendor
 
-# feat/spin-build: tinynn lives under vendor/ (spin carried-C exclusion);
-# tracked despite the vendor/ ignore.
-!/vendor/tinynn/

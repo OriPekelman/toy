@@ -1,24 +1,24 @@
-# toy — spin manifest (feat/spin-build guinea-pig; toy#107 / matz/spinel#1820).
+# toy — spin manifest (feat/spin-build; toy#107 / matz/spinel#1820, #1845).
 #
-# Native model: the ggml + tinynn archives are DECLARED BUILD STEPS
-# ([[build]]), not carried-C and not preinstalled ffi_lib libraries.
+# Native model: ggml + tinynn are DECLARED BUILD STEPS ([[build]]).
 # spin runs each entry in a scratch copy of its workdir (consented:
 # --allow-native-build / SPIN_ALLOW_NATIVE_BUILD=1 / `spin trust toy`),
 # verifies the declared artifacts, caches them content-keyed under
-# $XDG_CACHE_HOME/spin/native/, and links them via [native] libs below.
+# $XDG_CACHE_HOME/spin/native/, and links them via [native] libs.
 #
-# Layout notes (vs the Makefile world on main):
-#   - tinynn lives at vendor/tinynn on this branch: spin's carried-C
-#     discovery sweeps every .c outside build//vendor//test/ and would
-#     try (and fail) to compile the shim per-file without ggml headers.
-#   - vendor/tinynn/ggml-headers/ is a snapshot of vendor/ggml/include:
-#     [[build]] entries are scratch-isolated, so the tinynn entry cannot
-#     see the ggml entry's workdir; the public headers are duplicated to
-#     keep the units (and their caches) independent.
-#   - GPU variants (cuda/metal) are NOT expressed yet: consumer-side
-#     feature enablement is unimplemented upstream (per #1820), and the
-#     one-artifact-dir-per-package flattening would collide the CPU and
-#     CUDA libggml.a basenames. Tracked for the follow-up issue.
+# Uses the #1845 mechanics (matz/spinel 2a4a3a6e):
+#   - tinynn lives at tinynn/ — [[build]] workdirs are excluded from
+#     carried-C discovery, no vendor/ escape hatch needed;
+#   - artifacts keep their entry-relative paths under ${build.out}, so
+#     the ggml public headers ship as artifacts and the tinynn entry
+#     compiles against `-I ${build.out}/include` — no header snapshot;
+#   - the ffi_lib names in lib/toy/ffi/tinynn.rb & lib/toy/io/gguf_kv.rb
+#     are satisfied by these --link inputs (suppressed, not sent to ld),
+#     so the same source serves the Makefile world and the spin world.
+# GPU variants: consumer-side `--features cuda` exists upstream; the
+# remaining gap is a per-target link-flag surface for the CUDA runners'
+# `-Wl,-u,tnn_cuda_force_link` (dedicated upstream issue when we take
+# that leg — see toy#107).
 
 [package]
 name = "toy"
@@ -28,19 +28,21 @@ version = "0.9.0"
 default = []
 
 # --- ggml: vendored tree (pristine GGML_REV 41e7949), cmake, patched ---------
+# Header artifacts ride along so later entries (tinynn) and any dependent
+# can compile against ${build.out}/include without seeing this workdir.
 [[build]]
 workdir   = "vendor/ggml"
 patches   = ["vendor-patches/*.patch"]
 command   = "cmake -B build -DBUILD_SHARED_LIBS=OFF -DGGML_STATIC=ON -DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_VULKAN=OFF -DGGML_OPENCL=OFF -DGGML_BLAS=OFF -DGGML_OPENMP=OFF -DGGML_ACCELERATE=OFF -DGGML_BUILD_EXAMPLES=OFF -DGGML_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON && cmake --build build -j"
-artifacts = ["build/src/libggml.a", "build/src/libggml-base.a", "build/src/libggml-cpu.a"]
+artifacts = ["build/src/libggml.a", "build/src/libggml-base.a", "build/src/libggml-cpu.a", "include/ggml.h", "include/ggml-alloc.h", "include/ggml-backend.h", "include/ggml-cpu.h", "include/gguf.h"]
 
-# --- tinynn: the FFI shim archive, make -------------------------------------
+# --- tinynn: the FFI shim archive, make, against the staged ggml headers ----
 [[build]]
-workdir   = "vendor/tinynn"
-command   = "make GGML_INC=-Iggml-headers libtinynn_ggml.a"
+workdir   = "tinynn"
+command   = "make GGML_INC=-I${build.out}/include libtinynn_ggml.a"
 artifacts = ["libtinynn_ggml.a"]
 
 # Link order: dependents before dependencies (tinynn → ggml → cpu → base);
-# -lstdc++/-lpthread/-lm ride on ffi_lib in lib/toy/ffi/tinynn.rb.
+# -lstdc++/-lpthread/-lm ride on ffi_lib in the source.
 [native]
-libs = ["${build.out}/libtinynn_ggml.a", "${build.out}/libggml.a", "${build.out}/libggml-cpu.a", "${build.out}/libggml-base.a"]
+libs = ["${build.out}/libtinynn_ggml.a", "${build.out}/build/src/libggml.a", "${build.out}/build/src/libggml-cpu.a", "${build.out}/build/src/libggml-base.a"]

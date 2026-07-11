@@ -331,10 +331,14 @@ class AdamStepResult
 end
 
 module TinyNN
-  # feat/spin-build: the tinynn/ggml archives are [[build]] artifacts —
-  # `spin build` puts them on the link line as absolute `--link
-  # ${build.out}/*.a` paths ([native] libs in spin.toml), so there is no
-  # -l/-L resolution for them and no ffi_lib entries. System libs stay.
+  # Under `spin build` these archives arrive as `--link ${build.out}/…`
+  # inputs ([native] libs in spin.toml) and the matching ffi_lib names are
+  # satisfied/suppressed (matz/spinel 2a4a3a6e) — same source serves the
+  # Makefile world and the spin world.
+  ffi_lib "tinynn_ggml"
+  ffi_lib "ggml"
+  ffi_lib "ggml-cpu"
+  ffi_lib "ggml-base"
   ffi_lib "stdc++"
   ffi_lib "pthread"
   # spinel wrapper adds -lm *before* FFI libs; ggml-cpu needs it again.
@@ -355,7 +359,7 @@ module TinyNN
   # placeholder (toy#45) — change them in lockstep, or the vendor step's
   # zero-substitution warning fires. Fresh ggml (GGML_REV 41e7949) puts
   # all three archives at build/src/ — no ggml-cpu/ subdir -L needed.
-  ffi_cflags "-Wno-int-conversion"
+  ffi_cflags "-L. -Ltinynn -Lvendor/ggml/build/src -Wno-int-conversion"
 
   ffi_func :tnn_session_new,      [:int],                   :ptr
   # GH#3 — multi-GPU mode 1. tnn_session_new_on(kind, device) pins
