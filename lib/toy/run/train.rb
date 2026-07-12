@@ -40,7 +40,7 @@
 # (never read ts_vocab.txt strings — poly-dispatch landmine, 06:21).
 
 require_relative "../../toy"
-require_relative "../../../vendor/spinel/spinel_kit/lib/spinel_kit/json_builder"
+require_relative "../io/json_builder"
 require_relative "../io/toy_events"
 require_relative "../dev/toy_describe_flow"
 require_relative "../models/toy_smollm2"
@@ -144,7 +144,7 @@ if RECIPE == "warm-start"
     rc = TinyNN.tnn_events_open(EVENTS)
     if rc == 0
       rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
-      rs = SpinelKit::Json::Builder.new
+      rs = Toy::Json::Builder.new
       rs.add_str("kind", "run_start")
       rs.add_str("schema", "toy/v1")
       rs.add_num("t", TinyNN.tnn_events_now_seconds)
@@ -155,7 +155,7 @@ if RECIPE == "warm-start"
         TinyNN.tnn_provenance_host_name, TinyNN.tnn_provenance_host_os,
         TinyNN.tnn_provenance_host_arch,
         TinyNN.tnn_backend_name(recipe_ws.ws_cache.sess))
-      model = SpinelKit::Json::Builder.new
+      model = Toy::Json::Builder.new
       model.add_str("arch", "llama")
       model.add_str("name", "warm-start-scratch-tinystories")
       model.add_num("vocab",    cfg_ws.vocab)
@@ -166,7 +166,7 @@ if RECIPE == "warm-start"
       model.add_num("d_head",   cfg_ws.head_dim)
       model.add_num("d_ff",     cfg_ws.d_ff)
       rs.add_obj("model", model)
-      config = SpinelKit::Json::Builder.new
+      config = Toy::Json::Builder.new
       config.add_num("context", CONTEXT)
       config.add_num("steps",   STEPS)
       config.add_raw("lr",      "0.001")
@@ -201,7 +201,7 @@ if RECIPE == "warm-start"
 
     if EVENTS.length > 0
       step_wall_us = ((TinyNN.tnn_events_now_seconds - step_wall_start) * 1.0e6).to_i
-      es = SpinelKit::Json::Builder.new
+      es = Toy::Json::Builder.new
       es.add_str("kind",  "step")
       es.add_str("phase", "train")
       es.add_num("t",       TinyNN.tnn_events_now_seconds)
@@ -232,7 +232,7 @@ if RECIPE == "warm-start"
       puts "checkpoint write failed: rc=" + rc.to_s
     end
 
-    re = SpinelKit::Json::Builder.new
+    re = Toy::Json::Builder.new
     re.add_str("kind", "run_end")
     re.add_num("t",          TinyNN.tnn_events_now_seconds)
     re.add_str("ended_at",   TinyNN.tnn_events_iso8601_now)
@@ -311,7 +311,7 @@ if EVENTS.length > 0
   rc = TinyNN.tnn_events_open(EVENTS)
   if rc == 0
     rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
-    rs = SpinelKit::Json::Builder.new
+    rs = Toy::Json::Builder.new
     rs.add_str("kind", "run_start")
     rs.add_str("schema", "toy/v1")
     rs.add_num("t", TinyNN.tnn_events_now_seconds)
@@ -322,7 +322,7 @@ if EVENTS.length > 0
       TinyNN.tnn_provenance_host_name, TinyNN.tnn_provenance_host_os,
       TinyNN.tnn_provenance_host_arch,
       TinyNN.tnn_backend_name(recipe.fs_cache.sess))
-    model = SpinelKit::Json::Builder.new
+    model = Toy::Json::Builder.new
     model.add_str("arch", "llama")
     model.add_str("name", "from-scratch-tinystories")
     model.add_num("vocab",    cfg.vocab)
@@ -333,7 +333,7 @@ if EVENTS.length > 0
     model.add_num("d_head",   cfg.head_dim)
     model.add_num("d_ff",     cfg.d_ff)
     rs.add_obj("model", model)
-    config = SpinelKit::Json::Builder.new
+    config = Toy::Json::Builder.new
     config.add_num("context", CONTEXT)
     config.add_num("steps",   STEPS)
     config.add_raw("lr",      "0.001")
@@ -357,7 +357,7 @@ while step < STEPS
 
   if EVENTS.length > 0
     step_wall_us = ((TinyNN.tnn_events_now_seconds - step_wall_start) * 1.0e6).to_i
-    es = SpinelKit::Json::Builder.new
+    es = Toy::Json::Builder.new
     es.add_str("kind",  "step")
     es.add_str("phase", "train")
     es.add_num("t",       TinyNN.tnn_events_now_seconds)
@@ -390,7 +390,7 @@ if EVENTS.length > 0 && TinyNN.tnn_events_active == 1
     puts "checkpoint write failed: rc=" + rc.to_s
   end
 
-  re = SpinelKit::Json::Builder.new
+  re = Toy::Json::Builder.new
   re.add_str("kind", "run_end")
   re.add_num("t",          TinyNN.tnn_events_now_seconds)
   re.add_str("ended_at",   TinyNN.tnn_events_iso8601_now)

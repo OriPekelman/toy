@@ -19,7 +19,7 @@
 #     for "whole file as one string" + monomorphic Array<String>
 #     dispatch.
 
-require_relative "../../../vendor/spinel/spinel_kit/lib/spinel_kit/json_builder"
+require_relative "../io/json_builder"
 
 module ToyTokenDrift
   # One-time corpus frequency histogram. Returns Array<Int> of
@@ -104,7 +104,7 @@ module ToyTokenDrift
         freq = freqs[row]
       end
 
-      ev = SpinelKit::Json::Builder.new
+      ev = Toy::Json::Builder.new
       ev.add_str("kind",  "drift")
       ev.add_str("phase", "train")
       ev.add_num("t",           t_now)

@@ -7,7 +7,7 @@
 # cleanup pass retires it (serve must be gated first).
 #
 # Tep is consumed purely as HTTP transport (Tep::Handler / Tep.get/post/
-# Tep.run!). JSON encode/decode is SpinelKit::Json now, NOT Tep::Json (toy#44):
+# Tep.run!). JSON encode/decode is Toy::Json now, NOT Tep::Json (toy#44):
 # serve's only remaining Tep coupling is the handler/server surface. Nothing
 # here patches Tep -- this is build-dep usage, not "Tep re-adaptation" (that =
 # Tep consuming Toy, DEFERRED per user directive until Toy is stable).

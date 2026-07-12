@@ -33,6 +33,11 @@ SPINEL_BIN  ?= $(SPINEL_DIR)/spinel
 # without seeds when chasing an analyzer issue.
 SPINEL_RBS ?= --rbs $(CURDIR)/sig
 
+# spinel_kit resolves as a real require ("spinel_kit/git") on BOTH paths:
+# spin provides the dependency root; the direct-spinel path points -I at
+# the vendored gem's lib/ (gem layout). toy#107 deps leg.
+SPINEL_INC := -I $(CURDIR)/vendor/spinel/spinel_kit/lib
+
 # --- DevEx polish knobs (cosmetic, never gate correctness) ----------------
 # QUIET=1 (default) routes known-harmless build chatter through the
 # prep/quietly + prep/progress helpers so the terminal stays readable
@@ -47,12 +52,12 @@ QUIET    ?= 1
 QUIETLY  := $(CURDIR)/prep/quietly
 PROGRESS := $(CURDIR)/prep/progress
 ifeq ($(QUIET),0)
-  SPINEL = $(SPINEL_BIN) $(SPINEL_RBS)
+  SPINEL = $(SPINEL_BIN) $(SPINEL_RBS) $(SPINEL_INC)
 else
   SPINEL = $(QUIETLY) \
       'cannot resolve call to' \
       'ignoring duplicate libraries' \
-      -- $(SPINEL_BIN) $(SPINEL_RBS)
+      -- $(SPINEL_BIN) $(SPINEL_RBS) $(SPINEL_INC)
 endif
 # Sentinel deps so example/demo Spinel-compiled binaries get re-spun
 # when the Spinel compiler itself changes. Without this, stale .o /

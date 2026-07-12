@@ -26,7 +26,7 @@
 # MIRRORABLE (prep/gen_cuda_mirror.rb): CPU-only, no CUDA mirror.
 
 require_relative "../llm/engine/llama_kv_engine"
-require_relative "../../../vendor/spinel/spinel_kit/lib/spinel_kit/json_builder"
+require_relative "../io/json_builder"
 require_relative "../io/toy_events"
 require_relative "../io/loaders/toy_smollm2_loader"
 require_relative "../../../vendor/spinel/deps"
@@ -60,7 +60,7 @@ if EVENTS.length > 0
   rc = TinyNN.tnn_events_open(EVENTS)
   if rc == 0
     rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
-    rs = SpinelKit::Json::Builder.new
+    rs = Toy::Json::Builder.new
     rs.add_str("kind", "run_start")
     rs.add_str("schema", "toy/v1")
     rs.add_num("t", TinyNN.tnn_events_now_seconds)
@@ -71,7 +71,7 @@ if EVENTS.length > 0
       TinyNN.tnn_provenance_host_name, TinyNN.tnn_provenance_host_os,
       TinyNN.tnn_provenance_host_arch,
       TinyNN.tnn_backend_name(STATE.kv.sess))
-    model = SpinelKit::Json::Builder.new
+    model = Toy::Json::Builder.new
     model.add_str("arch", "llama")
     model.add_str("name", STATE.model_name)
     model.add_num("vocab",    STATE.cfg.vocab)
@@ -82,7 +82,7 @@ if EVENTS.length > 0
     model.add_num("d_head",   STATE.cfg.head_dim)
     model.add_num("d_ff",     STATE.cfg.d_ff)
     rs.add_obj("model", model)
-    config = SpinelKit::Json::Builder.new
+    config = Toy::Json::Builder.new
     config.add_num("max_t", MAX_T)
     config.add_num("port",  SERVE_PORT)
     rs.add_obj("config", config)
@@ -133,7 +133,7 @@ Tep.run!(SERVE_PORT, 1, false)
 # a cheap no-op (no double-run_end: Tep's own run_end rides APP.openai_events,
 # which serve never configures, so it is disabled).
 if EVENTS.length > 0 && TinyNN.tnn_events_active == 1
-  re = SpinelKit::Json::Builder.new
+  re = Toy::Json::Builder.new
   re.add_str("kind", "run_end")
   re.add_num("t",         TinyNN.tnn_events_now_seconds)
   re.add_str("ended_at",  TinyNN.tnn_events_iso8601_now)

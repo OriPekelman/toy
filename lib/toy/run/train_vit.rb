@@ -35,7 +35,7 @@
 # interpolation); ENV reads are TOP-LEVEL constants (a constant assigned
 # inside a conditional arm reads back empty at runtime); no Struct.new.
 
-require_relative "../../../vendor/spinel/spinel_kit/lib/spinel_kit/json_builder"
+require_relative "../io/json_builder"
 require_relative "../dev/toy_describe_flow"
 require_relative "../io/toy_events"
 require_relative "../models/toy_vit"
@@ -138,7 +138,7 @@ if EVENTS.length > 0
   rc = TinyNN.tnn_events_open(EVENTS)
   if rc == 0
     rid = TOY_RUN_ID.length > 0 ? TOY_RUN_ID : "anonymous"
-    rs = SpinelKit::Json::Builder.new
+    rs = Toy::Json::Builder.new
     rs.add_str("kind", "run_start")
     rs.add_str("schema", "toy/v1")
     rs.add_num("t", TinyNN.tnn_events_now_seconds)
@@ -150,7 +150,7 @@ if EVENTS.length > 0
       TinyNN.tnn_provenance_host_name, TinyNN.tnn_provenance_host_os,
       TinyNN.tnn_provenance_host_arch,
       TinyNN.tnn_backend_name(recipe.vt_cache.sess))
-    model = SpinelKit::Json::Builder.new
+    model = Toy::Json::Builder.new
     model.add_str("arch", "vit")
     model.add_str("name", "vit-tiny")
     model.add_num("image_size",  cfg.image_size)
@@ -161,14 +161,14 @@ if EVENTS.length > 0
     model.add_num("d_ff",        cfg.d_ff)
     model.add_num("num_classes", cfg.num_classes)
     rs.add_obj("model", model)
-    config = SpinelKit::Json::Builder.new
+    config = Toy::Json::Builder.new
     config.add_str("image_dir", IMG_DIR)
     config.add_num("n_images",  N_IMAGES)
     config.add_num("steps",     STEPS)
     config.add_num("seed",      SEED)
     config.add_str("init",      "scratch")
     rs.add_obj("config", config)
-    schedule = SpinelKit::Json::Builder.new
+    schedule = Toy::Json::Builder.new
     schedule.add_num("lr_max",  LR_MAX)
     schedule.add_num("lr_min",  LR_MIN)
     schedule.add_num("warmup",  WARMUP)
@@ -219,7 +219,7 @@ while step < STEPS
 
   if EVENTS.length > 0
     step_wall_us = ((TinyNN.tnn_events_now_seconds - step_wall_start) * 1.0e6).to_i
-    es = SpinelKit::Json::Builder.new
+    es = Toy::Json::Builder.new
     es.add_str("kind",  "step")
     es.add_str("phase", "train")
     es.add_num("t",       TinyNN.tnn_events_now_seconds)
@@ -236,7 +236,7 @@ end
 # writer + ToyGGUFWriter/Fuser poly-collide with ViTTinyConfig (#169
 # follow-up). Document the deferral in a note field (events, NOT stdout). ---
 if EVENTS.length > 0 && TinyNN.tnn_events_active == 1
-  re = SpinelKit::Json::Builder.new
+  re = Toy::Json::Builder.new
   re.add_str("kind", "run_end")
   re.add_num("t",          TinyNN.tnn_events_now_seconds)
   re.add_str("ended_at",   TinyNN.tnn_events_iso8601_now)

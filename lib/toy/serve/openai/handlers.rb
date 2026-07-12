@@ -32,10 +32,10 @@ class ModelsHandler < Tep::Handler
   def handle(req, res)
     res.headers["Content-Type"] = "application/json"
     "{\"object\":\"list\",\"data\":[{" +
-      SpinelKit::Json.encode_pair_str("id", STATE.model_name) + "," +
-      SpinelKit::Json.encode_pair_str("object", "model") + "," +
-      SpinelKit::Json.encode_pair_int("created", api_now_unix) + "," +
-      SpinelKit::Json.encode_pair_str("owned_by", "toy") +
+      Toy::Json.encode_pair_str("id", STATE.model_name) + "," +
+      Toy::Json.encode_pair_str("object", "model") + "," +
+      Toy::Json.encode_pair_int("created", api_now_unix) + "," +
+      Toy::Json.encode_pair_str("owned_by", "toy") +
     "}]}\n"
   end
 end
@@ -47,9 +47,9 @@ class CompletionsHandler < Tep::Handler
 
     # Accept the prompt as a JSON int array. OpenAI spec allows
     # `prompt: <int-array>` for pre-tokenized input; we require it.
-    prompt_ids = SpinelKit::Json.get_int_array(body, "prompt")
+    prompt_ids = Toy::Json.get_int_array(body, "prompt")
     if prompt_ids.length == 0
-      prompt_ids = SpinelKit::Json.get_int_array(body, "prompt_ids")
+      prompt_ids = Toy::Json.get_int_array(body, "prompt_ids")
     end
 
     if prompt_ids.length == 0
@@ -60,8 +60,8 @@ class CompletionsHandler < Tep::Handler
     end
 
     n_new = 16
-    if SpinelKit::Json.has_key?(body, "max_tokens")
-      n_new = SpinelKit::Json.get_int(body, "max_tokens")
+    if Toy::Json.has_key?(body, "max_tokens")
+      n_new = Toy::Json.get_int(body, "max_tokens")
     end
     if n_new <= 0; n_new = 16; end
     if n_new > 256; n_new = 256; end
@@ -98,18 +98,18 @@ class CompletionsHandler < Tep::Handler
     end
 
     "{" +
-      SpinelKit::Json.encode_pair_str("id", api_gen_id("cmpl")) + "," +
-      SpinelKit::Json.encode_pair_str("object", "text_completion") + "," +
-      SpinelKit::Json.encode_pair_int("created", api_now_unix) + "," +
-      SpinelKit::Json.encode_pair_str("model", STATE.model_name) + "," +
+      Toy::Json.encode_pair_str("id", api_gen_id("cmpl")) + "," +
+      Toy::Json.encode_pair_str("object", "text_completion") + "," +
+      Toy::Json.encode_pair_int("created", api_now_unix) + "," +
+      Toy::Json.encode_pair_str("model", STATE.model_name) + "," +
       "\"choices\":[{\"index\":0," +
-        SpinelKit::Json.encode_pair_str("text", "") + "," +
-        "\"ids\":" + SpinelKit::Json.from_int_array(new_ids) + "," +
+        Toy::Json.encode_pair_str("text", "") + "," +
+        "\"ids\":" + Toy::Json.from_int_array(new_ids) + "," +
         "\"finish_reason\":\"length\"}]," +
       "\"usage\":{" +
-        SpinelKit::Json.encode_pair_int("prompt_tokens", prompt_len) + "," +
-        SpinelKit::Json.encode_pair_int("completion_tokens", completion_len) + "," +
-        SpinelKit::Json.encode_pair_int("total_tokens", prompt_len + completion_len) +
+        Toy::Json.encode_pair_int("prompt_tokens", prompt_len) + "," +
+        Toy::Json.encode_pair_int("completion_tokens", completion_len) + "," +
+        Toy::Json.encode_pair_int("total_tokens", prompt_len + completion_len) +
       "}}\n"
   end
 end

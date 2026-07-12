@@ -56,3 +56,6 @@ artifacts = ["libtinynn_ggml.a"]
 # -lstdc++/-lpthread/-lm ride on ffi_lib in the source.
 [native]
 libs = ["${build.out}/libtinynn_ggml.a", "${build.out}/build/src/libggml.a", "${build.out}/build/src/libggml-cpu.a", "${build.out}/build/src/libggml-base.a"]
+
+[dependencies]
+spinel_kit = "~> 0.3"

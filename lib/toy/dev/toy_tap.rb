@@ -22,7 +22,7 @@
 # All stats are scalars; per_head_l2 is built as a JSON array string
 # via concatenation in this module.
 
-require_relative "../../../vendor/spinel/spinel_kit/lib/spinel_kit/json_builder"
+require_relative "../io/json_builder"
 
 module ToyTap
   # Single tap event. Pass layer=-1 / head=-1 to omit those fields
@@ -53,7 +53,7 @@ module ToyTap
       dn = "bf16"
     end
 
-    ev = SpinelKit::Json::Builder.new
+    ev = Toy::Json::Builder.new
     ev.add_str("kind",  "tap")
     ev.add_str("phase", "train")
     ev.add_num("t",      t_now)
@@ -135,7 +135,7 @@ module ToyTap
     buf = Mat.new(1, n)
     TinyNN.tnn_download_to_f64_array(sess, tensor, buf.flat, n)
 
-    ev = SpinelKit::Json::Builder.new
+    ev = Toy::Json::Builder.new
     ev.add_str("kind",  "tap")
     ev.add_str("phase", "train")
     ev.add_num("t",      t_now)

@@ -2,7 +2,7 @@
 # /v1/embeddings handler.
 #
 # MOVED from tep_demo/embeddings_handler.rb (P4 toy serve). Decodes the input
-# token-id array with SpinelKit::Json.get_int_array (toy#44; the former local
+# token-id array with Toy::Json.get_int_array (toy#44; the former local
 # ApiJson shim is retired — SpinelKit's decoder replaces it). Constructed with
 # (STATE, MODEL_NAME) so the handler doesn't need cross-file constant resolution.
 #
@@ -31,7 +31,7 @@ class EmbeddingsHandler < Tep::Handler
     res.headers["Content-Type"] = "application/json"
     body = req.body
 
-    ids = SpinelKit::Json.get_int_array(body, "input")
+    ids = Toy::Json.get_int_array(body, "input")
     if ids.length == 0
       res.set_status(400)
       return "{\"error\":{\"message\":\"input must be a non-empty int array " +
