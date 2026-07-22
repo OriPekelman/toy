@@ -27,6 +27,8 @@
 
 require_relative "../llm/engine/llama_kv_engine"
 require_relative "../io/json_builder"
+require_relative "../io/json"
+require_relative "../io/json_decoder"
 require_relative "../io/toy_events"
 require_relative "../io/loaders/toy_smollm2_loader"
 require_relative "../../../vendor/spinel/deps"

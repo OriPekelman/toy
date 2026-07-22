@@ -149,6 +149,12 @@ vendor-tep:
 	fi
 	bundle lock
 	SPINEL_EXT_DISABLE=pg SPINEL_DIR=$(HOME)/sites/spinel ../spinelgems/exe/spinel-compat vendor
+	@# REMOVE WHEN spinelgems#26 LANDS: deps.rb's generated $$LOAD_PATH
+	@# prelude aborts every Spinel binary at boot ("undefined method
+	@# 'unshift' for unknown" — $$LOAD_PATH is an untyped global at
+	@# f6a189e8). Spinel loads deps via the topo require_relatives; the
+	@# prelude only serves plain-CRuby runs, which toy's serve never does.
+	sed -i '/^\$$LOAD_PATH\.unshift/d' vendor/spinel/deps.rb
 	@# toy#69 — fold the vendored gems' aggregated sig root (advertised
 	@# by vendor/spinel/deps.rb, spinelgems#13) into toy's own --rbs
 	@# root via a gitignored symlink: spinel accepts ONE --rbs dir and
@@ -781,12 +787,12 @@ toy-train-metal: libexec/toy-train-metal
 # target so ToyRoot.ensure_built("libexec/toy-serve") both builds and
 # locates it. The endpoint logic moved out of tep_demo/openai_api_llama.rb
 # into lib/toy/serve/openai/* (Server/State + handlers + the embeddings
-# handler; JSON via SpinelKit::Json, toy#44). vendor/spinel/tep/lib/tep.rb is the TEP BUILD-DEP
+# handler; JSON via the absorbed Toy::Json codec, toy#107). vendor/spinel/tep/lib/tep.rb is the TEP BUILD-DEP
 # edge — Tep is consumed purely as transport (built by `make vendor-tep`
 # on a fresh tree; needs ../tep + ../spinelgems siblings). Deps mirror the
 # tep_demo recipe (Makefile:486) + the KV stack. CPU-only; NOT in
 # MIRRORABLE (see prep/gen_cuda_mirror.rb).
-libexec/toy-serve: lib/toy/run/serve.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
+libexec/toy-serve: lib/toy/run/serve.rb lib/toy/io/json_builder.rb lib/toy/io/json.rb lib/toy/io/json_decoder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
 		lib/toy/serve/openai/server.rb \
 		lib/toy/serve/openai/handlers.rb lib/toy/serve/openai/embeddings_handler.rb \
 		vendor/spinel/tep/lib/tep.rb \
