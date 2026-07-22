@@ -10,11 +10,12 @@ ruby "3.2.3", engine: "spinel", engine_version: "0.0.0"
 #
 # Pinned to the published gem (toy#31; was the git:main pre-publish stand-in).
 # tep 0.11.x ships artifact-free with prism as a DEV dep + spinel-ext.json at
-# the gem root, so it resolves + vendors cleanly. `~> 0.11.6` (toy#103): PG is
+# the gem root, so it resolves + vendors cleanly. `~> 0.11.7` (toy#103): PG is
 # opt-in (tep#216, serve compiles without libpq), boot-safe seeds (tep#223),
 # spinel_kit as a declared runtime dep (tep#220 — one shared copy, clears the
-# SpinelKit::Json double-bundle key-blanking, tep#213).
-gem "tep", "~> 0.11.6"
+# SpinelKit::Json double-bundle key-blanking, tep#213) — plus the 0.11.7
+# nil-guards (tep#245: request path died in nil.length at July masters).
+gem "tep", "~> 0.11.7"
 
 # SpinelKit — the shared Spinel stdlib-surface gem (toy#44). 0.3.0 retired the
 # JSON codec (toy absorbed it as Toy::Json, lib/toy/io/json_builder.rb); toy

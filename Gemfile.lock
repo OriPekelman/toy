@@ -2,7 +2,7 @@ GEM
   remote: https://rubygems.org/
   specs:
     spinel_kit (0.2.0)
-    tep (0.11.6)
+    tep (0.11.7)
       spinel_kit (~> 0.2)
 
 PLATFORMS
@@ -11,11 +11,11 @@ PLATFORMS
 
 DEPENDENCIES
   spinel_kit (~> 0.2.0)
-  tep (~> 0.11.6)
+  tep (~> 0.11.7)
 
 CHECKSUMS
   spinel_kit (0.2.0) sha256=3bf1de882260aa446ddc6b8cb067e14e4f2448f1e42d4d2e243dd04f6a887f85
-  tep (0.11.6) sha256=867dbf7797ec6d635d5377f4925769a160e1ebe22ef73149bfb7aaca9a9a26e1
+  tep (0.11.7) sha256=cfe6ee931f30993bee3c59a41150644f000c0660406a1ea23ec9092d970647de
 
 RUBY VERSION
    ruby 3.4.9p82
