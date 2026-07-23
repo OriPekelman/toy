@@ -73,7 +73,7 @@ require_relative "llm/classify_batch"
 # surface, CUDA types; user source stays device-agnostic.
 module Toy
   module Device
-    def self.name
+    def self.kind
       "cuda"
     end
 
@@ -108,5 +108,5 @@ end
 # the events C symbols live in libtinynn_ggml.a, linked by every backend
 # (the CPU TinyNN module is defined in this binary too — see the
 # checkpoint-seam note above). Required AFTER the Toy::Device module —
-# run_start! stamps backend{kind: Toy::Device.name} (toy#73 A.3).
+# run_start! stamps backend{kind: Toy::Device.kind} (toy#73 A.3).
 require_relative "io/run_bundle"

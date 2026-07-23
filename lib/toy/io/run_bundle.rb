@@ -24,7 +24,7 @@
 # PROVENANCE (toy#73 A.3 seed b):
 #   backend{kind} — AUTOMATIC. The device is compile-time known (you
 #     picked it by requiring compute.rb / compute_cuda.rb /
-#     compute_metal.rb), so run_start! stamps Toy::Device.name itself.
+#     compute_metal.rb), so run_start! stamps Toy::Device.kind itself.
 #     This is why the compute entries require this file AFTER defining
 #     Toy::Device — Spinel needs the constant defined before a file
 #     that references it compiles.
@@ -129,7 +129,7 @@ module Toy
     end
 
     # The shared run_start prefix: kind/schema/t/started_at/run_id/
-    # phase:"train" + host{} + backend{kind: Toy::Device.name} +
+    # phase:"train" + host{} + backend{kind: Toy::Device.kind} +
     # git{} when injected via git! — the same key order as the train
     # runners' Toy::Events.add_provenance. Callers append model{} +
     # config{} and emit.
@@ -143,7 +143,7 @@ module Toy
             RunBundle.json_escape(TinyNN.tnn_provenance_host_name) +
           "\",\"os\":\"" + TinyNN.tnn_provenance_host_os +
           "\",\"arch\":\"" + TinyNN.tnn_provenance_host_arch + "\"}" +
-          ",\"backend\":{\"kind\":\"" + Toy::Device.name + "\"}"
+          ",\"backend\":{\"kind\":\"" + Toy::Device.kind + "\"}"
       if @rb_git_sha.length > 0
         s = s + ",\"git\":{\"sha\":\"" + RunBundle.json_escape(@rb_git_sha) +
             "\",\"branch\":\"" + RunBundle.json_escape(@rb_git_branch) + "\"}"

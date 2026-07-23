@@ -104,7 +104,7 @@ require_relative "llm/classify_batch"
 # them require the variant file directly.
 module Toy
   module Device
-    def self.name
+    def self.kind
       "cpu"
     end
 
@@ -139,6 +139,6 @@ end
 # schema + the weights/ checkpoint-dir convention. SHARED (not mirrored):
 # the events C symbols live in libtinynn_ggml.a, linked by every backend.
 # Required AFTER the Toy::Device module above — run_start! stamps
-# backend{kind: Toy::Device.name} (toy#73 A.3), and Spinel needs the
+# backend{kind: Toy::Device.kind} (toy#73 A.3), and Spinel needs the
 # constant defined before a file referencing it compiles.
 require_relative "io/run_bundle"
