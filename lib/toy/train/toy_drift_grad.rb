@@ -33,7 +33,7 @@
 #     ToyDescribeFlow.build_index but inlined to avoid cross-module
 #     dependency).
 
-require_relative "../../../vendor/spinel/spinel_kit/lib/spinel_kit/json_builder"
+require_relative "../io/json_builder"
 
 module ToyDriftGrad
   # Walk session graph + leaves, return ordered array of (ptr, name)
@@ -133,7 +133,7 @@ module ToyDriftGrad
     l2_to_init = sum_sq_diff ** 0.5
 
     name = TinyNN.tnn_tensor_name(t)
-    ev = SpinelKit::Json::Builder.new
+    ev = Toy::Json::Builder.new
     ev.add_str("kind",  "drift")
     ev.add_str("phase", "train")
     ev.add_num("t",           t_now)
@@ -161,7 +161,7 @@ module ToyDriftGrad
     ne0 = TinyNN.tnn_tensor_ne0(g)
     ne1 = TinyNN.tnn_tensor_ne1(g)
     name = TinyNN.tnn_tensor_name(t)
-    ev = SpinelKit::Json::Builder.new
+    ev = Toy::Json::Builder.new
     ev.add_str("kind",  "grad")
     ev.add_str("phase", "train")
     ev.add_num("t",         t_now)

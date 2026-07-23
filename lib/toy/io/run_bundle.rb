@@ -57,7 +57,7 @@
 # `toy infer` and the bundle tooling expect them.
 #
 # JSON: self-contained minimal escaper (same escape table as
-# SpinelKit::Json::Builder) — NO vendor/spinel/spinel_kit require, so a
+# Toy::Json::Builder) — NO vendor/spinel/spinel_kit require, so a
 # fresh clone compiles the examples without `make vendor-tep`. Values
 # here are run ids / arch names + numbers; control bytes beyond
 # \" \\ \n \r \t pass through (don't put binary in a run id).
@@ -251,7 +251,7 @@ module Toy
     end
 
     # Minimal JSON string-body escaper (same table as
-    # SpinelKit::Json::Builder.escape, minus the \u00XX arm — run ids
+    # Toy::Json::Builder.escape, minus the \u00XX arm — run ids
     # and arch names are ASCII-clean by construction).
     def self.json_escape(s)
       out = ""

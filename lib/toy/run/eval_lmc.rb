@@ -47,7 +47,7 @@
 # popped-empty array literal.
 
 require_relative "../../toy"
-require_relative "../../../vendor/spinel/spinel_kit/lib/spinel_kit/json_builder"
+require_relative "../io/json_builder"
 require_relative "../models/toy_smollm2"
 require_relative "../llm/engine/llama_seq_engine"
 require_relative "../llm/adamw"
@@ -131,19 +131,19 @@ while seq_ids.length < SEQ_LEN; seq_ids.push(0); end
 # Emit run_start (FILE only).
 if EVENTS != ""
   t_open = TinyNN.tnn_events_now_seconds
-  rs = SpinelKit::Json::Builder.new
+  rs = Toy::Json::Builder.new
   rs.add_str("kind",  "run_start")
   rs.add_str("phase", "eval")
   rs.add_num("t",          t_open)
   rs.add_str("started_at", TinyNN.tnn_events_iso8601_now)
   rs.add_str("run_id",     RUN_ID)
   rs.add_str("name",       "lmc")
-  host = SpinelKit::Json::Builder.new
+  host = Toy::Json::Builder.new
   host.add_str("name", TinyNN.tnn_provenance_host_name)
   host.add_str("os",   TinyNN.tnn_provenance_host_os)
   host.add_str("arch", TinyNN.tnn_provenance_host_arch)
   rs.add_obj("host", host)
-  backend = SpinelKit::Json::Builder.new
+  backend = Toy::Json::Builder.new
   backend.add_str("kind", "cpu")
   rs.add_obj("backend", backend)
   TinyNN.tnn_events_emit(rs.dump)
@@ -302,13 +302,13 @@ while ai < alphas_arr.length
   # Emit eval event (FILE only).
   if EVENTS != ""
     t_now = TinyNN.tnn_events_now_seconds
-    ev = SpinelKit::Json::Builder.new
+    ev = Toy::Json::Builder.new
     ev.add_str("kind",  "eval")
     ev.add_str("phase", "eval")
     ev.add_num("t",    t_now)
     ev.add_str("name", "lmc")
     ev.add_num("loss", loss)
-    extra = SpinelKit::Json::Builder.new
+    extra = Toy::Json::Builder.new
     extra.add_num("alpha", alpha)
     ev.add_obj("extra", extra)
     TinyNN.tnn_events_emit(ev.dump)
@@ -320,7 +320,7 @@ end
 # Run-end (FILE only).
 if EVENTS != ""
   t_close = TinyNN.tnn_events_now_seconds
-  re = SpinelKit::Json::Builder.new
+  re = Toy::Json::Builder.new
   re.add_str("kind",  "run_end")
   re.add_str("phase", "eval")
   re.add_num("t",        t_close)

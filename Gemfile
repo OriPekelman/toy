@@ -10,14 +10,21 @@ ruby "3.2.3", engine: "spinel", engine_version: "0.0.0"
 #
 # Pinned to the published gem (toy#31; was the git:main pre-publish stand-in).
 # tep 0.11.x ships artifact-free with prism as a DEV dep + spinel-ext.json at
-# the gem root, so it resolves + vendors cleanly. `~> 0.11.2` = the current
-# release (0.11.2) — allows 0.11.x patches, holds the minor.
-gem "tep", "~> 0.11.2"
+# the gem root, so it resolves + vendors cleanly. `~> 0.11.7` (toy#103): PG is
+# opt-in (tep#216, serve compiles without libpq), boot-safe seeds (tep#223),
+# spinel_kit as a declared runtime dep (tep#220 — one shared copy, clears the
+# SpinelKit::Json double-bundle key-blanking, tep#213) — plus the 0.11.7
+# nil-guards (tep#245: request path died in nil.length at July masters).
+gem "tep", "~> 0.11.7"
 
-# SpinelKit — the shared Spinel stdlib-surface gem (toy#44): JSON
-# builder/encoder/decoder + .git/HEAD provenance, consolidated out of toy's
-# (and tep's) hand-rolled Toy::Json / Toy::Git shims. Pure Ruby, spinel-ext.json
-# is [] (no native ext), so it vendors as plain lib/ copies under
-# vendor/spinel/spinel_kit/. Consumed as the RELEASED RubyGems gem (like tep);
-# `~> 0.1` allows 0.1.x patches, holds the minor.
-gem "spinel_kit", "~> 0.1"
+# SpinelKit — the shared Spinel stdlib-surface gem (toy#44). 0.3.0 retired the
+# JSON codec (toy absorbed it as Toy::Json, lib/toy/io/json_builder.rb); toy
+# consumes spinel_kit/git only, and git.rb is byte-identical 0.2.0 ↔ 0.3.0
+# (pure lib/→root move).
+#
+# HELD at 0.2.x ON THIS PATH ONLY: 0.3.0 is a spin package (require_paths=".",
+# no lib/) and `spinel-compat vendor` assumes lib/ — it vendors only sig/*.rbs
+# (spinelgems issue filed). The spin path declares `~> 0.3` in spin.toml; the
+# two resolve to identical sources for everything toy requires. Re-align to
+# `~> 0.3` when spinel-compat honors require_paths.
+gem "spinel_kit", "~> 0.2.0"
