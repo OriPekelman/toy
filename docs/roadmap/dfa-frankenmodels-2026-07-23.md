@@ -141,10 +141,22 @@ separate, orthogonal leg: mul_mat_id backward, own issue.)
 
 ## 7. Phases
 
-- **P0 (~day)**: standalone C POC on vendored ggml (f1_matmul_bw_poc.c
-  precedent): 2-layer MLP, layer-1 `:dfa` / layer-2 `:chain`, finite-diff
-  check of the DFA grads, confirm graph_b extension + opt_step-with-custom-grad
-  works on sched. ABORT if the sched/alloc layer fights the extra nodes.
+- **P0 — ✅ DONE 2026-07-23** (`~/tmp/dfa_p0_poc.c`, deterministic
+  ALL-PASS): 2-layer MLP, layer-1 `:dfa` / layer-2 `:chain` on one
+  backend_sched graph_b (21 nodes, single alloc). Cut-by-membership
+  confirmed (autodiff builds NO W1 grad); chain grad vs finite-diff
+  1.98e-5; in-graph DFA grad vs hand reference 1.6e-6 over all 128
+  entries; mixed AdamW training CE 1.208 → 0.056 in 300 steps,
+  byte-identical across runs. The sched abort trigger did NOT fire.
+  Two load-bearing idioms surfaced for the P1 runner:
+  1. **Late-param flag**: `ggml_opt_step_adamw` asserts
+     `GGML_TENSOR_FLAG_PARAM` on the stepped weight — flag the `:dfa`
+     weight AFTER `build_backward_expand` (autodiff never sees it, the
+     assert is satisfied). Ordering is load-bearing.
+  2. **Pin all read-backs**: nodes appended after the backward (the DFA
+     chain + opt steps) reuse grad-acc/loss buffer slots under sched —
+     `ggml_set_output` everything read back (the engine already does
+     this via `tnn_pin_all_graph_b_nodes`).
 - **P1 (~days)**: `toy-train-franken` on the tiny-llama shape: last-block-BP /
   rest-DFA and all-chain configs. Gates: all-chain == existing trainer
   byte-exact (the null-hypothesis gate); DFA arm CE decreases; byte-repro
