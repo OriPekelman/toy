@@ -51,7 +51,7 @@ while step < STEPS
   step = step + 1
 end
 
-puts "compute-surface-cuda: device=" + Toy::Device.name +
+puts "compute-surface-cuda: device=" + Toy::Device.kind +
      " engines=[llama,gpt2] + FromScratch recipe trained, final_loss=" + loss.to_s
 if loss.finite?
   puts "compute-surface-cuda: ok"

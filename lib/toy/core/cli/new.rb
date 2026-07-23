@@ -283,7 +283,7 @@ module Toy
             puts "step " + (step + 1).to_s + ": loss=" + loss.to_s
             step = step + 1
           end
-          puts "experiment: ok (device=" + Toy::Device.name + ")"
+          puts "experiment: ok (device=" + Toy::Device.kind + ")"
 
           # toy#90 — release backend resources before exit. REQUIRED on
           # Metal: ggml-metal asserts at device-free that its residency

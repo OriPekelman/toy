@@ -794,7 +794,7 @@ toy-train-metal: libexec/toy-train-metal
 # MIRRORABLE (see prep/gen_cuda_mirror.rb).
 libexec/toy-serve: lib/toy/run/serve.rb lib/toy/io/json_builder.rb lib/toy/io/json.rb lib/toy/io/json_decoder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
 		lib/toy/serve/openai/server.rb \
-		lib/toy/serve/openai/handlers.rb lib/toy/serve/openai/embeddings_handler.rb \
+		lib/toy/serve/openai/handlers.rb lib/toy/serve/openai/toy_backend.rb \
 		vendor/spinel/tep/lib/tep.rb \
 		lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb \
 		tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec

@@ -32,9 +32,9 @@ require_relative "../io/json_decoder"
 require_relative "../io/toy_events"
 require_relative "../io/loaders/toy_smollm2_loader"
 require_relative "../../../vendor/spinel/deps"
-require_relative "../serve/openai/embeddings_handler"
 require_relative "../serve/openai/server"
 require_relative "../serve/openai/handlers"
+require_relative "../serve/openai/toy_backend"
 
 # ---- Events sink (toy/v1 serving telemetry; FILE only). -------------------
 # TOP-LEVEL constants (NEVER inside a branch — Spinel does not initialize a
@@ -94,13 +94,19 @@ if EVENTS.length > 0
   end
 end
 
-# Routes -- Tep consumed purely as transport (Tep.get/post + Tep::Handler).
+# Routes (toy#30) -- the four /v1 endpoints come from tep's OpenAI battery:
+# Server.use dispatches ToyBackend (IDs-only: choices[0].ids per tep#209;
+# /v1/chat/completions 501s via supports_chat?=false default). serve!("")
+# keeps tep's OWN event stream disabled — the toy/v1 telemetry stays on the
+# C emitter (run_start above; per-request event inside ToyBackend), which
+# serve_events_gate pins. Health + Index remain app-mounted (not battery
+# concerns). Known wire residuals vs the retired handlers: no trailing
+# newline, model echoes the request param (tep#212), empty prompt is a 200
+# empty completion, not a 400 (tep#249 — Backend has no error channel).
 Tep.get  "/",                     IndexHandler.new
 Tep.get  "/health",               HealthHandler.new
-Tep.get  "/v1/models",            ModelsHandler.new
-Tep.post "/v1/completions",       CompletionsHandler.new
-Tep.post "/v1/chat/completions",  ChatCompletionsHandler.new
-Tep.post "/v1/embeddings",        EmbeddingsHandler.new(STATE, MODEL_NAME)
+Tep::Llm::OpenAI::Server.use(ToyBackend.new(STATE, MODEL_NAME))
+Tep::Llm::OpenAI::Server.serve!("")
 
 # PORT from the controlled env (NEW; replaces the ARGV -p/-w/-q parse the
 # tep_demo binary used -- `toy serve` owns the UX). CPU-only, workers=1,
