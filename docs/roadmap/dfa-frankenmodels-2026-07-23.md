@@ -263,9 +263,23 @@ refinement (P3+).
      alignment through attention is weak (|cos| mostly <0.3, some
      upward drift, e.g. layer-0 k → 0.57) yet training proceeds —
      the granularity-vs-alignment trade is now measurable.
-- **P2**: per-segment policy table via RecipeOptions + the Franken-MoE arm
-  (BP router + DFA experts on a small MoE; needs the routed-token gather).
-  Tao gets the surface here; tao-side issue filed at P2 start.
+- **P2a — ✅ DONE 2026-07-24** (914847d): Toy::Train::DfaB (the B axes
+  as flat INT codes) + RecipeOptions credit_assignment/dfa_b_* +
+  LlamaSeqEngine#build_training_step_franken (per-HEAD dfa on q/k/v via
+  the GH#15 tap; B as once-uploaded graph-input leaves — zero
+  realize-path changes) + Recipes::FrankenFromScratch +
+  gate-franken-parity (all-chain loss curves BYTE-IDENTICAL to
+  FromScratch per step; dfa arm diverges + decreases). Full train_gate
+  matrix stayed byte-exact with the franken builder in the engine unit
+  — the union-pin dedicated-unit constraint is confirmed THAWED (noted
+  in the GDN reintegration doc). Spinel gotcha for consumers: keep
+  recipe drivers MONOMORPHIC (a poly recipe local garbles arg typing
+  program-wide). Physics gotcha: Adam's sign-scale updates make
+  qkv-only DFA divergence glacial at tiny configs — plan experiment
+  horizons accordingly.
+- **P2b (staged next)**: the Franken-MoE arm — dense small-E soft
+  mixture (no gather, no mul_mat_id): BP router + DFA experts, twin
+  lanes; then the hard-routed variant when the gather lands.
 - **P3**: `:mix(α)` blending arm + (only if experiments demand) the opaque-cut
   vendored op; CUDA leg LAST (mirror cost paid once the shape is stable).
 
