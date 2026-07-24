@@ -114,3 +114,14 @@ through `lib/toy/run/train.rb` → `Recipes::FromScratch` → `engine.set_gdn_la
    no-GDN runs stay byte-exact (from-scratch/warm-start/lora).
 3. Retire `toy-train-hybrid` once the engine path is green (keep its smoke as a
    cross-check).
+
+## 2026-07-24 — the blocker has THAWED (evidence from toy#109 P2)
+
+The franken credit-assignment work added a new training-step builder
+(`build_training_step_franken` + a DfaB require) INTO the LlamaSeqEngine
+compilation unit — exactly the class of change the union-pin miscompile
+forbade — and the full train_gate matrix (from-scratch/lora/warm-start/
+vit) stayed byte-exact, with compute-surface and poly-degrade clean, at
+the ecac633caa plain-master pin. The dedicated-runner constraint that
+motivated this doc no longer binds; GDN reintegration can proceed on its
+own merits when scheduled.

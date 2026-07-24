@@ -50,6 +50,7 @@
 require_relative "../../toy"
 require_relative "../ffi/tinynn"
 require_relative "../llm/primitives/rms_norm"
+require_relative "../train/dfa_b"
 
 module Toy
   module LLM
@@ -84,22 +85,30 @@ module Toy
           a
         end
 
-        # xorshift64 + Box–Muller gaussian, scaled; per-weight stream.
-        def self.gauss_fill(n, seed, sigma)
-          a = [0.0]; a.pop
-          s = (seed * 2654435761) % 9007199254740881
-          if s <= 0; s = seed + 7; end
-          i = 0
-          while i < n
-            s ^= (s << 13) & 0xFFFFFFFFFFFF; s ^= (s >> 7); s ^= (s << 17) & 0xFFFFFFFFFFFF
-            u1 = ((s % 1000003).to_f + 1.0) / 1000004.0
-            s ^= (s << 13) & 0xFFFFFFFFFFFF; s ^= (s >> 7); s ^= (s << 17) & 0xFFFFFFFFFFFF
-            u2 = ((s % 1000003).to_f + 1.0) / 1000004.0
-            g = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(6.283185307179586 * u2)
-            a.push(g * sigma)
-            i = i + 1
+        # B fill via the shared axes module (toy#109 P2). ENV knobs:
+        # FRANKEN_B_DIST=gaussian|uniform|rademacher,
+        # FRANKEN_B_SCALE=inv_sqrt_fan|glorot|fixed:<sigma>.
+        def self.b_dist_code
+          d = ENV["FRANKEN_B_DIST"] || ""
+          if d == "uniform"
+            return Toy::Train::DfaB::DIST_UNIFORM
           end
-          a
+          if d == "rademacher"
+            return Toy::Train::DfaB::DIST_RADEMACHER
+          end
+          Toy::Train::DfaB::DIST_GAUSSIAN
+        end
+
+        def self.b_sigma
+          sc = ENV["FRANKEN_B_SCALE"] || ""
+          if sc.length >= 6 && sc[0, 6] == "fixed:"
+            return Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_FIXED,
+                                              VOCAB, DM, sc[6, sc.length - 6].to_f)
+          end
+          if sc == "glorot"
+            return Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_GLOROT, VOCAB, DM, 0.0)
+          end
+          Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, VOCAB, DM, 0.0)
         end
 
         # Per-tower handle bundle (uniform-typed arrays; no Struct/Card).
@@ -291,11 +300,13 @@ module Toy
             TinyNN.tnn_zero_tensor(sess, tow_b.pm[gi]); TinyNN.tnn_zero_tensor(sess, tow_b.pv[gi])
             gi = gi + 1
           end
-          sigma = 1.0 / Math.sqrt(VOCAB.to_f)
+          dist_c = b_dist_code
+          sigma  = b_sigma
           bi = 0
           while bi < bmats.length
             nb = DM * VOCAB
-            TinyNN.tnn_upload_from_float_array(sess, bmats[bi], gauss_fill(nb, bseeds[bi], sigma), nb)
+            TinyNN.tnn_upload_from_float_array(sess, bmats[bi],
+              Toy::Train::DfaB.fill(nb, bseeds[bi], dist_c, sigma), nb)
             bi = bi + 1
           end
 

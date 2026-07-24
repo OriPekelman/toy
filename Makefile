@@ -2281,3 +2281,17 @@ toy-train-franken: libexec/toy-train-franken
 .PHONY: gate-franken
 gate-franken: libexec/toy-train-franken
 	ruby prep/franken_gate.rb
+
+# toy#109 P2 — engine-parity smoke: FromScratch vs FrankenFromScratch
+# all-chain byte-parity + the per-head dfa arm through the real engine.
+prep/smokes/smoke_franken_parity: prep/smokes/smoke_franken_parity.rb lib/toy/compute.rb \
+		lib/toy/llm/recipes/franken_from_scratch.rb lib/toy/llm/engine/llama_seq_engine.rb \
+		lib/toy/train/dfa_b.rb lib/toy/llm/recipe_options.rb \
+		tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) $< -o $@
+.PHONY: gate-franken-parity
+gate-franken-parity: prep/smokes/smoke_franken_parity
+	@out="$$(./prep/smokes/smoke_franken_parity 2>&1)"; \
+	echo "$$out" | tail -6; \
+	echo "$$out" | grep -q "^franken-parity: ok$$" || { echo "GATE FAIL [franken-parity]"; exit 1; }; \
+	echo "GATE PASS [franken-parity]: engine all-chain byte-parity + dfa arm (toy#109 P2)"

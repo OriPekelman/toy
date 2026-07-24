@@ -21,6 +21,7 @@ require_relative "../../../toy"
 require_relative "../../models/toy_smollm2"
 require_relative "../../ffi/tinynn"
 require_relative "../primitives/rms_norm"
+require_relative "../../train/dfa_b"
 require_relative "../primitives/rope"
 require_relative "../primitives/swiglu"
 require_relative "../primitives/gqa"
@@ -1185,6 +1186,145 @@ class LlamaSeqEngine
     # grows roughly with node count; fine for SmolLM2-135M at T<=64.
     TinyNN.tnn_pin_all_graph_b_nodes(@sess)
     TinyNN.tnn_realize_backward(@sess)
+    [t_loss, t_labels, t_hp]
+  end
+
+  # toy#109 P2 — the FrankenModel training step: build_training_step's
+  # full-finetune arm with a per-layer CREDIT-ASSIGNMENT policy. policy
+  # is a flat IntArray (0 = :chain, 1 = :dfa); layers beyond its length
+  # are chain. With an EMPTY/all-zero policy this method must emit the
+  # IDENTICAL graph to build_training_step (the parity gate pins it —
+  # every op below is verbatim from the original except inside the
+  # dfa-classified branch).
+  #
+  # :dfa scope (v1, per-matmul identity-boundary — design doc §4c): the
+  # ATTENTION Q/K/V per-head weights only, whose shared input tap
+  # (blk.tap_attn_norm, the GH#15 CKA tap) the forward already records.
+  # o/FFN/norms/globals stay :chain in every policy. Each dfa weight
+  # gets a fixed random B (ne=[vocab, d_head]) as a GRAPH-INPUT tensor
+  # uploaded ONCE post-realize (read-only leaf, same persistence class
+  # as labels between uploads — no realize-path changes needed);
+  # δ = B·e with e = (softmax(logits) − labels)/(T·B); grad = tapᵀ·δ
+  # appended as pure forward ops (P0 mechanics) and fed to
+  # opt_step_adamw in place of the autodiff grad-acc. The autodiff
+  # param set is UNCHANGED (shadow-shaped build; the cut primitive is a
+  # later phase) — chain grads for dfa weights exist but are unused.
+  #
+  # b_dist/b_scale/b_sigma are Toy::Train::DfaB codes; b_seed feeds
+  # per-weight streams (seed + li*1000 + wi) so re-policying one layer
+  # never reshuffles another's B. qkv_bias + dfa is unsupported (fail
+  # loud); dfa on a non-attention (GDN) layer fails loud.
+  def build_training_step_franken(policy, b_seed, b_dist, b_scale, b_sigma)
+    if !@seq_full_finetune_enabled
+      puts "build_training_step_franken: requires realize_for_random_init (full-finetune arm only)"
+      return nil
+    end
+    TinyNN.tnn_reset_for_rebuild(@sess)
+    build_forward_in_current_ctx
+
+    t_labels = TinyNN.tnn_input_2d_f32(@sess, @seq_t * @seq_b, @seq_vocab_size)
+    t_hp = TinyNN.tnn_input_1d_f32(@sess, 7)
+
+    t_loss = TinyNN.tnn_cross_entropy_loss(@sess, @t_seq_logits, t_labels)
+    TinyNN.tnn_set_output(t_loss)
+    TinyNN.tnn_set_loss(t_loss)
+
+    TinyNN.tnn_build_forward_only(@sess, t_loss)
+    TinyNN.tnn_build_backward(@sess)
+
+    any_dfa = false
+    pi = 0
+    while pi < policy.length
+      if policy[pi] == 1
+        any_dfa = true
+      end
+      pi = pi + 1
+    end
+
+    t_e = TinyNN.tnn_null_ptr
+    if any_dfa
+      if @seq_has_qkv_bias
+        raise "build_training_step_franken: qkv_bias + :dfa unsupported (v1)"
+      end
+      t_p = TinyNN.tnn_softmax(@sess, @t_seq_logits)
+      t_e = TinyNN.tnn_scale(@sess, TinyNN.tnn_sub(@sess, t_p, t_labels),
+                             1.0 / (@seq_t * @seq_b).to_f)
+    end
+
+    b_handles = [TinyNN.tnn_null_ptr]; b_handles.pop
+    b_seeds   = [0]; b_seeds.pop
+
+    tb = @seq_t * @seq_b
+    li = 0
+    while li < @seq_n_layers
+      blk = self.seq_blocks_ffi[li]
+      mode = 0
+      if li < policy.length
+        mode = policy[li]
+      end
+      if mode == 1 && self.seq_arch.seq_layer_kinds[li] != Toy::LLM::Archs::LayerSpec::KIND_ATTENTION
+        raise "build_training_step_franken: :dfa on non-attention layer " + li.to_s
+      end
+      nh  = @seq_n_heads
+      nkv = @seq_n_kv
+      wi = 0
+      while wi < blk.ft_weights.length
+        tw = blk.ft_weights[wi]
+        # ft layout (alloc_trainable_f32_weights!): [rn1, rn2,
+        # q×n_heads, (k,v)×n_kv interleaved, o, gate, up, down].
+        is_qkv = wi >= 2 && wi < 2 + nh + 2 * nkv
+        if mode == 1 && is_qkv
+          t_b = TinyNN.tnn_input_2d_f32(@sess, @seq_d_head, @seq_vocab_size)
+          t_delta = TinyNN.tnn_matmul(@sess, t_b, t_e)
+          t_tap_t = TinyNN.tnn_cont_2d(@sess,
+                      TinyNN.tnn_transpose(@sess, blk.tap_attn_norm), tb, @seq_d_model)
+          t_del_t = TinyNN.tnn_cont_2d(@sess,
+                      TinyNN.tnn_transpose(@sess, t_delta), tb, @seq_d_head)
+          t_g = TinyNN.tnn_matmul(@sess, t_tap_t, t_del_t)
+          TinyNN.tnn_set_output(t_g)
+          to = TinyNN.tnn_opt_step_adamw(@sess, tw, t_g,
+                                          blk.ft_m[wi], blk.ft_v[wi], t_hp)
+          TinyNN.tnn_extend_backward_graph(@sess, to)
+          b_handles.push(t_b)
+          b_seeds.push(b_seed + li * 1000 + wi)
+        else
+          tg = TinyNN.tnn_tensor_grad(@sess, tw)
+          to = TinyNN.tnn_opt_step_adamw(@sess, tw, tg,
+                                          blk.ft_m[wi], blk.ft_v[wi], t_hp)
+          TinyNN.tnn_extend_backward_graph(@sess, to)
+        end
+        wi = wi + 1
+      end
+      li = li + 1
+    end
+    gi = 0
+    while gi < @ft_globals_weights.length
+      tw = @ft_globals_weights[gi]
+      tg = TinyNN.tnn_tensor_grad(@sess, tw)
+      to = TinyNN.tnn_opt_step_adamw(@sess, tw, tg,
+                                      @ft_globals_m[gi], @ft_globals_v[gi], t_hp)
+      TinyNN.tnn_extend_backward_graph(@sess, to)
+      gi = gi + 1
+    end
+
+    # Loud wiring summary (never-mask: an empty dfa count under a
+    # non-empty policy is a bug, not a quiet fallback).
+    puts "franken: policy_len=" + policy.length.to_s +
+         " dfa_wired=" + b_handles.length.to_s
+
+    TinyNN.tnn_pin_all_graph_b_nodes(@sess)
+    TinyNN.tnn_realize_backward(@sess)
+
+    # B uploads: buffers exist only after sched alloc. Read-only leaves —
+    # uploaded once, stable across computes (labels-class persistence).
+    bi = 0
+    while bi < b_handles.length
+      nb = @seq_d_head * @seq_vocab_size
+      sig = Toy::Train::DfaB.sigma_for(b_scale, @seq_vocab_size, @seq_d_head, b_sigma)
+      TinyNN.tnn_upload_from_float_array(@sess, b_handles[bi],
+        Toy::Train::DfaB.fill(nb, b_seeds[bi], b_dist, sig), nb)
+      bi = bi + 1
+    end
     [t_loss, t_labels, t_hp]
   end
 

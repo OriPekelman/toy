@@ -56,7 +56,16 @@
 module Toy; module LLM
   class RecipeOptions
     attr_accessor :t_seq, :t_batch, :weight_dtype, :untied,
-                  :qkv_bias, :seed, :init_scale
+                  :qkv_bias, :seed, :init_scale,
+                  # toy#109 P2 — FrankenModel credit assignment. Read ONLY by
+                  # Recipes::FrankenFromScratch; the classic recipes ignore
+                  # them. credit_assignment: per-layer INT modes (0=chain,
+                  # 1=dfa); EMPTY = all-chain (the parity config). dfa_b_*:
+                  # the fixed-feedback-matrix axes (Toy::Train::DfaB codes) —
+                  # dist 0=gaussian/1=uniform/2=rademacher, scale
+                  # 0=inv_sqrt_fan/1=glorot/2=fixed(sigma).
+                  :credit_assignment, :dfa_b_seed, :dfa_b_dist,
+                  :dfa_b_scale, :dfa_b_sigma
 
     def initialize
       @t_seq        = 0
@@ -66,6 +75,11 @@ module Toy; module LLM
       @qkv_bias     = false
       @seed         = 0
       @init_scale   = 1.0
+      @credit_assignment = [0]; @credit_assignment.pop  # typed-empty IntArray
+      @dfa_b_seed   = 0
+      @dfa_b_dist   = 0
+      @dfa_b_scale  = 0
+      @dfa_b_sigma  = 0.0
     end
   end
 end; end
