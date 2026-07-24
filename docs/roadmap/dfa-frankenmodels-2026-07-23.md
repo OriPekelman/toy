@@ -290,8 +290,26 @@ refinement (P3+).
   experts, weak through attention. This is the load-bearing datum for
   Franken-mixing: put DFA where the experts are. Hard-routed variant
   (mul_mat_id + gather) stays staged for the scale leg.
-- **P3**: `:mix(α)` blending arm + (only if experiments demand) the opaque-cut
-  vendored op; CUDA leg LAST (mirror cost paid once the shape is stable).
+- **P3 (combiners) — ✅ DONE 2026-07-24**: `:mix(α)` + the MASKED
+  combiner family (§4b backlog) in BOTH the twin-lane runner
+  (`FRANKEN_POLICY=mix:<α>|maskdfa:<τ>|maskbp:<τ>`) and the engine
+  surface (modes 2/3/4 + `dfa_mix_alpha`/`dfa_mask_tau`). The mask is
+  a smooth near-hard gate 0.5(1+tanh(1e4(|g|−τ))) composed from bound
+  ops (no new FFI); τ=−1/huge saturate to exactly 1.0/0.0 → byte-null
+  anchors. Gates: runner mix(1.0) BYTE-equals chain, maskdfa(−1)
+  BYTE-equals dfa with saturated densities; engine mix(1.0) is
+  near-null (byte-identical 10 steps, then 1-ulp f32 sched drift from
+  the value-inert extra nodes — documented, tolerance 1e-5; the
+  load-bearing all-chain byte-null is unaffected). Mask-density
+  telemetry (`mask step=… density=…`). **First combiner data**:
+  mix(0.5) interpolates within-weight (0.26 vs 0.17/0.97 @40);
+  maskbp:τ=5e-4 — BP gated by DFA-magnitude saliency at density 0.81
+  — matches full BP (0.1707 vs 0.1700): the masked-update idea shows
+  immediate promise as update sparsification.
+- **P3 (remaining, staged)**: opaque-cut vendored op (only if an
+  experiment demands opacity-with-passthrough); hard-routed MoE
+  (gather + mul_mat_id) for the scale leg; CUDA mirrors LAST once the
+  shape is stable.
 
 ## 8. Explicit non-goals (v1)
 

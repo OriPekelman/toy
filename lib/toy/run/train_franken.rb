@@ -7,10 +7,17 @@
 # the SAME uploaded batch. Lane A is always :chain (backprop). Lane B follows
 # FRANKEN_POLICY — per-layer, comma-separated:
 #
-#   FRANKEN_POLICY=chain,chain   # null config: lane B must equal lane A
-#                                # byte-for-byte every step (twin-parity gate)
-#   FRANKEN_POLICY=dfa,dfa       # per-matmul DFA on the attention weights
-#   FRANKEN_POLICY=chain,dfa     # bottom-BP / top-DFA (or any mix)
+#   FRANKEN_POLICY=chain,chain        # null: lane B byte-equals lane A
+#   FRANKEN_POLICY=dfa,dfa            # per-matmul DFA on attention weights
+#   FRANKEN_POLICY=chain,dfa          # bottom-BP / top-DFA (any mix)
+#   FRANKEN_POLICY=mix:0.5,mix:0.5    # α·chain + (1−α)·dfa per weight (P3)
+#   FRANKEN_POLICY=maskdfa:0.001,...  # dfa gated by 1[|g_bp|>τ]  (P3 —
+#   FRANKEN_POLICY=maskbp:0.001,...   # bp gated by 1[|g_dfa|>τ]   the
+#                                     # "activation function on the update";
+#                                     # smooth gate 0.5(1+tanh(k(|g|−τ))),
+#                                     # k=1e4 ⇒ near-hard; τ=−1 saturates to
+#                                     # EXACTLY 1.0 ⇒ byte-equals dfa (null),
+#                                     # τ huge ⇒ exactly 0.0 ⇒ frozen arm)
 #
 # WHY one graph (P1 finding, load-bearing): tinynn's engine — and therefore
 # THE SCHED — is a process-global singleton (g_engine_cpu). Two sessions
@@ -117,6 +124,7 @@ module Toy
           attr_accessor :rns, :wqs, :wks, :wvs, :wos
           attr_accessor :hs, :ctxs, :t_loss, :t_logits
           attr_accessor :dfa_grads, :dfa_accs, :dfa_names
+          attr_accessor :masks, :mask_names
 
           def initialize
             np = TinyNN.tnn_null_ptr
@@ -135,6 +143,8 @@ module Toy
             @dfa_grads = [np]; @dfa_grads.pop
             @dfa_accs  = [np]; @dfa_accs.pop
             @dfa_names = [""]; @dfa_names.pop
+            @masks      = [np]; @masks.pop
+            @mask_names = [""]; @mask_names.pop
           end
         end
 
@@ -219,6 +229,15 @@ module Toy
           TinyNN.tnn_matmul(sess, a_in_t, delt_t)                      # [DM, DM]
         end
 
+        # Smooth near-hard gate: 0.5·(1 + tanh(k·(|g| − τ))), |g| via
+        # sqrt(g⊙g), k = 1e4. τ = −1 saturates to EXACTLY 1.0 (tanh(≥1e4)
+        # == 1.0f); τ huge saturates to exactly 0.0 — the byte-null anchors.
+        def self.smooth_mask(sess, g, tau)
+          absg = TinyNN.tnn_sqrt(sess, TinyNN.tnn_mul(sess, g, g))
+          y    = TinyNN.tnn_scale_bias(sess, absg, 1.0, 0.0 - tau)
+          TinyNN.tnn_scale_bias(sess, TinyNN.tnn_tanh(sess, TinyNN.tnn_scale(sess, y, 10000.0)), 0.5, 0.5)
+        end
+
         def self.wire_chain(sess, tw, t_hp, idx)
           tg = TinyNN.tnn_tensor_grad(sess, tw.pp[idx])
           to = TinyNN.tnn_opt_step_adamw(sess, tw.pp[idx], tg, tw.pm[idx], tw.pv[idx], t_hp)
@@ -233,13 +252,31 @@ module Toy
           end
           parts = pol_s.split(",")
           policy = [0]; policy.pop
+          p_alpha = [0.0]; p_alpha.pop
+          p_tau   = [0.0]; p_tau.pop
           i = 0
           while i < LAYERS
             m = 0
-            if i < parts.length && parts[i] == "dfa"
-              m = 1
+            al = 0.0
+            ta = 0.0
+            if i < parts.length
+              tk = parts[i]
+              if tk == "dfa"
+                m = 1
+              elsif tk.length > 4 && tk[0, 4] == "mix:"
+                m = 2
+                al = tk[4, tk.length - 4].to_f
+              elsif tk.length > 8 && tk[0, 8] == "maskdfa:"
+                m = 3
+                ta = tk[8, tk.length - 8].to_f
+              elsif tk.length > 7 && tk[0, 7] == "maskbp:"
+                m = 4
+                ta = tk[7, tk.length - 7].to_f
+              end
             end
             policy.push(m)
+            p_alpha.push(al)
+            p_tau.push(ta)
             i = i + 1
           end
           steps_s = ENV["STEPS"] || ""
@@ -270,7 +307,7 @@ module Toy
           bseeds = [0]; bseeds.pop
           li = 0
           while li < LAYERS
-            if policy[li] == 1
+            if policy[li] > 0
               wi = 0
               while wi < 4
                 bmats.push(TinyNN.tnn_input_2d_f32_persistent(sess, DM, VOCAB))
@@ -354,15 +391,35 @@ module Toy
               acts = [tow_b.hs[li], tow_b.hs[li], tow_b.hs[li], tow_b.ctxs[li]]
               wi = 0
               while wi < 4
-                w  = tow_b.pp[base + 1 + wi]
-                g  = dfa_grad(sess, bmats[bi], e_b, acts[wi])
+                w   = tow_b.pp[base + 1 + wi]
+                acc = TinyNN.tnn_tensor_grad(sess, w)
+                gd  = dfa_grad(sess, bmats[bi], e_b, acts[wi])
+                g   = gd
+                if policy[li] == 2
+                  al = p_alpha[li]
+                  g = TinyNN.tnn_add(sess,
+                        TinyNN.tnn_scale(sess, acc, al),
+                        TinyNN.tnn_scale(sess, gd, 1.0 - al))
+                elsif policy[li] == 3
+                  mk = smooth_mask(sess, acc, p_tau[li])
+                  TinyNN.tnn_set_output(mk)
+                  tow_b.masks.push(mk)
+                  tow_b.mask_names.push("li=" + li.to_s + " w=" + names[wi])
+                  g = TinyNN.tnn_mul(sess, gd, mk)
+                elsif policy[li] == 4
+                  mk = smooth_mask(sess, gd, p_tau[li])
+                  TinyNN.tnn_set_output(mk)
+                  tow_b.masks.push(mk)
+                  tow_b.mask_names.push("li=" + li.to_s + " w=" + names[wi])
+                  g = TinyNN.tnn_mul(sess, acc, mk)
+                end
                 TinyNN.tnn_set_output(g)
                 to = TinyNN.tnn_opt_step_adamw(sess, w, g,
                                                 tow_b.pm[base + 1 + wi],
                                                 tow_b.pv[base + 1 + wi], t_hp)
                 TinyNN.tnn_extend_backward_graph(sess, to)
                 tow_b.dfa_grads.push(g)
-                tow_b.dfa_accs.push(TinyNN.tnn_tensor_grad(sess, w))
+                tow_b.dfa_accs.push(acc)
                 tow_b.dfa_names.push("li=" + li.to_s + " w=" + names[wi])
                 bi = bi + 1
                 wi = wi + 1
@@ -419,6 +476,19 @@ module Toy
               puts "align step=" + s.to_s + " " + tow_b.dfa_names[di] +
                    " cos=" + cosv(gb, ga).to_s
               di = di + 1
+            end
+            mi = 0
+            while mi < tow_b.masks.length
+              TinyNN.tnn_download_to_f64_array(sess, tow_b.masks[mi], gb, DM * DM)
+              msum = 0.0
+              ii = 0
+              while ii < DM * DM
+                msum = msum + gb[ii]
+                ii = ii + 1
+              end
+              puts "mask step=" + s.to_s + " " + tow_b.mask_names[mi] +
+                   " density=" + (msum / (DM * DM).to_f).to_s
+              mi = mi + 1
             end
             s = s + 1
           end

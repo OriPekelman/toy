@@ -32,7 +32,8 @@ module Toy; module LLM; module Recipes
                                         opts.init_scale)
       result       = @ff_cache.build_training_step_franken(
                        opts.credit_assignment, opts.dfa_b_seed,
-                       opts.dfa_b_dist, opts.dfa_b_scale, opts.dfa_b_sigma)
+                       opts.dfa_b_dist, opts.dfa_b_scale, opts.dfa_b_sigma,
+                       opts.dfa_mix_alpha, opts.dfa_mask_tau)
       @ff_t_loss   = result[0]
       @ff_t_labels = result[1]
       @ff_t_hp     = result[2]

@@ -78,6 +78,42 @@ failures << "alignment: #{align_count} lines (want #{expected_aligns})" unless a
 failures << "alignment: #{align_bad} malformed cos values" unless align_bad == 0
 puts failures.empty? ? "  ok: dfa,dfa — lane_b CE #{first_b&.round(3)} -> #{last_b&.round(3)}; #{align_count} well-formed align lines" : "  FAIL: dfa leg"
 
+# ---- P3 combiner legs ----
+# mix(1.0) must byte-equal pure chain (lane parity), the strong null.
+out = run_franken("mix:1.0,mix:1.0", 6)
+mix_null_ok = true
+out.each_line do |line|
+  next unless line.start_with?("step ")
+  m = line.match(/lane_a=(\S+) lane_b=(\S+)/)
+  mix_null_ok = false if m.nil? || m[1] != m[2]
+end
+failures << "mix(1.0) != chain" unless mix_null_ok
+puts mix_null_ok ? "  ok: mix(1.0) byte-equals chain" : "  FAIL: mix(1.0)"
+
+# maskdfa(-1) must byte-equal pure dfa (saturated mask == exactly 1.0).
+ref = run_franken("dfa,dfa", 6).lines.select { |l| l.start_with?("step ") }
+msk = run_franken("maskdfa:-1,maskdfa:-1", 6)
+msk_steps = msk.lines.select { |l| l.start_with?("step ") }
+mask_null_ok = (ref == msk_steps)
+dens_bad = msk.lines.count { |l| l.start_with?("mask ") && !l.include?("density=1.0") }
+failures << "maskdfa(-1) != dfa" unless mask_null_ok
+failures << "maskdfa(-1): #{dens_bad} non-saturated densities" unless dens_bad == 0
+puts mask_null_ok && dens_bad == 0 ? "  ok: maskdfa(-1) byte-equals dfa, densities saturated" : "  FAIL: mask null"
+
+# mid-range: mix(0.5) and maskbp train; maskbp densities strictly in (0,1).
+out = run_franken("mix:0.5,mix:0.5", 40)
+mixc = out.lines.select { |l| l.start_with?("step ") }
+mfirst = Float(mixc.first.match(/lane_b=(\S+)/)[1]); mlast = Float(mixc.last.match(/lane_b=(\S+)/)[1])
+failures << "mix(0.5): #{mfirst} -> #{mlast}" unless mlast < mfirst * 0.2
+out = run_franken("maskbp:0.0005,maskbp:0.0005", 40)
+mbc = out.lines.select { |l| l.start_with?("step ") }
+bfirst = Float(mbc.first.match(/lane_b=(\S+)/)[1]); blast = Float(mbc.last.match(/lane_b=(\S+)/)[1])
+failures << "maskbp: #{bfirst} -> #{blast}" unless blast < bfirst * 0.2
+dvals = out.lines.select { |l| l.start_with?("mask ") }.map { |l| Float(l.match(/density=(\S+)/)[1]) }
+failures << "maskbp: no density lines" if dvals.empty?
+failures << "maskbp: densities not strictly interior" unless dvals.all? { |d| d > 0.0 && d < 1.0 }
+puts "  ok: mix(0.5) -> #{mlast.round(3)}; maskbp -> #{blast.round(4)} (densities interior: #{dvals.empty? ? 'n/a' : dvals.minmax.map { |x| x.round(3) }.join('..')})" if failures.empty?
+
 # ---- 4. byte-repro ----
 r1 = run_franken("dfa,dfa", 10)
 r2 = run_franken("dfa,dfa", 10)
@@ -88,7 +124,7 @@ else
 end
 
 if failures.empty?
-  puts "GATE PASS [franken]: twin-parity + dfa-decreases + alignment + byte-repro (toy#109 P1)"
+  puts "GATE PASS [franken]: twin-parity + dfa + mix/mask combiners + alignment + byte-repro (toy#109 P1+P3)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken]: #{f}" }

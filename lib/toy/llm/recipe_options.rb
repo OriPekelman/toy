@@ -64,8 +64,10 @@ module Toy; module LLM
                   # the fixed-feedback-matrix axes (Toy::Train::DfaB codes) —
                   # dist 0=gaussian/1=uniform/2=rademacher, scale
                   # 0=inv_sqrt_fan/1=glorot/2=fixed(sigma).
+                  # modes: 0=chain 1=dfa 2=mix(dfa_mix_alpha)
+                  # 3=mask-dfa(|g_bp|>tau) 4=mask-bp(|g_dfa|>tau)
                   :credit_assignment, :dfa_b_seed, :dfa_b_dist,
-                  :dfa_b_scale, :dfa_b_sigma
+                  :dfa_b_scale, :dfa_b_sigma, :dfa_mix_alpha, :dfa_mask_tau
 
     def initialize
       @t_seq        = 0
@@ -80,6 +82,8 @@ module Toy; module LLM
       @dfa_b_dist   = 0
       @dfa_b_scale  = 0
       @dfa_b_sigma  = 0.0
+      @dfa_mix_alpha = 0.5
+      @dfa_mask_tau  = 0.0
     end
   end
 end; end

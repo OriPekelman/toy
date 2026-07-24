@@ -1214,7 +1214,8 @@ class LlamaSeqEngine
   # per-weight streams (seed + li*1000 + wi) so re-policying one layer
   # never reshuffles another's B. qkv_bias + dfa is unsupported (fail
   # loud); dfa on a non-attention (GDN) layer fails loud.
-  def build_training_step_franken(policy, b_seed, b_dist, b_scale, b_sigma)
+  def build_training_step_franken(policy, b_seed, b_dist, b_scale, b_sigma,
+                                  mix_alpha, mask_tau)
     if !@seq_full_finetune_enabled
       puts "build_training_step_franken: requires realize_for_random_init (full-finetune arm only)"
       return nil
@@ -1235,7 +1236,7 @@ class LlamaSeqEngine
     any_dfa = false
     pi = 0
     while pi < policy.length
-      if policy[pi] == 1
+      if policy[pi] > 0
         any_dfa = true
       end
       pi = pi + 1
@@ -1262,7 +1263,7 @@ class LlamaSeqEngine
       if li < policy.length
         mode = policy[li]
       end
-      if mode == 1 && self.seq_arch.seq_layer_kinds[li] != Toy::LLM::Archs::LayerSpec::KIND_ATTENTION
+      if mode > 0 && self.seq_arch.seq_layer_kinds[li] != Toy::LLM::Archs::LayerSpec::KIND_ATTENTION
         raise "build_training_step_franken: :dfa on non-attention layer " + li.to_s
       end
       nh  = @seq_n_heads
@@ -1273,14 +1274,40 @@ class LlamaSeqEngine
         # ft layout (alloc_trainable_f32_weights!): [rn1, rn2,
         # q×n_heads, (k,v)×n_kv interleaved, o, gate, up, down].
         is_qkv = wi >= 2 && wi < 2 + nh + 2 * nkv
-        if mode == 1 && is_qkv
+        if mode > 0 && is_qkv
           t_b = TinyNN.tnn_input_2d_f32(@sess, @seq_d_head, @seq_vocab_size)
           t_delta = TinyNN.tnn_matmul(@sess, t_b, t_e)
           t_tap_t = TinyNN.tnn_cont_2d(@sess,
                       TinyNN.tnn_transpose(@sess, blk.tap_attn_norm), tb, @seq_d_model)
           t_del_t = TinyNN.tnn_cont_2d(@sess,
                       TinyNN.tnn_transpose(@sess, t_delta), tb, @seq_d_head)
-          t_g = TinyNN.tnn_matmul(@sess, t_tap_t, t_del_t)
+          t_gd = TinyNN.tnn_matmul(@sess, t_tap_t, t_del_t)
+          t_g = t_gd
+          # P3 combiners (design §4b): mix(alpha) blends the chain
+          # grad-acc; mask gates one signal by the other's magnitude
+          # via the smooth near-hard gate 0.5(1+tanh(1e4(|g|-tau))) —
+          # tau=-1 saturates to exactly 1.0 (== pure source signal),
+          # huge tau to exactly 0.0.
+          if mode == 2
+            t_acc = TinyNN.tnn_tensor_grad(@sess, tw)
+            t_g = TinyNN.tnn_add(@sess,
+                    TinyNN.tnn_scale(@sess, t_acc, mix_alpha),
+                    TinyNN.tnn_scale(@sess, t_gd, 1.0 - mix_alpha))
+          elsif mode == 3
+            t_acc = TinyNN.tnn_tensor_grad(@sess, tw)
+            t_ab  = TinyNN.tnn_sqrt(@sess, TinyNN.tnn_mul(@sess, t_acc, t_acc))
+            t_y   = TinyNN.tnn_scale_bias(@sess, t_ab, 1.0, 0.0 - mask_tau)
+            t_mk  = TinyNN.tnn_scale_bias(@sess,
+                      TinyNN.tnn_tanh(@sess, TinyNN.tnn_scale(@sess, t_y, 10000.0)), 0.5, 0.5)
+            t_g = TinyNN.tnn_mul(@sess, t_gd, t_mk)
+          elsif mode == 4
+            t_acc = TinyNN.tnn_tensor_grad(@sess, tw)
+            t_ab  = TinyNN.tnn_sqrt(@sess, TinyNN.tnn_mul(@sess, t_gd, t_gd))
+            t_y   = TinyNN.tnn_scale_bias(@sess, t_ab, 1.0, 0.0 - mask_tau)
+            t_mk  = TinyNN.tnn_scale_bias(@sess,
+                      TinyNN.tnn_tanh(@sess, TinyNN.tnn_scale(@sess, t_y, 10000.0)), 0.5, 0.5)
+            t_g = TinyNN.tnn_mul(@sess, t_acc, t_mk)
+          end
           TinyNN.tnn_set_output(t_g)
           to = TinyNN.tnn_opt_step_adamw(@sess, tw, t_g,
                                           blk.ft_m[wi], blk.ft_v[wi], t_hp)

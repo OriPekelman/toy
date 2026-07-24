@@ -23,6 +23,7 @@ require_relative "../../lib/toy/llm/recipes/franken_from_scratch"
 VOCAB   = 627
 CONTEXT = 16
 STEPS   = 12
+$mix_alpha_override = -1.0
 
 def build_batch
   seq_ids = [0]
@@ -92,10 +93,14 @@ end
 
 empty_pol = [0]; empty_pol.pop
 dfa_pol   = [1, 1, 1, 1]
+mix1_pol  = [2, 2, 2, 2]   # with MIX_ALPHA=1.0 must byte-equal chain
 
 curve_a = run_from_scratch_curve(empty_pol)
 curve_b = run_franken_curve(empty_pol)
 curve_c = run_franken_curve(dfa_pol)
+$mix_alpha_override = 1.0
+curve_d = run_franken_curve(mix1_pol)
+$mix_alpha_override = -1.0
 
 ok = true
 
@@ -105,6 +110,23 @@ while i < STEPS
        " franken_chain=" + curve_b[i] + " franken_dfa=" + curve_c[i]
   if curve_a[i] != curve_b[i]
     puts "PARITY FAIL at step " + i.to_s + ": " + curve_a[i] + " != " + curve_b[i]
+    ok = false
+  end
+  i = i + 1
+end
+
+# mix(1.0) vs chain: NEAR-equality (rel < 1e-5 per step), not byte.
+# Observed: byte-identical through step 9, then a 1-ulp f32 drift — the
+# extra (value-inert) combiner nodes perturb sched accumulation order.
+# The load-bearing byte-null stays the all-chain policy above; the
+# twin-lane runner's mix(1.0) null IS byte-exact (gate-franken).
+i = 0
+while i < STEPS
+  da = curve_d[i].to_f
+  aa = curve_a[i].to_f
+  rel = (da - aa).abs / (aa.abs + 1.0e-12)
+  if rel > 1.0e-5
+    puts "MIX(1.0) NEAR-PARITY FAIL at step " + i.to_s + ": rel=" + rel.to_s
     ok = false
   end
   i = i + 1
@@ -127,7 +149,7 @@ if curve_c[STEPS - 1] == curve_a[STEPS - 1]
 end
 
 if ok
-  puts "franken-parity: engine all-chain byte-parity + per-head dfa arm trains"
+  puts "franken-parity: engine all-chain byte-parity + per-head dfa arm trains + mix(1.0) near-parity (1-ulp sched drift documented)"
   puts "franken-parity: ok"
 else
   puts "franken-parity: FAIL"
