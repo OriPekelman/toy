@@ -1189,6 +1189,12 @@ class LlamaSeqEngine
     [t_loss, t_labels, t_hp]
   end
 
+  # toy#109 P2/#112 — franken telemetry handles, recorded by
+  # build_training_step_franken for align-event consumers (parallel
+  # arrays: dfa grad node, chain grad-acc, layer index, ft weight index).
+  attr_accessor :franken_align_grads, :franken_align_accs,
+                :franken_align_lis, :franken_align_wis
+
   # toy#109 P2 — the FrankenModel training step: build_training_step's
   # full-finetune arm with a per-layer CREDIT-ASSIGNMENT policy. policy
   # is a flat IntArray (0 = :chain, 1 = :dfa); layers beyond its length
@@ -1254,6 +1260,10 @@ class LlamaSeqEngine
 
     b_handles = [TinyNN.tnn_null_ptr]; b_handles.pop
     b_seeds   = [0]; b_seeds.pop
+    @franken_align_grads = [TinyNN.tnn_null_ptr]; @franken_align_grads.pop
+    @franken_align_accs  = [TinyNN.tnn_null_ptr]; @franken_align_accs.pop
+    @franken_align_lis   = [0]; @franken_align_lis.pop
+    @franken_align_wis   = [0]; @franken_align_wis.pop
 
     tb = @seq_t * @seq_b
     li = 0
@@ -1314,6 +1324,15 @@ class LlamaSeqEngine
           TinyNN.tnn_extend_backward_graph(@sess, to)
           b_handles.push(t_b)
           b_seeds.push(b_seed + li * 1000 + wi)
+          @franken_align_grads.push(t_g)
+          # PIN the shadow acc: for pure-:dfa weights it has NO consumer
+          # (the opt reads t_g), so sched aliases its slot and the align
+          # download reads zeros (P0 pin-read-backs lesson, engine form).
+          t_acc_rec = TinyNN.tnn_tensor_grad(@sess, tw)
+          TinyNN.tnn_set_output(t_acc_rec)
+          @franken_align_accs.push(t_acc_rec)
+          @franken_align_lis.push(li)
+          @franken_align_wis.push(wi)
         else
           tg = TinyNN.tnn_tensor_grad(@sess, tw)
           to = TinyNN.tnn_opt_step_adamw(@sess, tw, tg,

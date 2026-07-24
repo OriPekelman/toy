@@ -72,6 +72,10 @@ module Toy
         # Selected by `--arch gpt2` (from-scratch, CPU only this slice). Backward
         # of its LayerNorm + GELU rides the vendored kernels (vendor-patches/0007).
         GPT2_RUNNER_TARGET = "libexec/toy-train-gpt2"
+        # Franken credit-assignment runner (toy#109/#112) — its own binary
+        # (landmine #16): FrankenFromScratch alongside FromScratch stays out
+        # of the byte-gated toy-train unit.
+        FRANKEN_RUNNER_TARGET = "libexec/toy-train-franken-llama"
         # GPT-2 GPU twins (--arch gpt2 --device cuda|metal). SEPARATE single-type
         # binaries (landmine #16); link the generated CUDA/Metal engine mirrors.
         # The GELU/LayerNorm backward ops fall back to the CPU backend on GPU.
@@ -97,6 +101,11 @@ module Toy
           @corpus = nil  # warm-start corpus path
           @init  = nil   # warm-start init mode
           @device = "cpu"  # cpu | cuda | metal (from-scratch only for non-cpu)
+          @policy = nil    # franken: per-layer credit tokens
+          @dfa_b_seed  = nil  # franken B axes
+          @dfa_b_dist  = nil
+          @dfa_b_scale = nil
+          @align_events = false
           @arch   = ARCH   # llama | gpt2 (gpt2 = from-scratch CPU only this slice)
         end
 
@@ -155,7 +164,9 @@ module Toy
           #     warm-start +cuda                  in train_cuda.rb source)
           #   metal (fs only)  -> toy-train-metal
           #   cpu fs/warm-start-> toy-train
-          target = if @recipe == "lora"
+          target = if @recipe == "franken"
+                     FRANKEN_RUNNER_TARGET
+                   elsif @recipe == "lora"
                      @device == "cuda" ? LORA_CUDA_RUNNER_TARGET : LORA_RUNNER_TARGET
                    elsif @recipe == "vit-tiny"
                      VIT_RUNNER_TARGET
@@ -219,6 +230,13 @@ module Toy
             # data/vit_smoke is committed → no --corpus needed. vit IS seeded.
             env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
                              "IMG_DIR" => "data/vit_smoke")
+          elsif @recipe == "franken"
+            env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
+                             "FRANKEN_POLICY"  => (@policy || ""),
+                             "FRANKEN_B_SEED"  => (@dfa_b_seed || 0).to_s,
+                             "FRANKEN_B_DIST"  => (@dfa_b_dist || ""),
+                             "FRANKEN_B_SCALE" => (@dfa_b_scale || ""),
+                             "FRANKEN_ALIGN"   => (@align_events ? "1" : ""))
           else
             # from-scratch — byte-identical to today plus the harmless RECIPE key.
             env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s)
@@ -293,6 +311,40 @@ module Toy
               @seed = val.to_i
             when /\A--out=(.*)\z/m
               @out = $1
+            when "--policy"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--policy requires a value (e.g. chain,dfa)") if val.nil?
+              @policy = val
+            when /\A--policy=(.*)\z/
+              @policy = $1
+            when "--dfa-b-seed"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--dfa-b-seed must be an integer, got #{val.inspect}") unless val =~ /\A\d+\z/
+              @dfa_b_seed = val.to_i
+            when /\A--dfa-b-seed=(.*)\z/
+              val = $1
+              return bad_arg("--dfa-b-seed must be an integer, got #{val.inspect}") unless val =~ /\A\d+\z/
+              @dfa_b_seed = val.to_i
+            when "--dfa-b-dist"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--dfa-b-dist must be gaussian|uniform|rademacher") unless %w[gaussian uniform rademacher].include?(val)
+              @dfa_b_dist = val
+            when /\A--dfa-b-dist=(.*)\z/
+              val = $1
+              return bad_arg("--dfa-b-dist must be gaussian|uniform|rademacher") unless %w[gaussian uniform rademacher].include?(val)
+              @dfa_b_dist = val
+            when "--dfa-b-scale"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--dfa-b-scale requires a value") if val.nil?
+              @dfa_b_scale = val
+            when /\A--dfa-b-scale=(.*)\z/
+              @dfa_b_scale = $1
+            when "--align-events"
+              @align_events = true
             when "--model"
               i += 1
               val = @argv[i]
@@ -353,14 +405,17 @@ module Toy
             return bad_arg("unexpected extra arguments: #{rest[1..].join(' ')}")
           end
           @recipe = rest.first
-          unless %w[from-scratch lora warm-start vit-tiny].include?(@recipe)
-            return bad_arg("unknown recipe #{@recipe.inspect}; supported: 'from-scratch', 'lora', 'warm-start', 'vit-tiny'")
+          unless %w[from-scratch lora warm-start vit-tiny franken].include?(@recipe)
+            return bad_arg("unknown recipe #{@recipe.inspect}; supported: 'from-scratch', 'lora', 'warm-start', 'vit-tiny', 'franken'")
           end
           if @recipe != "lora" && (!@model.nil? || !@rank.nil?)
             return bad_arg("--model/--rank are only valid with recipe 'lora'")
           end
           if @recipe != "warm-start" && (!@corpus.nil? || !@init.nil?)
             return bad_arg("--corpus/--init are only valid with recipe 'warm-start'")
+          end
+          if @recipe != "franken" && (@policy || @dfa_b_seed || @dfa_b_dist || @dfa_b_scale || @align_events)
+            return bad_arg("--policy/--dfa-b-*/--align-events are only valid with recipe 'franken'")
           end
           if !@init.nil? && @init != "scratch"
             return bad_arg("--init #{@init.inspect} unsupported; only 'scratch' has a gate curve in this slice")

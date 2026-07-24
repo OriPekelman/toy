@@ -2305,3 +2305,17 @@ libexec/toy-train-franken-moe: lib/toy/run/train_franken_moe.rb lib/toy.rb lib/t
 .PHONY: gate-franken-moe
 gate-franken-moe: libexec/toy-train-franken-moe
 	ruby prep/franken_moe_gate.rb
+
+# toy#112 — the spec-callable franken runner (toy train franken): the
+# from-scratch drive through FrankenFromScratch, TAO_RUN_DIR events with
+# policy provenance + opt-in align events. Own unit (landmine #16).
+libexec/toy-train-franken-llama: lib/toy/run/train_franken_llama.rb lib/toy.rb lib/toy/ffi/tinynn.rb \
+		lib/toy/io/json_builder.rb lib/toy/io/json.rb lib/toy/io/toy_events.rb \
+		lib/toy/llm/engine/llama_seq_engine.rb lib/toy/llm/recipes/franken_from_scratch.rb \
+		lib/toy/llm/recipe_options.rb lib/toy/train/dfa_b.rb \
+		lib/toy/train/toy_gguf_writer.rb lib/toy/train/toy_gguf_fuse.rb \
+		tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) $< -o $@
+.PHONY: gate-franken-llama
+gate-franken-llama: libexec/toy-train-franken-llama
+	ruby prep/franken_llama_gate.rb

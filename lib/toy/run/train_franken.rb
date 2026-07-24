@@ -393,6 +393,7 @@ module Toy
               while wi < 4
                 w   = tow_b.pp[base + 1 + wi]
                 acc = TinyNN.tnn_tensor_grad(sess, w)
+                TinyNN.tnn_set_output(acc)   # shadow acc: no consumer in mode 1
                 gd  = dfa_grad(sess, bmats[bi], e_b, acts[wi])
                 g   = gd
                 if policy[li] == 2

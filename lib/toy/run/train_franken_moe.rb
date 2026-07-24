@@ -219,7 +219,9 @@ module Toy
           to = TinyNN.tnn_opt_step_adamw(sess, tw.pp[idx], g, tw.pm[idx], tw.pv[idx], t_hp)
           TinyNN.tnn_extend_backward_graph(sess, to)
           tw.dfa_grads.push(g)
-          tw.dfa_accs.push(TinyNN.tnn_tensor_grad(sess, tw.pp[idx]))
+          acc = TinyNN.tnn_tensor_grad(sess, tw.pp[idx])
+          TinyNN.tnn_set_output(acc)   # shadow acc: unconsumed, pin it
+          tw.dfa_accs.push(acc)
           tw.dfa_names.push(name)
           0
         end
