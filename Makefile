@@ -2295,3 +2295,13 @@ gate-franken-parity: prep/smokes/smoke_franken_parity
 	echo "$$out" | tail -6; \
 	echo "$$out" | grep -q "^franken-parity: ok$$" || { echo "GATE FAIL [franken-parity]"; exit 1; }; \
 	echo "GATE PASS [franken-parity]: engine all-chain byte-parity + dfa arm (toy#109 P2)"
+
+# toy#109 P2b — the Franken-MoE arm: dense 2-expert soft mixture,
+# BP-router + DFA-experts twin lanes.
+libexec/toy-train-franken-moe: lib/toy/run/train_franken_moe.rb lib/toy.rb lib/toy/ffi/tinynn.rb \
+		lib/toy/llm/primitives/rms_norm.rb lib/toy/train/dfa_b.rb \
+		tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) $< -o $@
+.PHONY: gate-franken-moe
+gate-franken-moe: libexec/toy-train-franken-moe
+	ruby prep/franken_moe_gate.rb

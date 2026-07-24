@@ -277,9 +277,19 @@ refinement (P3+).
   program-wide). Physics gotcha: Adam's sign-scale updates make
   qkv-only DFA divergence glacial at tiny configs — plan experiment
   horizons accordingly.
-- **P2b (staged next)**: the Franken-MoE arm — dense small-E soft
-  mixture (no gather, no mul_mat_id): BP router + DFA experts, twin
-  lanes; then the hard-routed variant when the gather lands.
+- **P2b — ✅ DONE 2026-07-24** (`toy-train-franken-moe` +
+  `gate-franken-moe`, all five legs PASS): dense 2-expert soft-mixture
+  tower (attention block + MoE-FFN block), twin lanes. **The MoE-bonus
+  claim is demonstrated end-to-end: BP-router + DFA-experts reaches
+  CE 0.023 vs full-BP 0.011 at 60 steps — near-parity — with expert
+  updates as pure forward ops (no autodiff through expert internals)
+  and the router healthy throughout (g0_mean ≈ 0.45, no collapse;
+  its gradient flows through softmax × the gated combine only).**
+  Contrast with P1's attention result (DFA 0.61 vs BP 0.012): the
+  literature prior holds in our harness — DFA is near-BP in MLP-shaped
+  experts, weak through attention. This is the load-bearing datum for
+  Franken-mixing: put DFA where the experts are. Hard-routed variant
+  (mul_mat_id + gather) stays staged for the scale leg.
 - **P3**: `:mix(α)` blending arm + (only if experiments demand) the opaque-cut
   vendored op; CUDA leg LAST (mirror cost paid once the shape is stable).
 
