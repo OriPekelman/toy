@@ -2264,3 +2264,20 @@ bench-vs-pytorch-heavy-report: demos/seq_train_bench_cuda demos/qwen25_bench_cud
         bench-vs-pytorch bench-vs-pytorch-update bench-vs-pytorch-report \
         bench-heavy bench-heavy-update bench-heavy-report \
         bench-vs-pytorch-heavy bench-vs-pytorch-heavy-update bench-vs-pytorch-heavy-report
+
+# toy#109 P1 — the FrankenModel credit-assignment twin-lane runner.
+# Lane A always :chain; lane B follows FRANKEN_POLICY (per-layer
+# chain|dfa). Per-matmul DFA (design doc §4c) + shadow alignment
+# telemetry. Own compilation unit (hybrid precedent).
+libexec/toy-train-franken: lib/toy/run/train_franken.rb lib/toy.rb lib/toy/ffi/tinynn.rb \
+		lib/toy/llm/primitives/rms_norm.rb \
+		tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) $< -o $@
+.PHONY: toy-train-franken
+toy-train-franken: libexec/toy-train-franken
+
+# Gates: twin-parity (policy=chain,chain ⇒ lanes byte-identical),
+# byte-repro (two runs identical), dfa-decreases, alignment well-formed.
+.PHONY: gate-franken
+gate-franken: libexec/toy-train-franken
+	ruby prep/franken_gate.rb

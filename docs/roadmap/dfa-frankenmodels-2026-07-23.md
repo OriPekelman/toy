@@ -107,6 +107,85 @@ WITHOUT implementing mul_mat_id autodiff — DFA isn't just an experiment here,
 it's a workaround for a real coverage gap. (Full-BP MoE training remains a
 separate, orthogonal leg: mul_mat_id backward, own issue.)
 
+## 4b. The B network + the comparison protocol (2026-07-24 clarification)
+
+**B_seg spec.** Fixed at init, never trained, shape `d_seg × d_out`. The
+family and scale are EXPERIMENT PARAMETERS (the scale is a hidden
+per-layer learning rate — it matters more than the family):
+
+    dfa_b: { dist: :gaussian | :uniform | :rademacher(p),
+             scale: :fixed(σ) | :inv_sqrt_fan | :glorot,
+             seed:  <run seed> }
+
+Defaults: `:gaussian`, `:inv_sqrt_fan` (σ = 1/√d_out). Sampling is
+xorshift (+ Box–Muller for gaussian); each segment's B is seeded from
+`(run_seed, stable_segment_id)` so re-policying one segment never
+reshuffles another's B. Byte-reproducible by construction (gate T4).
+
+**Two paired-comparison protocols** (they compose):
+
+1. **Shadow gradients** — one model, ONE forward pass, both credit
+   signals: apply the policy's update, LOG the other. Yields the FA
+   literature's core diagnostic, per-layer/per-step alignment
+   `cos∠(g_dfa, g_bp)` — the direct measurement of where DFA is a
+   sufficient credit signal (alignment is the mechanism by which
+   FA/DFA learns at all). Caveat: shadow-BP requires building the full
+   autodiff chain on that lane, so the membership CUT is absent in
+   diagnostics builds (chain grads computed, used only for telemetry;
+   applied updates provably unaffected — gated byte-identical
+   shadow-on vs shadow-off).
+2. **Twin lanes** — two weight sets, bit-identical seeded W₀, same
+   batch stream + hp schedule, stepped in lockstep in one binary.
+   After step 1 the forwards necessarily diverge (the weights do);
+   what stays paired is everything else — per-step loss deltas,
+   per-layer weight-divergence (L2 / cosine), and the end states.
+
+The instrumented runner does both: lane A `:chain` (doubles as the
+null-parity gate), lane B policy-driven with optional shadow.
+
+**Combiner backlog (noted 2026-07-24, for later experiments):** beyond
+`:mix(α)`, a MASKED combiner family — use one signal as a per-weight
+GATE for the other: `update = g_dfa ⊙ 1[|g_bp| > τ]` (or the
+transpose; or top-k instead of threshold) — an "activation function on
+the update". Cheap in this representation: both grad tensors already
+exist per-weight in shadow builds; the combiner is three elementwise
+ops at the same point where `:mix(α)` sits. The
+alignment-by-depth / by-expert curves are the intended generator of
+mixing intuitions (expert-wise, layer-wise, bottom-BP/top-DFA — the
+literature's prior is that alignment weakens toward the bottom of deep
+stacks — interleaved groups). Head-wise segmentation is structurally
+expressible (a head's output slice is a boundary) but stays out of v1
+per the non-goals.
+
+## 4c. The parallelism reading + the v1 DFA variant (2026-07-24)
+
+**Update-parallelism is represented, latently.** BP's backward is a
+serial dependency spine (grad_l needs grad_{l+1} — the backward lock).
+Each DFA update subgraph shares only {e, its own forward activations}
+with the rest of the graph and has NO edges to other layers' update
+subgraphs: width, not depth. ggml-cpu still executes the independent
+branches in topo order (threading is op-internal), so v1's win is
+graph-structural, not wall-clock — but it is the precondition for
+layer-parallel dispatch, pipeline-style update unlocking, and the
+scaling-story's loose-coupling unit (a layer shard needs broadcast-e +
+local state only; no backward sync). The runner logs
+backward-wallclock DFA-all vs BP-all to size the latent win.
+
+**v1 variant choice — per-matmul DFA (identity-boundary segments).**
+Block-boundary DFA (δ at block output, standard BP *within* the block —
+the literature-canonical transformer form) requires per-segment
+surrogate losses, and those contaminate the segments below unless the
+chain is CUT at each segment input: it genuinely needs the detach
+primitive. The v1 form instead gives EVERY weight matrix its own
+B_W (projecting e into that weight's output space); the update
+(B_W·e)·h_inᵀ is pure forward ops — P0 mechanics verbatim, no
+autodiff, no cuts — and composes with ANY policy layout (interleaved,
+expert-wise, head-wise later) rather than only contiguous stacks.
+Explicitly a modeling choice: finer credit granularity than canonical
+DFA; the shadow-alignment telemetry is the instrument that says what
+it costs. Block-boundary DFA joins the roadmap as the cut-primitive
+refinement (P3+).
+
 ## 5. Shape of the implementation (bounded)
 
 - **One dedicated runner** (`toy-train-franken`), hybrid-runner pattern: flat
@@ -157,10 +236,33 @@ separate, orthogonal leg: mul_mat_id backward, own issue.)
      chain + opt steps) reuse grad-acc/loss buffer slots under sched —
      `ggml_set_output` everything read back (the engine already does
      this via `tnn_pin_all_graph_b_nodes`).
-- **P1 (~days)**: `toy-train-franken` on the tiny-llama shape: last-block-BP /
-  rest-DFA and all-chain configs. Gates: all-chain == existing trainer
-  byte-exact (the null-hypothesis gate); DFA arm CE decreases; byte-repro
-  across reruns. CPU only.
+- **P1 — ✅ DONE 2026-07-24** (`lib/toy/run/train_franken.rb` →
+  `libexec/toy-train-franken`, `gate-franken` PASS on all four legs).
+  Self-contained twin-lane runner (hybrid-runner precedent; the
+  engine-integrated byte-parity-vs-toy-train gate moves to P2 with
+  RecipeOptions): two attention towers, bit-identical seeded init, ONE
+  graph/session, per-layer FRANKEN_POLICY (chain|dfa), per-matmul DFA
+  (§4c), shadow alignment telemetry. Gates: twin-parity (chain,chain ⇒
+  lanes byte-identical every step), dfa-decreases (CE 2.90→0.61/60
+  steps; BP lane 2.90→0.012), alignment well-formed (480 lines), byte-
+  repro. Zero shim changes — all composed from existing FFI binds; T1
+  margin huge. Findings:
+  1. **One-graph twins are mandatory**: tinynn's engine+sched is a
+     process-global singleton (`g_engine_cpu`) — two sessions
+     alternating realize/compute desynchronize (F1.1 stale-alloc
+     class; manifested as identical weights computing different
+     losses). Both towers in one graph_b = one sched alloc = lockstep
+     by construction. (A per-session sched is the eventual shim fix if
+     multi-session is ever needed; not required for this program.)
+  2. **Graph-root ordering**: `tnn_add_to_graph` silently refuses (-2)
+     once `tnn_build_forward_only` has set `realized` — extra loss
+     roots go in FIRST. Manifested as "tensor buffer not set" on the
+     second tower's loss.
+  3. **Early data**: bottom-BP/top-DFA interpolates between the pure
+     arms (0.52 vs 0.17/0.97 at 40 steps); matmul-granularity
+     alignment through attention is weak (|cos| mostly <0.3, some
+     upward drift, e.g. layer-0 k → 0.57) yet training proceeds —
+     the granularity-vs-alignment trade is now measurable.
 - **P2**: per-segment policy table via RecipeOptions + the Franken-MoE arm
   (BP router + DFA experts on a small MoE; needs the routed-token gather).
   Tao gets the surface here; tao-side issue filed at P2 start.
