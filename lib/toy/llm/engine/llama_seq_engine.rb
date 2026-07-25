@@ -1316,9 +1316,30 @@ class LlamaSeqEngine
   # toy#109 P2/#112 — franken telemetry handles, recorded by
   # build_training_step_franken for align-event consumers (parallel
   # arrays: dfa grad node, chain grad-acc, layer index, ft weight index).
+  # toy#117 — re-upload every B matrix (deterministic regeneration from
+  # the recorded seeds). B leaves were once-uploaded graph inputs and the
+  # sched scratch-reused their buffers: B[0]'s norm read 3.2e5 after ONE
+  # compute and hit Infinity by step 5, feeding the exponential DFA-grad
+  # explosion in the mask arms (the labels contract — inputs live only if
+  # re-uploaded per step — applies to EVERY graph-input leaf). Call at
+  # the top of each training step, before compute.
+  def franken_refresh_b!
+    bi = 0
+    while bi < @franken_b_handles.length
+      nb = @seq_d_head * @seq_vocab_size
+      sig = Toy::Train::DfaB.sigma_for(@franken_b_scale_rec, @seq_vocab_size,
+                                       @seq_d_head, @franken_b_sigma_rec)
+      TinyNN.tnn_upload_from_float_array(@sess, @franken_b_handles[bi],
+        Toy::Train::DfaB.fill(nb, @franken_b_seeds_rec[bi], @franken_b_dist_rec, sig), nb)
+      bi = bi + 1
+    end
+    0
+  end
+
   attr_accessor :franken_align_grads, :franken_align_accs,
                 :franken_align_lis, :franken_align_wis,
-                :franken_mask_tensors, :franken_mask_lis, :franken_mask_wis
+                :franken_mask_tensors, :franken_mask_lis, :franken_mask_wis,
+                :franken_b_handles
 
   # toy#109 P2 — the FrankenModel training step: build_training_step's
   # full-finetune arm with a per-layer CREDIT-ASSIGNMENT policy. policy
@@ -1385,6 +1406,11 @@ class LlamaSeqEngine
 
     b_handles = [TinyNN.tnn_null_ptr]; b_handles.pop
     b_seeds   = [0]; b_seeds.pop
+    @franken_b_handles = b_handles
+    @franken_b_seeds_rec = b_seeds
+    @franken_b_dist_rec  = b_dist
+    @franken_b_scale_rec = b_scale
+    @franken_b_sigma_rec = b_sigma
     @franken_align_grads = [TinyNN.tnn_null_ptr]; @franken_align_grads.pop
     @franken_align_accs  = [TinyNN.tnn_null_ptr]; @franken_align_accs.pop
     @franken_align_lis   = [0]; @franken_align_lis.pop
@@ -1428,6 +1454,7 @@ class LlamaSeqEngine
         is_qkv = wi >= 2 && wi < 2 + nh + 2 * nkv
         if mode > 0 && is_qkv
           t_b = TinyNN.tnn_input_2d_f32(@sess, @seq_d_head, @seq_vocab_size)
+          TinyNN.tnn_set_output(t_b)
           t_delta = TinyNN.tnn_matmul(@sess, t_b, t_e)
           t_tap_t = TinyNN.tnn_cont_2d(@sess,
                       TinyNN.tnn_transpose(@sess, blk.tap_attn_norm), tb, @seq_d_model)

@@ -263,6 +263,8 @@ lib/toy/llm/recipes/lora_cuda.rb
 lib/toy/llm/recipes/lora_metal.rb
 lib/toy/llm/recipes/warm_start_cuda.rb
 lib/toy/llm/recipes/warm_start_metal.rb
+lib/toy/llm/recipes/franken_from_scratch_cuda.rb
+lib/toy/llm/recipes/franken_from_scratch_metal.rb
 lib/toy/llm/engine/llama_kv_engine_cuda.rb
 lib/toy/llm/engine/llama_kv_engine_metal.rb
 lib/toy/llm/engine/gpt2_fwd_engine_cuda.rb

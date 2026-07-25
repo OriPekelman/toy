@@ -131,6 +131,21 @@ Dir.mktmpdir("franken_rid_gate") do |dir|
   end
 end
 
+# ---- llama-shape maskbp byte-null (toy#117): maskbp:-1 (gate saturated
+# to exactly 1.0) must byte-equal toy-train — the leg that would have
+# caught the B-buffer scratch-reuse explosion (rig shape provably
+# doesn't cover it; B leaves are per-step re-uploads now).
+fs8 = Open3.capture2e({ "STEPS" => "8", "SEED" => "0" }, FS_RUNNER, chdir: ROOT)[0]
+mb8 = run_franken_llama({ "FRANKEN_POLICY" => "maskbp:-1,maskbp:-1",
+                          "FRANKEN_B_SEED" => "42", "STEPS" => "8" }, nil)
+fs8c = fs8.lines.select { |l| l.start_with?("step ") }
+mb8c = mb8.lines.select { |l| l.start_with?("step ") }
+if fs8c.length == 8 && fs8c == mb8c
+  puts "  ok: maskbp(-1) byte-equals toy-train at the llama shape (toy#117 pin)"
+else
+  failures << "maskbp-null: curves differ\nfs: #{fs8c.join}mb: #{mb8c.join}"
+end
+
 # ---- 4. byte-repro ----
 r1 = run_franken_llama({ "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42" }, nil)
 r2 = run_franken_llama({ "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42" }, nil)

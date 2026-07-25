@@ -286,6 +286,7 @@ final_loss = 0.0
 step = 0
 while step < STEPS
   step_wall_start = TinyNN.tnn_events_now_seconds
+  recipe.ff_cache.franken_refresh_b!   # toy#117: B leaves are per-step uploads
   loss = recipe.step!(seq_ids, positions, m_labels, m_hp, step == 0)
   final_loss = loss
   # The byte-gated line — to STDOUT (train.rb contract).
