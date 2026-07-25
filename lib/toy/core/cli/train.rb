@@ -201,8 +201,13 @@ module Toy
           # mkdir).
           project  = Dir.pwd
           cfg      = Toy::Core::Config.load(project)
-          run_id   = resolve_run_id(cfg.run_id_template, project,
-                                    @arch == "gpt2" ? "gpt2" : arch_for(@recipe))
+          # toy#115 — a caller-supplied TOY_RUN_ID wins over the internal
+          # llama-<date>-<seq> counter (the tao#flow contract: the events
+          # run_id and the Tao registry entry must name the run identically;
+          # the controlled-env rebuild was silently dropping it).
+          run_id   = ENV["TOY_RUN_ID"].to_s.length > 0 ? ENV["TOY_RUN_ID"] :
+                       resolve_run_id(cfg.run_id_template, project,
+                                      @arch == "gpt2" ? "gpt2" : arch_for(@recipe))
           run_dir  = @out ? File.expand_path(@out) : File.join(project, "runs", run_id)
           begin
             FileUtils.mkdir_p(run_dir)

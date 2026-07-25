@@ -116,6 +116,21 @@ else
   failures << "seed1-parity: curves differ or toy-train failed\nfs: #{fs_curve.join}fr: #{fr_curve.join}"
 end
 
+# ---- TOY_RUN_ID passthrough (toy#115): the CLI's controlled env must
+# forward a caller-supplied run id into run_start.run_id (the tao#flow
+# contract) instead of substituting the internal counter.
+Dir.mktmpdir("franken_rid_gate") do |dir|
+  _, st = Open3.capture2e({ "TOY_RUN_ID" => "gate/rid/check" },
+                          File.join(ROOT, "bin", "toy"), "train", "franken",
+                          "--steps", "1", "--seed", "0", "--out", dir, chdir: ROOT)
+  rid = st.success? ? (JSON.parse(File.readlines(File.join(dir, "events.jsonl")).first)["run_id"] rescue nil) : nil
+  if rid == "gate/rid/check"
+    puts "  ok: TOY_RUN_ID passthrough (CLI controlled env honors caller id)"
+  else
+    failures << "run-id: TOY_RUN_ID not honored (got #{rid.inspect})"
+  end
+end
+
 # ---- 4. byte-repro ----
 r1 = run_franken_llama({ "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42" }, nil)
 r2 = run_franken_llama({ "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42" }, nil)

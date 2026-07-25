@@ -121,6 +121,17 @@ end
 # returns [cos, |a|, |b|] — norms ride into the align event (they matter:
 # zero-norm sides distinguish dead-download from dead-gradient, and the
 # |g_dfa|/|g_bp| ratio informs mix-alpha tuning).
+# toy#118 — non-finite floats serialize as JSON null (the toy#106
+# treatment, this runner's copy): finite iff x - x == 0.0.
+def num_or_null(x)
+  d = x - x
+  if d == 0.0
+    x.to_s
+  else
+    "null"
+  end
+end
+
 def cosv3(a, b, n)
   dot = 0.0; na = 0.0; nb = 0.0
   i = 0
@@ -287,11 +298,44 @@ while step < STEPS
     es.add_str("phase", "train")
     es.add_num("t",       TinyNN.tnn_events_now_seconds)
     es.add_num("step",    step + 1)
-    es.add_num("loss",    loss)
+    es.add_raw("loss",    num_or_null(loss))
     es.add_raw("lr",      "0.001")
     es.add_num("tokens",  CONTEXT)
     es.add_num("wall_us", step_wall_us)
     TinyNN.tnn_events_emit(es.dump)
+  end
+
+  mask_ts  = recipe.ff_cache.franken_mask_tensors
+  mask_lis = recipe.ff_cache.franken_mask_lis
+  mask_wis = recipe.ff_cache.franken_mask_wis
+  if ALIGN_ON && EVENTS.length > 0 && mask_ts.length > 0
+    mi = 0
+    while mi < mask_ts.length
+      mt = mask_ts[mi]
+      nw = TinyNN.tnn_tensor_nelements(mt)
+      while gbuf.length < nw; gbuf.push(0.0); end
+      rc_m = TinyNN.tnn_download_to_f64_array(recipe.ff_cache.sess, mt, gbuf, nw)
+      if rc_m != 0
+        puts "mask download failed: step=" + (step + 1).to_s + " rc=" + rc_m.to_s
+      else
+        msum = 0.0
+        ii = 0
+        while ii < nw
+          msum = msum + gbuf[ii]
+          ii = ii + 1
+        end
+        me = Toy::Json::Builder.new
+        me.add_str("kind",  "mask")
+        me.add_str("phase", "train")
+        me.add_num("t",     TinyNN.tnn_events_now_seconds)
+        me.add_num("step",  step + 1)
+        me.add_num("li",    mask_lis[mi])
+        me.add_num("wi",    mask_wis[mi])
+        me.add_raw("density", num_or_null(msum / nw.to_f))
+        TinyNN.tnn_events_emit(me.dump)
+      end
+      mi = mi + 1
+    end
   end
 
   if ALIGN_ON && EVENTS.length > 0 && n_align > 0
@@ -317,9 +361,9 @@ while step < STEPS
       ae.add_num("li",    recipe.ff_cache.franken_align_lis[ai])
       ae.add_num("wi",    recipe.ff_cache.franken_align_wis[ai])
       cnn = cosv3(gbuf, abuf, nw)
-      ae.add_num("cos",      cnn[0])
-      ae.add_num("dfa_norm", cnn[1])
-      ae.add_num("bp_norm",  cnn[2])
+      ae.add_raw("cos",      num_or_null(cnn[0]))
+      ae.add_raw("dfa_norm", num_or_null(cnn[1]))
+      ae.add_raw("bp_norm",  num_or_null(cnn[2]))
       TinyNN.tnn_events_emit(ae.dump)
       ai = ai + 1
     end
@@ -343,7 +387,7 @@ if EVENTS.length > 0 && TinyNN.tnn_events_active == 1
   re.add_str("ended_at",   TinyNN.tnn_events_iso8601_now)
   re.add_str("reason",     "completed")
   re.add_num("final_step", STEPS)
-  re.add_num("final_loss", final_loss)
+  re.add_raw("final_loss", num_or_null(final_loss))
   re.add_raw("exit_code",  "0")
   TinyNN.tnn_events_emit(re.dump)
   TinyNN.tnn_events_close

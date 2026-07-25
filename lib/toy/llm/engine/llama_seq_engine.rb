@@ -1317,7 +1317,8 @@ class LlamaSeqEngine
   # build_training_step_franken for align-event consumers (parallel
   # arrays: dfa grad node, chain grad-acc, layer index, ft weight index).
   attr_accessor :franken_align_grads, :franken_align_accs,
-                :franken_align_lis, :franken_align_wis
+                :franken_align_lis, :franken_align_wis,
+                :franken_mask_tensors, :franken_mask_lis, :franken_mask_wis
 
   # toy#109 P2 — the FrankenModel training step: build_training_step's
   # full-finetune arm with a per-layer CREDIT-ASSIGNMENT policy. policy
@@ -1388,6 +1389,9 @@ class LlamaSeqEngine
     @franken_align_accs  = [TinyNN.tnn_null_ptr]; @franken_align_accs.pop
     @franken_align_lis   = [0]; @franken_align_lis.pop
     @franken_align_wis   = [0]; @franken_align_wis.pop
+    @franken_mask_tensors = [TinyNN.tnn_null_ptr]; @franken_mask_tensors.pop
+    @franken_mask_lis     = [0]; @franken_mask_lis.pop
+    @franken_mask_wis     = [0]; @franken_mask_wis.pop
 
     tb = @seq_t * @seq_b
     li = 0
@@ -1448,6 +1452,10 @@ class LlamaSeqEngine
             t_mk  = TinyNN.tnn_scale_bias(@sess,
                       TinyNN.tnn_tanh(@sess, TinyNN.tnn_scale(@sess, t_y, 10000.0)), 0.5, 0.5)
             t_g = TinyNN.tnn_mul(@sess, t_gd, t_mk)
+            TinyNN.tnn_set_output(t_mk)
+            @franken_mask_tensors.push(t_mk)
+            @franken_mask_lis.push(li)
+            @franken_mask_wis.push(wi)
           elsif mode == 4
             t_acc = TinyNN.tnn_tensor_grad(@sess, tw)
             t_ab  = TinyNN.tnn_sqrt(@sess, TinyNN.tnn_mul(@sess, t_gd, t_gd))
@@ -1455,6 +1463,10 @@ class LlamaSeqEngine
             t_mk  = TinyNN.tnn_scale_bias(@sess,
                       TinyNN.tnn_tanh(@sess, TinyNN.tnn_scale(@sess, t_y, 10000.0)), 0.5, 0.5)
             t_g = TinyNN.tnn_mul(@sess, t_acc, t_mk)
+            TinyNN.tnn_set_output(t_mk)
+            @franken_mask_tensors.push(t_mk)
+            @franken_mask_lis.push(li)
+            @franken_mask_wis.push(wi)
           end
           TinyNN.tnn_set_output(t_g)
           to = TinyNN.tnn_opt_step_adamw(@sess, tw, t_g,
