@@ -16,30 +16,27 @@ toy is verified against **Spinel master**, plain rev pin:
 
 ```sh
 git clone https://github.com/matz/spinel && cd spinel
-git checkout ecac633caa
+git checkout b96280b3
 make deps && make
 ```
 
-At `ecac633caa` (verified 2026-07-23, gx10/GB10): the full gate matrix
-passes — 31 of 33 legs green including all four training recipes
+At `b96280b3` (verified 2026-07-25, gx10/GB10): the full gate matrix
+passes — 36 of 37 legs green including all four training recipes
 byte-exact (also under `SPINEL_GC_STRESS=1`), infer/eval CPU+CUDA,
 GPT-2 minimal + engine trainers (CPU and CUDA), compute-surface, the
-8 GDN/Dragon gates, the MLA/MoE gates, serve, consumer cold-start, and
-poly-degrade. The one exclusion is a documented, pin-independent red:
-mixed-precision tolerance (toy#108, identical at the previous pin).
-Do NOT pin past this rev for now: the ~12 commits immediately after it
-(`ecac633caa..16d6433c`) carry a 200×+ whole-program analysis blowup
-(matz/spinel#3287 — toy's serve unit goes 23 s → 75+ min); this pin is
-deliberately the last fast rev that includes the #3256 fix. Once #3287
-is fixed upstream, the pin advances per the usual sweep protocol
-(toy#95) — pin exactly this rev for byte-reproducibility.
+GDN/Dragon and MLA/MoE batteries, serve, consumer cold-start,
+poly-degrade, and the four franken credit-assignment gates (toy#109/
+#112). The one exclusion is the documented pin-independent red:
+mixed-precision tolerance (toy#108). The #3287 compile-time blowup
+that froze the previous pin is FIXED at this rev (serve unit compiles
+in ~37 s); #3285 (builtin `Module#name` shadowing) is also fixed —
+toy keeps the better `Device.kind` name regardless. Pin exactly this
+rev for byte-reproducibility; it advances per the toy#95 sweep
+protocol.
 
-Previous pin: `f6a189e8` (verified 2026-07-10, 28/28). The 2026-07-23
-advance crossed the matz/spinel#3256 fix (boxed `sp_RbVal` into
-`const char *`, hit by poly-degrade's bare compiles) and rode the
-`Device.kind` rename (matz/spinel#3285 — builtin `Module#name` shadows
-user overrides; toy no longer collides). tep's pin (`fd87f45b`,
-tep PR #243) is one day behind this rev on the same master line.
+Previous pins: `ecac633caa` (2026-07-23, 32/33 — deliberately the
+last fast rev before the then-unfixed #3287 window), `f6a189e8`
+(2026-07-10, 28/28).
 
 Historical note: v0.8.0–v0.9.0 were verified against the
 `toy-v0.8.0-pin` union branch (`fbb9beb` = spinel-dev#13 + #14 fixes,
