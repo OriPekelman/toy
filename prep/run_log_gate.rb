@@ -56,6 +56,10 @@ Dir.mktmpdir("toy_run_log_gate") do |root|
   best = write_run(root, "llama-20990101-002", [6.4, 6.1, 5.9])
   cut  = write_run(root, "llama-20990101-003", [6.5, 6.45], final: false)
   write_run(root, "llama-20990101-004", [])                     # never stepped
+  # toy#106 — a DIVERGED run: the writer now emits JSON null for a
+  # non-finite loss (RunBundle.json_num_or_null); the reader must parse
+  # the bundle and treat the null as absent, not abort the whole scan.
+  diverged = write_run(root, "llama-20990101-005", [6.4, nil])
   FileUtils.mkdir_p(File.join(root, "not-a-run"))               # no events.jsonl
 
   log = Toy::RunLog.open(good)
@@ -78,12 +82,18 @@ Dir.mktmpdir("toy_run_log_gate") do |root|
     Toy::RunLog.open(File.join(root, "llama-20990101-004")).final_loss.nil?
   end
 
+  check("diverged run (null loss, toy#106): parses; final_loss nil; curve carries the nil sentinel") do
+    dl = Toy::RunLog.open(diverged)
+    dl.final_loss.nil? && dl.loss_curve == [6.4, nil]
+  end
+
   scanned = Toy::RunLog.scan(root)
-  check("scan finds the 4 bundles, skips non-run dirs") { scanned.length == 4 }
+  check("scan finds the 5 bundles (diverged included), skips non-run dirs") { scanned.length == 5 }
   check("scan sorts by final_loss ascending, lossless last") do
-    scanned.map(&:run_id) ==
-      ["llama-20990101-002", "llama-20990101-001",
-       "llama-20990101-003", "llama-20990101-004"]
+    ids = scanned.map(&:run_id)
+    ids[0, 3] == ["llama-20990101-002", "llama-20990101-001",
+                  "llama-20990101-003"] &&
+      ids[3, 2].sort == ["llama-20990101-004", "llama-20990101-005"]
   end
   check("the 3-line 'find my best run' works") do
     Toy::RunLog.scan(root).first.final_loss == 5.9

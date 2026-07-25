@@ -218,6 +218,24 @@ module Toy
       nil
     end
 
+    # Serialize a Float as a JSON number, or JSON null when non-finite
+    # (toy#106: bare NaN/Infinity is invalid JSON and poisons
+    # RunLog.scan's fail-loud line parse — one diverged run bricked the
+    # whole runs/ comparison surface). Finiteness via `x - x == 0.0`:
+    # false for NaN (NaN != NaN) AND ±Inf (Inf - Inf = NaN) — portable
+    # under Spinel, no Float#finite?/Float::MAX lowering bets. Readers:
+    # RunLog#final_loss's truthy-check + scan's `|| Float::INFINITY`
+    # sort already treat null as absent; loss_curve carries the nil as
+    # the documented non-finite sentinel.
+    def self.json_num_or_null(x)
+      d = x - x
+      if d == 0.0
+        x.to_s
+      else
+        "null"
+      end
+    end
+
     # Emit one toy/v1 step event. `step` is the 1-indexed step number
     # (matches the runners' "step N: loss=" stdout line). Returns nil.
     def step!(step, loss)
@@ -225,7 +243,7 @@ module Toy
         TinyNN.tnn_events_emit("{\"kind\":\"step\",\"phase\":\"train\"" +
           ",\"t\":" + TinyNN.tnn_events_now_seconds.to_s +
           ",\"step\":" + step.to_s +
-          ",\"loss\":" + loss.to_s + "}")
+          ",\"loss\":" + RunBundle.json_num_or_null(loss) + "}")
       end
       nil
     end
@@ -242,7 +260,7 @@ module Toy
           ",\"ended_at\":\"" + TinyNN.tnn_events_iso8601_now + "\"" +
           ",\"reason\":\"completed\"" +
           ",\"final_step\":" + final_step.to_s +
-          ",\"final_loss\":" + final_loss.to_s +
+          ",\"final_loss\":" + RunBundle.json_num_or_null(final_loss) +
           ",\"exit_code\":0}")
         TinyNN.tnn_events_close
         @rb_active = false
