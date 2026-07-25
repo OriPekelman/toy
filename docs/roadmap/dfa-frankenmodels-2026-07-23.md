@@ -306,10 +306,24 @@ refinement (P3+).
   maskbp:τ=5e-4 — BP gated by DFA-magnitude saliency at density 0.81
   — matches full BP (0.1707 vs 0.1700): the masked-update idea shows
   immediate promise as update sparsification.
-- **P3 (remaining, staged)**: opaque-cut vendored op (only if an
-  experiment demands opacity-with-passthrough); hard-routed MoE
-  (gather + mul_mat_id) for the scale leg; CUDA mirrors LAST once the
-  shape is stable.
+- **Hard-routed MoE — ✅ DONE 2026-07-25**: `FRANKEN_MOE_ROUTING=top1`
+  on the MoE twin runner — in-graph argmax routing (tnn_argmax, the
+  program's FIRST new shim bind, mirror-rule applied) + mul_mat_id
+  dispatch + routed-token masks from get_rows(I_E, ids) one-hots.
+  Since mul_mat_id has no ggml backward, top1's lane B is FULLY DFA
+  (attention + router + masked experts; embed/norms frozen) with zero
+  tower-B params at build_backward — the walker's grads_needed
+  short-circuit keeps mul_mat_id off every grad path; DFA opt nodes
+  late-param (P0 idiom). Two structural finds: a LOSS flag on a
+  no-autodiff tower leaves an unallocated grad-acc that graph_reset
+  asserts on (lane-B loss is output-only in top1); and the utilization
+  telemetry immediately caught **router collapse** (e0_share→1.0 by
+  step 20 — no load-balancing loss yet; the natural next experiment
+  axis, and exactly what the telemetry is for). gate-franken-moe grew
+  the top1 legs; dense mode stays byte-identical.
+- **Still staged**: opaque-cut vendored op (on demand); load-balancing
+  aux-loss for top1 (the collapse fix); Metal franken twin (toy#104);
+  full-BP experts (toy#110).
 
 ## 8. Explicit non-goals (v1)
 

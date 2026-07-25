@@ -815,6 +815,16 @@ void *tnn_swiglu_split(void *sess, void *gate, void *up)
 
 /* M2 MoE primitives. Thin wrappers — ggml does the work; we just expose
  * the entry points through the FFI. See tinynn_ggml.h for shape docs. */
+/* Per-token argmax over ne0 (e.g. router logits [E, T] -> I32 ids [T]).
+ * toy#109 hard-routed MoE: the in-graph routing decision. Forward-only
+ * (routing is discrete; router grads flow through the gate VALUE). */
+void *tnn_argmax(void *sess, void *a)
+{
+    if (!sess || !a) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_argmax(s->ctx, (struct ggml_tensor *)a);
+}
+
 void *tnn_mul_mat_id(void *sess, void *as, void *b, void *ids)
 {
     if (!sess || !as || !b || !ids) return NULL;

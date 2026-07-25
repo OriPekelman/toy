@@ -78,6 +78,24 @@ failures << "alignment: #{align_bad} malformed" unless align_bad == 0
 failures << "router: #{router_bad}/#{router_count} unhealthy g0_mean" unless router_bad == 0 && router_count == 60
 puts failures.empty? ? "  ok: dfa-experts — lane_b CE #{first_b&.round(3)} -> #{last_b&.round(4)} (BP lane -> #{last_a&.round(4)}); router healthy" : "  FAIL: dfa-experts leg"
 
+# ---- top1 hard-routing legs (toy#109 hard-routed MoE) ----
+out = run_moe("dfa-experts", 40)  # dense reference for comparison
+t1a = Open3.capture2e({ "FRANKEN_MOE" => "dfa-experts", "FRANKEN_MOE_ROUTING" => "top1",
+                        "STEPS" => "40", "FRANKEN_SEED" => "1234" }, RUNNER, chdir: ROOT)
+abort "franken_moe_gate: top1 run failed:\n#{t1a[0].lines.last(8).join}" unless t1a[1].success?
+t1b = Open3.capture2e({ "FRANKEN_MOE" => "dfa-experts", "FRANKEN_MOE_ROUTING" => "top1",
+                        "STEPS" => "40", "FRANKEN_SEED" => "1234" }, RUNNER, chdir: ROOT)
+failures << "top1: byte-repro failed" unless t1a[0] == t1b[0]
+t1_losses = t1a[0].lines.select { |l| l.start_with?("step ") }
+                  .map { |l| l[/lane_b=(\S+)/, 1].to_f }
+failures << "top1: NaN" if t1_losses.any?(&:nan?)
+failures << "top1: did not train (#{t1_losses.first} -> #{t1_losses.last})" unless t1_losses.last < t1_losses.first - 0.1
+routes = t1a[0].lines.select { |l| l.start_with?("route ") }
+               .map { |l| l[/e0_share=(\S+)/, 1].to_f }
+failures << "top1: no route telemetry" if routes.empty?
+failures << "top1: malformed shares" unless routes.all? { |r| r >= 0.0 && r <= 1.0 }
+puts failures.empty? ? "  ok: top1 — trains (#{t1_losses.first.round(3)} -> #{t1_losses.last.round(3)}), deterministic, #{routes.length} route lines (final e0_share=#{routes.last})" : "  FAIL: top1 leg"
+
 # ---- 5. byte-repro ----
 r1 = run_moe("dfa-experts", 10)
 r2 = run_moe("dfa-experts", 10)
@@ -85,7 +103,7 @@ failures << "byte-repro: outputs differ" unless r1 == r2
 puts r1 == r2 ? "  ok: byte-repro — two dfa-experts runs identical" : "  FAIL: byte-repro"
 
 if failures.empty?
-  puts "GATE PASS [franken-moe]: parity + dfa-experts-trains + router-health + alignment + byte-repro (toy#109 P2b)"
+  puts "GATE PASS [franken-moe]: parity + dfa-experts + top1-hard-routing + router-health + alignment + byte-repro (toy#109 P2b + hard-routed leg)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe]: #{f}" }

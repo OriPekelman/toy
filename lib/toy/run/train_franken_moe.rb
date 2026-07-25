@@ -14,6 +14,24 @@
 #   o_i     = down_i·a_i                  [DM, T]
 #   out     = x + Σ_i o_i ⊙ g_i           g_i = sel_i·gates  [1, T]
 #
+# ROUTING (FRANKEN_MOE_ROUTING env, toy#109 hard-routed leg):
+#   dense (default) — the P2b soft mixture, byte-identical to before.
+#   top1            — HARD routing via in-graph argmax + mul_mat_id
+#                     (tnn_argmax is the program's first new shim bind).
+#                     Lane B is then FULLY DFA (attention q/k/v/o +
+#                     router + routing-masked experts; embed/norms
+#                     frozen): mul_mat_id has NO ggml backward, so no
+#                     grad path may touch it — zero tower-B params at
+#                     build_backward time keeps the walker away
+#                     (grads_needed short-circuit), and the DFA updates
+#                     are forward ops with LATE-param opt nodes (P0
+#                     idiom). Expert updates mask to their ROUTED
+#                     tokens via get_rows(I_E, ids) one-hots. Router
+#                     grads: none from chain — router is DFA too
+#                     (B_r: vocab→E). Lane A stays the dense
+#                     all-chain baseline; per-expert utilization is
+#                     emitted per step ("route step=N shares=...").
+#
 # Lane B policy (FRANKEN_MOE env):
 #   chain        — null config: byte-identical to lane A (parity gate)
 #   dfa-experts  — the design-doc "MoE bonus" demonstration: router Wr
@@ -86,7 +104,7 @@ module Toy
         class MoeTower
           attr_accessor :pp, :pm, :pv
           attr_accessor :t_loss, :t_logits, :t_gates
-          attr_accessor :tap_h2, :tap_a1, :tap_a2
+          attr_accessor :tap_h2, :tap_a1, :tap_a2, :tap_ah, :tap_ctx, :t_onehots
           attr_accessor :dfa_grads, :dfa_accs, :dfa_names
 
           def initialize
@@ -100,6 +118,9 @@ module Toy
             @tap_h2   = np
             @tap_a1   = np
             @tap_a2   = np
+            @tap_ah   = np
+            @tap_ctx  = np
+            @t_onehots = np
             @dfa_grads = [np]; @dfa_grads.pop
             @dfa_accs  = [np]; @dfa_accs.pop
             @dfa_names = [""]; @dfa_names.pop
@@ -143,6 +164,7 @@ module Toy
           tw
         end
 
+        # returns [out, h, ctx] — the DFA taps (dense mode ignores 1/2).
         def self.attention_block(sess, t_x, rn, wq, wk, wv, wo)
           h = Toy::LLM::Primitives::RMSNorm.build(sess, t_x, rn, EPS)
           q = TinyNN.tnn_matmul(sess, wq, h)
@@ -155,7 +177,7 @@ module Toy
           v_t    = TinyNN.tnn_transpose(sess, v)
           ctx    = TinyNN.tnn_matmul(sess, v_t, attn)
           out    = TinyNN.tnn_matmul(sess, wo, ctx)
-          TinyNN.tnn_add(sess, t_x, out)
+          [TinyNN.tnn_add(sess, t_x, out), h, ctx]
         end
 
         # Dense soft-mixture MoE block; records taps + gates on the tower.
@@ -184,16 +206,63 @@ module Toy
           TinyNN.tnn_add(sess, t_x, TinyNN.tnn_add(sess, gated1, gated2))
         end
 
-        def self.forward_tower(sess, tw, t_tok, t_labels, sel1, sel2)
+        # HARD top-1 MoE block: argmax routing + mul_mat_id dispatch.
+        # eye = uploaded identity [NE,NE]; records taps + onehots + gates.
+        def self.moe_block_top1(sess, tw, t_x, eye)
+          rn2 = tw.pp[7]
+          wr  = tw.pp[8]
+          h2 = Toy::LLM::Primitives::RMSNorm.build(sess, t_x, rn2, EPS)
+          tw.tap_h2 = h2
+          r_logits = TinyNN.tnn_matmul(sess, wr, h2)              # [NE, T]
+          probs    = TinyNN.tnn_softmax(sess, r_logits)
+          TinyNN.tnn_set_output(probs)
+          tw.t_gates = probs
+          ids   = TinyNN.tnn_argmax(sess, r_logits)               # I32 [T]
+          ids2  = TinyNN.tnn_reshape_3d(sess, ids, 1, T, 1)       # [1, T]
+          oneh  = TinyNN.tnn_get_rows(sess, eye, ids)             # [NE, T]
+          TinyNN.tnn_set_output(oneh)
+          tw.t_onehots = oneh
+          gate  = TinyNN.tnn_sum_rows(sess, TinyNN.tnn_mul(sess, oneh, probs)) # [1,T]
+
+          up_stack = TinyNN.tnn_concat(sess,
+            TinyNN.tnn_reshape_3d(sess, tw.pp[9],  DM, DFF, 1),
+            TinyNN.tnn_reshape_3d(sess, tw.pp[11], DM, DFF, 1), 2)   # [DM,DFF,NE]
+          dn_stack = TinyNN.tnn_concat(sess,
+            TinyNN.tnn_reshape_3d(sess, tw.pp[10], DFF, DM, 1),
+            TinyNN.tnn_reshape_3d(sess, tw.pp[12], DFF, DM, 1), 2)   # [DFF,DM,NE]
+
+          h3    = TinyNN.tnn_reshape_3d(sess, h2, DM, 1, T)
+          upo   = TinyNN.tnn_mul_mat_id(sess, up_stack, h3, ids2)    # [DFF,1,T]
+          a     = TinyNN.tnn_gelu(sess, upo)
+          tw.tap_a1 = TinyNN.tnn_reshape_3d(sess, a, DFF, T, 1)      # routed acts [DFF,T]
+          dno   = TinyNN.tnn_mul_mat_id(sess, dn_stack, a, ids2)     # [DM,1,T]
+          eo    = TinyNN.tnn_reshape_3d(sess, dno, DM, T, 1)         # [DM,T]
+          TinyNN.tnn_add(sess, t_x, TinyNN.tnn_mul(sess, eo, gate))
+        end
+
+        def self.forward_tower(sess, tw, t_tok, t_labels, sel1, sel2, eye, top1)
           x = TinyNN.tnn_get_rows(sess, tw.pp[0], t_tok)
-          x = attention_block(sess, x, tw.pp[2], tw.pp[3], tw.pp[4], tw.pp[5], tw.pp[6])
-          x = moe_block(sess, tw, x, sel1, sel2)
+          atrip = attention_block(sess, x, tw.pp[2], tw.pp[3], tw.pp[4], tw.pp[5], tw.pp[6])
+          x = atrip[0]
+          tw.tap_ah  = atrip[1]
+          tw.tap_ctx = atrip[2]
+          if top1
+            x = moe_block_top1(sess, tw, x, eye)
+          else
+            x = moe_block(sess, tw, x, sel1, sel2)
+          end
           xf  = Toy::LLM::Primitives::RMSNorm.build(sess, x, tw.pp[1], EPS)
           lgt = TinyNN.tnn_matmul(sess, tw.pp[0], xf)
           tw.t_logits = lgt
           tw.t_loss   = TinyNN.tnn_cross_entropy_loss(sess, lgt, t_labels)
           TinyNN.tnn_set_output(tw.t_loss)
-          TinyNN.tnn_set_loss(tw.t_loss)
+          # top1 tower B is a NO-AUTODIFF tower: its loss is read-only
+          # output, never a backward root — a LOSS flag there leaves an
+          # unallocated grad-acc that ggml_graph_reset asserts on
+          # (GGML_ASSERT(grad_acc->data), found the hard way).
+          if !top1
+            TinyNN.tnn_set_loss(tw.t_loss)
+          end
           0
         end
 
@@ -209,6 +278,24 @@ module Toy
         def self.wire_chain(sess, tw, t_hp, idx)
           tg = TinyNN.tnn_tensor_grad(sess, tw.pp[idx])
           to = TinyNN.tnn_opt_step_adamw(sess, tw.pp[idx], tg, tw.pm[idx], tw.pv[idx], t_hp)
+          TinyNN.tnn_extend_backward_graph(sess, to)
+          0
+        end
+
+        # top1 lane-B wire: LATE-param (P0 idiom — tower B has zero params
+        # at build_backward time) + optional routing mask on delta. No align
+        # recording (no autodiff accs exist in this tower).
+        def self.wire_dfa_top1(sess, tw, t_hp, idx, b, e, a_in, d_in, d_out, mask)
+          delta = TinyNN.tnn_matmul(sess, b, e)
+          if mask != TinyNN.tnn_null_ptr
+            delta = TinyNN.tnn_mul(sess, delta, mask)
+          end
+          a_in_t = TinyNN.tnn_cont_2d(sess, TinyNN.tnn_transpose(sess, a_in), T, d_in)
+          delt_t = TinyNN.tnn_cont_2d(sess, TinyNN.tnn_transpose(sess, delta), T, d_out)
+          g = TinyNN.tnn_matmul(sess, a_in_t, delt_t)
+          TinyNN.tnn_set_output(g)
+          TinyNN.tnn_set_param(tw.pp[idx])
+          to = TinyNN.tnn_opt_step_adamw(sess, tw.pp[idx], g, tw.pm[idx], tw.pv[idx], t_hp)
           TinyNN.tnn_extend_backward_graph(sess, to)
           0
         end
@@ -248,6 +335,8 @@ module Toy
             mode_s = "dfa-experts"
           end
           dfa_experts = mode_s == "dfa-experts"
+          routing_s = ENV["FRANKEN_MOE_ROUTING"] || ""
+          top1 = routing_s == "top1"
           steps_s = ENV["STEPS"] || ""
           steps = steps_s.length > 0 ? steps_s.to_i : 40
           seed_s = ENV["FRANKEN_SEED"] || ""
@@ -255,6 +344,7 @@ module Toy
           lr = 0.02
 
           puts "franken-moe twin-lane: experts=" + NE.to_s + " policy_b=" + mode_s +
+               " routing=" + (top1 ? "top1" : "dense") +
                " steps=" + steps.to_s + " seed=" + seed.to_s
 
           sess = TinyNN.tnn_session_new(0)
@@ -272,11 +362,24 @@ module Toy
           # one-hot row selectors [1, NE]
           sel1 = TinyNN.tnn_input_2d_f32_persistent(sess, 1, NE)
           sel2 = TinyNN.tnn_input_2d_f32_persistent(sess, 1, NE)
+          # top1 extras: identity table + B mats for the fully-DFA lane B
+          # (attention q/k/v/o + router; expert B mats reuse b_up/b_down).
+          eye   = TinyNN.tnn_input_2d_f32_persistent(sess, NE, NE)
+          b_aq  = TinyNN.tnn_input_2d_f32_persistent(sess, DM, VOCAB)
+          b_ak  = TinyNN.tnn_input_2d_f32_persistent(sess, DM, VOCAB)
+          b_av  = TinyNN.tnn_input_2d_f32_persistent(sess, DM, VOCAB)
+          b_ao  = TinyNN.tnn_input_2d_f32_persistent(sess, DM, VOCAB)
+          b_r   = TinyNN.tnn_input_2d_f32_persistent(sess, NE, VOCAB)
 
           gi = 0
           while gi < tow_a.pp.length
             TinyNN.tnn_set_param(tow_a.pp[gi])
-            TinyNN.tnn_set_param(tow_b.pp[gi])
+            # top1: tower B gets ZERO params at build_backward time — the
+            # backward walker must never need a grad through mul_mat_id
+            # (no ggml backward case). DFA opt nodes late-param instead.
+            if !top1
+              TinyNN.tnn_set_param(tow_b.pp[gi])
+            end
             gi = gi + 1
           end
           TinyNN.tnn_finalize_weights(sess)
@@ -306,12 +409,23 @@ module Toy
           s2 = [0.0, 1.0]
           TinyNN.tnn_upload_from_float_array(sess, sel1, s1, NE)
           TinyNN.tnn_upload_from_float_array(sess, sel2, s2, NE)
+          ey = [1.0, 0.0, 0.0, 1.0]
+          TinyNN.tnn_upload_from_float_array(sess, eye, ey, NE * NE)
+          if top1
+            sig_dm = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, VOCAB, DM, 0.0)
+            sig_e  = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, VOCAB, NE, 0.0)
+            TinyNN.tnn_upload_from_float_array(sess, b_aq, Toy::Train::DfaB.fill(DM * VOCAB, seed + 21, dist_c, sig_dm), DM * VOCAB)
+            TinyNN.tnn_upload_from_float_array(sess, b_ak, Toy::Train::DfaB.fill(DM * VOCAB, seed + 22, dist_c, sig_dm), DM * VOCAB)
+            TinyNN.tnn_upload_from_float_array(sess, b_av, Toy::Train::DfaB.fill(DM * VOCAB, seed + 23, dist_c, sig_dm), DM * VOCAB)
+            TinyNN.tnn_upload_from_float_array(sess, b_ao, Toy::Train::DfaB.fill(DM * VOCAB, seed + 24, dist_c, sig_dm), DM * VOCAB)
+            TinyNN.tnn_upload_from_float_array(sess, b_r,  Toy::Train::DfaB.fill(NE * VOCAB, seed + 25, dist_c, sig_e),  NE * VOCAB)
+          end
 
           t_tok    = TinyNN.tnn_input_1d_i32(sess, T)
           t_labels = TinyNN.tnn_input_2d_f32(sess, T, VOCAB)
           t_hp     = TinyNN.tnn_input_1d_f32(sess, 7)
-          forward_tower(sess, tow_a, t_tok, t_labels, sel1, sel2)
-          forward_tower(sess, tow_b, t_tok, t_labels, sel1, sel2)
+          forward_tower(sess, tow_a, t_tok, t_labels, sel1, sel2, eye, false)
+          forward_tower(sess, tow_b, t_tok, t_labels, sel1, sel2, eye, top1)
 
           # P1 finding: extra roots FIRST, then the realizing call.
           TinyNN.tnn_add_to_graph(sess, tow_a.t_loss)
@@ -327,6 +441,22 @@ module Toy
           # lane B: chain everywhere except (policy) the four expert weights
           p_sm = TinyNN.tnn_softmax(sess, tow_b.t_logits)
           e_b  = TinyNN.tnn_scale(sess, TinyNN.tnn_sub(sess, p_sm, t_labels), 1.0 / T.to_f)
+          if top1
+            # FULLY-DFA tower B: attention + router + routed-masked experts;
+            # embed/norms frozen. Routing masks from the recorded one-hots.
+            np2 = TinyNN.tnn_null_ptr
+            wire_dfa_top1(sess, tow_b, t_hp, 3, b_aq, e_b, tow_b.tap_ah,  DM, DM, np2)
+            wire_dfa_top1(sess, tow_b, t_hp, 4, b_ak, e_b, tow_b.tap_ah,  DM, DM, np2)
+            wire_dfa_top1(sess, tow_b, t_hp, 5, b_av, e_b, tow_b.tap_ah,  DM, DM, np2)
+            wire_dfa_top1(sess, tow_b, t_hp, 6, b_ao, e_b, tow_b.tap_ctx, DM, DM, np2)
+            wire_dfa_top1(sess, tow_b, t_hp, 8, b_r,  e_b, tow_b.tap_h2,  DM, NE, np2)
+            m1 = TinyNN.tnn_matmul(sess, sel1, tow_b.t_onehots)   # [1,T]
+            m2 = TinyNN.tnn_matmul(sess, sel2, tow_b.t_onehots)
+            wire_dfa_top1(sess, tow_b, t_hp, 9,  b_up1,   e_b, tow_b.tap_h2, DM,  DFF, m1)
+            wire_dfa_top1(sess, tow_b, t_hp, 10, b_down1, e_b, tow_b.tap_a1, DFF, DM,  m1)
+            wire_dfa_top1(sess, tow_b, t_hp, 11, b_up2,   e_b, tow_b.tap_h2, DM,  DFF, m2)
+            wire_dfa_top1(sess, tow_b, t_hp, 12, b_down2, e_b, tow_b.tap_a1, DFF, DM,  m2)
+          else
           idx = 0
           while idx < 9
             wire_chain(sess, tow_b, t_hp, idx)
@@ -343,6 +473,7 @@ module Toy
               wire_chain(sess, tow_b, t_hp, idx)
               idx = idx + 1
             end
+          end
           end
 
           TinyNN.tnn_pin_all_graph_b_nodes(sess)
@@ -407,6 +538,16 @@ module Toy
               end
               puts "align step=" + s.to_s + " " + tow_b.dfa_names[di] + " cos=" + cv.to_s
               di = di + 1
+            end
+            if top1
+              TinyNN.tnn_download_to_f64_array(sess, tow_b.t_onehots, gates_buf, NE * T)
+              e0 = 0.0
+              ti2 = 0
+              while ti2 < T
+                e0 = e0 + gates_buf[ti2 * NE]
+                ti2 = ti2 + 1
+              end
+              puts "route step=" + s.to_s + " e0_share=" + (e0 / T.to_f).to_s
             end
             TinyNN.tnn_download_to_f64_array(sess, tow_b.t_gates, gates_buf, NE * T)
             gsum = 0.0
