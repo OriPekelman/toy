@@ -261,8 +261,31 @@ opts = Toy::LLM::RecipeOptions.new
 opts.t_seq  = CONTEXT
 opts.untied = true
 opts.seed   = SEED
+# GDN reintegration: GDN_LAYERS="1" (comma-separated 0-based indices)
+# builds those layers as Gated-DeltaNet blocks. Unset/empty = the
+# byte-gated all-attention path, unchanged.
+gdn_s = ENV["GDN_LAYERS"] || ""
+if gdn_s.length > 0
+  gparts = gdn_s.split(",")
+  gp = 0
+  while gp < gparts.length
+    opts.gdn_layers.push(gparts[gp].to_i)
+    gp = gp + 1
+  end
+end
 
 recipe = Toy::LLM::Recipes::FromScratch.new
+# GDN indices go DIRECTLY to the engine via INT-arg calls (add_gdn_layer!):
+# the opts.gdn_layers hop read EMPTY inside the recipe in this unit
+# (RecipeOptions reader degradation, spinel-dev#19 family; and the
+# array-PARAM setter form died to the #688 landmine before that).
+# Runner-direct + INT args is the proven shape. opts.gdn_layers stays
+# populated as the provenance carrier.
+gd = 0
+while gd < opts.gdn_layers.length
+  recipe.fs_cache.add_gdn_layer!(opts.gdn_layers[gd])
+  gd = gd + 1
+end
 recipe.realize!(cfg, opts)
 # tao#flow-json-emit (#25): self-describing run bundle, parallel to events.jsonl.
 ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe.fs_cache.sess)

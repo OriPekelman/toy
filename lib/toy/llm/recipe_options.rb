@@ -67,7 +67,11 @@ module Toy; module LLM
                   # modes: 0=chain 1=dfa 2=mix(dfa_mix_alpha)
                   # 3=mask-dfa(|g_bp|>tau) 4=mask-bp(|g_dfa|>tau)
                   :credit_assignment, :dfa_b_seed, :dfa_b_dist,
-                  :dfa_b_scale, :dfa_b_sigma, :dfa_mix_alpha, :dfa_mask_tau
+                  :dfa_b_scale, :dfa_b_sigma, :dfa_mix_alpha, :dfa_mask_tau,
+                  # GDN reintegration: 0-based indices of layers built as
+                  # Gated-DeltaNet blocks (empty = all-attention, the
+                  # byte-gated default). Read by FromScratch + Franken.
+                  :gdn_layers
 
     def initialize
       @t_seq        = 0
@@ -84,6 +88,7 @@ module Toy; module LLM
       @dfa_b_sigma  = 0.0
       @dfa_mix_alpha = 0.5
       @dfa_mask_tau  = 0.0
+      @gdn_layers = [0]; @gdn_layers.pop   # typed-empty IntArray
     end
   end
 end; end

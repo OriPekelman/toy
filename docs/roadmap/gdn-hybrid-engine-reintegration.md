@@ -125,3 +125,29 @@ vit) stayed byte-exact, with compute-surface and poly-degrade clean, at
 the ecac633caa plain-master pin. The dedicated-runner constraint that
 motivated this doc no longer binds; GDN reintegration can proceed on its
 own merits when scheduled.
+
+## 2026-07-25 — FOLDED IN (steps 1–7 applied; gate-gdn-engine green)
+
+Applied on the b96280b3 pin. `GDN_LAYERS=1 toy train from-scratch --seed 1`
+trains through the shared engine (10.58 → 9.48/8 steps); the all-attention
+path stays byte-exact (train_gate 4/4 + the corruption gate in
+prep/gdn_engine_gate.rb); toy-train-hybrid + gate-gdn-hybrid retained as the
+cross-check per the protocol. Franken composes (GDN layers chain-wire their
+triples in build_training_step_franken; :dfa on a GDN layer fails loud).
+
+Deviations from this doc's sketch, found the hard way:
+1. `set_gdn_layers!(indices)` — the doc's own step-1 sketch — dies to the
+   #688 ARRAY-PARAM landmine the doc itself catalogs as trigger #3 (the
+   array arrives empty at realize). The landed shape is `add_gdn_layer!(idx)`
+   INT-arg calls, made RUNNER-DIRECT (`recipe.fs_cache.add_gdn_layer!`):
+   the opts.gdn_layers hop ALSO reads empty across the recipe boundary in
+   the toy-train unit (RecipeOptions reader degradation, spinel-dev#19
+   family). opts.gdn_layers remains the provenance carrier.
+2. Step 4's planned `a_log/dt_bias = 0.0` init was never the NaN issue —
+   the real killer was toy#114: the seed-0 xorshift stream is DEGENERATE
+   (zero fixed point → ±37σ inits everywhere), which attention has always
+   survived (norm-rescued; frozen into the byte-gated baselines!) and GDN
+   cannot. GDN+seed=0 now fails loud; the init-quality reset is toy#114.
+3. The historical trigger #4 (`grads==NULL` from GDN alloc/train code in
+   the engine unit) is CONFIRMED DEAD on plain master — the corruption
+   gate passes byte-exact with everything compiled in.

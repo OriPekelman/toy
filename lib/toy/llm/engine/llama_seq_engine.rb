@@ -120,6 +120,8 @@ class LlamaSeqEngine
     @seq_d_head     = 0
     @seq_group_size = 0
     @seq_n_layers   = 0
+    @seq_gdn_layer_indices = [0];     @seq_gdn_layer_indices.pop
+    @seq_is_gdn            = [false]; @seq_is_gdn.pop
     @seq_vocab_size = 0
     @seq_rope_base            = 10000.0
     @seq_rope_scaling         = Toy::RopeScaling.none
@@ -173,6 +175,38 @@ class LlamaSeqEngine
   # output. Opt-in: the embed tensor on Qwen-class vocab is large and
   # makes the memory budget noticeably tighter, but the math itself
   # works correctly post vendor-patches/0006 (chunked get_rows_back).
+  # GDN reintegration (docs/roadmap/gdn-hybrid-engine-reintegration.md,
+  # applied 2026-07-25 post-thaw). Call BEFORE realize_for_random_init,
+  # once per GDN layer index — INT ARG ONLY: the array-parameter form
+  # (set_gdn_layers!(indices)) arrived EMPTY at realize (the #688
+  # array-param landmine, the doc's trigger #3, re-confirmed on
+  # b96280b3). No indices added (the default) = all-attention,
+  # byte-identical to before.
+  def add_gdn_layer!(idx)
+    @seq_gdn_layer_indices.push(idx)
+  end
+
+  def build_gdn_flags!
+    @seq_is_gdn = [false]; @seq_is_gdn.pop
+    li = 0
+    while li < @seq_n_layers
+      @seq_is_gdn.push(false)
+      li = li + 1
+    end
+    k = 0
+    while k < @seq_gdn_layer_indices.length
+      idx = @seq_gdn_layer_indices[k]
+      if idx >= 0 && idx < @seq_n_layers
+        @seq_is_gdn[idx] = true
+      end
+      k = k + 1
+    end
+  end
+
+  def seq_gdn_blocks_ffi_ref
+    @seq_arch.seq_gdn_blocks_ffi
+  end
+
   def enable_full_finetune_embeddings!
     @ft_train_embeddings_enabled = true
   end
@@ -590,6 +624,18 @@ class LlamaSeqEngine
     @ft_train_embeddings_enabled = true   # forces persistent-F32 alloc of embeddings
     @seq_full_finetune_enabled   = true   # build_training_step gates on this
 
+    # GDN + seed=0 is fail-loud: the zero-seed xorshift stream is
+    # DEGENERATE (zero fixed point -> every Box-Muller draw hits the
+    # u1 clamp -> +-37sigma inits). The attention path has historically
+    # survived this (norm-rescued; the byte-gated baselines FROZE it --
+    # see the init-quality issue), but GDN's exp/softplus/recurrence
+    # NaNs immediately. Until the init-stream reset lands, GDN runs
+    # require a nonzero seed.
+    if @seq_gdn_layer_indices.length > 0 && seed == 0
+      raise "realize_for_random_init: GDN layers require a nonzero seed " +
+            "(seed=0's xorshift stream is degenerate; see the init-quality issue)"
+    end
+
     @seq_t          = t_seq
     # GH#7 — micro-batching. B=1 keeps the codepath bit-identical to
     # the pre-GH#7 single-sequence training. B>1 lays out tokens as a
@@ -633,6 +679,24 @@ class LlamaSeqEngine
     # (LlamaArch#seed_blocks!), which already owns @seq_blocks_ffi.
     @seq_arch.seed_blocks!(@seq_n_layers)
 
+    # GDN reintegration: mark layer kinds (INT-arg calls only — the
+    # #688 array-param landmine shape stays banned).
+    build_gdn_flags!
+    marked = 0
+    kk = 0
+    while kk < @seq_gdn_layer_indices.length
+      gidx = @seq_gdn_layer_indices[kk]
+      if gidx >= 0 && gidx < @seq_n_layers
+        @seq_arch.set_gdn_layer!(gidx)
+        marked = marked + 1
+      end
+      kk = kk + 1
+    end
+    if @seq_gdn_layer_indices.length > 0
+      puts "gdn: requested=" + @seq_gdn_layer_indices.length.to_s +
+           " marked=" + marked.to_s + " of " + @seq_n_layers.to_s + " layers"
+    end
+
     # P2.6 Step 4 — the per-block F32 ALLOC loop body now lives on the
     # block (TransformerBlock#alloc_trainable_f32_weights!), which already
     # OWNS these self.t_seq_* handles at forward time. The block takes
@@ -645,11 +709,18 @@ class LlamaSeqEngine
     # method (not unified with full_finetune's [d_model,d_model]).
     li = 0
     while li < @seq_n_layers
-      blk = self.seq_blocks_ffi[li]
-      prefix = "blk." + li.to_s + "."
-      blk.alloc_trainable_f32_weights!(@sess, self, prefix,
-                                       @seq_d_model, @seq_d_ff, @seq_d_head,
-                                       @seq_n_heads, @seq_n_kv)
+      if @seq_is_gdn[li]
+        gblk = self.seq_gdn_blocks_ffi_ref[li]
+        gblk.alloc_trainable_f32_weights!(@sess, @seq_d_model, @seq_d_head,
+                                          @seq_n_heads)
+        gblk.set_params!
+      else
+        blk = self.seq_blocks_ffi[li]
+        prefix = "blk." + li.to_s + "."
+        blk.alloc_trainable_f32_weights!(@sess, self, prefix,
+                                         @seq_d_model, @seq_d_ff, @seq_d_head,
+                                         @seq_n_heads, @seq_n_kv)
+      end
       li = li + 1
     end
 
@@ -731,6 +802,26 @@ class LlamaSeqEngine
 
     li = 0
     while li < @seq_n_layers
+      if @seq_is_gdn[li]
+        gblk = self.seq_gdn_blocks_ffi_ref[li]
+        inner = @seq_n_heads * @seq_d_head
+        upload_constant(gblk.t_rn_gamma, @seq_d_model, 1.0)
+        upload_gaussian(gblk.t_w_q, inner * @seq_d_model, inv_sqrt_d, state)
+        upload_gaussian(gblk.t_w_k, inner * @seq_d_model, inv_sqrt_d, state)
+        upload_gaussian(gblk.t_w_v, inner * @seq_d_model, inv_sqrt_d, state)
+        upload_gaussian(gblk.t_w_z, inner * @seq_d_model, inv_sqrt_d, state)
+        upload_gaussian(gblk.t_w_a, @seq_n_heads * @seq_d_model, inv_sqrt_d, state)
+        upload_gaussian(gblk.t_w_b, @seq_n_heads * @seq_d_model, inv_sqrt_d, state)
+        # Small-noise init for the decay pair (NOT the doc's planned 0.0:
+        # empirically the exact-zero pair NaNs at T=32 on the smoke shape,
+        # while the hybrid runner's small-noise init trains — mirror it).
+        upload_gaussian(gblk.t_a_log,   @seq_n_heads, 0.25, state)
+        upload_gaussian(gblk.t_dt_bias, @seq_n_heads, 0.25, state)
+        upload_constant(gblk.t_go_gamma, inner, 1.0)
+        upload_gaussian(gblk.t_w_o, @seq_d_model * inner, inv_sqrt_d, state)
+        li = li + 1
+        next
+      end
       blk = self.seq_blocks_ffi[li]
       upload_constant(blk.t_seq_rn1_gamma, @seq_d_model, 1.0)
       upload_constant(blk.t_seq_rn2_gamma, @seq_d_model, 1.0)
@@ -981,6 +1072,18 @@ class LlamaSeqEngine
   def ft_zero_init_adam(qkv_bias)
     li = 0
     while li < @seq_n_layers
+      if @seq_is_gdn[li]
+        gblk = self.seq_gdn_blocks_ffi_ref[li]
+        gblk.zero_state!(@sess)
+        gi2 = 0
+        while gi2 < gblk.ft_weights.length
+          TinyNN.tnn_zero_tensor(@sess, gblk.ft_m[gi2])
+          TinyNN.tnn_zero_tensor(@sess, gblk.ft_v[gi2])
+          gi2 = gi2 + 1
+        end
+        li = li + 1
+        next
+      end
       blk = self.seq_blocks_ffi[li]
       i = 0
       while i < blk.ft_weights.length
@@ -1131,6 +1234,20 @@ class LlamaSeqEngine
       # triple. The arrays are populated in realize_for_full_finetune.
       li = 0
       while li < @seq_n_layers
+        if @seq_is_gdn[li]
+          gblk = self.seq_gdn_blocks_ffi_ref[li]
+          wg = 0
+          while wg < gblk.ft_weights.length
+            twg = gblk.ft_weights[wg]
+            tgg = TinyNN.tnn_tensor_grad(@sess, twg)
+            tog = TinyNN.tnn_opt_step_adamw(@sess, twg, tgg,
+                                             gblk.ft_m[wg], gblk.ft_v[wg], t_hp)
+            TinyNN.tnn_extend_backward_graph(@sess, tog)
+            wg = wg + 1
+          end
+          li = li + 1
+          next
+        end
         blk = self.seq_blocks_ffi[li]
         wi = 0
         while wi < blk.ft_weights.length
@@ -1275,6 +1392,20 @@ class LlamaSeqEngine
       end
       if mode > 0 && self.seq_arch.seq_layer_kinds[li] != Toy::LLM::Archs::LayerSpec::KIND_ATTENTION
         raise "build_training_step_franken: :dfa on non-attention layer " + li.to_s
+      end
+      if @seq_is_gdn[li]
+        gblk = self.seq_gdn_blocks_ffi_ref[li]
+        wg = 0
+        while wg < gblk.ft_weights.length
+          twg = gblk.ft_weights[wg]
+          tgg = TinyNN.tnn_tensor_grad(@sess, twg)
+          tog = TinyNN.tnn_opt_step_adamw(@sess, twg, tgg,
+                                           gblk.ft_m[wg], gblk.ft_v[wg], t_hp)
+          TinyNN.tnn_extend_backward_graph(@sess, tog)
+          wg = wg + 1
+        end
+        li = li + 1
+        next
       end
       nh  = @seq_n_heads
       nkv = @seq_n_kv

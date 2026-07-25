@@ -2319,3 +2319,9 @@ libexec/toy-train-franken-llama: lib/toy/run/train_franken_llama.rb lib/toy.rb l
 .PHONY: gate-franken-llama
 gate-franken-llama: libexec/toy-train-franken-llama
 	ruby prep/franken_llama_gate.rb
+
+# GDN reintegration gate (docs/roadmap/gdn-hybrid-engine-reintegration.md,
+# folded in 2026-07-25): all-attention byte-exact + GDN-through-the-engine.
+.PHONY: gate-gdn-engine
+gate-gdn-engine: libexec/toy-train
+	ruby prep/gdn_engine_gate.rb
