@@ -99,6 +99,23 @@ Dir.mktmpdir("franken_llama_gate") do |dir|
   puts "  ok: bundle — run_start(franken provenance) + 5 steps + 60 align + run_end + checkpoint; dfa curve differs" if failures.empty?
 end
 
+# ---- seed!=0 parity (toy#113): franken empty-policy must equal
+# toy-train AT THE SAME NONZERO SEED, compared DYNAMICALLY (no fixture:
+# seed!=0 curves are toy-version-scoped; only seed=0 is frozen). This
+# tripwires the whole-program numeric-stream divergence class — at
+# f7cea71 the two units compiled DIFFERENT xorshift/Box-Muller streams
+# from identical source (seed=0 masked it).
+FS_RUNNER = File.join(ROOT, "libexec", "toy-train")
+fs_out, fs_st = Open3.capture2e({ "STEPS" => "8", "SEED" => "1" }, FS_RUNNER, chdir: ROOT)
+fr_out = run_franken_llama({ "STEPS" => "8", "SEED" => "1" }, nil)
+fs_curve = fs_out.lines.select { |l| l.start_with?("step ") }
+fr_curve = fr_out.lines.select { |l| l.start_with?("step ") }
+if fs_st.success? && fs_curve.length == 8 && fs_curve == fr_curve
+  puts "  ok: seed=1 parity — franken empty-policy byte-equals toy-train (8 steps, dynamic)"
+else
+  failures << "seed1-parity: curves differ or toy-train failed\nfs: #{fs_curve.join}fr: #{fr_curve.join}"
+end
+
 # ---- 4. byte-repro ----
 r1 = run_franken_llama({ "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42" }, nil)
 r2 = run_franken_llama({ "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42" }, nil)
@@ -106,7 +123,7 @@ failures << "byte-repro: outputs differ" unless r1 == r2
 puts "  ok: byte-repro — two policy runs identical" if r1 == r2
 
 if failures.empty?
-  puts "GATE PASS [franken-llama]: F0 byte-parity + bundle/provenance/align + dfa-effect + byte-repro (toy#112)"
+  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + byte-repro (toy#112/#113)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-llama]: #{f}" }
