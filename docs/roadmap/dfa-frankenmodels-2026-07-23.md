@@ -321,6 +321,24 @@ refinement (P3+).
   step 20 — no load-balancing loss yet; the natural next experiment
   axis, and exactly what the telemetry is for). gate-franken-moe grew
   the top1 legs; dense mode stays byte-identical.
+- **toy#117 (maskbp NaN@6 at the llama shape) — ✅ FIXED 2026-07-25**:
+  root cause was the engine's B matrices being once-uploaded
+  **graph-input leaves** — backend_sched scratch-reuses graph-input
+  buffers between computes (the labels contract), so B was garbage
+  after the first step (norm 3.2e5 → Infinity by step 5), driving the
+  exponential dfa-grad explosion Tao measured. NOT the tanh gate
+  (plain `tanhf`, bounded). Fix: `franken_refresh_b!` — deterministic
+  per-step B re-upload from the recorded (seed, dist, scale, sigma)
+  axes — called by the franken llama runners before each step, plus
+  `tnn_set_output` pins on the B leaves. **Durable rule: any
+  per-step-constant tensor a graph reads must live in a persistent
+  context or be re-uploaded every step; a graph-input leaf does not
+  hold its value across computes.** (The rig's B is persistent-ctx,
+  which is why P1/P3 never hit this.) Regression pin: llama-shape
+  `maskbp:-1` byte-null leg in gate-franken-llama. The engine
+  mix(1.0) near-null drift is *not* this bug — it persists (sub-2e-2)
+  with per-step-clean B, consistent with ×0.0 annihilating any finite
+  garbage; still an open question on toy#109.
 - **Still staged**: opaque-cut vendored op (on demand); load-balancing
   aux-loss for top1 (the collapse fix); Metal franken twin (toy#104);
   full-BP experts (toy#110).
