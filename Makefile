@@ -2325,3 +2325,16 @@ gate-franken-llama: libexec/toy-train-franken-llama
 .PHONY: gate-gdn-engine
 gate-gdn-engine: libexec/toy-train
 	ruby prep/gdn_engine_gate.rb
+
+# toy#109 CUDA franken leg — the CUDA twin of the spec-callable runner
+# (`toy train franken --device cuda`). Force-link keeps the CUDA backend
+# registration alive (same as every CUDA trainer).
+libexec/toy-train-franken-llama-cuda: lib/toy/run/train_franken_llama_cuda.rb lib/toy.rb \
+		lib/toy/ffi/tinynn_cuda.rb lib/toy/io/json_builder.rb lib/toy/io/json.rb \
+		lib/toy/io/toy_events.rb lib/toy/llm/recipe_options.rb lib/toy/train/dfa_b.rb \
+		lib/toy/train/toy_gguf_writer.rb lib/toy/train/toy_gguf_fuse.rb \
+		tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
+.PHONY: gate-franken-llama-cuda
+gate-franken-llama-cuda: libexec/toy-train-franken-llama-cuda libexec/toy-train-cuda
+	ruby prep/franken_llama_cuda_gate.rb

@@ -128,6 +128,11 @@ module TinyNNMetal
   ffi_func :tnn_flash_attn_ext,   [:ptr, :ptr, :ptr, :ptr, :ptr,
                                    :double, :double, :double], :ptr
   ffi_func :tnn_silu,             [:ptr, :ptr],             :ptr
+  # toy#109 CUDA/Metal franken leg — the combiner/mask + error-signal ops
+  # (mirror-rule additions; shared-shim symbols, no new C).
+  ffi_func :tnn_scale_bias,       [:ptr, :ptr, :double, :double], :ptr
+  ffi_func :tnn_sub,              [:ptr, :ptr, :ptr],       :ptr
+  ffi_func :tnn_sqrt,             [:ptr, :ptr],             :ptr
   ffi_func :tnn_tanh,             [:ptr, :ptr],             :ptr
   ffi_func :tnn_mul,              [:ptr, :ptr, :ptr],       :ptr
   ffi_func :tnn_div,              [:ptr, :ptr, :ptr],       :ptr

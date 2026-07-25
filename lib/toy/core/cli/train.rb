@@ -76,6 +76,7 @@ module Toy
         # (landmine #16): FrankenFromScratch alongside FromScratch stays out
         # of the byte-gated toy-train unit.
         FRANKEN_RUNNER_TARGET = "libexec/toy-train-franken-llama"
+        FRANKEN_CUDA_RUNNER_TARGET = "libexec/toy-train-franken-llama-cuda"
         # GPT-2 GPU twins (--arch gpt2 --device cuda|metal). SEPARATE single-type
         # binaries (landmine #16); link the generated CUDA/Metal engine mirrors.
         # The GELU/LayerNorm backward ops fall back to the CPU backend on GPU.
@@ -165,7 +166,7 @@ module Toy
           #   metal (fs only)  -> toy-train-metal
           #   cpu fs/warm-start-> toy-train
           target = if @recipe == "franken"
-                     FRANKEN_RUNNER_TARGET
+                     @device == "cuda" ? FRANKEN_CUDA_RUNNER_TARGET : FRANKEN_RUNNER_TARGET
                    elsif @recipe == "lora"
                      @device == "cuda" ? LORA_CUDA_RUNNER_TARGET : LORA_RUNNER_TARGET
                    elsif @recipe == "vit-tiny"
@@ -425,6 +426,9 @@ module Toy
           # from-scratch only (the macOS metal runner is from-scratch).
           if @device == "metal" && @recipe != "from-scratch"
             return bad_arg("--device metal is only supported with recipe 'from-scratch'")
+          end
+          if @recipe == "franken" && @device == "metal"
+            return bad_arg("franken has no metal runner yet (CUDA + CPU only)")
           end
           # vit-tiny is CPU-only in this slice: reject cuda AND metal as clean
           # bad-input (the --device allow-list already caught unknown devices).

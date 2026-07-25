@@ -127,6 +127,11 @@ module TinyNNCuda
   ffi_func :tnn_input_3d_persistent_typed, [:ptr, :int, :int, :int, :int], :ptr
   ffi_func :tnn_add,              [:ptr, :ptr, :ptr],       :ptr
   ffi_func :tnn_gelu,             [:ptr, :ptr],             :ptr
+  # toy#109 CUDA/Metal franken leg — the combiner/mask + error-signal ops
+  # (mirror-rule additions; shared-shim symbols, no new C).
+  ffi_func :tnn_scale_bias,       [:ptr, :ptr, :double, :double], :ptr
+  ffi_func :tnn_sub,              [:ptr, :ptr, :ptr],       :ptr
+  ffi_func :tnn_sqrt,             [:ptr, :ptr],             :ptr
   ffi_func :tnn_tanh,             [:ptr, :ptr],             :ptr
   # C-SSM (#114): state-space model primitives.
   ffi_func :tnn_ssm_conv,         [:ptr, :ptr, :ptr],       :ptr
