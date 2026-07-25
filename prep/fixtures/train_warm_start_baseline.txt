@@ -1,5 +1,9 @@
-step 1: loss=6.440947532653809
-step 2: loss=6.4390740394592285
-step 3: loss=6.431989669799805
-step 4: loss=6.418195724487305
-step 5: loss=6.384598731994629
+# Re-recorded 2026-07-25 (toy#114 init-quality reset: mixer-seeded stream).
+# Re-recorded 2026-07-25 (toy#114 init-quality reset: mixer-seeded stream).
+# Re-recorded 2026-07-25 (toy#114 init-quality reset: mixer-seeded stream).
+# Re-recorded 2026-07-25 (toy#114 init-quality reset: mixer-seeded stream).
+step 1: loss=6.464970588684082
+step 2: loss=6.4363274574279785
+step 3: loss=6.458736896514893
+step 4: loss=6.453929901123047
+step 5: loss=6.436751842498779

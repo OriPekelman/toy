@@ -7,10 +7,9 @@
 #      corruption gate: GDN code in the unit must not perturb the
 #      proven path; this is the historical grads==NULL trigger).
 #   2. GDN TRAINS THROUGH THE ENGINE: GDN_LAYERS=1 SEED=1 STEPS=8 —
-#      loss decreases, no NaN. (SEED=1: the seed-0 stream is degenerate
-#      — see the init-quality issue — and GDN fails loud on it.)
-#   3. SEED GUARD: GDN_LAYERS=1 SEED=0 exits nonzero with the loud
-#      message (never-mask: degeneracy must not be trainable-looking).
+#      loss decreases, no NaN.
+#   3. SEED=0 TRAINS TOO (post toy#114 mixer): the historical
+#      degenerate-stream guard is retired — zero-seed init is healthy.
 #   4. BYTE-REPRO: two identical GDN runs, identical stdout.
 
 ROOT    = File.expand_path("..", __dir__)
@@ -55,13 +54,13 @@ else
 end
 puts failures.empty? ? "  ok: GDN_LAYERS=1 trains through the engine (#{losses.first&.round(3)} -> #{losses.last&.round(3)})" : "  FAIL: gdn training"
 
-# ---- 3. seed guard ----
+# ---- 3. seed=0 trains (toy#114 mixer) ----
 out, st = run_train({ "GDN_LAYERS" => "1", "SEED" => "0" })
-if st.success? || !out.include?("nonzero seed")
-  failures << "seed-guard: GDN+seed=0 did not fail loud (exit=#{st.exitstatus})"
-  puts "  FAIL: seed guard"
+l0 = out.lines.select { |l| l.start_with?("step ") }.map { |l| l[/loss=(\S+)/, 1].to_f }
+if st.success? && l0.length == 8 && l0.none?(&:nan?) && l0.last < l0.first - 0.05
+  puts "  ok: GDN + seed=0 trains (mixer-seeded stream; #{l0.first.round(3)} -> #{l0.last.round(3)})"
 else
-  puts "  ok: GDN + seed=0 fails loud (degenerate-stream guard)"
+  failures << "seed0: GDN at seed=0 did not train (exit=#{st.exitstatus}, #{l0.first} -> #{l0.last})"
 end
 
 # ---- 4. byte-repro ----
@@ -71,7 +70,7 @@ failures << "byte-repro: outputs differ" unless o1 == o2
 puts o1 == o2 ? "  ok: byte-repro — two GDN runs identical" : "  FAIL: byte-repro"
 
 if failures.empty?
-  puts "GATE PASS [gdn-engine]: all-attention byte-exact + GDN-trains + seed-guard + byte-repro"
+  puts "GATE PASS [gdn-engine]: all-attention byte-exact + GDN-trains(seed 0+1) + byte-repro"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [gdn-engine]: #{f}" }

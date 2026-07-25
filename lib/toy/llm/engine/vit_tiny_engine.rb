@@ -385,7 +385,7 @@ class ViTTinyEngine
   end
 
   def upload_random_init!(seed, init_scale)
-    state = [seed]
+    state = xorshift_seed_state(seed)
     cfg   = @cfg
     inv_d = init_scale / Math.sqrt(cfg.d_model.to_f)
     # patch_embed.proj.weight (linear over flat patches): Gaussian.
@@ -428,23 +428,38 @@ class ViTTinyEngine
     end
   end
 
+  # toy#114 — mixer-seeded stream state (zero fixed point + poor small-
+  # seed avalanche in the raw [seed] state; see llama_seq_engine's
+  # xorshift_seed_state). Self-contained (vit inlines its xorshift).
+  def xorshift_seed_state(seed)
+    # 31-bit LCG (matz/spinel#3371: 64-bit masks wrap negative under
+    # Spinel); multiply-fold + warmup, nonzero for every seed (toy#114).
+    s = ((seed + 104729) * 2654435761) % 2147483647
+    if s <= 0
+      s = seed + 104729
+    end
+    w = 0
+    while w < 8
+      s = (s * 1103515245 + 12345) & 0x7FFFFFFF
+      w = w + 1
+    end
+    [s]
+  end
+
   def upload_gaussian(tensor, n, std, state)
     buf = Array.new(n, 0.0)
     i = 0
     while i < n
-      # Box-Muller from a xorshift64 stream (state[0] mutated in place).
+      # Box-Muller from a 31-bit LCG stream (toy#114 / matz/spinel#3371:
+      # the former 64-bit xorshift wrapped negative under Spinel).
       s = state[0]
-      s = s ^ (s << 13);  s = s & 0xFFFFFFFFFFFFFFFF
-      s = s ^ (s >> 7);   s = s & 0xFFFFFFFFFFFFFFFF
-      s = s ^ (s << 17);  s = s & 0xFFFFFFFFFFFFFFFF
+      s = (s * 1103515245 + 12345) & 0x7FFFFFFF
       state[0] = s
-      u1 = (s & 0xFFFFFFFF).to_f / 4294967296.0
+      u1 = (s.to_f + 1.0) / 2147483648.0
       s = state[0]
-      s = s ^ (s << 13);  s = s & 0xFFFFFFFFFFFFFFFF
-      s = s ^ (s >> 7);   s = s & 0xFFFFFFFFFFFFFFFF
-      s = s ^ (s << 17);  s = s & 0xFFFFFFFFFFFFFFFF
+      s = (s * 1103515245 + 12345) & 0x7FFFFFFF
       state[0] = s
-      u2 = (s & 0xFFFFFFFF).to_f / 4294967296.0
+      u2 = (s.to_f + 1.0) / 2147483648.0
       if u1 < 1.0e-12; u1 = 1.0e-12; end
       z = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math::PI * u2)
       buf[i] = z * std

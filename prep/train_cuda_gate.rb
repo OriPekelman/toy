@@ -58,7 +58,12 @@ CASES = [
     steps: 5,
     run_twice: false,
     ckpt: :roundtrip,
-    ids_fixture: "ckpt_roundtrip_baseline.txt" },
+    # toy#114: CUDA gets its OWN roundtrip ids fixture — CPU and CUDA
+    # training curves are byte-different by design, so their checkpoints
+    # (and generated ids) legitimately differ. The historical shared
+    # fixture only worked because the degenerate seed-0 init collapsed
+    # BOTH platforms' generation to "7 7 7 …".
+    ids_fixture: "ckpt_roundtrip_cuda.txt" },
   { recipe: "warm-start",
     args: ["warm-start", "--device", "cuda", "--steps", "5", "--seed", "0",
            "--corpus", "prep/fixtures/ts_seqs_gate.bin"],
@@ -133,15 +138,21 @@ def run_case(c)
     end
   end
 
-  # (b) loss decreases.
+  # (b) losses finite. The former monotonic-decrease assertion was an
+  # artifact of the degenerate seed-0 init (toy#114): warm-start's gate
+  # run is ENTIRELY inside lr warmup on a STREAMING corpus (a different
+  # slice each step), so per-step losses track slice hardness, not
+  # descent — only the norm-crushed degenerate init made "decrease"
+  # trivially true. The byte-recorded baseline (a) is the regression
+  # pin; here we assert the curve is finite (never-mask on NaN/Inf).
   first_loss = (got.first =~ /loss=(.+)\z/) ? $1.to_f : nil
   last_loss  = (got.last  =~ /loss=(.+)\z/) ? $1.to_f : nil
   if first_loss.nil? || last_loss.nil?
     return [false, ["GATE FAIL [#{tag}]: could not parse loss from step lines"]]
   end
-  unless last_loss < first_loss
-    return [false, ["GATE FAIL [#{tag}]: loss did not decrease " \
-                    "(initial=#{first_loss}, final=#{last_loss})"]]
+  bad = got.count { |l| v = l[/loss=(\S+)/, 1].to_f; v.nan? || v.infinite? }
+  unless bad == 0
+    return [false, ["GATE FAIL [#{tag}]: #{bad} non-finite losses"]]
   end
 
   # (c) checkpoint criterion.

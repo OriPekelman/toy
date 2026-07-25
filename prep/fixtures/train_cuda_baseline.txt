@@ -25,8 +25,12 @@
 #     (docs/archive/p1-grad-bisection-2026-05-22.md), not a bug.
 #
 # Format: bare "step N: loss=…" lines; '#'/blank lines ignored by the gate.
-step 1: loss=6.440946102142334
-step 2: loss=6.4006571769714355
-step 3: loss=6.3215107917785645
-step 4: loss=6.23642635345459
-step 5: loss=6.161816120147705
+# Re-recorded 2026-07-25 (toy#114 init-quality reset: mixer-seeded stream).
+# Re-recorded 2026-07-25 (toy#114 init-quality reset: mixer-seeded stream).
+# Re-recorded 2026-07-25 (toy#114 init-quality reset: mixer-seeded stream).
+# Re-recorded 2026-07-25 (toy#114 init-quality reset: mixer-seeded stream).
+step 1: loss=6.464962959289551
+step 2: loss=6.342616558074951
+step 3: loss=6.200675964355469
+step 4: loss=6.072197914123535
+step 5: loss=5.955175399780273

@@ -624,17 +624,6 @@ class LlamaSeqEngine
     @ft_train_embeddings_enabled = true   # forces persistent-F32 alloc of embeddings
     @seq_full_finetune_enabled   = true   # build_training_step gates on this
 
-    # GDN + seed=0 is fail-loud: the zero-seed xorshift stream is
-    # DEGENERATE (zero fixed point -> every Box-Muller draw hits the
-    # u1 clamp -> +-37sigma inits). The attention path has historically
-    # survived this (norm-rescued; the byte-gated baselines FROZE it --
-    # see the init-quality issue), but GDN's exp/softplus/recurrence
-    # NaNs immediately. Until the init-stream reset lands, GDN runs
-    # require a nonzero seed.
-    if @seq_gdn_layer_indices.length > 0 && seed == 0
-      raise "realize_for_random_init: GDN layers require a nonzero seed " +
-            "(seed=0's xorshift stream is degenerate; see the init-quality issue)"
-    end
 
     @seq_t          = t_seq
     # GH#7 — micro-batching. B=1 keeps the codepath bit-identical to
@@ -780,7 +769,7 @@ class LlamaSeqEngine
   # N(0, 0.02). All values computed in Ruby, uploaded in bulk via
   # tnn_upload_from_float_array.
   def upload_random_init!(seed, init_scale, qkv_bias, untied)
-    state = [seed]
+    state = lcg_seed_state(seed)
 
     # Token embed: width depends on projection lens.
     # When donor_d_in > 0, embed is [vocab, donor_d_in] (caller may
@@ -846,10 +835,29 @@ class LlamaSeqEngine
     end
   end
 
-  # Box-Muller from a xorshift64-driven uniform stream. state is a
-  # one-element Array<Integer> so the mutable PRNG state survives
-  # across calls without using class variables. Always emits exactly
-  # `n` Gaussian-distributed F32 values via tnn_upload_from_float_array.
+  # toy#114 — the init stream is a 31-bit LCG (the lora/gpt2 idiom, proven
+  # byte-consistent CRuby<->Spinel<->CUDA by the mri/lora differential
+  # gates). The previous 64-bit xorshift stream read NEGATIVE under Spinel
+  # past 2^63 (matz/spinel#3371: signed-int64 wrap where CRuby promotes to
+  # bignum) and silently diverged from CRuby -- with all LCG state below
+  # 2^31, no value ever approaches the wrap. Seed enters through a
+  # multiply-fold + 8 warmup draws: nonzero and well-mixed for EVERY seed
+  # including 0 (the raw [seed] xorshift state had a zero fixed point that
+  # froze +-37sigma inits into the historical baselines).
+  # Constant-fill upload (gammas to 1.0, biases/decays to 0.0).
+  def upload_constant(tensor, n, v)
+    buf = [0.0]; buf.pop
+    i = 0
+    while i < n
+      buf.push(v)
+      i = i + 1
+    end
+    TinyNN.tnn_upload_from_float_array(@sess, tensor, buf, n)
+  end
+
+  # Box-Muller gaussian upload from the LCG uniform stream. state is a
+  # one-element Array<Integer> so the mutable PRNG state survives across
+  # calls without class variables. Emits exactly `n` gaussian F32 values.
   def upload_gaussian(tensor, n, std, state)
     buf = [0.0]; buf.pop
     pair = 0
@@ -857,8 +865,8 @@ class LlamaSeqEngine
     i = 0
     while i < n
       if pair == 0
-        u1 = xorshift_uniform!(state)
-        u2 = xorshift_uniform!(state)
+        u1 = lcg_uniform!(state)
+        u2 = lcg_uniform!(state)
         if u1 < 1.0e-300; u1 = 1.0e-300; end
         r = Math.sqrt(-2.0 * Math.log(u1))
         theta = 2.0 * Math::PI * u2
@@ -876,26 +884,25 @@ class LlamaSeqEngine
     TinyNN.tnn_upload_from_float_array(@sess, tensor, buf, n)
   end
 
-  def upload_constant(tensor, n, v)
-    buf = [0.0]; buf.pop
-    i = 0
-    while i < n
-      buf.push(v)
-      i = i + 1
-    end
-    TinyNN.tnn_upload_from_float_array(@sess, tensor, buf, n)
+  def lcg_uniform!(state)
+    s = state[0]
+    s = (s * 1103515245 + 12345) & 0x7FFFFFFF
+    state[0] = s
+    (s.to_f + 1.0) / 2147483648.0
   end
 
-  # xorshift64 → uniform in (0, 1). Mutates state[0].
-  def xorshift_uniform!(state)
-    x = state[0]
-    x = x ^ (x << 13)
-    x = x & 0xFFFFFFFFFFFFFFFF
-    x = x ^ (x >> 7)
-    x = x ^ (x << 17)
-    x = x & 0xFFFFFFFFFFFFFFFF
-    state[0] = x
-    (x.to_f / 18446744073709551616.0) + 1.0e-300
+  def lcg_seed_state(seed)
+    s = ((seed + 104729) * 2654435761) % 2147483647
+    if s <= 0
+      s = seed + 104729
+    end
+    st = [s]
+    w = 0
+    while w < 8
+      lcg_uniform!(st)
+      w = w + 1
+    end
+    st
   end
 
   # Append (weight, m, v) to the block's parallel arrays. Allocates

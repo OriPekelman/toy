@@ -13,4 +13,5 @@
 # from-scratch fixture's 7s). The warm-start checkpoint is the lens-fold path
 # (donor_d_in>0), folded into a STANDARD fused-llama GGUF that CPU `toy infer`
 # loads unchanged — this fixture proves the CUDA->CPU checkpoint round-trip.
-ids: 1 2 3 21 21 21 21 21
+# Re-recorded 2026-07-25 (toy#114 init-quality reset: mixer-seeded stream).
+ids: 1 2 3 297 146 146 524 447

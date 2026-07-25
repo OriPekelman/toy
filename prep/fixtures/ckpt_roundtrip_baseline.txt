@@ -5,4 +5,5 @@
 # Prompt ids  : 1 2 3   (all < vocab=627; the from-scratch model has NO tokenizer)
 # N generated : 5  → the line below is prompt(3) + continuation(5) = 8 ids.
 # Body: the verbatim "ids: …" line `toy infer` prints. BYTE-IDENTICAL gate.
-ids: 1 2 3 7 7 7 7 7
+# Re-recorded 2026-07-25 (toy#114 init-quality reset: mixer-seeded stream).
+ids: 1 2 3 297 146 591 225 369

@@ -16,8 +16,12 @@
 # Format: one bare "step N: loss=…" line per step (single fixture, so the
 # simpler bare-lines block — not infer_baseline's per-fixture tab keying).
 # Lines starting with '#' and blank lines are ignored by the gate.
-step 1: loss=6.440947532653809
-step 2: loss=6.390329360961914
-step 3: loss=6.321597576141357
-step 4: loss=6.240766525268555
-step 5: loss=6.151132583618164
+# Re-recorded 2026-07-25 (toy#114 init-quality reset: mixer-seeded stream).
+# Re-recorded 2026-07-25 (toy#114 init-quality reset: mixer-seeded stream).
+# Re-recorded 2026-07-25 (toy#114 init-quality reset: mixer-seeded stream).
+# Re-recorded 2026-07-25 (toy#114 init-quality reset: mixer-seeded stream).
+step 1: loss=6.464970588684082
+step 2: loss=6.342554569244385
+step 3: loss=6.200664043426514
+step 4: loss=6.07212495803833
+step 5: loss=5.955118656158447
