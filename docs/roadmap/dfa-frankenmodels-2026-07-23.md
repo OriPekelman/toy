@@ -339,9 +339,25 @@ refinement (P3+).
   mix(1.0) near-null drift is *not* this bug — it persists (sub-2e-2)
   with per-step-clean B, consistent with ×0.0 annihilating any finite
   garbage; still an open question on toy#109.
-- **Still staged**: opaque-cut vendored op (on demand); load-balancing
-  aux-loss for top1 (the collapse fix); Metal franken twin (toy#104);
-  full-BP experts (toy#110).
+- **Load-balancing aux-loss — ✅ DONE 2026-07-26**: `FRANKEN_MOE_AUX=<α>`
+  on the top1 MoE twin — Switch-style `L_aux = α·NE·Σ_e f_e·P̄_e` as a
+  second LOSS root. `f_e` (routed fraction, non-differentiable) is
+  CPU-computed from the previous step's one-hots and re-uploaded per
+  step (the toy#117 labels contract; lag-1 ≡ current here since the
+  rig batch is fixed); `P̄_e` is on the autodiff path from Wr — the
+  ONLY tower-B param (the aux backward is Wr→softmax→mean, and
+  argmax's I32 output keeps the walker away from mul_mat_id). Router
+  update = `g_dfa(task) + g_bp(aux)` into one opt step — itself a
+  franken mix, per-signal rather than per-weight. Zero new FFI; α=0
+  builds the exact pre-aux graph. **Finding**: at this shape the 4
+  tokens' router logits move together, so the aux yields TEMPORAL
+  balance — the router alternates which expert serves the batch
+  (aux=0.05 over 120 steps: e0/e1 step-majorities 33/67 vs 100/0
+  starvation without; lane-B CE unchanged, 2.588 vs 2.577). Per-batch
+  mixing needs token-diverse inputs — an experiment axis, not a rig
+  defect. gate-franken-moe grew the control-collapse + aux legs.
+- **Still staged**: opaque-cut vendored op (on demand); Metal franken
+  twin (toy#104); full-BP experts (toy#110).
 
 ## 8. Explicit non-goals (v1)
 

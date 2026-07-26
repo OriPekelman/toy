@@ -32,6 +32,22 @@
 #                     all-chain baseline; per-expert utilization is
 #                     emitted per step ("route step=N shares=...").
 #
+# LOAD-BALANCING AUX LOSS (FRANKEN_MOE_AUX env, top1 only; the router-
+# collapse fix — without it the DFA-fed top1 router collapses to one
+# expert by ~step 20):
+#   Switch-style L_aux = α·NE·Σ_e f_e·P̄_e, where f_e = routed-token
+#   fraction (non-differentiable — computed CPU-side from the previous
+#   step's one-hots and re-uploaded per step as a plain graph input,
+#   the toy#117 labels contract; uniform at step 0 — with this rig's
+#   fixed batch the lag-1 f equals the current f after step 0) and
+#   P̄_e = mean router prob (differentiable). The aux is a second LOSS
+#   root: Wr joins the autodiff param set (the ONLY tower-B param —
+#   the aux backward path is Wr→logits→softmax→mean, nowhere near
+#   mul_mat_id; argmax's output is I32 so the walker allocates no grad
+#   through it), and the router update becomes
+#   g_total = g_dfa(task) + g_bp(aux) into one opt_step_adamw.
+#   α=0 (default) builds the exact pre-aux graph — byte-null.
+#
 # Lane B policy (FRANKEN_MOE env):
 #   chain        — null config: byte-identical to lane A (parity gate)
 #   dfa-experts  — the design-doc "MoE bonus" demonstration: router Wr
@@ -337,6 +353,9 @@ module Toy
           dfa_experts = mode_s == "dfa-experts"
           routing_s = ENV["FRANKEN_MOE_ROUTING"] || ""
           top1 = routing_s == "top1"
+          aux_s = ENV["FRANKEN_MOE_AUX"] || ""
+          aux_alpha = aux_s.length > 0 ? aux_s.to_f : 0.0
+          aux_on = top1 && aux_alpha > 0.0
           steps_s = ENV["STEPS"] || ""
           steps = steps_s.length > 0 ? steps_s.to_i : 40
           seed_s = ENV["FRANKEN_SEED"] || ""
@@ -344,7 +363,7 @@ module Toy
           lr = 0.02
 
           puts "franken-moe twin-lane: experts=" + NE.to_s + " policy_b=" + mode_s +
-               " routing=" + (top1 ? "top1" : "dense") +
+               " routing=" + (top1 ? "top1" : "dense") + " aux=" + aux_alpha.to_s +
                " steps=" + steps.to_s + " seed=" + seed.to_s
 
           sess = TinyNN.tnn_session_new(0)
@@ -370,6 +389,10 @@ module Toy
           b_av  = TinyNN.tnn_input_2d_f32_persistent(sess, DM, VOCAB)
           b_ao  = TinyNN.tnn_input_2d_f32_persistent(sess, DM, VOCAB)
           b_r   = TinyNN.tnn_input_2d_f32_persistent(sess, NE, VOCAB)
+          # aux-loss constants: ones column for the sum-over-T contraction
+          # (persistent = real storage; the per-step f vector is a plain
+          # graph input, declared below with tok/labels).
+          ones_t = TinyNN.tnn_input_2d_f32_persistent(sess, 1, T)   # ne=[T,1]
 
           gi = 0
           while gi < tow_a.pp.length
@@ -381,6 +404,11 @@ module Toy
               TinyNN.tnn_set_param(tow_b.pp[gi])
             end
             gi = gi + 1
+          end
+          if aux_on
+            # Wr is the sole tower-B autodiff param: the aux backward
+            # stops at Wr; everything else stays late-param DFA.
+            TinyNN.tnn_set_param(tow_b.pp[8])
           end
           TinyNN.tnn_finalize_weights(sess)
 
@@ -419,16 +447,41 @@ module Toy
             TinyNN.tnn_upload_from_float_array(sess, b_av, Toy::Train::DfaB.fill(DM * VOCAB, seed + 23, dist_c, sig_dm), DM * VOCAB)
             TinyNN.tnn_upload_from_float_array(sess, b_ao, Toy::Train::DfaB.fill(DM * VOCAB, seed + 24, dist_c, sig_dm), DM * VOCAB)
             TinyNN.tnn_upload_from_float_array(sess, b_r,  Toy::Train::DfaB.fill(NE * VOCAB, seed + 25, dist_c, sig_e),  NE * VOCAB)
+            onesv = zeros(T)
+            oi = 0
+            while oi < T
+              onesv[oi] = 1.0
+              oi = oi + 1
+            end
+            TinyNN.tnn_upload_from_float_array(sess, ones_t, onesv, T)
           end
 
           t_tok    = TinyNN.tnn_input_1d_i32(sess, T)
           t_labels = TinyNN.tnn_input_2d_f32(sess, T, VOCAB)
           t_hp     = TinyNN.tnn_input_1d_f32(sess, 7)
+          t_f      = TinyNN.tnn_input_2d_f32(sess, 1, NE)   # ne=[NE,1]
           forward_tower(sess, tow_a, t_tok, t_labels, sel1, sel2, eye, false)
           forward_tower(sess, tow_b, t_tok, t_labels, sel1, sel2, eye, top1)
 
+          # aux loss: Σ_e Σ_t f'_e·probs[e,t] with the α·NE/T scaling
+          # folded into the uploaded f' vector; [NE,1] broadcasts over T,
+          # sum_rows + ones-contraction scalarize it (all ops have ggml
+          # backwards; nothing here touches the argmax/mul_mat_id path).
+          t_aux = TinyNN.tnn_null_ptr
+          if aux_on
+            m_fp  = TinyNN.tnn_mul(sess, tow_b.t_gates, t_f)      # [NE,T]
+            s_tok = TinyNN.tnn_sum_rows(sess, m_fp)               # [1,T]
+            s_col = TinyNN.tnn_reshape_3d(sess, s_tok, T, 1, 1)   # [T,1]
+            t_aux = TinyNN.tnn_matmul(sess, s_col, ones_t)        # scalar
+            TinyNN.tnn_set_output(t_aux)
+            TinyNN.tnn_set_loss(t_aux)
+          end
+
           # P1 finding: extra roots FIRST, then the realizing call.
           TinyNN.tnn_add_to_graph(sess, tow_a.t_loss)
+          if aux_on
+            TinyNN.tnn_add_to_graph(sess, t_aux)
+          end
           TinyNN.tnn_build_forward_only(sess, tow_b.t_loss)
           TinyNN.tnn_build_backward(sess)
 
@@ -449,7 +502,20 @@ module Toy
             wire_dfa_top1(sess, tow_b, t_hp, 4, b_ak, e_b, tow_b.tap_ah,  DM, DM, np2)
             wire_dfa_top1(sess, tow_b, t_hp, 5, b_av, e_b, tow_b.tap_ah,  DM, DM, np2)
             wire_dfa_top1(sess, tow_b, t_hp, 6, b_ao, e_b, tow_b.tap_ctx, DM, DM, np2)
-            wire_dfa_top1(sess, tow_b, t_hp, 8, b_r,  e_b, tow_b.tap_h2,  DM, NE, np2)
+            if aux_on
+              # router = DFA task signal + BP aux signal, one opt step.
+              # Wr is an EARLY param (set before build_backward) — no
+              # late set_param here; its autodiff acc carries the aux
+              # grad only (lane-B CE is not a loss root).
+              g_dfa_r = dfa_grad(sess, b_r, e_b, tow_b.tap_h2, DM, NE)
+              acc_r   = TinyNN.tnn_tensor_grad(sess, tow_b.pp[8])
+              g_tot   = TinyNN.tnn_add(sess, g_dfa_r, acc_r)
+              TinyNN.tnn_set_output(g_tot)
+              to_r = TinyNN.tnn_opt_step_adamw(sess, tow_b.pp[8], g_tot, tow_b.pm[8], tow_b.pv[8], t_hp)
+              TinyNN.tnn_extend_backward_graph(sess, to_r)
+            else
+              wire_dfa_top1(sess, tow_b, t_hp, 8, b_r, e_b, tow_b.tap_h2, DM, NE, np2)
+            end
             m1 = TinyNN.tnn_matmul(sess, sel1, tow_b.t_onehots)   # [1,T]
             m2 = TinyNN.tnn_matmul(sess, sel2, tow_b.t_onehots)
             wire_dfa_top1(sess, tow_b, t_hp, 9,  b_up1,   e_b, tow_b.tap_h2, DM,  DFF, m1)
@@ -492,6 +558,15 @@ module Toy
           gbuf_up   = zeros(DM * DFF)
           abuf_up   = zeros(DM * DFF)
           gates_buf = zeros(NE * T)
+          # f' vector for the aux loss: α·NE·f_e/T, uniform before the
+          # first compute, then lag-1 from the routed one-hots.
+          fvec = zeros(NE)
+          fi = 0
+          while fi < NE
+            fvec[fi] = aux_alpha / T.to_f
+            fi = fi + 1
+          end
+          aux_buf = zeros(1)
           first_a = 0.0; last_a = 0.0; first_b = 0.0; last_b = 0.0
           b1 = 0.9; b2 = 0.95
           s = 0
@@ -507,6 +582,9 @@ module Toy
             TinyNN.upload_int_array(sess, t_tok, ids)
             TinyNN.tnn_upload_from_float_array(sess, t_labels, labels, VOCAB * T)
             TinyNN.tnn_upload_from_float_array(sess, t_hp, hp, 7)
+            if aux_on
+              TinyNN.tnn_upload_from_float_array(sess, t_f, fvec, NE)
+            end
             TinyNN.tnn_compute_backward(sess)
             TinyNN.tnn_download(sess, tow_a.t_loss)
             la = TinyNN.tnn_scratch_get(sess, 0)
@@ -548,6 +626,22 @@ module Toy
                 ti2 = ti2 + 1
               end
               puts "route step=" + s.to_s + " e0_share=" + (e0 / T.to_f).to_s
+              if aux_on
+                # lag-1 f' from this step's routing (α·NE·count_e/T²)
+                ei = 0
+                while ei < NE
+                  cnt = 0.0
+                  ti3 = 0
+                  while ti3 < T
+                    cnt = cnt + gates_buf[ti3 * NE + ei]
+                    ti3 = ti3 + 1
+                  end
+                  fvec[ei] = aux_alpha * NE.to_f * cnt / (T.to_f * T.to_f)
+                  ei = ei + 1
+                end
+                TinyNN.tnn_download_to_f64_array(sess, t_aux, aux_buf, 1)
+                puts "auxbal step=" + s.to_s + " loss=" + aux_buf[0].to_s
+              end
             end
             TinyNN.tnn_download_to_f64_array(sess, tow_b.t_gates, gates_buf, NE * T)
             gsum = 0.0

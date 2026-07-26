@@ -11,6 +11,11 @@
 #      router doesn't collapse while experts learn by DFA).
 #   4. ALIGNMENT WELL-FORMED: 4 lines/step, cos finite in [-1, 1].
 #   5. BYTE-REPRO: two identical invocations, identical stdout.
+#   6. TOP1 + AUX (FRANKEN_MOE_AUX load-balancing): no-aux control
+#      collapses to one expert (the documented DFA-router finding);
+#      aux=0.05 restores a per-expert utilization floor (temporal
+#      alternation at this shape), trains, byte-repro, auxbal lines
+#      well-formed.
 
 ROOT   = File.expand_path("..", __dir__)
 RUNNER = File.join(ROOT, "libexec", "toy-train-franken-moe")
@@ -96,6 +101,38 @@ failures << "top1: no route telemetry" if routes.empty?
 failures << "top1: malformed shares" unless routes.all? { |r| r >= 0.0 && r <= 1.0 }
 puts failures.empty? ? "  ok: top1 — trains (#{t1_losses.first.round(3)} -> #{t1_losses.last.round(3)}), deterministic, #{routes.length} route lines (final e0_share=#{routes.last})" : "  FAIL: top1 leg"
 
+# ---- top1 load-balancing aux legs (the router-collapse fix) ----
+# Control contrast: WITHOUT aux the DFA-fed router starves one expert
+# permanently (routes pinned to a single expert over the tail). With
+# FRANKEN_MOE_AUX the starvation breaks: at this rig's shape the 4
+# tokens' router logits move together, so balance is TEMPORAL (the
+# router alternates which expert serves the whole batch) — the
+# contract is a utilization floor per expert, not per-batch mixing.
+tail_routes = routes.last(15)
+failures << "aux-control: no-aux router did not collapse (tail #{tail_routes.uniq.inspect}) — the aux rationale needs re-examining" unless tail_routes.uniq.length == 1 && (tail_routes.first == 0.0 || tail_routes.first == 1.0)
+aux_env = { "FRANKEN_MOE" => "dfa-experts", "FRANKEN_MOE_ROUTING" => "top1",
+            "FRANKEN_MOE_AUX" => "0.05", "STEPS" => "120", "FRANKEN_SEED" => "1234" }
+x1 = Open3.capture2e(aux_env, RUNNER, chdir: ROOT)
+abort "franken_moe_gate: aux run failed:\n#{x1[0].lines.last(8).join}" unless x1[1].success?
+x2 = Open3.capture2e(aux_env, RUNNER, chdir: ROOT)
+failures << "aux: byte-repro failed" unless x1[0] == x2[0]
+ax_losses = x1[0].lines.select { |l| l.start_with?("step ") }
+                 .map { |l| l[/lane_b=(\S+)/, 1].to_f }
+failures << "aux: NaN" if ax_losses.any?(&:nan?)
+failures << "aux: did not train (#{ax_losses.first} -> #{ax_losses.last})" unless ax_losses.last < ax_losses.first - 0.1
+ax_routes = x1[0].lines.select { |l| l.start_with?("route ") }
+                 .map { |l| l[/e0_share=(\S+)/, 1].to_f }
+tail = ax_routes.drop(20)
+e0_maj = tail.count { |r| r > 0.5 }
+e1_maj = tail.count { |r| r < 0.5 }
+floor = (tail.length * 0.2).floor
+failures << "aux: expert starvation persists (e0-majority #{e0_maj}, e1-majority #{e1_maj} of #{tail.length}; floor #{floor})" unless e0_maj >= floor && e1_maj >= floor
+auxbals = x1[0].lines.select { |l| l.start_with?("auxbal ") }
+                .map { |l| l[/loss=(\S+)/, 1].to_f }
+failures << "aux: #{auxbals.length} auxbal lines (want 120)" unless auxbals.length == 120
+failures << "aux: malformed auxbal values" unless auxbals.all? { |v| v.finite? && v >= 0.0 }
+puts failures.empty? ? "  ok: aux — no-aux control collapses; aux=0.05 breaks starvation (e0/e1 step-majorities #{e0_maj}/#{e1_maj} of #{tail.length}), trains (#{ax_losses.first.round(3)} -> #{ax_losses.last.round(3)}), deterministic, 120 auxbal lines" : "  FAIL: aux leg"
+
 # ---- 5. byte-repro ----
 r1 = run_moe("dfa-experts", 10)
 r2 = run_moe("dfa-experts", 10)
@@ -103,7 +140,7 @@ failures << "byte-repro: outputs differ" unless r1 == r2
 puts r1 == r2 ? "  ok: byte-repro — two dfa-experts runs identical" : "  FAIL: byte-repro"
 
 if failures.empty?
-  puts "GATE PASS [franken-moe]: parity + dfa-experts + top1-hard-routing + router-health + alignment + byte-repro (toy#109 P2b + hard-routed leg)"
+  puts "GATE PASS [franken-moe]: parity + dfa-experts + top1-hard-routing + aux-load-balancing + router-health + alignment + byte-repro (toy#109 P2b + hard-routed + aux legs)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe]: #{f}" }
