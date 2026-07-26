@@ -17,8 +17,25 @@
 # Command Line Tools only (the xcrun metal / metallib compilers ship
 # only with full Xcode). Kernels get JIT-compiled at first device load.
 
-SPINEL_DIR  ?= $(HOME)/sites/spinel
+# Toolchain pin (toy#119; see docs/consuming-toy.md). toy is built and
+# byte-gated against ONE spinel rev; compiling with any other rev is how
+# gate-franken-llama "broke at HEAD" with zero source changes (an old
+# ~/sites/spinel miscompiled the engine — backward never built,
+# graph_reset hit grads==NULL). Advance PINNED_SPINEL in the same
+# commit as the consuming-toy.md pin, per the toy#95 sweep protocol.
+# The default SPINEL_DIR prefers the pinned scratch toolchain when it
+# exists (gx10), falling back to ~/sites/spinel (which the guard then
+# vets by rev, NOT by path — a Mac clone at the pin passes).
+PINNED_SPINEL := b96280b3
+SPINEL_DIR  ?= $(firstword $(wildcard /srv/data/scratch/spinel-master-0723) $(HOME)/sites/spinel)
 SPINEL_BIN  ?= $(SPINEL_DIR)/spinel
+
+SPINEL_ACTUAL := $(shell git -C $(SPINEL_DIR) rev-parse --short=8 HEAD 2>/dev/null || echo unknown)
+ifneq ($(SPINEL_SKIP_PIN_CHECK),1)
+ifneq ($(SPINEL_ACTUAL),$(PINNED_SPINEL))
+$(error toy is pinned to spinel $(PINNED_SPINEL) but SPINEL_DIR=$(SPINEL_DIR) is at '$(SPINEL_ACTUAL)'. Export SPINEL_DIR=<checkout at $(PINNED_SPINEL)> (gx10: /srv/data/scratch/spinel-master-0723), or SPINEL_SKIP_PIN_CHECK=1 to bypass deliberately (e.g. a pin-advance sweep))
+endif
+endif
 
 # toy#69 — sig/*.rbs type roots. Every Spinel compile seeds the analyzer
 # with toy's shipped RBS tree (`--rbs sig`): uncalled public methods
@@ -2325,6 +2342,30 @@ gate-franken-llama: libexec/toy-train-franken-llama
 .PHONY: gate-gdn-engine
 gate-gdn-engine: libexec/toy-train
 	ruby prep/gdn_engine_gate.rb
+
+# The core training byte-gate matrix (prep/train_gate.rb: from-scratch /
+# warm-start / lora / vit against frozen fixtures). Previously only the
+# sweep scripts called it — toy#119 gave it a first-class target so the
+# `gates` aggregate covers it.
+.PHONY: gate-train
+gate-train: libexec/toy-train
+	ruby prep/train_gate.rb
+
+# toy#119 process note: one command that runs EVERY gate leg. A shared-
+# layer change (tinynn/*.c, the engine unit, a toolchain/pin move) must
+# sweep ALL consumers, not just the leg being worked on — toy#113 and
+# toy#119 both escaped through a green sibling gate. The list is
+# self-parsed from this Makefile (any new gate-* target joins
+# automatically); the off-platform backend legs are filtered by uname.
+ALL_GATES := $(sort $(shell grep -oE '^gate-[a-z0-9-]+' $(firstword $(MAKEFILE_LIST))))
+ifeq ($(shell uname),Darwin)
+GATES := $(filter-out gate-cuda %-cuda,$(ALL_GATES))
+else
+GATES := $(filter-out gate-metal %-metal,$(ALL_GATES))
+endif
+.PHONY: gates
+gates: $(GATES)
+	@echo "ALL GATES PASS ($(words $(GATES)) legs)"
 
 # toy#109 CUDA franken leg — the CUDA twin of the spec-callable runner
 # (`toy train franken --device cuda`). Force-link keeps the CUDA backend

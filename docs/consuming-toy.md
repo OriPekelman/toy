@@ -34,6 +34,20 @@ toy keeps the better `Device.kind` name regardless. Pin exactly this
 rev for byte-reproducibility; it advances per the toy#95 sweep
 protocol.
 
+The pin is ENFORCED by the build (toy#119): the Makefile carries
+`PINNED_SPINEL := b96280b3` and every `make` invocation checks
+`SPINEL_DIR`'s git rev against it, failing loud on mismatch — compiling
+toy with any other Spinel is how gate-franken-llama "broke at HEAD"
+with zero source changes (a stale shared checkout miscompiled the
+engine). On the gx10 the default `SPINEL_DIR` resolves to the pinned
+scratch toolchain (`/srv/data/scratch/spinel-master-0723`), so a bare
+`make` does the right thing; any checkout at the pinned rev passes the
+guard (the check is by rev, not path). `SPINEL_SKIP_PIN_CHECK=1`
+bypasses it deliberately (pin-advance sweeps). A pin advance updates
+`PINNED_SPINEL` and this document in the same commit. `make gates`
+runs every gate leg on the current platform — the required sweep after
+any shared-layer change (tinynn C, the engine unit, a pin move).
+
 Previous pins: `ecac633caa` (2026-07-23, 32/33 — deliberately the
 last fast rev before the then-unfixed #3287 window), `f6a189e8`
 (2026-07-10, 28/28).
