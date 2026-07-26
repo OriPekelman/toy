@@ -23,7 +23,6 @@ require_relative "../../lib/toy/llm/recipes/franken_from_scratch"
 VOCAB   = 627
 CONTEXT = 16
 STEPS   = 12
-$mix_alpha_override = -1.0
 
 def build_batch
   seq_ids = [0]
@@ -73,9 +72,10 @@ def run_from_scratch_curve(policy)
   curve
 end
 
-def run_franken_curve(policy)
+def run_franken_curve(policy, mix_alpha)
   cfg = Toy::SmolLM2Config.new(VOCAB, 64, 4, 4, 128, 2, CONTEXT, 10000.0, 1.0e-5)
   opts = build_opts(policy)
+  opts.dfa_mix_alpha = mix_alpha
   batch = build_batch
   curve = [""]
   curve.pop
@@ -96,11 +96,9 @@ dfa_pol   = [1, 1, 1, 1]
 mix1_pol  = [2, 2, 2, 2]   # with MIX_ALPHA=1.0 must byte-equal chain
 
 curve_a = run_from_scratch_curve(empty_pol)
-curve_b = run_franken_curve(empty_pol)
-curve_c = run_franken_curve(dfa_pol)
-$mix_alpha_override = 1.0
-curve_d = run_franken_curve(mix1_pol)
-$mix_alpha_override = -1.0
+curve_b = run_franken_curve(empty_pol, 0.5)
+curve_c = run_franken_curve(dfa_pol, 0.5)
+curve_d = run_franken_curve(mix1_pol, 1.0)
 
 ok = true
 
@@ -115,21 +113,20 @@ while i < STEPS
   i = i + 1
 end
 
-# mix(1.0) vs chain: NEAR-equality (rel < 2e-2 per step), not byte.
-# The drift from the (value-inert) combiner nodes is INIT-DEPENDENT:
-# 1-ulp at step 10 on the degenerate pre-toy#114 init, up to ~1e-2 by
-# step 11 on the healthy LCG init. Mechanism unresolved (candidate:
-# grad-acc partial-accumulation read or sched split reordering) — open
-# question tracked on toy#109. The load-bearing byte-null stays the
-# all-chain policy above; the twin-lane runner's mix(1.0) null IS
-# byte-exact (gate-franken).
+# mix(1.0) vs chain: BYTE equality. The long-standing "near-null drift"
+# (tolerance 1e-5, then 2e-2) was a PROBE BUG, resolved 2026-07-26: this
+# smoke set a $mix_alpha_override global that NOTHING read, so the mix
+# arm ran at opts.dfa_mix_alpha's default 0.5 — the "drift" was real
+# half-DFA signal (init-dependent, glacial under Adam sign-scale),
+# never sched noise. With alpha actually 1.0 the combiner graph
+# [add(scale(acc,1.0), scale(gd,0.0))] is BYTE-inert: 16-step value
+# dump showed g == acc bitwise on all 24 mix weights, zero weight
+# divergence, identical loss strings.
 i = 0
 while i < STEPS
-  da = curve_d[i].to_f
-  aa = curve_a[i].to_f
-  rel = (da - aa).abs / (aa.abs + 1.0e-12)
-  if rel > 2.0e-2
-    puts "MIX(1.0) NEAR-PARITY FAIL at step " + i.to_s + ": rel=" + rel.to_s
+  if curve_d[i] != curve_a[i]
+    puts "MIX(1.0) BYTE-PARITY FAIL at step " + i.to_s + ": " +
+         curve_d[i] + " != " + curve_a[i]
     ok = false
   end
   i = i + 1
@@ -152,7 +149,7 @@ if curve_c[STEPS - 1] == curve_a[STEPS - 1]
 end
 
 if ok
-  puts "franken-parity: engine all-chain byte-parity + per-head dfa arm trains + mix(1.0) near-parity (1-ulp sched drift documented)"
+  puts "franken-parity: engine all-chain byte-parity + per-head dfa arm trains + mix(1.0) byte-null"
   puts "franken-parity: ok"
 else
   puts "franken-parity: FAIL"

@@ -339,6 +339,22 @@ refinement (P3+).
   mix(1.0) near-null drift is *not* this bug — it persists (sub-2e-2)
   with per-step-clean B, consistent with ×0.0 annihilating any finite
   garbage; still an open question on toy#109.
+- **mix(1.0) "near-null drift" — ✅ RESOLVED 2026-07-26 as a probe bug**:
+  the parity smoke set a `$mix_alpha_override` global that *nothing
+  read*, so its "mix(1.0)" arm always ran at `opts.dfa_mix_alpha`'s
+  default **0.5** — the "drift" (1-ulp@10 on the degenerate init,
+  ~1e-2@11 on the healthy init, toleranced at 2e-2) was real half-DFA
+  signal surfacing glacially under Adam sign-scale, never sched noise.
+  With α actually plumbed as 1.0, a 16-step value dump shows the
+  combiner graph `add(scale(acc,1.0), scale(gd,0.0))` is **byte-inert**:
+  `g == acc` bitwise on all 24 mix weights every step, zero weight
+  divergence, identical loss strings. The smoke now plumbs α explicitly
+  and pins engine mix(1.0) as a strict BYTE-null; the earlier
+  "value-inert extra nodes cause 1-ulp sched drift" claim is retracted
+  (they are byte-inert). Lesson: a null anchor must verify its
+  *parameter plumbing* end-to-end before its tolerance means anything —
+  the rig's byte-exact mix(1.0) vs the engine's "drift" was the tell
+  that the two arms weren't running the same α.
 - **Load-balancing aux-loss — ✅ DONE 2026-07-26**: `FRANKEN_MOE_AUX=<α>`
   on the top1 MoE twin — Switch-style `L_aux = α·NE·Σ_e f_e·P̄_e` as a
   second LOSS root. `f_e` (routed fraction, non-differentiable) is
