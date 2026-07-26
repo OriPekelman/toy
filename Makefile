@@ -2329,7 +2329,7 @@ gate-franken-moe: libexec/toy-train-franken-moe
 libexec/toy-train-franken-llama: lib/toy/run/train_franken_llama.rb lib/toy.rb lib/toy/ffi/tinynn.rb \
 		lib/toy/io/json_builder.rb lib/toy/io/json.rb lib/toy/io/toy_events.rb \
 		lib/toy/llm/engine/llama_seq_engine.rb lib/toy/llm/recipes/franken_from_scratch.rb \
-		lib/toy/llm/recipe_options.rb lib/toy/train/dfa_b.rb \
+		lib/toy/llm/recipe_options.rb lib/toy/dev/toy_describe_flow.rb lib/toy/train/dfa_b.rb \
 		lib/toy/train/toy_gguf_writer.rb lib/toy/train/toy_gguf_fuse.rb \
 		tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
 	$(SPINEL) $< -o $@
@@ -2372,7 +2372,7 @@ gates: $(GATES)
 # registration alive (same as every CUDA trainer).
 libexec/toy-train-franken-llama-cuda: lib/toy/run/train_franken_llama_cuda.rb lib/toy.rb \
 		lib/toy/ffi/tinynn_cuda.rb lib/toy/io/json_builder.rb lib/toy/io/json.rb \
-		lib/toy/io/toy_events.rb lib/toy/llm/recipe_options.rb lib/toy/train/dfa_b.rb \
+		lib/toy/io/toy_events.rb lib/toy/llm/recipe_options.rb lib/toy/dev/toy_describe_flow.rb lib/toy/train/dfa_b.rb \
 		lib/toy/train/toy_gguf_writer.rb lib/toy/train/toy_gguf_fuse.rb \
 		tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) | libexec
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@

@@ -75,6 +75,9 @@ Dir.mktmpdir("franken_cuda_gate") do |dir|
     failures << "bundle: no events.jsonl"
   end
   failures << "bundle: missing checkpoint" unless File.file?(File.join(dir, "weights", "step_5.gguf"))
+  fj = File.join(dir, "flow.json")
+  flow = File.file?(fj) ? (JSON.parse(File.read(fj)) rescue nil) : nil
+  failures << "bundle: flow.json missing/invalid" if flow.nil? || flow["format"] != "toy/v1" || !flow["nodes"].is_a?(Array) || flow["nodes"].empty?
   puts failures.empty? ? "  ok: bundle — provenance + 60 align events + run_end + checkpoint (CPU write-seam)" : "  FAIL: bundle"
 end
 

@@ -37,6 +37,7 @@ require_relative "../llm/labels"
 require_relative "../train/toy_gguf_writer"
 require_relative "../train/toy_gguf_fuse"
 require_relative "../train/dfa_b"
+require_relative "../dev/toy_describe_flow"
 
 STEPS       = (ENV["STEPS"] || "5").to_i
 SEED        = (ENV["SEED"]  || "0").to_i
@@ -191,6 +192,11 @@ opts.dfa_mask_tau  = mask_tau
 
 recipe = Toy::LLM::Recipes::FrankenFromScratchCuda.new
 recipe.realize!(cfg, opts)
+
+# tao#flow-json-emit (#25): self-describing run bundle, parallel to
+# events.jsonl — the toy#112 gap: F-series ran capture_flow:false and
+# `tao report --html` lost the architecture DAG for franken runs.
+ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe.ff_cache.sess)
 
 # Per-step inputs — VERBATIM train.rb (fail-loud corpus guard included).
 if !File.exist?("data/ts_seqs.txt")

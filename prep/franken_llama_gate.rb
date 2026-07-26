@@ -96,6 +96,16 @@ Dir.mktmpdir("franken_llama_gate") do |dir|
   end
   ckpt = File.join(dir, "weights", "step_5.gguf")
   failures << "bundle: missing checkpoint #{ckpt}" unless File.file?(ckpt)
+  # toy#112 gap closed: flow.json (the toy#25 self-describing bundle)
+  fj = File.join(dir, "flow.json")
+  if File.file?(fj)
+    flow = JSON.parse(File.read(fj)) rescue nil
+    if flow.nil? || flow["format"] != "toy/v1" || !flow["nodes"].is_a?(Array) || flow["nodes"].empty?
+      failures << "bundle: flow.json invalid (format/nodes)"
+    end
+  else
+    failures << "bundle: no flow.json"
+  end
   puts "  ok: bundle — run_start(franken provenance) + 5 steps + 60 align + run_end + checkpoint; dfa curve differs" if failures.empty?
 end
 
