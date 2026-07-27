@@ -156,6 +156,33 @@ else
   failures << "maskbp-null: curves differ\nfs: #{fs8c.join}mb: #{mb8c.join}"
 end
 
+# ---- toy#122: F6 long-horizon surface — corpus stream + align thinning ----
+# corpus arm: deterministic, actually streams (differs from the fixed-seq
+# feed), and leaves the byte-gated default path untouched (leg 1 pins it).
+c1 = run_franken_llama({ "STEPS" => "8", "CORPUS" => "data/ts_seqs.bin" }, nil)
+c2 = run_franken_llama({ "STEPS" => "8", "CORPUS" => "data/ts_seqs.bin" }, nil)
+c_curve = c1.lines.select { |l| l.start_with?("step ") }
+failures << "corpus: not deterministic" unless c1 == c2
+failures << "corpus: only #{c_curve.length} steps" unless c_curve.length == 8
+d_curve = run_franken_llama({ "STEPS" => "8" }, nil).lines.select { |l| l.start_with?("step ") }
+failures << "corpus: curve identical to fixed-seq feed (stream not live)" if c_curve == d_curve
+puts failures.empty? ? "  ok: --corpus streams (deterministic, differs from fixed-seq; default feed untouched)" : "  FAIL: corpus leg"
+
+# align-every thinning: N=3 over 6 steps -> emissions at steps 1,4 ->
+# 12 weights x 2 = 24 align events; N=1 == legacy per-step (72).
+Dir.mktmpdir("franken_ae_gate") do |dir|
+  run_franken_llama({ "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42",
+                      "FRANKEN_ALIGN" => "1", "FRANKEN_ALIGN_EVERY" => "3",
+                      "STEPS" => "6" }, dir)
+  evs = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+  aligns = evs.select { |e| e["kind"] == "align" }
+  steps_seen = aligns.map { |e| e["step"] }.uniq.sort
+  failures << "align-every: #{aligns.length} events (want 24)" unless aligns.length == 24
+  failures << "align-every: wrong steps #{steps_seen.inspect} (want [1,4])" unless steps_seen == [1, 4]
+  failures << "align-every: step events thinned too (#{evs.count { |e| e['kind'] == 'step' }})" unless evs.count { |e| e["kind"] == "step" } == 6
+end
+puts failures.empty? ? "  ok: --align-every thins align emissions (24 @ N=3/6 steps; step events untouched)" : "  FAIL: align-every leg"
+
 # ---- 4. byte-repro ----
 r1 = run_franken_llama({ "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42" }, nil)
 r2 = run_franken_llama({ "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42" }, nil)
@@ -163,7 +190,7 @@ failures << "byte-repro: outputs differ" unless r1 == r2
 puts "  ok: byte-repro — two policy runs identical" if r1 == r2
 
 if failures.empty?
-  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + byte-repro (toy#112/#113)"
+  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + byte-repro (toy#112/#113)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-llama]: #{f}" }

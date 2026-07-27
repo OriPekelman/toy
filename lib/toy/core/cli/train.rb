@@ -108,6 +108,7 @@ module Toy
           @dfa_b_dist  = nil
           @dfa_b_scale = nil
           @align_events = false
+          @align_every  = nil   # franken: thin align/mask emissions (toy#122)
           @routing    = nil   # franken-moe: dense | top1
           @moe_policy = nil   # franken-moe: chain | dfa-experts
           @moe_aux    = nil   # franken-moe: top1 aux-loss alpha
@@ -143,6 +144,11 @@ module Toy
               return bad_arg("no such file: #{lora_gguf} (lora needs a " \
                              "native-layout base GGUF; see `toy list`, or convert one " \
                              "with prep/convert_smollm2_to_gguf.py --ggml-native)")
+            end
+          elsif @recipe == "franken" && @corpus
+            unless File.file?(@corpus)
+              return bad_arg("no such file: #{@corpus} (franken --corpus streams " \
+                             "packed-i32 tokens; `toy new` seeds data/ts_seqs.bin)")
             end
           elsif @recipe == "warm-start"
             ws_corpus = @corpus || "data/ts_seqs.bin"
@@ -257,7 +263,9 @@ module Toy
                              "FRANKEN_B_SEED"  => (@dfa_b_seed || 0).to_s,
                              "FRANKEN_B_DIST"  => (@dfa_b_dist || ""),
                              "FRANKEN_B_SCALE" => (@dfa_b_scale || ""),
-                             "FRANKEN_ALIGN"   => (@align_events ? "1" : ""))
+                             "FRANKEN_ALIGN"   => (@align_events ? "1" : ""),
+                             "FRANKEN_ALIGN_EVERY" => (@align_every || 1).to_s,
+                             "CORPUS"          => (@corpus || ""))
           else
             # from-scratch — byte-identical to today plus the harmless RECIPE key.
             env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s)
@@ -366,6 +374,15 @@ module Toy
               @dfa_b_scale = $1
             when "--align-events"
               @align_events = true
+            when "--align-every"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--align-every must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i > 0
+              @align_every = val.to_i
+            when /\A--align-every=(.*)\z/
+              val = $1
+              return bad_arg("--align-every must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i > 0
+              @align_every = val.to_i
             when "--routing"
               i += 1
               val = @argv[i]
@@ -459,14 +476,20 @@ module Toy
           if @recipe != "lora" && (!@model.nil? || !@rank.nil?)
             return bad_arg("--model/--rank are only valid with recipe 'lora'")
           end
-          if @recipe != "warm-start" && (!@corpus.nil? || !@init.nil?)
-            return bad_arg("--corpus/--init are only valid with recipe 'warm-start'")
+          if !%w[warm-start franken].include?(@recipe) && !@corpus.nil?
+            return bad_arg("--corpus is only valid with recipe 'warm-start' or 'franken'")
+          end
+          if @recipe != "warm-start" && !@init.nil?
+            return bad_arg("--init is only valid with recipe 'warm-start'")
           end
           if !%w[franken franken-moe].include?(@recipe) && (@dfa_b_seed || @dfa_b_dist || @dfa_b_scale || @align_events)
             return bad_arg("--dfa-b-*/--align-events are only valid with recipe 'franken' or 'franken-moe'")
           end
           if @recipe != "franken" && @policy
             return bad_arg("--policy is only valid with recipe 'franken'")
+          end
+          if @recipe != "franken" && @align_every
+            return bad_arg("--align-every is only valid with recipe 'franken'")
           end
           if @recipe != "franken-moe" && (@routing || @moe_policy || @moe_aux)
             return bad_arg("--routing/--moe-policy/--moe-aux are only valid with recipe 'franken-moe'")

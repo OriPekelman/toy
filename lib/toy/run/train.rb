@@ -181,6 +181,7 @@ if RECIPE == "warm-start"
   # --- Training loop (0-indexed; cosine LR + streamed corpus). ---
   final_loss  = 0.0
   byte_offset = 0
+  corpus_bytes = File.size(corpus)
   step        = 0
   while step < STEPS
     step_wall_start = TinyNN.tnn_events_now_seconds
@@ -188,6 +189,13 @@ if RECIPE == "warm-start"
     adamw_ws.lr = lr
     m_hp = adamw_ws.hp(step)   # bias_correct=false → slots5/6=betas
 
+    # toy#122 fallout: rotate BEFORE the window would run past EOF.
+    # (read_seq's EOF-wrap reads from 0 but byte_offset kept growing, so
+    # every post-EOF step re-read the FIRST window — latent stuck-window;
+    # unreachable at gate horizons, real at F6 horizons.)
+    if byte_offset + CONTEXT * 4 > corpus_bytes
+      byte_offset = 0
+    end
     seq_ids = ToyCorpusLoader.read_seq(corpus, byte_offset, CONTEXT)
     byte_offset = byte_offset + CONTEXT * 4   # i32
 

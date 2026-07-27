@@ -37,6 +37,7 @@ require_relative "../llm/labels"
 require_relative "../train/toy_gguf_writer"
 require_relative "../train/toy_gguf_fuse"
 require_relative "../train/dfa_b"
+require_relative "../io/toy_corpus_loader"
 require_relative "../dev/toy_describe_flow"
 
 STEPS       = (ENV["STEPS"] || "5").to_i
@@ -48,6 +49,13 @@ B_SEED      = (ENV["FRANKEN_B_SEED"] || "0").to_i
 B_DIST_S    = ENV["FRANKEN_B_DIST"] || ""
 B_SCALE_S   = ENV["FRANKEN_B_SCALE"] || ""
 ALIGN_ON    = (ENV["FRANKEN_ALIGN"] || "") == "1"
+# toy#122 (the F6 long-horizon instrument): CORPUS switches the feed to
+# the streamed multi-sequence corpus (rotating windows, warm-start's
+# reader); ALIGN_EVERY thins the shadow-telemetry emissions (align AND
+# mask events + their downloads) to every Nth step.
+CORPUS      = ENV["CORPUS"] || ""
+ae_raw = (ENV["FRANKEN_ALIGN_EVERY"] || "1").to_i
+ALIGN_EVERY = ae_raw < 1 ? 1 : ae_raw
 
 # Gate-fixed model SHAPE — identical to train.rb (the F0 contract).
 VOCAB    = 627
@@ -199,12 +207,20 @@ recipe.realize!(cfg, opts)
 ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe.ff_cache.sess)
 
 # Per-step inputs — VERBATIM train.rb (fail-loud corpus guard included).
-if !File.exist?("data/ts_seqs.txt")
+# toy#122: with CORPUS set, sequences stream per step inside the loop
+# (rotating windows over the packed-i32 file); labels are rebuilt per
+# step. Without it: the byte-gated single fixed sequence, unchanged.
+if CORPUS.length > 0 && !File.exist?(CORPUS)
+  puts "toy-train-franken-cuda: corpus not found: " + CORPUS
+  puts "  --corpus streams packed-i32 tokens (the warm-start reader)."
+  exit 1
+end
+if CORPUS.length == 0 && !File.exist?("data/ts_seqs.txt")
   puts "toy-train-franken: corpus not found: data/ts_seqs.txt (cwd-relative)"
   puts "  franken reads the first line of data/ts_seqs.txt (train.rb contract)."
   exit 1
 end
-raw        = File.read("data/ts_seqs.txt")
+raw        = CORPUS.length == 0 ? File.read("data/ts_seqs.txt") : "0"
 first_line = raw.split("\n")[0]
 parts      = first_line.split(" ")
 seq_ids    = [0]; seq_ids.pop
@@ -289,9 +305,22 @@ if ALIGN_ON && n_align > 0
 end
 
 final_loss = 0.0
+corpus_off   = 0
+corpus_bytes = CORPUS.length > 0 ? File.size(CORPUS) : 0
 step = 0
 while step < STEPS
   step_wall_start = TinyNN.tnn_events_now_seconds
+  if CORPUS.length > 0
+    # rotating-window stream: restart at 0 BEFORE the window would run
+    # past EOF (read_seq's own EOF-wrap otherwise pins every later step
+    # to the first window — the stuck-window failure mode).
+    if corpus_off + CONTEXT * 4 > corpus_bytes
+      corpus_off = 0
+    end
+    seq_ids  = ToyCorpusLoader.read_seq(CORPUS, corpus_off, CONTEXT)
+    corpus_off = corpus_off + CONTEXT * 4
+    m_labels = Toy::Labels.next_token_guarded(seq_ids, VOCAB, CONTEXT, 1)
+  end
   recipe.ff_cache.franken_refresh_b!   # toy#117: B leaves are per-step uploads
   loss = recipe.step!(seq_ids, positions, m_labels, m_hp, step == 0)
   final_loss = loss
@@ -315,7 +344,8 @@ while step < STEPS
   mask_ts  = recipe.ff_cache.franken_mask_tensors
   mask_lis = recipe.ff_cache.franken_mask_lis
   mask_wis = recipe.ff_cache.franken_mask_wis
-  if ALIGN_ON && EVENTS.length > 0 && mask_ts.length > 0
+  align_step = (step % ALIGN_EVERY) == 0
+  if ALIGN_ON && align_step && EVENTS.length > 0 && mask_ts.length > 0
     mi = 0
     while mi < mask_ts.length
       mt = mask_ts[mi]
@@ -345,7 +375,7 @@ while step < STEPS
     end
   end
 
-  if ALIGN_ON && EVENTS.length > 0 && n_align > 0
+  if ALIGN_ON && align_step && EVENTS.length > 0 && n_align > 0
     ai = 0
     while ai < n_align
       nw = TinyNN.tnn_tensor_nelements(recipe.ff_cache.franken_align_grads[ai])
