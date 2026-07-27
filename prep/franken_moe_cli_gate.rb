@@ -199,6 +199,22 @@ Dir.mktmpdir("moe_cli_wide") do |dir|
   puts failures.length == n0 ? "  ok: --shape wide — bp-spine trains (#{wl.first.round(3)} -> #{wl.last.round(3)}), deterministic, provenance" : "  FAIL: wide leg"
 end
 
+# ---- toy#127: --align-every thinning (the toy#122 thinning, MoE-side) ----
+# N=3 over 6 steps -> emissions at steps 1,4 -> 4 weights x 2 = 8 align
+# events; step + route events stay per-step (6 each).
+n0 = failures.length
+Dir.mktmpdir("moe_cli_ae") do |dir|
+  run_cli(%w[--steps 6 --seed 0 --moe-policy dfa-experts --align-events --align-every 3], {}, dir)
+  evs = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+  aligns = evs.select { |e| e["kind"] == "align" }
+  steps_seen = aligns.map { |e| e["step"] }.uniq.sort
+  failures << "align-every: #{aligns.length} align events (want 8)" unless aligns.length == 8
+  failures << "align-every: wrong steps #{steps_seen.inspect} (want [1,4])" unless steps_seen == [1, 4]
+  failures << "align-every: step events thinned too (#{evs.count { |e| e['kind'] == 'step' }})" unless evs.count { |e| e["kind"] == "step" } == 6
+  failures << "align-every: route events thinned too (#{evs.count { |e| e['kind'] == 'route' }})" unless evs.count { |e| e["kind"] == "route" } == 6
+  puts failures.length == n0 ? "  ok: --align-every thins align emissions (8 @ N=3/6 steps; step/route events untouched)" : "  FAIL: align-every leg"
+end
+
 # ---- toy#125: --corpus (the F8 data surface) ----
 # The corpus feed runs the frozen-vocab contract (627, toy#123) — the
 # vocab-16 fixed-seq embed cannot take the stream's ids — so the leg
@@ -271,7 +287,7 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
 end
 
 if failures.empty?
-  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + bundle (toy#120/#121)"
+  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + bundle (toy#120/#121)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe-cli]: #{f}" }

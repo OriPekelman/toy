@@ -24,6 +24,9 @@
 #   FRANKEN_B_SEED / FRANKEN_B_DIST / FRANKEN_B_SCALE — DfaB axes
 #   FRANKEN_ALIGN=1      opt-in align events (dense dfa-experts only:
 #                        top1 has no autodiff accs to compare against)
+#   FRANKEN_ALIGN_EVERY  toy#127: thin align downloads + emissions to
+#                        every Nth step (the toy#122 thinning, MoE-side;
+#                        step/route events stay per-step; default 1)
 #   CORPUS               toy#125 (the F8 data surface): stream the
 #                        packed-i32 corpus per step (warm-start's
 #                        reader, rotating T-token windows, pre-EOF
@@ -99,6 +102,11 @@ module Toy
           bseed_s = ENV["FRANKEN_B_SEED"] || ""
           b_seed = bseed_s.length > 0 ? bseed_s.to_i : 1234
           align_on = (ENV["FRANKEN_ALIGN"] || "") == "1"
+          # toy#127: the toy#122 thinning, MoE-side — every Nth step
+          # skips the align DOWNLOADS and emissions both (the shadow
+          # readback is the cost); step/route events stay per-step.
+          ae_raw = (ENV["FRANKEN_ALIGN_EVERY"] || "1").to_i
+          align_every = ae_raw < 1 ? 1 : ae_raw
           events = run_dir.length > 0 ? (run_dir + "/events.jsonl") : ""
           lr = 0.02
 
@@ -481,8 +489,8 @@ module Toy
               TinyNN.tnn_events_emit(re2.dump)
             end
 
-            # align events (dense dfa-experts, opt-in)
-            if align_on && events.length > 0 && n_dfa > 0
+            # align events (dense dfa-experts, opt-in; toy#127 thinned)
+            if align_on && events.length > 0 && n_dfa > 0 && (s % align_every) == 0
               ai = 0
               while ai < n_dfa
                 nw = TinyNN.tnn_tensor_nelements(tw.dfa_grads[ai])

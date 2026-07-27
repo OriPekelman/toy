@@ -261,6 +261,7 @@ module Toy
                              "FRANKEN_B_DIST"      => (@dfa_b_dist || ""),
                              "FRANKEN_B_SCALE"     => (@dfa_b_scale || ""),
                              "FRANKEN_ALIGN"       => (@align_events ? "1" : ""),
+                             "FRANKEN_ALIGN_EVERY" => (@align_every || 1).to_s,
                              "CORPUS"              => (@corpus || ""))
           elsif @recipe == "franken"
             env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
@@ -525,8 +526,8 @@ module Toy
           if @recipe != "franken" && @policy
             return bad_arg("--policy is only valid with recipe 'franken'")
           end
-          if @recipe != "franken" && @align_every
-            return bad_arg("--align-every is only valid with recipe 'franken'")
+          if !%w[franken franken-moe].include?(@recipe) && @align_every
+            return bad_arg("--align-every is only valid with recipe 'franken' or 'franken-moe'")
           end
           if @recipe != "franken" && (@lr || @warmup)
             return bad_arg("--lr/--warmup are only valid with recipe 'franken' (toy#126)")
