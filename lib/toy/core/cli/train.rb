@@ -77,6 +77,7 @@ module Toy
         # of the byte-gated toy-train unit.
         FRANKEN_RUNNER_TARGET = "libexec/toy-train-franken-llama"
         FRANKEN_CUDA_RUNNER_TARGET = "libexec/toy-train-franken-llama-cuda"
+        FRANKEN_MOE_RUNNER_TARGET = "libexec/toy-train-franken-moe-cli"
         # GPT-2 GPU twins (--arch gpt2 --device cuda|metal). SEPARATE single-type
         # binaries (landmine #16); link the generated CUDA/Metal engine mirrors.
         # The GELU/LayerNorm backward ops fall back to the CPU backend on GPU.
@@ -107,6 +108,9 @@ module Toy
           @dfa_b_dist  = nil
           @dfa_b_scale = nil
           @align_events = false
+          @routing    = nil   # franken-moe: dense | top1
+          @moe_policy = nil   # franken-moe: chain | dfa-experts
+          @moe_aux    = nil   # franken-moe: top1 aux-loss alpha
           @arch   = ARCH   # llama | gpt2 (gpt2 = from-scratch CPU only this slice)
         end
 
@@ -165,7 +169,9 @@ module Toy
           #     warm-start +cuda                  in train_cuda.rb source)
           #   metal (fs only)  -> toy-train-metal
           #   cpu fs/warm-start-> toy-train
-          target = if @recipe == "franken"
+          target = if @recipe == "franken-moe"
+                     FRANKEN_MOE_RUNNER_TARGET
+                   elsif @recipe == "franken"
                      @device == "cuda" ? FRANKEN_CUDA_RUNNER_TARGET : FRANKEN_RUNNER_TARGET
                    elsif @recipe == "lora"
                      @device == "cuda" ? LORA_CUDA_RUNNER_TARGET : LORA_RUNNER_TARGET
@@ -236,6 +242,15 @@ module Toy
             # data/vit_smoke is committed → no --corpus needed. vit IS seeded.
             env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
                              "IMG_DIR" => "data/vit_smoke")
+          elsif @recipe == "franken-moe"
+            env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
+                             "FRANKEN_MOE_ROUTING" => (@routing || "dense"),
+                             "FRANKEN_MOE"         => (@moe_policy || "chain"),
+                             "FRANKEN_MOE_AUX"     => (@moe_aux || "0"),
+                             "FRANKEN_B_SEED"      => (@dfa_b_seed || 1234).to_s,
+                             "FRANKEN_B_DIST"      => (@dfa_b_dist || ""),
+                             "FRANKEN_B_SCALE"     => (@dfa_b_scale || ""),
+                             "FRANKEN_ALIGN"       => (@align_events ? "1" : ""))
           elsif @recipe == "franken"
             env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
                              "FRANKEN_POLICY"  => (@policy || ""),
@@ -351,6 +366,33 @@ module Toy
               @dfa_b_scale = $1
             when "--align-events"
               @align_events = true
+            when "--routing"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--routing must be dense|top1") unless %w[dense top1].include?(val)
+              @routing = val
+            when /\A--routing=(.*)\z/
+              val = $1
+              return bad_arg("--routing must be dense|top1") unless %w[dense top1].include?(val)
+              @routing = val
+            when "--moe-policy"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--moe-policy must be chain|dfa-experts") unless %w[chain dfa-experts].include?(val)
+              @moe_policy = val
+            when /\A--moe-policy=(.*)\z/
+              val = $1
+              return bad_arg("--moe-policy must be chain|dfa-experts") unless %w[chain dfa-experts].include?(val)
+              @moe_policy = val
+            when "--moe-aux"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--moe-aux must be a non-negative float, got #{val.inspect}") unless val =~ /\A\d+(\.\d+)?\z/
+              @moe_aux = val
+            when /\A--moe-aux=(.*)\z/
+              val = $1
+              return bad_arg("--moe-aux must be a non-negative float, got #{val.inspect}") unless val =~ /\A\d+(\.\d+)?\z/
+              @moe_aux = val
             when "--model"
               i += 1
               val = @argv[i]
@@ -411,8 +453,8 @@ module Toy
             return bad_arg("unexpected extra arguments: #{rest[1..].join(' ')}")
           end
           @recipe = rest.first
-          unless %w[from-scratch lora warm-start vit-tiny franken].include?(@recipe)
-            return bad_arg("unknown recipe #{@recipe.inspect}; supported: 'from-scratch', 'lora', 'warm-start', 'vit-tiny', 'franken'")
+          unless %w[from-scratch lora warm-start vit-tiny franken franken-moe].include?(@recipe)
+            return bad_arg("unknown recipe #{@recipe.inspect}; supported: 'from-scratch', 'lora', 'warm-start', 'vit-tiny', 'franken', 'franken-moe'")
           end
           if @recipe != "lora" && (!@model.nil? || !@rank.nil?)
             return bad_arg("--model/--rank are only valid with recipe 'lora'")
@@ -420,8 +462,20 @@ module Toy
           if @recipe != "warm-start" && (!@corpus.nil? || !@init.nil?)
             return bad_arg("--corpus/--init are only valid with recipe 'warm-start'")
           end
-          if @recipe != "franken" && (@policy || @dfa_b_seed || @dfa_b_dist || @dfa_b_scale || @align_events)
-            return bad_arg("--policy/--dfa-b-*/--align-events are only valid with recipe 'franken'")
+          if !%w[franken franken-moe].include?(@recipe) && (@dfa_b_seed || @dfa_b_dist || @dfa_b_scale || @align_events)
+            return bad_arg("--dfa-b-*/--align-events are only valid with recipe 'franken' or 'franken-moe'")
+          end
+          if @recipe != "franken" && @policy
+            return bad_arg("--policy is only valid with recipe 'franken'")
+          end
+          if @recipe != "franken-moe" && (@routing || @moe_policy || @moe_aux)
+            return bad_arg("--routing/--moe-policy/--moe-aux are only valid with recipe 'franken-moe'")
+          end
+          if @recipe == "franken-moe" && @moe_aux && @routing != "top1"
+            return bad_arg("--moe-aux requires --routing top1 (the aux-loss rides the hard router)")
+          end
+          if @recipe == "franken-moe" && @moe_policy == "dfa-experts" && @routing == "top1"
+            return bad_arg("--moe-policy is dense-only: top1 IS the fully-DFA lane (drop --moe-policy)")
           end
           if !@init.nil? && @init != "scratch"
             return bad_arg("--init #{@init.inspect} unsupported; only 'scratch' has a gate curve in this slice")
@@ -437,6 +491,9 @@ module Toy
           end
           # vit-tiny is CPU-only in this slice: reject cuda AND metal as clean
           # bad-input (the --device allow-list already caught unknown devices).
+          if @recipe == "franken-moe" && @device != "cpu"
+            return bad_arg("--device #{@device.inspect} is not supported for recipe 'franken-moe' (cpu-only instrument)")
+          end
           if @recipe == "vit-tiny" && @device != "cpu"
             return bad_arg("--device #{@device.inspect} is not supported for recipe 'vit-tiny' (cpu-only in this slice)")
           end
@@ -455,6 +512,7 @@ module Toy
         def arch_for(recipe)
           return "smollm2" if recipe == "lora"
           return "vit"     if recipe == "vit-tiny"
+          return "moe"     if recipe == "franken-moe"
           "llama"
         end
 

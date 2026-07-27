@@ -2315,13 +2315,25 @@ gate-franken-parity: prep/smokes/smoke_franken_parity
 
 # toy#109 P2b — the Franken-MoE arm: dense 2-expert soft mixture,
 # BP-router + DFA-experts twin lanes.
-libexec/toy-train-franken-moe: lib/toy/run/train_franken_moe.rb lib/toy.rb lib/toy/ffi/tinynn.rb \
+libexec/toy-train-franken-moe: lib/toy/run/train_franken_moe.rb lib/toy/run/franken_moe_parts.rb lib/toy.rb lib/toy/ffi/tinynn.rb \
 		lib/toy/llm/primitives/rms_norm.rb lib/toy/train/dfa_b.rb \
 		tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
 	$(SPINEL) $< -o $@
 .PHONY: gate-franken-moe
 gate-franken-moe: libexec/toy-train-franken-moe
 	ruby prep/franken_moe_gate.rb
+
+# toy#120 — the spec-callable single-lane MoE runner (`toy train
+# franken-moe`, the F4 surface). Shares franken_moe_parts.rb with the rig.
+libexec/toy-train-franken-moe-cli: lib/toy/run/train_franken_moe_cli.rb lib/toy/run/franken_moe_parts.rb \
+		lib/toy.rb lib/toy/ffi/tinynn.rb lib/toy/io/json_builder.rb lib/toy/io/json.rb \
+		lib/toy/io/toy_events.rb lib/toy/dev/toy_describe_flow.rb \
+		lib/toy/llm/primitives/rms_norm.rb lib/toy/train/dfa_b.rb \
+		tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) $< -o $@
+.PHONY: gate-franken-moe-cli
+gate-franken-moe-cli: libexec/toy-train-franken-moe-cli libexec/toy-train-franken-moe
+	ruby prep/franken_moe_cli_gate.rb
 
 # toy#112 — the spec-callable franken runner (toy train franken): the
 # from-scratch drive through FrankenFromScratch, TAO_RUN_DIR events with
