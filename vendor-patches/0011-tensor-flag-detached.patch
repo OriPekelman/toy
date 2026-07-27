@@ -1,0 +1,27 @@
+--- a/include/ggml.h
++++ b/include/ggml.h
+@@ -650,6 +650,7 @@
+         GGML_TENSOR_FLAG_PARAM   =  4, // ...contains trainable parameters
+         GGML_TENSOR_FLAG_LOSS    =  8, // ...defines loss for numerical optimization (multiple loss tensors add up)
+         GGML_TENSOR_FLAG_COMPUTE = 16, // ...must be computed
++        GGML_TENSOR_FLAG_DETACHED = 32, // ...is an opaque cut: forward-identity, gradient-opaque (toy vendor-patch 0011)
+     };
+ 
+     enum ggml_tri_type {
+--- a/src/ggml.c
++++ b/src/ggml.c
+@@ -7084,6 +7084,14 @@
+             continue;
+         }
+ 
++        if (node->flags & GGML_TENSOR_FLAG_DETACHED) {
++            // toy vendor-patch 0011: opaque cut. The node is a leaf for
++            // the needs-grad propagation — no gradient is ever created
++            // for it, so nothing walks through it to its sources.
++            // ggml_compute_backward early-returns on its NULL grad.
++            continue;
++        }
++
+         bool node_needs_grad = (node->flags & GGML_TENSOR_FLAG_PARAM) || (node->flags & GGML_TENSOR_FLAG_LOSS);
+         bool ignore_src[GGML_MAX_SRC] = {false};
+         switch (node->op) {

@@ -378,11 +378,11 @@ module Toy
             when "--moe-policy"
               i += 1
               val = @argv[i]
-              return bad_arg("--moe-policy must be chain|dfa-experts|bp-router-dfa-experts") unless %w[chain dfa-experts bp-router-dfa-experts].include?(val)
+              return bad_arg("--moe-policy must be chain|dfa-experts|bp-router-dfa-experts|bp-spine") unless %w[chain dfa-experts bp-router-dfa-experts bp-spine].include?(val)
               @moe_policy = val
             when /\A--moe-policy=(.*)\z/
               val = $1
-              return bad_arg("--moe-policy must be chain|dfa-experts|bp-router-dfa-experts") unless %w[chain dfa-experts bp-router-dfa-experts].include?(val)
+              return bad_arg("--moe-policy must be chain|dfa-experts|bp-router-dfa-experts|bp-spine") unless %w[chain dfa-experts bp-router-dfa-experts bp-spine].include?(val)
               @moe_policy = val
             when "--moe-aux"
               i += 1
@@ -477,8 +477,8 @@ module Toy
           if @recipe == "franken-moe" && @routing == "top1" && %w[chain dfa-experts].include?(@moe_policy)
             return bad_arg("--moe-policy #{@moe_policy} is dense-only; top1 takes no policy (fully-DFA lane) or --moe-policy bp-router-dfa-experts (toy#121)")
           end
-          if @recipe == "franken-moe" && @moe_policy == "bp-router-dfa-experts" && @routing != "top1"
-            return bad_arg("--moe-policy bp-router-dfa-experts requires --routing top1")
+          if @recipe == "franken-moe" && %w[bp-router-dfa-experts bp-spine].include?(@moe_policy) && @routing != "top1"
+            return bad_arg("--moe-policy #{@moe_policy} requires --routing top1")
           end
           if !@init.nil? && @init != "scratch"
             return bad_arg("--init #{@init.inspect} unsupported; only 'scratch' has a gate curve in this slice")

@@ -50,6 +50,14 @@ endif
 # without seeds when chasing an analyzer issue.
 SPINEL_RBS ?= --rbs $(CURDIR)/sig
 
+# Gate harnesses resolve the toolchain THROUGH make (single source of
+# truth + the pin guard runs at parse time) instead of a hardcoded
+# ~/sites/spinel fallback — the toy#119 hazard class; consumer_gate and
+# poly_degrade_gate were its last two carriers.
+.PHONY: print-spinel-dir
+print-spinel-dir:
+	@echo $(SPINEL_DIR)
+
 # spinel_kit resolves as a real require ("spinel_kit/git") on BOTH paths:
 # spin provides the dependency root; the direct-spinel path points -I at
 # the vendored gem's lib/ (gem layout). toy#107 deps leg.
@@ -1291,7 +1299,8 @@ GGML_PATCHES := \
 	vendor-patches/0007-gpt2-backward-kernels.patch \
 	vendor-patches/0008-mul-mat-backward-mixed-precision.patch \
 	vendor-patches/0009-sched-unsupported-node-diagnostic.patch \
-	vendor-patches/0010-cuda-buffer_from_ptr-skip-init_tensor-padding-memset.patch
+	vendor-patches/0010-cuda-buffer_from_ptr-skip-init_tensor-padding-memset.patch \
+	vendor-patches/0011-tensor-flag-detached.patch
 
 # Sentinel file marking that all $(GGML_PATCHES) have been applied to
 # the vendored tree. Build targets depend on it through CMakeLists.txt

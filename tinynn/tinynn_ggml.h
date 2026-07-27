@@ -549,3 +549,4 @@ int    tnn_scratch_nan_count_f32(void *sess, int n);
 #endif
 
 #endif
+void *tnn_detach(void *sess, void *a);   /* opaque cut: fwd identity, grad-opaque (toy#121) */

@@ -38,7 +38,18 @@ require "fileutils"
 require "json"
 
 ROOT       = File.expand_path("..", __dir__)
-SPINEL_DIR = ENV["SPINEL_DIR"] || File.join(Dir.home, "sites", "spinel")
+# Toolchain via make (pin-guard-validated; toy#119 class — the old
+# ~/sites/spinel fallback silently compiled with a stale toolchain).
+require "open3"
+def resolve_spinel_dir
+  env = ENV["SPINEL_DIR"].to_s
+  return env unless env.empty?
+  out, st = Open3.capture2("make", "--no-print-directory", "-s", "print-spinel-dir",
+                           chdir: File.expand_path("..", __dir__))
+  abort "consumer_gate: SPINEL_DIR resolution via make failed (pin guard?):\n#{out}" unless st.success?
+  out.strip
+end
+SPINEL_DIR = resolve_spinel_dir
 SPINEL_BIN = File.join(SPINEL_DIR, "spinel")
 
 abort "GATE FAIL [consumer]: no spinel at #{SPINEL_BIN} (set SPINEL_DIR=)" unless File.executable?(SPINEL_BIN)

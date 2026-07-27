@@ -33,8 +33,18 @@ BASELINE = File.join(ROOT, "prep", "fixtures", "poly_degrade_baseline.txt")
 RECORD   = ARGV.include?("--record")
 
 # Resolve the spinel binary the same way the Makefile does.
-SPINEL = ENV["SPINEL_BIN"] ||
-         File.join(ENV["SPINEL_DIR"] || File.join(Dir.home, "sites", "spinel"), "spinel")
+require "open3"
+def resolve_spinel_dir_pd
+  env = ENV["SPINEL_DIR"].to_s
+  return env unless env.empty?
+  out, st = Open3.capture2("make", "--no-print-directory", "-s", "print-spinel-dir",
+                           chdir: File.expand_path("..", __dir__))
+  abort "poly-degrade-gate: SPINEL_DIR resolution via make failed (pin guard?):\n#{out}" unless st.success?
+  out.strip
+end
+# Toolchain via make (pin-guard-validated; toy#119 class — the old
+# ~/sites/spinel fallback silently compiled with a stale toolchain).
+SPINEL = ENV["SPINEL_BIN"] || File.join(resolve_spinel_dir_pd, "spinel")
 
 # Canonical numerical compute entrypoints (the hand-written CPU runners — the
 # paths where a silent emit-0 corrupts training/eval/inference output). The

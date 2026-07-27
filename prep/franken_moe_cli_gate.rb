@@ -16,6 +16,11 @@
 #      — each expert majority-serves >= 20% of tail steps @120.
 #   6. BUNDLE: run_start.franken_moe provenance, route events == steps,
 #      run_end, flow.json, TOY_RUN_ID passthrough, parseable JSONL.
+#   8. BP-SPINE (toy#121 stretch, vendor-patch 0011): forward-identity
+#      null — step-1 loss BYTE-equals the other top1 arms (detach is
+#      identity; pre-update forward is the same graph); trains PAST the
+#      fully-dfa plateau (the cut works: chain grads reach the spine,
+#      the walker never needs mul_mat_id); deterministic; provenance.
 #   7. BP-ROUTER (toy#121, the F5 core): --moe-policy
 #      bp-router-dfa-experts under top1 — curve differs from the
 #      fully-DFA arm at the same seed (the p-scale credit path moves
@@ -147,6 +152,31 @@ Dir.mktmpdir("moe_cli_bpr") do |dir|
   puts failures.length == n0 ? "  ok: bp-router — differs from fully-dfa (credit path live), deterministic, aux composes, provenance named" : "  FAIL: bp-router leg"
 end
 
+# ---- 8. bp-spine (toy#121 stretch; the opaque cut) ----
+n0 = failures.length
+Dir.mktmpdir("moe_cli_spine") do |dir|
+  sp_a = run_cli(%w[--steps 60 --seed 0 --routing top1 --moe-policy bp-spine], {}, dir)
+  sp_b = run_cli(%w[--steps 60 --seed 0 --routing top1 --moe-policy bp-spine], {}, nil)
+  failures << "bp-spine: curve repro failed" unless losses(sp_a) == losses(sp_b)
+  ls = losses(sp_a).map(&:to_f)
+  failures << "bp-spine: NaN" if ls.any?(&:nan?)
+  # forward-identity null: detach is identity, so the pre-update step-1
+  # loss must BYTE-equal the fully-dfa arm's (params don't matter at
+  # step 1; same forward graph values).
+  fully1 = losses(run_cli(%w[--steps 1 --seed 0 --routing top1], {}, nil)).first
+  failures << "bp-spine: step-1 forward differs from fully-dfa (#{losses(sp_a).first} vs #{fully1}) — detach is not identity" unless losses(sp_a).first == fully1
+  # the cut's purpose: the BP spine escapes the fully-DFA plateau
+  # (fully-dfa sits ~2.6+ at this shape/horizon; bp-spine reaches
+  # full-BP-class loss — 0.002-class by step 100; assert a wide margin)
+  failures << "bp-spine: did not escape the plateau (step60 #{ls.last})" unless ls.last < 0.5
+  evs = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+  pol = evs.first && evs.first.dig("franken_moe", "policy")
+  failures << "bp-spine: provenance policy #{pol.inspect}" unless pol == "bp-spine"
+  aux_out = run_cli(%w[--steps 20 --seed 0 --routing top1 --moe-policy bp-spine --moe-aux 0.05], {}, nil)
+  failures << "bp-spine: aux composition failed" unless losses(aux_out).length == 20 && losses(aux_out).map(&:to_f).none?(&:nan?)
+  puts failures.length == n0 ? "  ok: bp-spine — step-1 byte-equals fully-dfa (detach identity), escapes the plateau (#{ls.first.round(3)} -> #{ls.last.round(4)} @60), deterministic, aux composes" : "  FAIL: bp-spine leg"
+end
+
 # ---- 6. bundle structure + run-id passthrough ----
 n0 = failures.length
 Dir.mktmpdir("moe_cli_bundle") do |dir|
@@ -176,7 +206,7 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
 end
 
 if failures.empty?
-  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bundle (toy#120/#121)"
+  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + bundle (toy#120/#121)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe-cli]: #{f}" }

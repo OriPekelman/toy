@@ -115,6 +115,7 @@ module TinyNNMetal
   ffi_func :tnn_matmul,           [:ptr, :ptr, :ptr],       :ptr
   # M2: MoE primitives.
   ffi_func :tnn_argmax,           [:ptr, :ptr],             :ptr
+  ffi_func :tnn_detach,           [:ptr, :ptr],             :ptr
   ffi_func :tnn_mul_mat_id,       [:ptr, :ptr, :ptr, :ptr], :ptr
   ffi_func :tnn_add_id,           [:ptr, :ptr, :ptr, :ptr], :ptr
   ffi_func :tnn_argsort,          [:ptr, :ptr, :int],       :ptr

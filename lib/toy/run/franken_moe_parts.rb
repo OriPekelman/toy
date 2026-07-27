@@ -160,7 +160,11 @@ module Toy
 
         # HARD top-1 MoE block: argmax routing + mul_mat_id dispatch.
         # eye = uploaded identity [NE,NE]; records taps + onehots + gates.
-        def self.moe_block_top1(sess, tw, t_x, eye)
+        # cut=1 (toy#121 bp-spine): the expert INPUT goes through
+        # tnn_detach — forward-identity, gradient-opaque — so chain
+        # grads reach attention/embeds via the residual + router
+        # branches while the walker never needs mul_mat_id backward.
+        def self.moe_block_top1(sess, tw, t_x, eye, cut)
           rn2 = tw.pp[7]
           wr  = tw.pp[8]
           h2 = Toy::LLM::Primitives::RMSNorm.build(sess, t_x, rn2, EPS)
@@ -183,7 +187,11 @@ module Toy
             TinyNN.tnn_reshape_3d(sess, tw.pp[10], DFF, DM, 1),
             TinyNN.tnn_reshape_3d(sess, tw.pp[12], DFF, DM, 1), 2)   # [DFF,DM,NE]
 
-          h3    = TinyNN.tnn_reshape_3d(sess, h2, DM, 1, T)
+          h_exp = h2
+          if cut == 1
+            h_exp = TinyNN.tnn_detach(sess, h2)
+          end
+          h3    = TinyNN.tnn_reshape_3d(sess, h_exp, DM, 1, T)
           upo   = TinyNN.tnn_mul_mat_id(sess, up_stack, h3, ids2)    # [DFF,1,T]
           a     = TinyNN.tnn_gelu(sess, upo)
           tw.tap_a1 = TinyNN.tnn_reshape_3d(sess, a, DFF, T, 1)      # routed acts [DFF,T]
@@ -192,14 +200,14 @@ module Toy
           TinyNN.tnn_add(sess, t_x, TinyNN.tnn_mul(sess, eo, gate))
         end
 
-        def self.forward_tower(sess, tw, t_tok, t_labels, sel1, sel2, eye, top1)
+        def self.forward_tower(sess, tw, t_tok, t_labels, sel1, sel2, eye, top1, cut)
           x = TinyNN.tnn_get_rows(sess, tw.pp[0], t_tok)
           atrip = attention_block(sess, x, tw.pp[2], tw.pp[3], tw.pp[4], tw.pp[5], tw.pp[6])
           x = atrip[0]
           tw.tap_ah  = atrip[1]
           tw.tap_ctx = atrip[2]
           if top1
-            x = moe_block_top1(sess, tw, x, eye)
+            x = moe_block_top1(sess, tw, x, eye, cut)
           else
             x = moe_block(sess, tw, x, sel1, sel2)
           end

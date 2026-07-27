@@ -81,6 +81,7 @@ module Toy
           end
           dfa_experts = mode_s == "dfa-experts"
           bp_router = top1 && mode_s == "bp-router-dfa-experts"
+          bp_spine  = top1 && mode_s == "bp-spine"
           aux_s = ENV["FRANKEN_MOE_AUX"] || ""
           aux_alpha = aux_s.length > 0 ? aux_s.to_f : 0.0
           bseed_s = ENV["FRANKEN_B_SEED"] || ""
@@ -91,7 +92,13 @@ module Toy
 
           pol_name = mode_s
           if top1
-            pol_name = bp_router ? "bp-router-dfa-experts" : "top1-dfa"
+            pol_name = "top1-dfa"
+            if bp_router
+              pol_name = "bp-router-dfa-experts"
+            end
+            if bp_spine
+              pol_name = "bp-spine"
+            end
           end
           puts "franken-moe: routing=" + (top1 ? "top1" : "dense") +
                " policy=" + pol_name +
@@ -122,12 +129,15 @@ module Toy
           # late-param DFA — the walker must never need mul_mat_id).
           gi = 0
           while gi < tw.pp.length
-            if !top1
+            # dense: every weight. bp-spine: the whole spine 0..8 (embed,
+            # fnorm, attention, rn2, Wr) — experts 9..12 stay late-param
+            # DFA behind the detach cut.
+            if !top1 || (bp_spine && gi < 9)
               TinyNN.tnn_set_param(tw.pp[gi])
             end
             gi = gi + 1
           end
-          if top1
+          if top1 && !bp_spine
             TinyNN.tnn_set_param(tw.pp[8])
           end
           TinyNN.tnn_finalize_weights(sess)
@@ -180,8 +190,8 @@ module Toy
           t_labels = TinyNN.tnn_input_2d_f32(sess, T, VOCAB)
           t_hp     = TinyNN.tnn_input_1d_f32(sess, 7)
           t_f      = TinyNN.tnn_input_2d_f32(sess, 1, NE)   # ne=[NE,1]
-          forward_tower(sess, tw, t_tok, t_labels, sel1, sel2, eye, top1)
-          if bp_router
+          forward_tower(sess, tw, t_tok, t_labels, sel1, sel2, eye, top1, bp_spine ? 1 : 0)
+          if bp_router || bp_spine
             # toy#121: the task CE joins the loss roots — backward reaches
             # Wr through gate = sum_rows(oneh*probs) -> softmax -> matmul,
             # never mul_mat_id (eo's subtree stays out of grads_needed).
@@ -208,11 +218,22 @@ module Toy
             p_sm = TinyNN.tnn_softmax(sess, tw.t_logits)
             e_b  = TinyNN.tnn_scale(sess, TinyNN.tnn_sub(sess, p_sm, t_labels), 1.0 / T.to_f)
             np2 = TinyNN.tnn_null_ptr
-            wire_dfa_top1(sess, tw, t_hp, 3, b_aq, e_b, tw.tap_ah,  DM, DM, np2)
-            wire_dfa_top1(sess, tw, t_hp, 4, b_ak, e_b, tw.tap_ah,  DM, DM, np2)
-            wire_dfa_top1(sess, tw, t_hp, 5, b_av, e_b, tw.tap_ah,  DM, DM, np2)
-            wire_dfa_top1(sess, tw, t_hp, 6, b_ao, e_b, tw.tap_ctx, DM, DM, np2)
-            if bp_router
+            if bp_spine
+              # the whole spine is chain: embed/fnorm/attention/rn2 + Wr
+              sp = 0
+              while sp < 9
+                wire_chain(sess, tw, t_hp, sp)
+                sp = sp + 1
+              end
+            else
+              wire_dfa_top1(sess, tw, t_hp, 3, b_aq, e_b, tw.tap_ah,  DM, DM, np2)
+              wire_dfa_top1(sess, tw, t_hp, 4, b_ak, e_b, tw.tap_ah,  DM, DM, np2)
+              wire_dfa_top1(sess, tw, t_hp, 5, b_av, e_b, tw.tap_ah,  DM, DM, np2)
+              wire_dfa_top1(sess, tw, t_hp, 6, b_ao, e_b, tw.tap_ctx, DM, DM, np2)
+            end
+            if bp_spine
+              # router already chain-wired above; experts follow below
+            elsif bp_router
               # toy#121: router credit is PURE BP — the acc already holds
               # task-BP + aux-BP (both loss roots backward into it).
               wire_chain(sess, tw, t_hp, 8)

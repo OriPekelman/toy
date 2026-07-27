@@ -77,3 +77,17 @@ Each patch has a doc:
   rationale in the commit message.
 
 When the F1/F2/F3 work stabilises, propose each as a separate ggml-org/ggml PR.
+
+## 0011-tensor-flag-detached.patch
+
+`GGML_TENSOR_FLAG_DETACHED` (toy#121 bp-spine): an opaque-cut tensor
+flag — forward-identity, gradient-opaque. `ggml_build_backward_expand`
+treats a flagged node as a leaf for the needs-grad propagation: no
+gradient is ever allocated for it, so nothing walks through it to its
+sources (`ggml_compute_backward` early-returns on the NULL grad; zero
+backward cases needed). Set via `tnn_detach` (a `ggml_dup` + flag —
+DUP has forward kernels on every backend, so no new compute code).
+Purpose: sever exactly one edge from a differentiable subgraph — the
+expert-input path into `mul_mat_id` — while the residual and router
+branches keep their chain grads (the design doc's deferred opaque-cut;
+its 'an experiment demands it' trigger fired with F5).

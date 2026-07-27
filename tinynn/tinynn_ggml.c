@@ -825,6 +825,21 @@ void *tnn_argmax(void *sess, void *a)
     return (void *)ggml_argmax(s->ctx, (struct ggml_tensor *)a);
 }
 
+/* Opaque cut (toy#121 bp-spine, vendor-patch 0011): forward-identity
+ * (ggml_dup), gradient-opaque (GGML_TENSOR_FLAG_DETACHED makes the
+ * backward walker treat it as a leaf — nothing propagates through to
+ * its source). Use to sever exactly one edge from an otherwise
+ * differentiable subgraph, e.g. the expert-input path into mul_mat_id
+ * while the residual + router branches keep their chain grads. */
+void *tnn_detach(void *sess, void *a)
+{
+    if (!sess || !a) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    struct ggml_tensor *t = ggml_dup(s->ctx, (struct ggml_tensor *)a);
+    t->flags |= GGML_TENSOR_FLAG_DETACHED;
+    return (void *)t;
+}
+
 void *tnn_mul_mat_id(void *sess, void *as, void *b, void *ids)
 {
     if (!sess || !as || !b || !ids) return NULL;
