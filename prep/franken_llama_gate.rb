@@ -183,6 +183,22 @@ Dir.mktmpdir("franken_ae_gate") do |dir|
 end
 puts failures.empty? ? "  ok: --align-every thins align emissions (24 @ N=3/6 steps; step events untouched)" : "  FAIL: align-every leg"
 
+# ---- toy#124: shape presets, byte-pinned per preset ----
+%w[wide deep].each do |sh|
+  fx = File.join(ROOT, "prep", "fixtures", "franken_#{sh}_baseline.txt")
+  exp = File.readlines(fx).reject { |l| l.start_with?("#") || l.strip.empty? }.map(&:chomp)
+  got = run_franken_llama({ "FRANKEN_SHAPE" => sh, "STEPS" => "5" }, nil)
+        .lines.select { |l| l.start_with?("step ") }.map(&:chomp)
+  if got == exp
+    puts "  ok: --shape #{sh} byte-equals its recorded baseline (5 steps)"
+  else
+    failures << "shape-#{sh}: curve != #{File.basename(fx)}\ngot:  #{got.join(' | ')}\nwant: #{exp.join(' | ')}"
+  end
+  s1 = run_franken_llama({ "FRANKEN_SHAPE" => sh, "STEPS" => "5", "SEED" => "1" }, nil)
+  s2 = run_franken_llama({ "FRANKEN_SHAPE" => sh, "STEPS" => "5", "SEED" => "1" }, nil)
+  failures << "shape-#{sh}: seed=1 not deterministic" unless s1 == s2
+end
+
 # ---- 4. byte-repro ----
 r1 = run_franken_llama({ "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42" }, nil)
 r2 = run_franken_llama({ "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42" }, nil)
@@ -190,7 +206,7 @@ failures << "byte-repro: outputs differ" unless r1 == r2
 puts "  ok: byte-repro — two policy runs identical" if r1 == r2
 
 if failures.empty?
-  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + byte-repro (toy#112/#113)"
+  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + shape presets (toy#124) + byte-repro (toy#112/#113)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-llama]: #{f}" }

@@ -57,13 +57,24 @@ CORPUS      = ENV["CORPUS"] || ""
 ae_raw = (ENV["FRANKEN_ALIGN_EVERY"] || "1").to_i
 ALIGN_EVERY = ae_raw < 1 ? 1 : ae_raw
 
-# Gate-fixed model SHAPE — identical to train.rb (the F0 contract).
+# Model shape — toy#124 presets (F7/F8 escalation). base = the gate
+# shape, identical to train.rb (the F0 contract, byte-null); wide/deep
+# scale width (and depth) at the PINNED vocab 627 + context 32 (the
+# frozen-vocab corpus contract, toy#123). DONOR_D keeps the base 2x
+# ratio to d_model (the projection lens is random-init here; the ratio
+# keeps the architecture family consistent across presets).
+SHAPE_S = ENV["FRANKEN_SHAPE"] || "base"
+if SHAPE_S != "base" && SHAPE_S != "wide" && SHAPE_S != "deep"
+  puts "unknown FRANKEN_SHAPE: " + SHAPE_S + " (want base|wide|deep)"
+  exit 1
+end
+BIG      = SHAPE_S != "base"
 VOCAB    = 627
-D_MODEL  = 64
-DONOR_D  = 128
-N_HEADS  = 4
-D_FF     = 128
-N_LAYERS = 2
+D_MODEL  = BIG ? 256 : 64
+DONOR_D  = BIG ? 512 : 128
+N_HEADS  = BIG ? 8 : 4
+D_FF     = BIG ? 512 : 128
+N_LAYERS = SHAPE_S == "deep" ? 6 : 2
 CONTEXT  = 32
 
 EVENTS = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/events.jsonl") : ""
@@ -256,6 +267,7 @@ if EVENTS.length > 0
     model = Toy::Json::Builder.new
     model.add_str("arch", "llama")
     model.add_str("name", "franken-tinystories")
+    model.add_str("shape", SHAPE_S)
     model.add_num("vocab",    cfg.vocab)
     model.add_num("d_model",  cfg.d_model)
     model.add_num("n_layers", cfg.n_layers)

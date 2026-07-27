@@ -1,0 +1,8 @@
+# prep/fixtures/franken_deep_baseline.txt — toy#124 preset byte-pin
+# toy train franken --shape deep --steps 5 --seed 0 (fixed-seq feed)
+# recorded at spinel dc5b8f17, toy 9bcfb11
+step 1: loss=6.5511674880981445
+step 2: loss=5.70480489730835
+step 3: loss=5.042335510253906
+step 4: loss=4.436592102050781
+step 5: loss=3.783909559249878

@@ -177,6 +177,23 @@ Dir.mktmpdir("moe_cli_spine") do |dir|
   puts failures.length == n0 ? "  ok: bp-spine — step-1 byte-equals fully-dfa (detach identity), escapes the plateau (#{ls.first.round(3)} -> #{ls.last.round(4)} @60), deterministic, aux composes" : "  FAIL: bp-spine leg"
 end
 
+# ---- toy#124: --shape wide (d256/ff512, same NE/T/vocab) ----
+n0 = failures.length
+Dir.mktmpdir("moe_cli_wide") do |dir|
+  w1 = run_cli(%w[--steps 8 --seed 0 --shape wide --routing top1 --moe-policy bp-spine], {}, dir)
+  w2 = run_cli(%w[--steps 8 --seed 0 --shape wide --routing top1 --moe-policy bp-spine], {}, nil)
+  failures << "wide: not deterministic" unless losses(w1) == losses(w2)
+  wl = losses(w1).map(&:to_f)
+  failures << "wide: NaN" if wl.any?(&:nan?)
+  failures << "wide: bp-spine did not train (#{wl.first} -> #{wl.last})" unless wl.last < wl.first - 0.5
+  wc = losses(run_cli(%w[--steps 8 --seed 0 --shape wide], {}, nil))
+  failures << "wide: dense-chain identical to bp-spine (shape/policy dead)" if losses(w1) == wc
+  evs = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+  shp = evs.first && evs.first.dig("model", "shape")
+  failures << "wide: provenance shape #{shp.inspect}" unless shp == "wide"
+  puts failures.length == n0 ? "  ok: --shape wide — bp-spine trains (#{wl.first.round(3)} -> #{wl.last.round(3)}), deterministic, provenance" : "  FAIL: wide leg"
+end
+
 # ---- 6. bundle structure + run-id passthrough ----
 n0 = failures.length
 Dir.mktmpdir("moe_cli_bundle") do |dir|
@@ -206,7 +223,7 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
 end
 
 if failures.empty?
-  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + bundle (toy#120/#121)"
+  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + bundle (toy#120/#121)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe-cli]: #{f}" }

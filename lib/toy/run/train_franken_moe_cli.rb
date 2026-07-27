@@ -105,22 +105,33 @@ module Toy
                " aux=" + aux_alpha.to_s + " steps=" + steps.to_s +
                " seed=" + seed.to_s + " b_seed=" + b_seed.to_s
 
+          shape_s = ENV["FRANKEN_SHAPE"] || "base"
+          if shape_s != "base" && shape_s != "wide"
+            puts "unknown FRANKEN_SHAPE: " + shape_s + " (franken-moe takes base|wide)"
+            return 1
+          end
+          if shape_s == "wide"
+            shape_init(256, 512)
+          else
+            shape_init(DM_BASE, DFF_BASE)
+          end
+
           sess = TinyNN.tnn_session_new(0)
           TinyNN.tnn_session_set_graph_capacity(sess, 262144)
 
           tw = alloc_tower(sess)
 
-          b_up1   = TinyNN.tnn_input_2d_f32_persistent(sess, DFF, VOCAB)
-          b_down1 = TinyNN.tnn_input_2d_f32_persistent(sess, DM,  VOCAB)
-          b_up2   = TinyNN.tnn_input_2d_f32_persistent(sess, DFF, VOCAB)
-          b_down2 = TinyNN.tnn_input_2d_f32_persistent(sess, DM,  VOCAB)
+          b_up1   = TinyNN.tnn_input_2d_f32_persistent(sess, dfv, VOCAB)
+          b_down1 = TinyNN.tnn_input_2d_f32_persistent(sess, dmv,  VOCAB)
+          b_up2   = TinyNN.tnn_input_2d_f32_persistent(sess, dfv, VOCAB)
+          b_down2 = TinyNN.tnn_input_2d_f32_persistent(sess, dmv,  VOCAB)
           sel1 = TinyNN.tnn_input_2d_f32_persistent(sess, 1, NE)
           sel2 = TinyNN.tnn_input_2d_f32_persistent(sess, 1, NE)
           eye   = TinyNN.tnn_input_2d_f32_persistent(sess, NE, NE)
-          b_aq  = TinyNN.tnn_input_2d_f32_persistent(sess, DM, VOCAB)
-          b_ak  = TinyNN.tnn_input_2d_f32_persistent(sess, DM, VOCAB)
-          b_av  = TinyNN.tnn_input_2d_f32_persistent(sess, DM, VOCAB)
-          b_ao  = TinyNN.tnn_input_2d_f32_persistent(sess, DM, VOCAB)
+          b_aq  = TinyNN.tnn_input_2d_f32_persistent(sess, dmv, VOCAB)
+          b_ak  = TinyNN.tnn_input_2d_f32_persistent(sess, dmv, VOCAB)
+          b_av  = TinyNN.tnn_input_2d_f32_persistent(sess, dmv, VOCAB)
+          b_ao  = TinyNN.tnn_input_2d_f32_persistent(sess, dmv, VOCAB)
           b_r   = TinyNN.tnn_input_2d_f32_persistent(sess, NE, VOCAB)
           ones_t = TinyNN.tnn_input_2d_f32_persistent(sess, 1, T)   # ne=[T,1]
 
@@ -153,16 +164,16 @@ module Toy
             gi = gi + 1
           end
           dist_c = b_dist_code
-          sig_up   = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, VOCAB, DFF, 0.0)
-          sig_down = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, VOCAB, DM, 0.0)
+          sig_up   = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, VOCAB, dfv, 0.0)
+          sig_down = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, VOCAB, dmv, 0.0)
           TinyNN.tnn_upload_from_float_array(sess, b_up1,
-            Toy::Train::DfaB.fill(DFF * VOCAB, b_seed + 11, dist_c, sig_up), DFF * VOCAB)
+            Toy::Train::DfaB.fill(dfv * VOCAB, b_seed + 11, dist_c, sig_up), dfv * VOCAB)
           TinyNN.tnn_upload_from_float_array(sess, b_down1,
-            Toy::Train::DfaB.fill(DM * VOCAB, b_seed + 12, dist_c, sig_down), DM * VOCAB)
+            Toy::Train::DfaB.fill(dmv * VOCAB, b_seed + 12, dist_c, sig_down), dmv * VOCAB)
           TinyNN.tnn_upload_from_float_array(sess, b_up2,
-            Toy::Train::DfaB.fill(DFF * VOCAB, b_seed + 13, dist_c, sig_up), DFF * VOCAB)
+            Toy::Train::DfaB.fill(dfv * VOCAB, b_seed + 13, dist_c, sig_up), dfv * VOCAB)
           TinyNN.tnn_upload_from_float_array(sess, b_down2,
-            Toy::Train::DfaB.fill(DM * VOCAB, b_seed + 14, dist_c, sig_down), DM * VOCAB)
+            Toy::Train::DfaB.fill(dmv * VOCAB, b_seed + 14, dist_c, sig_down), dmv * VOCAB)
           s1 = [1.0, 0.0]
           s2 = [0.0, 1.0]
           TinyNN.tnn_upload_from_float_array(sess, sel1, s1, NE)
@@ -170,12 +181,12 @@ module Toy
           ey = [1.0, 0.0, 0.0, 1.0]
           TinyNN.tnn_upload_from_float_array(sess, eye, ey, NE * NE)
           if top1
-            sig_dm = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, VOCAB, DM, 0.0)
+            sig_dm = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, VOCAB, dmv, 0.0)
             sig_e  = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, VOCAB, NE, 0.0)
-            TinyNN.tnn_upload_from_float_array(sess, b_aq, Toy::Train::DfaB.fill(DM * VOCAB, b_seed + 21, dist_c, sig_dm), DM * VOCAB)
-            TinyNN.tnn_upload_from_float_array(sess, b_ak, Toy::Train::DfaB.fill(DM * VOCAB, b_seed + 22, dist_c, sig_dm), DM * VOCAB)
-            TinyNN.tnn_upload_from_float_array(sess, b_av, Toy::Train::DfaB.fill(DM * VOCAB, b_seed + 23, dist_c, sig_dm), DM * VOCAB)
-            TinyNN.tnn_upload_from_float_array(sess, b_ao, Toy::Train::DfaB.fill(DM * VOCAB, b_seed + 24, dist_c, sig_dm), DM * VOCAB)
+            TinyNN.tnn_upload_from_float_array(sess, b_aq, Toy::Train::DfaB.fill(dmv * VOCAB, b_seed + 21, dist_c, sig_dm), dmv * VOCAB)
+            TinyNN.tnn_upload_from_float_array(sess, b_ak, Toy::Train::DfaB.fill(dmv * VOCAB, b_seed + 22, dist_c, sig_dm), dmv * VOCAB)
+            TinyNN.tnn_upload_from_float_array(sess, b_av, Toy::Train::DfaB.fill(dmv * VOCAB, b_seed + 23, dist_c, sig_dm), dmv * VOCAB)
+            TinyNN.tnn_upload_from_float_array(sess, b_ao, Toy::Train::DfaB.fill(dmv * VOCAB, b_seed + 24, dist_c, sig_dm), dmv * VOCAB)
             TinyNN.tnn_upload_from_float_array(sess, b_r,  Toy::Train::DfaB.fill(NE * VOCAB, b_seed + 25, dist_c, sig_e),  NE * VOCAB)
             onesv = zeros(T)
             oi = 0
@@ -226,10 +237,10 @@ module Toy
                 sp = sp + 1
               end
             else
-              wire_dfa_top1(sess, tw, t_hp, 3, b_aq, e_b, tw.tap_ah,  DM, DM, np2)
-              wire_dfa_top1(sess, tw, t_hp, 4, b_ak, e_b, tw.tap_ah,  DM, DM, np2)
-              wire_dfa_top1(sess, tw, t_hp, 5, b_av, e_b, tw.tap_ah,  DM, DM, np2)
-              wire_dfa_top1(sess, tw, t_hp, 6, b_ao, e_b, tw.tap_ctx, DM, DM, np2)
+              wire_dfa_top1(sess, tw, t_hp, 3, b_aq, e_b, tw.tap_ah,  dmv, dmv, np2)
+              wire_dfa_top1(sess, tw, t_hp, 4, b_ak, e_b, tw.tap_ah,  dmv, dmv, np2)
+              wire_dfa_top1(sess, tw, t_hp, 5, b_av, e_b, tw.tap_ah,  dmv, dmv, np2)
+              wire_dfa_top1(sess, tw, t_hp, 6, b_ao, e_b, tw.tap_ctx, dmv, dmv, np2)
             end
             if bp_spine
               # router already chain-wired above; experts follow below
@@ -239,7 +250,7 @@ module Toy
               wire_chain(sess, tw, t_hp, 8)
             else
               # F4 lane: router = DFA task signal + BP aux signal
-              g_dfa_r = dfa_grad(sess, b_r, e_b, tw.tap_h2, DM, NE)
+              g_dfa_r = dfa_grad(sess, b_r, e_b, tw.tap_h2, dmv, NE)
               acc_r   = TinyNN.tnn_tensor_grad(sess, tw.pp[8])
               g_tot   = TinyNN.tnn_add(sess, g_dfa_r, acc_r)
               TinyNN.tnn_set_output(g_tot)
@@ -248,10 +259,10 @@ module Toy
             end
             m1 = TinyNN.tnn_matmul(sess, sel1, tw.t_onehots)
             m2 = TinyNN.tnn_matmul(sess, sel2, tw.t_onehots)
-            wire_dfa_top1(sess, tw, t_hp, 9,  b_up1,   e_b, tw.tap_h2, DM,  DFF, m1)
-            wire_dfa_top1(sess, tw, t_hp, 10, b_down1, e_b, tw.tap_a1, DFF, DM,  m1)
-            wire_dfa_top1(sess, tw, t_hp, 11, b_up2,   e_b, tw.tap_h2, DM,  DFF, m2)
-            wire_dfa_top1(sess, tw, t_hp, 12, b_down2, e_b, tw.tap_a1, DFF, DM,  m2)
+            wire_dfa_top1(sess, tw, t_hp, 9,  b_up1,   e_b, tw.tap_h2, dmv,  dfv, m1)
+            wire_dfa_top1(sess, tw, t_hp, 10, b_down1, e_b, tw.tap_a1, dfv, dmv,  m1)
+            wire_dfa_top1(sess, tw, t_hp, 11, b_up2,   e_b, tw.tap_h2, dmv,  dfv, m2)
+            wire_dfa_top1(sess, tw, t_hp, 12, b_down2, e_b, tw.tap_a1, dfv, dmv,  m2)
           else
             if dfa_experts
               p_sm = TinyNN.tnn_softmax(sess, tw.t_logits)
@@ -261,10 +272,10 @@ module Toy
                 wire_chain(sess, tw, t_hp, idx)
                 idx = idx + 1
               end
-              wire_dfa(sess, tw, t_hp, 9,  b_up1,   e_b, tw.tap_h2, DM,  DFF, "up1")
-              wire_dfa(sess, tw, t_hp, 10, b_down1, e_b, tw.tap_a1, DFF, DM,  "down1")
-              wire_dfa(sess, tw, t_hp, 11, b_up2,   e_b, tw.tap_h2, DM,  DFF, "up2")
-              wire_dfa(sess, tw, t_hp, 12, b_down2, e_b, tw.tap_a2, DFF, DM,  "down2")
+              wire_dfa(sess, tw, t_hp, 9,  b_up1,   e_b, tw.tap_h2, dmv,  dfv, "up1")
+              wire_dfa(sess, tw, t_hp, 10, b_down1, e_b, tw.tap_a1, dfv, dmv,  "down1")
+              wire_dfa(sess, tw, t_hp, 11, b_up2,   e_b, tw.tap_h2, dmv,  dfv, "up2")
+              wire_dfa(sess, tw, t_hp, 12, b_down2, e_b, tw.tap_a2, dfv, dmv,  "down2")
             else
               idx = 0
               while idx < 13
@@ -296,11 +307,12 @@ module Toy
                 TinyNN.tnn_provenance_host_arch, TinyNN.tnn_backend_name(sess))
               model = Toy::Json::Builder.new
               model.add_str("arch", "franken-moe")
+              model.add_str("shape", shape_s)
               model.add_str("name", "franken-moe-instrument")
               model.add_num("vocab",    VOCAB)
-              model.add_num("d_model",  DM)
+              model.add_num("d_model",  dmv)
               model.add_num("n_experts", NE)
-              model.add_num("d_ff",     DFF)
+              model.add_num("d_ff",     dfv)
               rs.add_obj("model", model)
               config = Toy::Json::Builder.new
               config.add_num("context", T)
@@ -333,8 +345,8 @@ module Toy
           end
 
           n_dfa = tw.dfa_grads.length
-          gbuf = zeros(DM * DFF)
-          abuf = zeros(DM * DFF)
+          gbuf = zeros(dmv * dfv)
+          abuf = zeros(dmv * dfv)
           gates_buf = zeros(NE * T)
           fvec = zeros(NE)
           fi = 0

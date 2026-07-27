@@ -109,6 +109,7 @@ module Toy
           @dfa_b_scale = nil
           @align_events = false
           @align_every  = nil   # franken: thin align/mask emissions (toy#122)
+          @shape        = nil   # franken/franken-moe: preset (toy#124)
           @routing    = nil   # franken-moe: dense | top1
           @moe_policy = nil   # franken-moe: chain | dfa-experts
           @moe_aux    = nil   # franken-moe: top1 aux-loss alpha
@@ -253,6 +254,7 @@ module Toy
                              "FRANKEN_MOE_ROUTING" => (@routing || "dense"),
                              "FRANKEN_MOE"         => (@moe_policy || "chain"),
                              "FRANKEN_MOE_AUX"     => (@moe_aux || "0"),
+                             "FRANKEN_SHAPE"       => (@shape || "base"),
                              "FRANKEN_B_SEED"      => (@dfa_b_seed || 1234).to_s,
                              "FRANKEN_B_DIST"      => (@dfa_b_dist || ""),
                              "FRANKEN_B_SCALE"     => (@dfa_b_scale || ""),
@@ -265,6 +267,7 @@ module Toy
                              "FRANKEN_B_SCALE" => (@dfa_b_scale || ""),
                              "FRANKEN_ALIGN"   => (@align_events ? "1" : ""),
                              "FRANKEN_ALIGN_EVERY" => (@align_every || 1).to_s,
+                             "FRANKEN_SHAPE"   => (@shape || "base"),
                              "CORPUS"          => (@corpus || ""))
           else
             # from-scratch — byte-identical to today plus the harmless RECIPE key.
@@ -374,6 +377,15 @@ module Toy
               @dfa_b_scale = $1
             when "--align-events"
               @align_events = true
+            when "--shape"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--shape must be base|wide|deep") unless %w[base wide deep].include?(val)
+              @shape = val
+            when /\A--shape=(.*)\z/
+              val = $1
+              return bad_arg("--shape must be base|wide|deep") unless %w[base wide deep].include?(val)
+              @shape = val
             when "--align-every"
               i += 1
               val = @argv[i]
@@ -490,6 +502,12 @@ module Toy
           end
           if @recipe != "franken" && @align_every
             return bad_arg("--align-every is only valid with recipe 'franken'")
+          end
+          if !%w[franken franken-moe].include?(@recipe) && @shape
+            return bad_arg("--shape is only valid with recipe 'franken' or 'franken-moe'")
+          end
+          if @recipe == "franken-moe" && @shape == "deep"
+            return bad_arg("--shape deep is llama-only; franken-moe takes base|wide (toy#124)")
           end
           if @recipe != "franken-moe" && (@routing || @moe_policy || @moe_aux)
             return bad_arg("--routing/--moe-policy/--moe-aux are only valid with recipe 'franken-moe'")

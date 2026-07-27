@@ -15,11 +15,31 @@ module Toy
     module Run
       module TrainFrankenMoe
         VOCAB = 16
-        DM    = 8
-        DFF   = 16
+        DM_BASE  = 8
+        DFF_BASE = 16
         NE    = 2      # experts
         T     = 4
         EPS   = 1.0e-5
+
+        # toy#124 shape presets: DM/DFF are runtime module state so the
+        # spec-callable runner can widen (base d8/ff16, wide d256/ff512)
+        # without a second compiled unit. EVERY runner calls shape_init
+        # FIRST (the rig pins base; the CLI reads FRANKEN_SHAPE).
+        # VOCAB/NE/T stay pinned — F8's width question is expert/dm
+        # width, and the instrument's batch contract does not move.
+        def self.shape_init(dm, dff)
+          @sh_dm = dm
+          @sh_df = dff
+          0
+        end
+
+        def self.dmv
+          @sh_dm
+        end
+
+        def self.dfv
+          @sh_df
+        end
 
         def self.fillv(n, seed)
           a = [0.0]; a.pop
@@ -100,19 +120,19 @@ module Toy
         # up1, down1, up2, down2}   → pp indices 0..12
         def self.alloc_tower(sess)
           tw = MoeTower.new
-          reg2(sess, tw, VOCAB, DM)   # 0 embed
-          reg1(sess, tw, DM)          # 1 fnorm
-          reg1(sess, tw, DM)          # 2 attn rn1
-          reg2(sess, tw, DM, DM)      # 3 wq
-          reg2(sess, tw, DM, DM)      # 4 wk
-          reg2(sess, tw, DM, DM)      # 5 wv
-          reg2(sess, tw, DM, DM)      # 6 wo
-          reg1(sess, tw, DM)          # 7 moe rn2
-          reg2(sess, tw, NE, DM)      # 8 wr (router)
-          reg2(sess, tw, DFF, DM)     # 9 up1
-          reg2(sess, tw, DM, DFF)     # 10 down1
-          reg2(sess, tw, DFF, DM)     # 11 up2
-          reg2(sess, tw, DM, DFF)     # 12 down2
+          reg2(sess, tw, VOCAB, dmv)   # 0 embed
+          reg1(sess, tw, dmv)          # 1 fnorm
+          reg1(sess, tw, dmv)          # 2 attn rn1
+          reg2(sess, tw, dmv, dmv)      # 3 wq
+          reg2(sess, tw, dmv, dmv)      # 4 wk
+          reg2(sess, tw, dmv, dmv)      # 5 wv
+          reg2(sess, tw, dmv, dmv)      # 6 wo
+          reg1(sess, tw, dmv)          # 7 moe rn2
+          reg2(sess, tw, NE, dmv)      # 8 wr (router)
+          reg2(sess, tw, dfv, dmv)     # 9 up1
+          reg2(sess, tw, dmv, dfv)     # 10 down1
+          reg2(sess, tw, dfv, dmv)     # 11 up2
+          reg2(sess, tw, dmv, dfv)     # 12 down2
           tw
         end
 
@@ -123,7 +143,7 @@ module Toy
           k = TinyNN.tnn_matmul(sess, wk, h)
           v = TinyNN.tnn_matmul(sess, wv, h)
           scores = TinyNN.tnn_matmul(sess, k, q)
-          scaled = TinyNN.tnn_scale(sess, scores, 1.0 / Math.sqrt(DM.to_f))
+          scaled = TinyNN.tnn_scale(sess, scores, 1.0 / Math.sqrt(dmv.to_f))
           masked = TinyNN.tnn_diag_mask_inf(sess, scaled, 0)
           attn   = TinyNN.tnn_softmax(sess, masked)
           v_t    = TinyNN.tnn_transpose(sess, v)
@@ -181,22 +201,22 @@ module Toy
           gate  = TinyNN.tnn_sum_rows(sess, TinyNN.tnn_mul(sess, oneh, probs)) # [1,T]
 
           up_stack = TinyNN.tnn_concat(sess,
-            TinyNN.tnn_reshape_3d(sess, tw.pp[9],  DM, DFF, 1),
-            TinyNN.tnn_reshape_3d(sess, tw.pp[11], DM, DFF, 1), 2)   # [DM,DFF,NE]
+            TinyNN.tnn_reshape_3d(sess, tw.pp[9],  dmv, dfv, 1),
+            TinyNN.tnn_reshape_3d(sess, tw.pp[11], dmv, dfv, 1), 2)   # [DM,DFF,NE]
           dn_stack = TinyNN.tnn_concat(sess,
-            TinyNN.tnn_reshape_3d(sess, tw.pp[10], DFF, DM, 1),
-            TinyNN.tnn_reshape_3d(sess, tw.pp[12], DFF, DM, 1), 2)   # [DFF,DM,NE]
+            TinyNN.tnn_reshape_3d(sess, tw.pp[10], dfv, dmv, 1),
+            TinyNN.tnn_reshape_3d(sess, tw.pp[12], dfv, dmv, 1), 2)   # [DFF,DM,NE]
 
           h_exp = h2
           if cut == 1
             h_exp = TinyNN.tnn_detach(sess, h2)
           end
-          h3    = TinyNN.tnn_reshape_3d(sess, h_exp, DM, 1, T)
+          h3    = TinyNN.tnn_reshape_3d(sess, h_exp, dmv, 1, T)
           upo   = TinyNN.tnn_mul_mat_id(sess, up_stack, h3, ids2)    # [DFF,1,T]
           a     = TinyNN.tnn_gelu(sess, upo)
-          tw.tap_a1 = TinyNN.tnn_reshape_3d(sess, a, DFF, T, 1)      # routed acts [DFF,T]
+          tw.tap_a1 = TinyNN.tnn_reshape_3d(sess, a, dfv, T, 1)      # routed acts [DFF,T]
           dno   = TinyNN.tnn_mul_mat_id(sess, dn_stack, a, ids2)     # [DM,1,T]
-          eo    = TinyNN.tnn_reshape_3d(sess, dno, DM, T, 1)         # [DM,T]
+          eo    = TinyNN.tnn_reshape_3d(sess, dno, dmv, T, 1)         # [DM,T]
           TinyNN.tnn_add(sess, t_x, TinyNN.tnn_mul(sess, eo, gate))
         end
 

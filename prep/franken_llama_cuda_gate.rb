@@ -81,8 +81,17 @@ Dir.mktmpdir("franken_cuda_gate") do |dir|
   puts failures.empty? ? "  ok: bundle — provenance + 60 align events + run_end + checkpoint (CPU write-seam)" : "  FAIL: bundle"
 end
 
+# ---- toy#124/#122: shape + corpus on the CUDA twin (determinism-scoped;
+# CUDA is never compared to CPU) ----
+w1 = run_bin(FRK, { "FRANKEN_SHAPE" => "wide", "CORPUS" => "data/ts_seqs.bin", "STEPS" => "6" })
+w2 = run_bin(FRK, { "FRANKEN_SHAPE" => "wide", "CORPUS" => "data/ts_seqs.bin", "STEPS" => "6" })
+failures << "shape-wide: cuda not deterministic" unless w1 == w2
+wl = curve(w1).map { |l| l[/loss=(\S+)/, 1].to_f }
+failures << "shape-wide: NaN/short" unless wl.length == 6 && wl.none?(&:nan?)
+puts failures.empty? ? "  ok: --shape wide + --corpus on CUDA — deterministic, trains" : "  FAIL: cuda shape leg"
+
 if failures.empty?
-  puts "GATE PASS [franken-llama-cuda]: parity(seed 0+1) + dfa-arm + determinism + bundle (toy#109 CUDA leg)"
+  puts "GATE PASS [franken-llama-cuda]: parity(seed 0+1) + dfa-arm + determinism + bundle + shape/corpus (toy#109/#122/#124 CUDA leg)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-llama-cuda]: #{f}" }
