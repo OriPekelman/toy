@@ -26,14 +26,14 @@
 # The default SPINEL_DIR prefers the pinned scratch toolchain when it
 # exists (gx10), falling back to ~/sites/spinel (which the guard then
 # vets by rev, NOT by path — a Mac clone at the pin passes).
-PINNED_SPINEL := b96280b3
-SPINEL_DIR  ?= $(firstword $(wildcard /srv/data/scratch/spinel-master-0723) $(HOME)/sites/spinel)
+PINNED_SPINEL := dc5b8f17
+SPINEL_DIR  ?= $(firstword $(wildcard /srv/data/scratch/spinel-dc5b8f17) $(HOME)/sites/spinel)
 SPINEL_BIN  ?= $(SPINEL_DIR)/spinel
 
 SPINEL_ACTUAL := $(shell git -C $(SPINEL_DIR) rev-parse --short=8 HEAD 2>/dev/null || echo unknown)
 ifneq ($(SPINEL_SKIP_PIN_CHECK),1)
 ifneq ($(SPINEL_ACTUAL),$(PINNED_SPINEL))
-$(error toy is pinned to spinel $(PINNED_SPINEL) but SPINEL_DIR=$(SPINEL_DIR) is at '$(SPINEL_ACTUAL)'. Export SPINEL_DIR=<checkout at $(PINNED_SPINEL)> (gx10: /srv/data/scratch/spinel-master-0723), or SPINEL_SKIP_PIN_CHECK=1 to bypass deliberately (e.g. a pin-advance sweep))
+$(error toy is pinned to spinel $(PINNED_SPINEL) but SPINEL_DIR=$(SPINEL_DIR) is at '$(SPINEL_ACTUAL)'. Export SPINEL_DIR=<checkout at $(PINNED_SPINEL)> (gx10: /srv/data/scratch/spinel-dc5b8f17), or SPINEL_SKIP_PIN_CHECK=1 to bypass deliberately (e.g. a pin-advance sweep))
 endif
 endif
 

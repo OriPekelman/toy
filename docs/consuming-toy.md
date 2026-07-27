@@ -16,23 +16,23 @@ toy is verified against **Spinel master**, plain rev pin:
 
 ```sh
 git clone https://github.com/matz/spinel && cd spinel
-git checkout b96280b3
+git checkout dc5b8f17
 make deps && make
 ```
 
-At `b96280b3` (verified 2026-07-25, gx10/GB10): the full gate matrix
-passes — 36 of 37 legs green including all four training recipes
-byte-exact (also under `SPINEL_GC_STRESS=1`), infer/eval CPU+CUDA,
-GPT-2 minimal + engine trainers (CPU and CUDA), compute-surface, the
-GDN/Dragon and MLA/MoE batteries, serve, consumer cold-start,
-poly-degrade, and the four franken credit-assignment gates (toy#109/
-#112). The one exclusion is the documented pin-independent red:
-mixed-precision tolerance (toy#108). The #3287 compile-time blowup
-that froze the previous pin is FIXED at this rev (serve unit compiles
-in ~37 s); #3285 (builtin `Module#name` shadowing) is also fixed —
-toy keeps the better `Device.kind` name regardless. Pin exactly this
-rev for byte-reproducibility; it advances per the toy#95 sweep
-protocol.
+At `dc5b8f17` (verified 2026-07-27, gx10/GB10): the full `make gates`
+matrix passes — all 39 legs green, including every byte-exact fixture
+(four training recipes, also under `SPINEL_GC_STRESS=1`; infer/eval;
+serve; GPT-2 CPU+CUDA), the CUDA batteries, the GDN/Dragon and
+MLA/MoE decodes, consumer cold-start, poly-degrade, gate-mri, the
+five franken credit-assignment gates, and mixed-precision (0.17%,
+healthy since the toy#114 init reset). `dc5b8f17` is deliberately the
+LAST GOOD rev below **matz/spinel#3396** (toy-filed, bisected:
+94e332ee's generational string-heap sweep frees a live poly-concat
+operand — warm-start SEGVs under GC stress). Do not advance past
+dc5b8f17 until #3396 is fixed; the nine commits above it are the
+94e332ee wave plus header renames. Pin exactly this rev for
+byte-reproducibility; it advances per the toy#95 sweep protocol.
 
 The pin is ENFORCED by the build (toy#119): the Makefile carries
 `PINNED_SPINEL := b96280b3` and every `make` invocation checks
@@ -48,9 +48,9 @@ bypasses it deliberately (pin-advance sweeps). A pin advance updates
 runs every gate leg on the current platform — the required sweep after
 any shared-layer change (tinynn C, the engine unit, a pin move).
 
-Previous pins: `ecac633caa` (2026-07-23, 32/33 — deliberately the
-last fast rev before the then-unfixed #3287 window), `f6a189e8`
-(2026-07-10, 28/28).
+Previous pins: `b96280b3` (2026-07-25, 36/37), `ecac633caa`
+(2026-07-23, 32/33 — deliberately the last fast rev before the
+then-unfixed #3287 window), `f6a189e8` (2026-07-10, 28/28).
 
 Historical note: v0.8.0–v0.9.0 were verified against the
 `toy-v0.8.0-pin` union branch (`fbb9beb` = spinel-dev#13 + #14 fixes,
