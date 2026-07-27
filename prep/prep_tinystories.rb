@@ -14,6 +14,16 @@
 #     --max_lines 500 \
 #     --context_length 64 \
 #     --prompt "Once upon a time"
+#
+# FROZEN-VOCAB LARGE PACK (toy#123, the F6 full-horizon corpus):
+#   ruby prep/prep_tinystories.rb --frozen_vocab data/ts_vocab.txt \
+#       --out_bin data/ts_seqs_large.bin --max_lines 0
+# Reuses the PINNED vocab (line index = token id — the trainers' 627
+# shape contract); streams EVERY line of the source file; OOV words are
+# DROPPED (not UNK'd: the vocab has no spare slot, and dropping whole
+# lines retains almost nothing at 627 words). Emits a flat packed-i32
+# token stream the --corpus flag reads at arbitrary offsets, plus
+# retention stats. Nothing about the classic 3-file mode changes.
 require "optparse"
 require "fileutils"
 require_relative "dataset_loader"
@@ -34,7 +44,36 @@ OptionParser.new do |o|
   o.on("--context_length N", Integer) { |v| opts[:context_length] = v }
   o.on("--prompt P")             { |v| opts[:prompt] = v }
   o.on("--out_dir D")            { |v| opts[:out_dir] = v }
+  o.on("--frozen_vocab P")       { |v| opts[:frozen_vocab] = v }
+  o.on("--out_bin P")            { |v| opts[:out_bin] = v }
 end.parse!
+
+if opts[:frozen_vocab]
+  vocab_words = File.readlines(opts[:frozen_vocab]).map(&:chomp)
+  word_to_index = vocab_words.each_with_index.to_h
+  abort "frozen vocab is empty: #{opts[:frozen_vocab]}" if vocab_words.empty?
+  out_bin = opts[:out_bin] || File.join(opts[:out_dir], "ts_seqs_large.bin")
+  n = opts[:max_lines]
+  puts "Frozen-vocab pack: #{vocab_words.size} words from #{opts[:frozen_vocab]}"
+  puts "Loading #{opts[:repo]} / #{opts[:file]} (#{n == 0 ? 'ALL' : "first #{n}"} lines)…"
+  lines = n == 0 ? DatasetLoader.lines(opts[:repo], opts[:file]) :
+                   DatasetLoader.head(opts[:repo], opts[:file], n)
+  ids = []
+  total_words = 0
+  lines.each do |l|
+    toks = Tokenizer.tokenize_french(l)
+    total_words += toks.size
+    toks.each do |w|
+      id = word_to_index[w]
+      ids << id if id
+    end
+  end
+  File.open(out_bin, "wb") { |f| f.write(ids.pack("l<*")) }
+  max_id = ids.max
+  puts "Wrote #{out_bin}: #{ids.size} tokens (#{(ids.size * 100.0 / total_words).round(1)}% of #{total_words} words retained; max id #{max_id}, vocab #{vocab_words.size})"
+  abort "PACK INVALID: max id #{max_id} >= vocab #{vocab_words.size}" if max_id >= vocab_words.size
+  exit 0
+end
 
 FileUtils.mkdir_p(opts[:out_dir])
 
