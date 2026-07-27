@@ -258,6 +258,56 @@ Dir.mktmpdir("moe_cli_corpus") do |dir|
   puts failures.length == n0 ? "  ok: --corpus streams at vocab 627 (deterministic, differs from fixed-seq, seed semantics, dense/aux/wide compose, EOF rotation)" : "  FAIL: corpus leg"
 end
 
+# ---- toy#128: --experts N (the demonstrator's E axis) ----
+# E=2 flag-null (== default byte-exact); E=4: provenance + length-4
+# shares; aux bracket — aux=0 collapses to ONE expert, aux=0.2 puts
+# every expert >= 0.1 tail mean share (deterministic, so pinnable;
+# NOTE aux=0.05 leaves an expert starved at E=4/T=4 — F8c's alpha
+# question, recorded on the issue, deliberately NOT gated); bp-spine
+# escapes the fully-dfa plateau at E=4; dense dfa-experts wires all
+# 8 expert weights (align names up1..down4); composes wide+corpus.
+n0 = failures.length
+e2 = losses(run_cli(%w[--steps 8 --seed 0 --experts 2], {}, nil))
+failures << "experts: --experts 2 differs from default (flag-null broken)" unless e2 == cli_chain0
+Dir.mktmpdir("moe_cli_e4") do |dir|
+  run_cli(%w[--steps 120 --seed 0 --experts 4 --routing top1], {}, dir)
+  evs = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+  rs = evs.first || {}
+  failures << "experts: provenance n_experts #{rs.dig('model', 'n_experts').inspect} (want 4)" unless rs.dig("model", "n_experts") == 4
+  routes = evs.select { |e| e["kind"] == "route" }
+  failures << "experts: shares not length-4 vectors" unless routes.length == 120 && routes.all? { |r| r["shares"].length == 4 }
+  tail = routes.drop(20)
+  means = [0, 1, 2, 3].map { |e| tail.map { |r| r["shares"][e] }.sum / tail.length }
+  failures << "experts: aux=0 did not collapse (#{means.map { |m| m.round(3) }.inspect})" unless means.max > 0.999
+end
+Dir.mktmpdir("moe_cli_e4aux") do |dir|
+  run_cli(%w[--steps 120 --seed 0 --experts 4 --routing top1 --moe-aux 0.2], {}, dir)
+  evs = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+  routes = evs.select { |e| e["kind"] == "route" }
+  tail = routes.drop(20)
+  means = [0, 1, 2, 3].map { |e| tail.map { |r| r["shares"][e] }.sum / tail.length }
+  failures << "experts: aux=0.2 floor broken (#{means.map { |m| m.round(3) }.inspect}, want all >= 0.1)" unless means.all? { |m| m >= 0.1 }
+end
+sp_args = %w[--steps 60 --seed 0 --experts 4 --routing top1 --moe-policy bp-spine]
+sp1 = run_cli(sp_args, {}, nil)
+sp2 = run_cli(sp_args, {}, nil)
+failures << "experts: E=4 bp-spine not deterministic" unless losses(sp1) == losses(sp2)
+spl = losses(sp1).map(&:to_f)
+failures << "experts: E=4 bp-spine did not escape the plateau (#{spl.last})" unless spl.last < 0.5
+fd = losses(run_cli(%w[--steps 60 --seed 0 --experts 4 --routing top1], {}, nil))
+failures << "experts: E=4 bp-spine identical to fully-dfa" if losses(sp1) == fd
+Dir.mktmpdir("moe_cli_e4dfa") do |dir|
+  run_cli(%w[--steps 6 --seed 0 --experts 4 --moe-policy dfa-experts --align-events], {}, dir)
+  evs = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+  aligns = evs.select { |e| e["kind"] == "align" }
+  names = aligns.map { |e| e["w"] }.uniq.sort
+  failures << "experts: #{aligns.length} align events (want 48 = 8 weights x 6)" unless aligns.length == 48
+  failures << "experts: align names #{names.inspect}" unless names == %w[down1 down2 down3 down4 up1 up2 up3 up4]
+end
+wc = run_cli(%w[--steps 8 --seed 0 --experts 4 --shape wide --corpus data/ts_seqs.bin --routing top1 --moe-policy bp-spine], {}, nil)
+failures << "experts: wide+corpus composition failed" unless losses(wc).length == 8 && losses(wc).map(&:to_f).none?(&:nan?)
+puts failures.length == n0 ? "  ok: --experts — E=2 flag-null; E=4 aux bracket (collapse vs >=0.1 floor @0.2), bp-spine escapes plateau, 8 dfa wires named, wide+corpus compose" : "  FAIL: experts leg"
+
 # ---- 6. bundle structure + run-id passthrough ----
 n0 = failures.length
 Dir.mktmpdir("moe_cli_bundle") do |dir|
@@ -287,7 +337,7 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
 end
 
 if failures.empty?
-  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + bundle (toy#120/#121)"
+  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + bundle (toy#120/#121)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe-cli]: #{f}" }

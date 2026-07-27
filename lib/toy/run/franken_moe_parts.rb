@@ -33,10 +33,16 @@ module Toy
         # embeds cannot take those token ids (get_rows would read past
         # the table). The rig and the CLI's fixed-seq feed pin VOCAB
         # (16, byte-null); --corpus pins 627.
-        def self.shape_init(dm, dff, vocab)
+        #
+        # toy#128: expert count joined too (the demonstrator's E axis;
+        # E>=8 is the F9 target). The rig pins NE (2, byte-null); the
+        # CLI reads FRANKEN_MOE_EXPERTS. Experts live at pp[9+2i]
+        # (up_i) / pp[10+2i] (down_i); the spine stays 0..8.
+        def self.shape_init(dm, dff, vocab, ne)
           @sh_dm = dm
           @sh_df = dff
           @sh_vocab = vocab
+          @sh_ne = ne
           0
         end
 
@@ -50,6 +56,10 @@ module Toy
 
         def self.vocabv
           @sh_vocab
+        end
+
+        def self.nev
+          @sh_ne
         end
 
         def self.fillv(n, seed)
@@ -88,6 +98,7 @@ module Toy
           attr_accessor :pp, :pm, :pv
           attr_accessor :t_loss, :t_logits, :t_gates
           attr_accessor :tap_h2, :tap_a1, :tap_a2, :tap_ah, :tap_ctx, :t_onehots
+          attr_accessor :tap_as
           attr_accessor :dfa_grads, :dfa_accs, :dfa_names
 
           def initialize
@@ -104,6 +115,7 @@ module Toy
             @tap_ah   = np
             @tap_ctx  = np
             @t_onehots = np
+            @tap_as    = [np]; @tap_as.pop   # toy#128: per-expert dense acts
             @dfa_grads = [np]; @dfa_grads.pop
             @dfa_accs  = [np]; @dfa_accs.pop
             @dfa_names = [""]; @dfa_names.pop
@@ -128,7 +140,8 @@ module Toy
 
         # weight order (parity depends on identical registration in both
         # towers): embed, fnorm, attn{rn1,wq,wk,wv,wo}, moe{rn2, wr,
-        # up1, down1, up2, down2}   → pp indices 0..12
+        # then per expert i: up_i, down_i}  → pp indices 0..8+2E
+        # (toy#128: the expert tail loops; E=2 reproduces 9..12 exactly)
         def self.alloc_tower(sess)
           tw = MoeTower.new
           reg2(sess, tw, vocabv, dmv)  # 0 embed
@@ -139,11 +152,13 @@ module Toy
           reg2(sess, tw, dmv, dmv)      # 5 wv
           reg2(sess, tw, dmv, dmv)      # 6 wo
           reg1(sess, tw, dmv)          # 7 moe rn2
-          reg2(sess, tw, NE, dmv)      # 8 wr (router)
-          reg2(sess, tw, dfv, dmv)     # 9 up1
-          reg2(sess, tw, dmv, dfv)     # 10 down1
-          reg2(sess, tw, dfv, dmv)     # 11 up2
-          reg2(sess, tw, dmv, dfv)     # 12 down2
+          reg2(sess, tw, nev, dmv)     # 8 wr (router)
+          ei = 0
+          while ei < nev
+            reg2(sess, tw, dfv, dmv)   # 9+2i  up_i
+            reg2(sess, tw, dmv, dfv)   # 10+2i down_i
+            ei = ei + 1
+          end
           tw
         end
 
@@ -164,8 +179,12 @@ module Toy
         end
 
         # Dense soft-mixture MoE block; records taps + gates on the tower.
-        # sel1/sel2 are the uploaded one-hot row selectors [1, NE].
-        def self.moe_block(sess, tw, t_x, sel1, sel2)
+        # sels = the E uploaded one-hot row selectors [1, NE] (toy#128:
+        # an array; the E=2 graph is the original one — sum tree
+        # (t_x + (g1 + g2)) reproduced by the accumulator loop).
+        # tap_a1/tap_a2 keep the rig's two-expert names; tap_as carries
+        # all E for the CLI's generalized dfa wires.
+        def self.moe_block(sess, tw, t_x, sels)
           rn2 = tw.pp[7]
           wr  = tw.pp[8]
           h2 = Toy::LLM::Primitives::RMSNorm.build(sess, t_x, rn2, EPS)
@@ -174,19 +193,28 @@ module Toy
           gates    = TinyNN.tnn_softmax(sess, r_logits)       # [NE, T]
           TinyNN.tnn_set_output(gates)
           tw.t_gates = gates
-          g1 = TinyNN.tnn_matmul(sess, sel1, gates)           # [1, T]
-          g2 = TinyNN.tnn_matmul(sess, sel2, gates)           # [1, T]
-
-          a1 = TinyNN.tnn_gelu(sess, TinyNN.tnn_matmul(sess, tw.pp[9], h2))   # [DFF,T]
-          tw.tap_a1 = a1
-          o1 = TinyNN.tnn_matmul(sess, tw.pp[10], a1)                          # [DM,T]
-          a2 = TinyNN.tnn_gelu(sess, TinyNN.tnn_matmul(sess, tw.pp[11], h2))
-          tw.tap_a2 = a2
-          o2 = TinyNN.tnn_matmul(sess, tw.pp[12], a2)
-
-          gated1 = TinyNN.tnn_mul(sess, o1, g1)   # broadcast [DM,T]*[1,T]
-          gated2 = TinyNN.tnn_mul(sess, o2, g2)
-          TinyNN.tnn_add(sess, t_x, TinyNN.tnn_add(sess, gated1, gated2))
+          acc = TinyNN.tnn_null_ptr
+          ei = 0
+          while ei < nev
+            g_i = TinyNN.tnn_matmul(sess, sels[ei], gates)    # [1, T]
+            a_i = TinyNN.tnn_gelu(sess, TinyNN.tnn_matmul(sess, tw.pp[9 + 2 * ei], h2))  # [DFF,T]
+            tw.tap_as.push(a_i)
+            if ei == 0
+              tw.tap_a1 = a_i
+            end
+            if ei == 1
+              tw.tap_a2 = a_i
+            end
+            o_i = TinyNN.tnn_matmul(sess, tw.pp[10 + 2 * ei], a_i)               # [DM,T]
+            gated_i = TinyNN.tnn_mul(sess, o_i, g_i)  # broadcast [DM,T]*[1,T]
+            if ei == 0
+              acc = gated_i
+            else
+              acc = TinyNN.tnn_add(sess, acc, gated_i)
+            end
+            ei = ei + 1
+          end
+          TinyNN.tnn_add(sess, t_x, acc)
         end
 
         # HARD top-1 MoE block: argmax routing + mul_mat_id dispatch.
@@ -211,12 +239,18 @@ module Toy
           tw.t_onehots = oneh
           gate  = TinyNN.tnn_sum_rows(sess, TinyNN.tnn_mul(sess, oneh, probs)) # [1,T]
 
-          up_stack = TinyNN.tnn_concat(sess,
-            TinyNN.tnn_reshape_3d(sess, tw.pp[9],  dmv, dfv, 1),
-            TinyNN.tnn_reshape_3d(sess, tw.pp[11], dmv, dfv, 1), 2)   # [DM,DFF,NE]
-          dn_stack = TinyNN.tnn_concat(sess,
-            TinyNN.tnn_reshape_3d(sess, tw.pp[10], dfv, dmv, 1),
-            TinyNN.tnn_reshape_3d(sess, tw.pp[12], dfv, dmv, 1), 2)   # [DFF,DM,NE]
+          # toy#128: stack the E experts by chained concat along dim 2
+          # (E=2 == the original single concat pair).
+          up_stack = TinyNN.tnn_reshape_3d(sess, tw.pp[9],  dmv, dfv, 1)
+          dn_stack = TinyNN.tnn_reshape_3d(sess, tw.pp[10], dfv, dmv, 1)
+          ei = 1
+          while ei < nev
+            up_stack = TinyNN.tnn_concat(sess, up_stack,
+              TinyNN.tnn_reshape_3d(sess, tw.pp[9 + 2 * ei],  dmv, dfv, 1), 2)   # [DM,DFF,E]
+            dn_stack = TinyNN.tnn_concat(sess, dn_stack,
+              TinyNN.tnn_reshape_3d(sess, tw.pp[10 + 2 * ei], dfv, dmv, 1), 2)   # [DFF,DM,E]
+            ei = ei + 1
+          end
 
           h_exp = h2
           if cut == 1
@@ -231,7 +265,7 @@ module Toy
           TinyNN.tnn_add(sess, t_x, TinyNN.tnn_mul(sess, eo, gate))
         end
 
-        def self.forward_tower(sess, tw, t_tok, t_labels, sel1, sel2, eye, top1, cut)
+        def self.forward_tower(sess, tw, t_tok, t_labels, sels, eye, top1, cut)
           x = TinyNN.tnn_get_rows(sess, tw.pp[0], t_tok)
           atrip = attention_block(sess, x, tw.pp[2], tw.pp[3], tw.pp[4], tw.pp[5], tw.pp[6])
           x = atrip[0]
@@ -240,7 +274,7 @@ module Toy
           if top1
             x = moe_block_top1(sess, tw, x, eye, cut)
           else
-            x = moe_block(sess, tw, x, sel1, sel2)
+            x = moe_block(sess, tw, x, sels)
           end
           xf  = Toy::LLM::Primitives::RMSNorm.build(sess, x, tw.pp[1], EPS)
           lgt = TinyNN.tnn_matmul(sess, tw.pp[0], xf)

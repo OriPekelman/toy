@@ -27,6 +27,14 @@
 #   FRANKEN_ALIGN_EVERY  toy#127: thin align downloads + emissions to
 #                        every Nth step (the toy#122 thinning, MoE-side;
 #                        step/route events stay per-step; default 1)
+#   FRANKEN_MOE_EXPERTS  toy#128 (the demonstrator's E axis): expert
+#                        count >= 2 (default 2, byte-null — the rig
+#                        shape). Experts at pp[9+2i]/pp[10+2i]; B seeds
+#                        stable per expert index (legacy +11..+14 for
+#                        experts 0/1, +101+10i/+102+10i from expert 2 —
+#                        the legacy stride would hit the attention B
+#                        offsets +21..+25 at expert 5). route.shares
+#                        becomes the true length-E vector.
 #   CORPUS               toy#125 (the F8 data surface): stream the
 #                        packed-i32 corpus per step (warm-start's
 #                        reader, rotating T-token windows, pre-EOF
@@ -123,7 +131,8 @@ module Toy
           puts "franken-moe: routing=" + (top1 ? "top1" : "dense") +
                " policy=" + pol_name +
                " aux=" + aux_alpha.to_s + " steps=" + steps.to_s +
-               " seed=" + seed.to_s + " b_seed=" + b_seed.to_s
+               " seed=" + seed.to_s + " b_seed=" + b_seed.to_s +
+               " experts=" + (ENV["FRANKEN_MOE_EXPERTS"] || "2")
 
           shape_s = ENV["FRANKEN_SHAPE"] || "base"
           if shape_s != "base" && shape_s != "wide"
@@ -142,10 +151,18 @@ module Toy
           if corpus_s.length > 0
             vsel = 627
           end
+          # toy#128: expert count (the demonstrator's E axis; default 2
+          # byte-null — the rig shape).
+          ex_s = ENV["FRANKEN_MOE_EXPERTS"] || ""
+          esel = ex_s.length > 0 ? ex_s.to_i : NE
+          if esel < 2
+            puts "FRANKEN_MOE_EXPERTS must be >= 2, got " + ex_s
+            return 1
+          end
           if shape_s == "wide"
-            shape_init(256, 512, vsel)
+            shape_init(256, 512, vsel, esel)
           else
-            shape_init(DM_BASE, DFF_BASE, vsel)
+            shape_init(DM_BASE, DFF_BASE, vsel, esel)
           end
 
           sess = TinyNN.tnn_session_new(0)
@@ -153,18 +170,30 @@ module Toy
 
           tw = alloc_tower(sess)
 
-          b_up1   = TinyNN.tnn_input_2d_f32_persistent(sess, dfv, vocabv)
-          b_down1 = TinyNN.tnn_input_2d_f32_persistent(sess, dmv,  vocabv)
-          b_up2   = TinyNN.tnn_input_2d_f32_persistent(sess, dfv, vocabv)
-          b_down2 = TinyNN.tnn_input_2d_f32_persistent(sess, dmv,  vocabv)
-          sel1 = TinyNN.tnn_input_2d_f32_persistent(sess, 1, NE)
-          sel2 = TinyNN.tnn_input_2d_f32_persistent(sess, 1, NE)
-          eye   = TinyNN.tnn_input_2d_f32_persistent(sess, NE, NE)
+          # toy#128: per-expert B mats + one-hot selectors as arrays
+          # (E=2 reproduces the b_up1/b_down1/b_up2/b_down2 + sel1/sel2
+          # allocation order exactly).
+          np0 = TinyNN.tnn_null_ptr
+          b_ups   = [np0]; b_ups.pop
+          b_downs = [np0]; b_downs.pop
+          ei = 0
+          while ei < nev
+            b_ups.push(TinyNN.tnn_input_2d_f32_persistent(sess, dfv, vocabv))
+            b_downs.push(TinyNN.tnn_input_2d_f32_persistent(sess, dmv, vocabv))
+            ei = ei + 1
+          end
+          sels = [np0]; sels.pop
+          ei = 0
+          while ei < nev
+            sels.push(TinyNN.tnn_input_2d_f32_persistent(sess, 1, nev))
+            ei = ei + 1
+          end
+          eye   = TinyNN.tnn_input_2d_f32_persistent(sess, nev, nev)
           b_aq  = TinyNN.tnn_input_2d_f32_persistent(sess, dmv, vocabv)
           b_ak  = TinyNN.tnn_input_2d_f32_persistent(sess, dmv, vocabv)
           b_av  = TinyNN.tnn_input_2d_f32_persistent(sess, dmv, vocabv)
           b_ao  = TinyNN.tnn_input_2d_f32_persistent(sess, dmv, vocabv)
-          b_r   = TinyNN.tnn_input_2d_f32_persistent(sess, NE, vocabv)
+          b_r   = TinyNN.tnn_input_2d_f32_persistent(sess, nev, vocabv)
           ones_t = TinyNN.tnn_input_2d_f32_persistent(sess, 1, T)   # ne=[T,1]
 
           # params: dense = every weight (shadow-shaped when dfa-experts);
@@ -198,28 +227,48 @@ module Toy
           dist_c = b_dist_code
           sig_up   = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, vocabv, dfv, 0.0)
           sig_down = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, vocabv, dmv, 0.0)
-          TinyNN.tnn_upload_from_float_array(sess, b_up1,
-            Toy::Train::DfaB.fill(dfv * vocabv, b_seed + 11, dist_c, sig_up), dfv * vocabv)
-          TinyNN.tnn_upload_from_float_array(sess, b_down1,
-            Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 12, dist_c, sig_down), dmv * vocabv)
-          TinyNN.tnn_upload_from_float_array(sess, b_up2,
-            Toy::Train::DfaB.fill(dfv * vocabv, b_seed + 13, dist_c, sig_up), dfv * vocabv)
-          TinyNN.tnn_upload_from_float_array(sess, b_down2,
-            Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 14, dist_c, sig_down), dmv * vocabv)
-          s1 = [1.0, 0.0]
-          s2 = [0.0, 1.0]
-          TinyNN.tnn_upload_from_float_array(sess, sel1, s1, NE)
-          TinyNN.tnn_upload_from_float_array(sess, sel2, s2, NE)
-          ey = [1.0, 0.0, 0.0, 1.0]
-          TinyNN.tnn_upload_from_float_array(sess, eye, ey, NE * NE)
+          # toy#128 per-expert B seeds — STABLE in the expert index (the
+          # standing DfaB discipline: re-policying one expert never
+          # reshuffles another). Experts 0/1 keep the legacy offsets
+          # +11/+12/+13/+14 (E=2 byte-null); experts >= 2 jump to
+          # +101+10i / +102+10i — the legacy stride would collide with
+          # the attention/router B offsets (+21..+25) from expert 5 on.
+          ei = 0
+          while ei < nev
+            us = b_seed + 11 + 2 * ei
+            ds = b_seed + 12 + 2 * ei
+            if ei >= 2
+              us = b_seed + 101 + 10 * ei
+              ds = b_seed + 102 + 10 * ei
+            end
+            TinyNN.tnn_upload_from_float_array(sess, b_ups[ei],
+              Toy::Train::DfaB.fill(dfv * vocabv, us, dist_c, sig_up), dfv * vocabv)
+            TinyNN.tnn_upload_from_float_array(sess, b_downs[ei],
+              Toy::Train::DfaB.fill(dmv * vocabv, ds, dist_c, sig_down), dmv * vocabv)
+            ei = ei + 1
+          end
+          ei = 0
+          while ei < nev
+            sv = zeros(nev)
+            sv[ei] = 1.0
+            TinyNN.tnn_upload_from_float_array(sess, sels[ei], sv, nev)
+            ei = ei + 1
+          end
+          ey = zeros(nev * nev)
+          ei = 0
+          while ei < nev
+            ey[ei * nev + ei] = 1.0
+            ei = ei + 1
+          end
+          TinyNN.tnn_upload_from_float_array(sess, eye, ey, nev * nev)
           if top1
             sig_dm = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, vocabv, dmv, 0.0)
-            sig_e  = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, vocabv, NE, 0.0)
+            sig_e  = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, vocabv, nev, 0.0)
             TinyNN.tnn_upload_from_float_array(sess, b_aq, Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 21, dist_c, sig_dm), dmv * vocabv)
             TinyNN.tnn_upload_from_float_array(sess, b_ak, Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 22, dist_c, sig_dm), dmv * vocabv)
             TinyNN.tnn_upload_from_float_array(sess, b_av, Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 23, dist_c, sig_dm), dmv * vocabv)
             TinyNN.tnn_upload_from_float_array(sess, b_ao, Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 24, dist_c, sig_dm), dmv * vocabv)
-            TinyNN.tnn_upload_from_float_array(sess, b_r,  Toy::Train::DfaB.fill(NE * vocabv, b_seed + 25, dist_c, sig_e),  NE * vocabv)
+            TinyNN.tnn_upload_from_float_array(sess, b_r,  Toy::Train::DfaB.fill(nev * vocabv, b_seed + 25, dist_c, sig_e),  nev * vocabv)
             onesv = zeros(T)
             oi = 0
             while oi < T
@@ -232,8 +281,8 @@ module Toy
           t_tok    = TinyNN.tnn_input_1d_i32(sess, T)
           t_labels = TinyNN.tnn_input_2d_f32(sess, T, vocabv)
           t_hp     = TinyNN.tnn_input_1d_f32(sess, 7)
-          t_f      = TinyNN.tnn_input_2d_f32(sess, 1, NE)   # ne=[NE,1]
-          forward_tower(sess, tw, t_tok, t_labels, sel1, sel2, eye, top1, bp_spine ? 1 : 0)
+          t_f      = TinyNN.tnn_input_2d_f32(sess, 1, nev)   # ne=[NE,1]
+          forward_tower(sess, tw, t_tok, t_labels, sels, eye, top1, bp_spine ? 1 : 0)
           if bp_router || bp_spine
             # toy#121: the task CE joins the loss roots — backward reaches
             # Wr through gate = sum_rows(oneh*probs) -> softmax -> matmul,
@@ -282,19 +331,23 @@ module Toy
               wire_chain(sess, tw, t_hp, 8)
             else
               # F4 lane: router = DFA task signal + BP aux signal
-              g_dfa_r = dfa_grad(sess, b_r, e_b, tw.tap_h2, dmv, NE)
+              g_dfa_r = dfa_grad(sess, b_r, e_b, tw.tap_h2, dmv, nev)
               acc_r   = TinyNN.tnn_tensor_grad(sess, tw.pp[8])
               g_tot   = TinyNN.tnn_add(sess, g_dfa_r, acc_r)
               TinyNN.tnn_set_output(g_tot)
               to_r = TinyNN.tnn_opt_step_adamw(sess, tw.pp[8], g_tot, tw.pm[8], tw.pv[8], t_hp)
               TinyNN.tnn_extend_backward_graph(sess, to_r)
             end
-            m1 = TinyNN.tnn_matmul(sess, sel1, tw.t_onehots)
-            m2 = TinyNN.tnn_matmul(sess, sel2, tw.t_onehots)
-            wire_dfa_top1(sess, tw, t_hp, 9,  b_up1,   e_b, tw.tap_h2, dmv,  dfv, m1)
-            wire_dfa_top1(sess, tw, t_hp, 10, b_down1, e_b, tw.tap_a1, dfv, dmv,  m1)
-            wire_dfa_top1(sess, tw, t_hp, 11, b_up2,   e_b, tw.tap_h2, dmv,  dfv, m2)
-            wire_dfa_top1(sess, tw, t_hp, 12, b_down2, e_b, tw.tap_a1, dfv, dmv,  m2)
+            # toy#128: per-expert routed-mask DFA wires (E=2 == the old
+            # m1/m2 + 9..12 sequence; both downs read tap_a1 = the
+            # routed acts from mul_mat_id).
+            ei = 0
+            while ei < nev
+              m_i = TinyNN.tnn_matmul(sess, sels[ei], tw.t_onehots)
+              wire_dfa_top1(sess, tw, t_hp, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_h2, dmv,  dfv, m_i)
+              wire_dfa_top1(sess, tw, t_hp, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_a1, dfv, dmv,  m_i)
+              ei = ei + 1
+            end
           else
             if dfa_experts
               p_sm = TinyNN.tnn_softmax(sess, tw.t_logits)
@@ -304,13 +357,17 @@ module Toy
                 wire_chain(sess, tw, t_hp, idx)
                 idx = idx + 1
               end
-              wire_dfa(sess, tw, t_hp, 9,  b_up1,   e_b, tw.tap_h2, dmv,  dfv, "up1")
-              wire_dfa(sess, tw, t_hp, 10, b_down1, e_b, tw.tap_a1, dfv, dmv,  "down1")
-              wire_dfa(sess, tw, t_hp, 11, b_up2,   e_b, tw.tap_h2, dmv,  dfv, "up2")
-              wire_dfa(sess, tw, t_hp, 12, b_down2, e_b, tw.tap_a2, dfv, dmv,  "down2")
+              # toy#128: per-expert dense DFA wires; each down_i reads
+              # its own dense act tap (tap_as[i]).
+              ei = 0
+              while ei < nev
+                wire_dfa(sess, tw, t_hp, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_h2,    dmv,  dfv, "up" + (ei + 1).to_s)
+                wire_dfa(sess, tw, t_hp, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_as[ei], dfv, dmv,  "down" + (ei + 1).to_s)
+                ei = ei + 1
+              end
             else
               idx = 0
-              while idx < 13
+              while idx < 9 + 2 * nev
                 wire_chain(sess, tw, t_hp, idx)
                 idx = idx + 1
               end
@@ -343,7 +400,7 @@ module Toy
               model.add_str("name", "franken-moe-instrument")
               model.add_num("vocab",    vocabv)
               model.add_num("d_model",  dmv)
-              model.add_num("n_experts", NE)
+              model.add_num("n_experts", nev)
               model.add_num("d_ff",     dfv)
               rs.add_obj("model", model)
               config = Toy::Json::Builder.new
@@ -381,10 +438,11 @@ module Toy
           n_dfa = tw.dfa_grads.length
           gbuf = zeros(dmv * dfv)
           abuf = zeros(dmv * dfv)
-          gates_buf = zeros(NE * T)
-          fvec = zeros(NE)
+          gates_buf = zeros(nev * T)
+          share_v = zeros(nev)
+          fvec = zeros(nev)
           fi = 0
-          while fi < NE
+          while fi < nev
             fvec[fi] = aux_alpha / T.to_f
             fi = fi + 1
           end
@@ -418,7 +476,7 @@ module Toy
             TinyNN.tnn_upload_from_float_array(sess, t_labels, labels, vocabv * T)
             TinyNN.tnn_upload_from_float_array(sess, t_hp, hp, 7)
             if top1
-              TinyNN.tnn_upload_from_float_array(sess, t_f, fvec, NE)
+              TinyNN.tnn_upload_from_float_array(sess, t_f, fvec, nev)
             end
             TinyNN.tnn_compute_backward(sess)
             TinyNN.tnn_download(sess, tw.t_loss)
@@ -436,43 +494,61 @@ module Toy
               TinyNN.tnn_events_emit(es.dump)
             end
 
-            # route event: shares + router health, both routings
-            sh0 = 0.0
+            # route event: shares + router health, both routings.
+            # toy#128: shares is the true per-expert vector (length E) —
+            # top1 = hard one-hot token shares, dense = mean soft gate
+            # per expert (E=2 keeps shares[0] exactly; shares[1] is now
+            # measured, not 1-shares[0]).
             if top1
-              TinyNN.tnn_download_to_f64_array(sess, tw.t_onehots, gates_buf, NE * T)
-              ti2 = 0
-              while ti2 < T
-                sh0 = sh0 + gates_buf[ti2 * NE]
-                ti2 = ti2 + 1
+              TinyNN.tnn_download_to_f64_array(sess, tw.t_onehots, gates_buf, nev * T)
+              ei = 0
+              while ei < nev
+                cs = 0.0
+                ti2 = 0
+                while ti2 < T
+                  cs = cs + gates_buf[ti2 * nev + ei]
+                  ti2 = ti2 + 1
+                end
+                share_v[ei] = cs / T.to_f
+                ei = ei + 1
               end
-              sh0 = sh0 / T.to_f
             end
-            TinyNN.tnn_download_to_f64_array(sess, tw.t_gates, gates_buf, NE * T)
+            TinyNN.tnn_download_to_f64_array(sess, tw.t_gates, gates_buf, nev * T)
             g0 = 0.0
             ti = 0
             while ti < T
-              g0 = g0 + gates_buf[ti * NE]
+              g0 = g0 + gates_buf[ti * nev]
               ti = ti + 1
             end
             g0 = g0 / T.to_f
             if !top1
-              sh0 = g0
+              ei = 0
+              while ei < nev
+                cs = 0.0
+                ti2 = 0
+                while ti2 < T
+                  cs = cs + gates_buf[ti2 * nev + ei]
+                  ti2 = ti2 + 1
+                end
+                share_v[ei] = cs / T.to_f
+                ei = ei + 1
+              end
             end
             aux_v = "null"
             if top1
               TinyNN.tnn_download_to_f64_array(sess, t_aux, aux_buf, 1)
               aux_v = num_or_null_cli(aux_buf[0])
               # lag-1 f' from this step's routing
-              TinyNN.tnn_download_to_f64_array(sess, tw.t_onehots, gates_buf, NE * T)
+              TinyNN.tnn_download_to_f64_array(sess, tw.t_onehots, gates_buf, nev * T)
               ei = 0
-              while ei < NE
+              while ei < nev
                 cnt = 0.0
                 ti3 = 0
                 while ti3 < T
-                  cnt = cnt + gates_buf[ti3 * NE + ei]
+                  cnt = cnt + gates_buf[ti3 * nev + ei]
                   ti3 = ti3 + 1
                 end
-                fvec[ei] = aux_alpha * NE.to_f * cnt / (T.to_f * T.to_f)
+                fvec[ei] = aux_alpha * nev.to_f * cnt / (T.to_f * T.to_f)
                 ei = ei + 1
               end
             end
@@ -482,8 +558,17 @@ module Toy
               re2.add_str("phase", "train")
               re2.add_num("t",     TinyNN.tnn_events_now_seconds)
               re2.add_num("step",  s + 1)
-              re2.add_raw("shares", "[" + num_or_null_cli(sh0) + "," +
-                                    num_or_null_cli(1.0 - sh0) + "]")
+              sh_s = "["
+              ei = 0
+              while ei < nev
+                if ei > 0
+                  sh_s = sh_s + ","
+                end
+                sh_s = sh_s + num_or_null_cli(share_v[ei])
+                ei = ei + 1
+              end
+              sh_s = sh_s + "]"
+              re2.add_raw("shares", sh_s)
               re2.add_raw("g0_mean", num_or_null_cli(g0))
               re2.add_raw("aux",     aux_v)
               TinyNN.tnn_events_emit(re2.dump)

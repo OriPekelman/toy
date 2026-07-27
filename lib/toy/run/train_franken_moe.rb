@@ -96,7 +96,7 @@ module Toy
                " routing=" + (top1 ? "top1" : "dense") + " aux=" + aux_alpha.to_s +
                " steps=" + steps.to_s + " seed=" + seed.to_s
 
-          shape_init(DM_BASE, DFF_BASE, VOCAB)   # the rig IS the base instrument
+          shape_init(DM_BASE, DFF_BASE, VOCAB, NE)   # the rig IS the base instrument
           sess = TinyNN.tnn_session_new(0)
           TinyNN.tnn_session_set_graph_capacity(sess, 262144)
 
@@ -191,8 +191,8 @@ module Toy
           t_labels = TinyNN.tnn_input_2d_f32(sess, T, VOCAB)
           t_hp     = TinyNN.tnn_input_1d_f32(sess, 7)
           t_f      = TinyNN.tnn_input_2d_f32(sess, 1, NE)   # ne=[NE,1]
-          forward_tower(sess, tow_a, t_tok, t_labels, sel1, sel2, eye, false, 0)
-          forward_tower(sess, tow_b, t_tok, t_labels, sel1, sel2, eye, top1, 0)
+          forward_tower(sess, tow_a, t_tok, t_labels, [sel1, sel2], eye, false, 0)
+          forward_tower(sess, tow_b, t_tok, t_labels, [sel1, sel2], eye, top1, 0)
 
           # aux loss: Σ_e Σ_t f'_e·probs[e,t] with the α·NE/T scaling
           # folded into the uploaded f' vector; [NE,1] broadcasts over T,

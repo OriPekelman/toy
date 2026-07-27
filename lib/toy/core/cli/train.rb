@@ -115,6 +115,7 @@ module Toy
           @routing    = nil   # franken-moe: dense | top1
           @moe_policy = nil   # franken-moe: chain | dfa-experts
           @moe_aux    = nil   # franken-moe: top1 aux-loss alpha
+          @experts    = nil   # franken-moe: expert count E>=2 (toy#128)
           @arch   = ARCH   # llama | gpt2 (gpt2 = from-scratch CPU only this slice)
         end
 
@@ -256,6 +257,7 @@ module Toy
                              "FRANKEN_MOE_ROUTING" => (@routing || "dense"),
                              "FRANKEN_MOE"         => (@moe_policy || "chain"),
                              "FRANKEN_MOE_AUX"     => (@moe_aux || "0"),
+                             "FRANKEN_MOE_EXPERTS" => (@experts || 2).to_s,
                              "FRANKEN_SHAPE"       => (@shape || "base"),
                              "FRANKEN_B_SEED"      => (@dfa_b_seed || 1234).to_s,
                              "FRANKEN_B_DIST"      => (@dfa_b_dist || ""),
@@ -464,6 +466,16 @@ module Toy
               val = $1
               return bad_arg("--warmup must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i > 0
               @warmup = val.to_i
+            when "--experts"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--experts requires a value") if val.nil?
+              return bad_arg("--experts must be an integer >= 2, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= 2
+              @experts = val.to_i
+            when /\A--experts=(.*)\z/
+              val = $1
+              return bad_arg("--experts must be an integer >= 2, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= 2
+              @experts = val.to_i
             when "--init"
               i += 1
               val = @argv[i]
@@ -540,6 +552,9 @@ module Toy
           end
           if @recipe != "franken-moe" && (@routing || @moe_policy || @moe_aux)
             return bad_arg("--routing/--moe-policy/--moe-aux are only valid with recipe 'franken-moe'")
+          end
+          if @recipe != "franken-moe" && @experts
+            return bad_arg("--experts is only valid with recipe 'franken-moe' (toy#128)")
           end
           if @recipe == "franken-moe" && @moe_aux && @routing != "top1"
             return bad_arg("--moe-aux requires --routing top1 (the aux-loss rides the hard router)")
