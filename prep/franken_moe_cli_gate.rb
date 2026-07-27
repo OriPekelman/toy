@@ -16,6 +16,13 @@
 #      — each expert majority-serves >= 20% of tail steps @120.
 #   6. BUNDLE: run_start.franken_moe provenance, route events == steps,
 #      run_end, flow.json, TOY_RUN_ID passthrough, parseable JSONL.
+#   7. BP-ROUTER (toy#121, the F5 core): --moe-policy
+#      bp-router-dfa-experts under top1 — curve differs from the
+#      fully-DFA arm at the same seed (the p-scale credit path moves
+#      Wr), deterministic, aux composes, provenance names the policy.
+#      STRUCTURAL only: whether BP router credit escapes the plateau
+#      at scale is F5's question, not the gate's (at gate shape it is
+#      a mild 2/3-seed improvement — recorded on toy#121).
 
 ROOT = File.expand_path("..", __dir__)
 TOY  = File.join(ROOT, "bin", "toy")
@@ -122,6 +129,24 @@ Dir.mktmpdir("moe_cli_aux") do |dir|
   puts failures.length == n0 ? "  ok: top1 aux=0.05 breaks starvation (e0/e1 majorities #{e0}/#{e1} of #{tail.length})" : "  FAIL: top1-aux leg"
 end
 
+# ---- 7. bp-router (toy#121) ----
+n0 = failures.length
+Dir.mktmpdir("moe_cli_bpr") do |dir|
+  out_a = run_cli(%w[--steps 40 --seed 0 --routing top1 --moe-policy bp-router-dfa-experts], {}, dir)
+  out_b = run_cli(%w[--steps 40 --seed 0 --routing top1 --moe-policy bp-router-dfa-experts], {}, nil)
+  failures << "bp-router: curve repro failed" unless losses(out_a) == losses(out_b)
+  ls = losses(out_a).map(&:to_f)
+  failures << "bp-router: NaN" if ls.any?(&:nan?)
+  fully = losses(run_cli(%w[--steps 40 --seed 0 --routing top1], {}, nil))
+  failures << "bp-router: curve identical to fully-dfa (task-BP credit path dead)" if losses(out_a) == fully
+  evs = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+  pol = evs.first && evs.first.dig("franken_moe", "policy")
+  failures << "bp-router: provenance policy #{pol.inspect}" unless pol == "bp-router-dfa-experts"
+  aux_out = run_cli(%w[--steps 20 --seed 0 --routing top1 --moe-policy bp-router-dfa-experts --moe-aux 0.05], {}, nil)
+  failures << "bp-router: aux composition failed" unless losses(aux_out).length == 20 && losses(aux_out).map(&:to_f).none?(&:nan?)
+  puts failures.length == n0 ? "  ok: bp-router — differs from fully-dfa (credit path live), deterministic, aux composes, provenance named" : "  FAIL: bp-router leg"
+end
+
 # ---- 6. bundle structure + run-id passthrough ----
 n0 = failures.length
 Dir.mktmpdir("moe_cli_bundle") do |dir|
@@ -151,7 +176,7 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
 end
 
 if failures.empty?
-  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bundle (toy#120)"
+  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bundle (toy#120/#121)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe-cli]: #{f}" }

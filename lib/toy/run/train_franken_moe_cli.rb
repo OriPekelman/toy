@@ -6,8 +6,20 @@
 # ENV (the CLI's controlled env):
 #   STEPS / SEED / TAO_RUN_DIR / TOY_RUN_ID       — as train.rb
 #   FRANKEN_MOE_ROUTING  dense (default) | top1
-#   FRANKEN_MOE          chain (default) | dfa-experts   (dense only;
-#                        top1 IS the fully-DFA lane, flag ignored there)
+#   FRANKEN_MOE          dense: chain (default) | dfa-experts
+#                        top1:  "" (fully-DFA lane, the F4 arm) |
+#                               bp-router-dfa-experts (toy#121, the F5
+#                               core: task-BP router credit through the
+#                               p-scale edge — the forward is IDENTICAL
+#                               to the fully-DFA lane (out = x +
+#                               p_sel*expert_out, already Switch-scaled);
+#                               ONLY credit flow changes. Wr's acc
+#                               accumulates task-BP + aux-BP (two loss
+#                               roots, one autodiff acc); experts and
+#                               attention stay per-matmul DFA; the
+#                               backward walker still never needs
+#                               mul_mat_id (same grads_needed
+#                               short-circuit as the aux path).
 #   FRANKEN_MOE_AUX      <alpha> (top1 only; load-balancing aux-loss)
 #   FRANKEN_B_SEED / FRANKEN_B_DIST / FRANKEN_B_SCALE — DfaB axes
 #   FRANKEN_ALIGN=1      opt-in align events (dense dfa-experts only:
@@ -68,6 +80,7 @@ module Toy
             mode_s = "chain"
           end
           dfa_experts = mode_s == "dfa-experts"
+          bp_router = top1 && mode_s == "bp-router-dfa-experts"
           aux_s = ENV["FRANKEN_MOE_AUX"] || ""
           aux_alpha = aux_s.length > 0 ? aux_s.to_f : 0.0
           bseed_s = ENV["FRANKEN_B_SEED"] || ""
@@ -76,8 +89,12 @@ module Toy
           events = run_dir.length > 0 ? (run_dir + "/events.jsonl") : ""
           lr = 0.02
 
+          pol_name = mode_s
+          if top1
+            pol_name = bp_router ? "bp-router-dfa-experts" : "top1-dfa"
+          end
           puts "franken-moe: routing=" + (top1 ? "top1" : "dense") +
-               " policy=" + (top1 ? "top1-dfa" : mode_s) +
+               " policy=" + pol_name +
                " aux=" + aux_alpha.to_s + " steps=" + steps.to_s +
                " seed=" + seed.to_s + " b_seed=" + b_seed.to_s
 
@@ -164,6 +181,12 @@ module Toy
           t_hp     = TinyNN.tnn_input_1d_f32(sess, 7)
           t_f      = TinyNN.tnn_input_2d_f32(sess, 1, NE)   # ne=[NE,1]
           forward_tower(sess, tw, t_tok, t_labels, sel1, sel2, eye, top1)
+          if bp_router
+            # toy#121: the task CE joins the loss roots — backward reaches
+            # Wr through gate = sum_rows(oneh*probs) -> softmax -> matmul,
+            # never mul_mat_id (eo's subtree stays out of grads_needed).
+            TinyNN.tnn_set_loss(tw.t_loss)
+          end
 
           # top1: aux loss root (always built; alpha=0 -> zero f' vector).
           t_aux = TinyNN.tnn_null_ptr
@@ -189,13 +212,19 @@ module Toy
             wire_dfa_top1(sess, tw, t_hp, 4, b_ak, e_b, tw.tap_ah,  DM, DM, np2)
             wire_dfa_top1(sess, tw, t_hp, 5, b_av, e_b, tw.tap_ah,  DM, DM, np2)
             wire_dfa_top1(sess, tw, t_hp, 6, b_ao, e_b, tw.tap_ctx, DM, DM, np2)
-            # router = DFA task signal + BP aux signal (early param)
-            g_dfa_r = dfa_grad(sess, b_r, e_b, tw.tap_h2, DM, NE)
-            acc_r   = TinyNN.tnn_tensor_grad(sess, tw.pp[8])
-            g_tot   = TinyNN.tnn_add(sess, g_dfa_r, acc_r)
-            TinyNN.tnn_set_output(g_tot)
-            to_r = TinyNN.tnn_opt_step_adamw(sess, tw.pp[8], g_tot, tw.pm[8], tw.pv[8], t_hp)
-            TinyNN.tnn_extend_backward_graph(sess, to_r)
+            if bp_router
+              # toy#121: router credit is PURE BP — the acc already holds
+              # task-BP + aux-BP (both loss roots backward into it).
+              wire_chain(sess, tw, t_hp, 8)
+            else
+              # F4 lane: router = DFA task signal + BP aux signal
+              g_dfa_r = dfa_grad(sess, b_r, e_b, tw.tap_h2, DM, NE)
+              acc_r   = TinyNN.tnn_tensor_grad(sess, tw.pp[8])
+              g_tot   = TinyNN.tnn_add(sess, g_dfa_r, acc_r)
+              TinyNN.tnn_set_output(g_tot)
+              to_r = TinyNN.tnn_opt_step_adamw(sess, tw.pp[8], g_tot, tw.pm[8], tw.pv[8], t_hp)
+              TinyNN.tnn_extend_backward_graph(sess, to_r)
+            end
             m1 = TinyNN.tnn_matmul(sess, sel1, tw.t_onehots)
             m2 = TinyNN.tnn_matmul(sess, sel2, tw.t_onehots)
             wire_dfa_top1(sess, tw, t_hp, 9,  b_up1,   e_b, tw.tap_h2, DM,  DFF, m1)
@@ -260,7 +289,7 @@ module Toy
               rs.add_obj("config", config)
               fm = Toy::Json::Builder.new
               fm.add_str("routing",   top1 ? "top1" : "dense")
-              fm.add_str("policy",    top1 ? "top1-dfa" : mode_s)
+              fm.add_str("policy",    pol_name)
               fm.add_num("aux_alpha", aux_alpha)
               fm.add_num("b_seed",    b_seed)
               fm.add_num("b_dist",    dist_c)
