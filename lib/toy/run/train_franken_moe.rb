@@ -96,7 +96,7 @@ module Toy
                " routing=" + (top1 ? "top1" : "dense") + " aux=" + aux_alpha.to_s +
                " steps=" + steps.to_s + " seed=" + seed.to_s
 
-          shape_init(DM_BASE, DFF_BASE)   # the rig IS the base instrument
+          shape_init(DM_BASE, DFF_BASE, VOCAB)   # the rig IS the base instrument
           sess = TinyNN.tnn_session_new(0)
           TinyNN.tnn_session_set_graph_capacity(sess, 262144)
 

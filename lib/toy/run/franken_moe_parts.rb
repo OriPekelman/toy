@@ -25,11 +25,18 @@ module Toy
         # spec-callable runner can widen (base d8/ff16, wide d256/ff512)
         # without a second compiled unit. EVERY runner calls shape_init
         # FIRST (the rig pins base; the CLI reads FRANKEN_SHAPE).
-        # VOCAB/NE/T stay pinned — F8's width question is expert/dm
-        # width, and the instrument's batch contract does not move.
-        def self.shape_init(dm, dff)
+        # NE/T stay pinned — F8's width question is expert/dm width, and
+        # the instrument's batch contract does not move.
+        #
+        # toy#125: vocab joined the runtime state — the corpus feed
+        # streams the frozen-vocab contract (627, toy#123), and vocab-16
+        # embeds cannot take those token ids (get_rows would read past
+        # the table). The rig and the CLI's fixed-seq feed pin VOCAB
+        # (16, byte-null); --corpus pins 627.
+        def self.shape_init(dm, dff, vocab)
           @sh_dm = dm
           @sh_df = dff
+          @sh_vocab = vocab
           0
         end
 
@@ -39,6 +46,10 @@ module Toy
 
         def self.dfv
           @sh_df
+        end
+
+        def self.vocabv
+          @sh_vocab
         end
 
         def self.fillv(n, seed)
@@ -120,7 +131,7 @@ module Toy
         # up1, down1, up2, down2}   → pp indices 0..12
         def self.alloc_tower(sess)
           tw = MoeTower.new
-          reg2(sess, tw, VOCAB, dmv)   # 0 embed
+          reg2(sess, tw, vocabv, dmv)  # 0 embed
           reg1(sess, tw, dmv)          # 1 fnorm
           reg1(sess, tw, dmv)          # 2 attn rn1
           reg2(sess, tw, dmv, dmv)      # 3 wq

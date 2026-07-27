@@ -24,6 +24,16 @@
 #   FRANKEN_B_SEED / FRANKEN_B_DIST / FRANKEN_B_SCALE — DfaB axes
 #   FRANKEN_ALIGN=1      opt-in align events (dense dfa-experts only:
 #                        top1 has no autodiff accs to compare against)
+#   CORPUS               toy#125 (the F8 data surface): stream the
+#                        packed-i32 corpus per step (warm-start's
+#                        reader, rotating T-token windows, pre-EOF
+#                        rotation — the toy#122 stuck-window fix);
+#                        labels rebuilt per step (next_token_guarded).
+#                        Sets the instrument to the frozen-vocab
+#                        contract (VOCAB 627, toy#123) — the fixed-seq
+#                        feed's vocab-16 embed cannot take the stream's
+#                        token ids. Absent flag = the byte-gated fixed
+#                        sequence at vocab 16, untouched.
 #
 # SEED seeds the weight-init stream (seed*131 mixed into the rig's
 # fillv); SEED=0 reproduces the rig's fixed init BYTE-exactly, so the
@@ -51,6 +61,8 @@ require_relative "franken_moe_parts"
 require_relative "../io/json_builder"
 require_relative "../io/json"
 require_relative "../io/toy_events"
+require_relative "../llm/labels"
+require_relative "../io/toy_corpus_loader"
 require_relative "../dev/toy_describe_flow"
 
 module Toy
@@ -110,10 +122,22 @@ module Toy
             puts "unknown FRANKEN_SHAPE: " + shape_s + " (franken-moe takes base|wide)"
             return 1
           end
+          corpus_s = ENV["CORPUS"] || ""
+          if corpus_s.length > 0 && !File.exist?(corpus_s)
+            puts "toy-train-franken-moe: corpus not found: " + corpus_s
+            puts "  --corpus streams packed-i32 tokens (the warm-start reader)."
+            return 1
+          end
+          # toy#125: the corpus stream is the frozen-vocab contract
+          # (627, toy#123); the fixed-seq feed stays vocab 16 byte-null.
+          vsel = VOCAB
+          if corpus_s.length > 0
+            vsel = 627
+          end
           if shape_s == "wide"
-            shape_init(256, 512)
+            shape_init(256, 512, vsel)
           else
-            shape_init(DM_BASE, DFF_BASE)
+            shape_init(DM_BASE, DFF_BASE, vsel)
           end
 
           sess = TinyNN.tnn_session_new(0)
@@ -121,18 +145,18 @@ module Toy
 
           tw = alloc_tower(sess)
 
-          b_up1   = TinyNN.tnn_input_2d_f32_persistent(sess, dfv, VOCAB)
-          b_down1 = TinyNN.tnn_input_2d_f32_persistent(sess, dmv,  VOCAB)
-          b_up2   = TinyNN.tnn_input_2d_f32_persistent(sess, dfv, VOCAB)
-          b_down2 = TinyNN.tnn_input_2d_f32_persistent(sess, dmv,  VOCAB)
+          b_up1   = TinyNN.tnn_input_2d_f32_persistent(sess, dfv, vocabv)
+          b_down1 = TinyNN.tnn_input_2d_f32_persistent(sess, dmv,  vocabv)
+          b_up2   = TinyNN.tnn_input_2d_f32_persistent(sess, dfv, vocabv)
+          b_down2 = TinyNN.tnn_input_2d_f32_persistent(sess, dmv,  vocabv)
           sel1 = TinyNN.tnn_input_2d_f32_persistent(sess, 1, NE)
           sel2 = TinyNN.tnn_input_2d_f32_persistent(sess, 1, NE)
           eye   = TinyNN.tnn_input_2d_f32_persistent(sess, NE, NE)
-          b_aq  = TinyNN.tnn_input_2d_f32_persistent(sess, dmv, VOCAB)
-          b_ak  = TinyNN.tnn_input_2d_f32_persistent(sess, dmv, VOCAB)
-          b_av  = TinyNN.tnn_input_2d_f32_persistent(sess, dmv, VOCAB)
-          b_ao  = TinyNN.tnn_input_2d_f32_persistent(sess, dmv, VOCAB)
-          b_r   = TinyNN.tnn_input_2d_f32_persistent(sess, NE, VOCAB)
+          b_aq  = TinyNN.tnn_input_2d_f32_persistent(sess, dmv, vocabv)
+          b_ak  = TinyNN.tnn_input_2d_f32_persistent(sess, dmv, vocabv)
+          b_av  = TinyNN.tnn_input_2d_f32_persistent(sess, dmv, vocabv)
+          b_ao  = TinyNN.tnn_input_2d_f32_persistent(sess, dmv, vocabv)
+          b_r   = TinyNN.tnn_input_2d_f32_persistent(sess, NE, vocabv)
           ones_t = TinyNN.tnn_input_2d_f32_persistent(sess, 1, T)   # ne=[T,1]
 
           # params: dense = every weight (shadow-shaped when dfa-experts);
@@ -164,16 +188,16 @@ module Toy
             gi = gi + 1
           end
           dist_c = b_dist_code
-          sig_up   = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, VOCAB, dfv, 0.0)
-          sig_down = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, VOCAB, dmv, 0.0)
+          sig_up   = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, vocabv, dfv, 0.0)
+          sig_down = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, vocabv, dmv, 0.0)
           TinyNN.tnn_upload_from_float_array(sess, b_up1,
-            Toy::Train::DfaB.fill(dfv * VOCAB, b_seed + 11, dist_c, sig_up), dfv * VOCAB)
+            Toy::Train::DfaB.fill(dfv * vocabv, b_seed + 11, dist_c, sig_up), dfv * vocabv)
           TinyNN.tnn_upload_from_float_array(sess, b_down1,
-            Toy::Train::DfaB.fill(dmv * VOCAB, b_seed + 12, dist_c, sig_down), dmv * VOCAB)
+            Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 12, dist_c, sig_down), dmv * vocabv)
           TinyNN.tnn_upload_from_float_array(sess, b_up2,
-            Toy::Train::DfaB.fill(dfv * VOCAB, b_seed + 13, dist_c, sig_up), dfv * VOCAB)
+            Toy::Train::DfaB.fill(dfv * vocabv, b_seed + 13, dist_c, sig_up), dfv * vocabv)
           TinyNN.tnn_upload_from_float_array(sess, b_down2,
-            Toy::Train::DfaB.fill(dmv * VOCAB, b_seed + 14, dist_c, sig_down), dmv * VOCAB)
+            Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 14, dist_c, sig_down), dmv * vocabv)
           s1 = [1.0, 0.0]
           s2 = [0.0, 1.0]
           TinyNN.tnn_upload_from_float_array(sess, sel1, s1, NE)
@@ -181,13 +205,13 @@ module Toy
           ey = [1.0, 0.0, 0.0, 1.0]
           TinyNN.tnn_upload_from_float_array(sess, eye, ey, NE * NE)
           if top1
-            sig_dm = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, VOCAB, dmv, 0.0)
-            sig_e  = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, VOCAB, NE, 0.0)
-            TinyNN.tnn_upload_from_float_array(sess, b_aq, Toy::Train::DfaB.fill(dmv * VOCAB, b_seed + 21, dist_c, sig_dm), dmv * VOCAB)
-            TinyNN.tnn_upload_from_float_array(sess, b_ak, Toy::Train::DfaB.fill(dmv * VOCAB, b_seed + 22, dist_c, sig_dm), dmv * VOCAB)
-            TinyNN.tnn_upload_from_float_array(sess, b_av, Toy::Train::DfaB.fill(dmv * VOCAB, b_seed + 23, dist_c, sig_dm), dmv * VOCAB)
-            TinyNN.tnn_upload_from_float_array(sess, b_ao, Toy::Train::DfaB.fill(dmv * VOCAB, b_seed + 24, dist_c, sig_dm), dmv * VOCAB)
-            TinyNN.tnn_upload_from_float_array(sess, b_r,  Toy::Train::DfaB.fill(NE * VOCAB, b_seed + 25, dist_c, sig_e),  NE * VOCAB)
+            sig_dm = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, vocabv, dmv, 0.0)
+            sig_e  = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, vocabv, NE, 0.0)
+            TinyNN.tnn_upload_from_float_array(sess, b_aq, Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 21, dist_c, sig_dm), dmv * vocabv)
+            TinyNN.tnn_upload_from_float_array(sess, b_ak, Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 22, dist_c, sig_dm), dmv * vocabv)
+            TinyNN.tnn_upload_from_float_array(sess, b_av, Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 23, dist_c, sig_dm), dmv * vocabv)
+            TinyNN.tnn_upload_from_float_array(sess, b_ao, Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 24, dist_c, sig_dm), dmv * vocabv)
+            TinyNN.tnn_upload_from_float_array(sess, b_r,  Toy::Train::DfaB.fill(NE * vocabv, b_seed + 25, dist_c, sig_e),  NE * vocabv)
             onesv = zeros(T)
             oi = 0
             while oi < T
@@ -198,7 +222,7 @@ module Toy
           end
 
           t_tok    = TinyNN.tnn_input_1d_i32(sess, T)
-          t_labels = TinyNN.tnn_input_2d_f32(sess, T, VOCAB)
+          t_labels = TinyNN.tnn_input_2d_f32(sess, T, vocabv)
           t_hp     = TinyNN.tnn_input_1d_f32(sess, 7)
           t_f      = TinyNN.tnn_input_2d_f32(sess, 1, NE)   # ne=[NE,1]
           forward_tower(sess, tw, t_tok, t_labels, sel1, sel2, eye, top1, bp_spine ? 1 : 0)
@@ -309,7 +333,7 @@ module Toy
               model.add_str("arch", "franken-moe")
               model.add_str("shape", shape_s)
               model.add_str("name", "franken-moe-instrument")
-              model.add_num("vocab",    VOCAB)
+              model.add_num("vocab",    vocabv)
               model.add_num("d_model",  dmv)
               model.add_num("n_experts", NE)
               model.add_num("d_ff",     dfv)
@@ -336,13 +360,15 @@ module Toy
           end
 
           ids = [1, 2, 3, 4]
-          labels = zeros(VOCAB * T)
+          labels = zeros(vocabv * T)
           tt = 0
           while tt < T
-            tgt = (ids[tt] + 1) % VOCAB
-            labels[tgt + VOCAB * tt] = 1.0
+            tgt = (ids[tt] + 1) % vocabv
+            labels[tgt + vocabv * tt] = 1.0
             tt = tt + 1
           end
+          corpus_off   = 0
+          corpus_bytes = corpus_s.length > 0 ? File.size(corpus_s) : 0
 
           n_dfa = tw.dfa_grads.length
           gbuf = zeros(dmv * dfv)
@@ -367,8 +393,21 @@ module Toy
             t = (s + 1).to_f
             hp = [lr, b1, b2, 1.0e-8, 0.0,
                   1.0 / (1.0 - (b1 ** t)), 1.0 / (1.0 - (b2 ** t))]
+            if corpus_s.length > 0
+              # rotating-window stream: restart at 0 BEFORE the window
+              # would run past EOF (read_seq's own EOF-wrap otherwise
+              # pins every later step to the first window — the toy#122
+              # stuck-window failure mode).
+              if corpus_off + T * 4 > corpus_bytes
+                corpus_off = 0
+              end
+              ids = ToyCorpusLoader.read_seq(corpus_s, corpus_off, T)
+              corpus_off = corpus_off + T * 4
+              m_lab = Toy::Labels.next_token_guarded(ids, vocabv, T, 1)
+              labels = m_lab.flat
+            end
             TinyNN.upload_int_array(sess, t_tok, ids)
-            TinyNN.tnn_upload_from_float_array(sess, t_labels, labels, VOCAB * T)
+            TinyNN.tnn_upload_from_float_array(sess, t_labels, labels, vocabv * T)
             TinyNN.tnn_upload_from_float_array(sess, t_hp, hp, 7)
             if top1
               TinyNN.tnn_upload_from_float_array(sess, t_f, fvec, NE)

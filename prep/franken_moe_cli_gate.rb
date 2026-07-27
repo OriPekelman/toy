@@ -21,6 +21,11 @@
 #      identity; pre-update forward is the same graph); trains PAST the
 #      fully-dfa plateau (the cut works: chain grads reach the spine,
 #      the walker never needs mul_mat_id); deterministic; provenance.
+#   9. CORPUS (toy#125, the F8 data surface): --corpus streams the
+#      packed-i32 corpus at the frozen-vocab contract (627, toy#123) —
+#      deterministic, live (differs from the fixed-seq feed), seeded,
+#      composes (dense / top1+aux / bp-spine / --shape wide), EOF
+#      rotation survives (the toy#122 stuck-window fix).
 #   7. BP-ROUTER (toy#121, the F5 core): --moe-policy
 #      bp-router-dfa-experts under top1 — curve differs from the
 #      fully-DFA arm at the same seed (the p-scale credit path moves
@@ -194,6 +199,49 @@ Dir.mktmpdir("moe_cli_wide") do |dir|
   puts failures.length == n0 ? "  ok: --shape wide — bp-spine trains (#{wl.first.round(3)} -> #{wl.last.round(3)}), deterministic, provenance" : "  FAIL: wide leg"
 end
 
+# ---- toy#125: --corpus (the F8 data surface) ----
+# The corpus feed runs the frozen-vocab contract (627, toy#123) — the
+# vocab-16 fixed-seq embed cannot take the stream's ids — so the leg
+# pins the vocab shift in provenance alongside the stream itself:
+# deterministic, differs from the fixed-seq feed, seed-sensitive with
+# per-seed repro (the standing seed!=0 lesson), composes with dense /
+# top1+aux / bp-spine / --shape wide, and survives EOF rotation (the
+# toy#122 stuck-window fix; tiny corpus forces the pre-EOF restart).
+n0 = failures.length
+Dir.mktmpdir("moe_cli_corpus") do |dir|
+  c_args = %w[--steps 8 --seed 0 --corpus data/ts_seqs.bin --routing top1 --moe-policy bp-spine]
+  c1 = run_cli(c_args, {}, dir)
+  c2 = run_cli(c_args, {}, nil)
+  failures << "corpus: not deterministic" unless losses(c1) == losses(c2) && losses(c1).length == 8
+  failures << "corpus: NaN" if losses(c1).map(&:to_f).any?(&:nan?)
+  d8 = losses(run_cli(%w[--steps 8 --seed 0 --routing top1 --moe-policy bp-spine], {}, nil))
+  failures << "corpus: curve identical to fixed-seq feed (stream not live)" if losses(c1) == d8
+  evs = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+  vocab = evs.first && evs.first.dig("model", "vocab")
+  failures << "corpus: provenance vocab #{vocab.inspect} (want 627 — the frozen-vocab contract)" unless vocab == 627
+  s1_args = %w[--steps 8 --seed 1 --corpus data/ts_seqs.bin --routing top1 --moe-policy bp-spine]
+  s1a = run_cli(s1_args, {}, nil)
+  s1b = run_cli(s1_args, {}, nil)
+  failures << "corpus: seed=1 repro failed" unless losses(s1a) == losses(s1b)
+  failures << "corpus: seed=1 identical to seed=0 (init not seeded)" if losses(s1a) == losses(c1)
+  w_args = %w[--steps 8 --seed 0 --corpus data/ts_seqs.bin --shape wide --routing top1 --moe-policy bp-spine]
+  w1 = run_cli(w_args, {}, nil)
+  w2 = run_cli(w_args, {}, nil)
+  failures << "corpus-wide: not deterministic" unless losses(w1) == losses(w2) && losses(w1).length == 8
+  dn = run_cli(%w[--steps 8 --seed 0 --corpus data/ts_seqs.bin], {}, nil)
+  ax = run_cli(%w[--steps 8 --seed 0 --corpus data/ts_seqs.bin --routing top1 --moe-aux 0.05], {}, nil)
+  comp = losses(dn) + losses(ax)
+  failures << "corpus: dense/aux composition failed" unless losses(dn).length == 8 && losses(ax).length == 8 && comp.map(&:to_f).none?(&:nan?)
+  tiny = File.join(dir, "tiny_corpus.bin")
+  File.binwrite(tiny, File.binread(File.join(ROOT, "data", "ts_seqs.bin"), 160))   # 40 tokens = 10 windows
+  r_args = ["--steps", "25", "--seed", "0", "--corpus", tiny, "--routing", "top1", "--moe-policy", "bp-spine"]
+  r1 = run_cli(r_args, {}, nil)
+  r2 = run_cli(r_args, {}, nil)
+  failures << "corpus-rotate: not deterministic across EOF" unless losses(r1) == losses(r2) && losses(r1).length == 25
+  failures << "corpus-rotate: NaN past EOF" if losses(r1).map(&:to_f).any?(&:nan?)
+  puts failures.length == n0 ? "  ok: --corpus streams at vocab 627 (deterministic, differs from fixed-seq, seed semantics, dense/aux/wide compose, EOF rotation)" : "  FAIL: corpus leg"
+end
+
 # ---- 6. bundle structure + run-id passthrough ----
 n0 = failures.length
 Dir.mktmpdir("moe_cli_bundle") do |dir|
@@ -223,7 +271,7 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
 end
 
 if failures.empty?
-  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + bundle (toy#120/#121)"
+  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + bundle (toy#120/#121)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe-cli]: #{f}" }

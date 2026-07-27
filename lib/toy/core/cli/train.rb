@@ -146,9 +146,9 @@ module Toy
                              "native-layout base GGUF; see `toy list`, or convert one " \
                              "with prep/convert_smollm2_to_gguf.py --ggml-native)")
             end
-          elsif @recipe == "franken" && @corpus
+          elsif %w[franken franken-moe].include?(@recipe) && @corpus
             unless File.file?(@corpus)
-              return bad_arg("no such file: #{@corpus} (franken --corpus streams " \
+              return bad_arg("no such file: #{@corpus} (#{@recipe} --corpus streams " \
                              "packed-i32 tokens; `toy new` seeds data/ts_seqs.bin)")
             end
           elsif @recipe == "warm-start"
@@ -258,7 +258,8 @@ module Toy
                              "FRANKEN_B_SEED"      => (@dfa_b_seed || 1234).to_s,
                              "FRANKEN_B_DIST"      => (@dfa_b_dist || ""),
                              "FRANKEN_B_SCALE"     => (@dfa_b_scale || ""),
-                             "FRANKEN_ALIGN"       => (@align_events ? "1" : ""))
+                             "FRANKEN_ALIGN"       => (@align_events ? "1" : ""),
+                             "CORPUS"              => (@corpus || ""))
           elsif @recipe == "franken"
             env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
                              "FRANKEN_POLICY"  => (@policy || ""),
@@ -488,8 +489,8 @@ module Toy
           if @recipe != "lora" && (!@model.nil? || !@rank.nil?)
             return bad_arg("--model/--rank are only valid with recipe 'lora'")
           end
-          if !%w[warm-start franken].include?(@recipe) && !@corpus.nil?
-            return bad_arg("--corpus is only valid with recipe 'warm-start' or 'franken'")
+          if !%w[warm-start franken franken-moe].include?(@recipe) && !@corpus.nil?
+            return bad_arg("--corpus is only valid with recipe 'warm-start', 'franken', or 'franken-moe'")
           end
           if @recipe != "warm-start" && !@init.nil?
             return bad_arg("--init is only valid with recipe 'warm-start'")
