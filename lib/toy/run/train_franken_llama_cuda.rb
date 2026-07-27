@@ -56,6 +56,16 @@ ALIGN_ON    = (ENV["FRANKEN_ALIGN"] || "") == "1"
 CORPUS      = ENV["CORPUS"] || ""
 ae_raw = (ENV["FRANKEN_ALIGN_EVERY"] || "1").to_i
 ALIGN_EVERY = ae_raw < 1 ? 1 : ae_raw
+# toy#126 (the F7b LR-sweep surface): FRANKEN_LR overrides the fixed
+# from-scratch lr (hp slot 0; default 0.001, byte-null without the
+# flag). FRANKEN_WARMUP=N ramps lr linearly over the first N steps
+# (lr_t = LR*(t+1)/N, reaching LR exactly at step N) — a pure
+# Ruby-side per-step hp rebuild: the hp Mat is re-fed to step! every
+# step anyway, so warmup needs NO engine work.
+LR_S = ENV["FRANKEN_LR"] || ""
+LR   = LR_S.length > 0 ? LR_S.to_f : 0.001
+wu_raw = (ENV["FRANKEN_WARMUP"] || "0").to_i
+WARMUP = wu_raw < 0 ? 0 : wu_raw
 
 # Model shape — toy#124 presets (F7/F8 escalation). base = the gate
 # shape, identical to train.rb (the F0 contract, byte-null); wide/deep
@@ -246,7 +256,9 @@ positions = [0]; positions.pop
 p = 0; while p < CONTEXT; positions.push(p); p = p + 1; end
 
 m_labels = Toy::Labels.next_token(seq_ids, VOCAB, CONTEXT, 1)
-m_hp = Toy::AdamW.for_from_scratch.hp(0)
+adamw = Toy::AdamW.for_from_scratch
+adamw.lr = LR
+m_hp = adamw.hp(0)
 
 # ---- Events: run_start with the franken provenance object (#112). ----
 if EVENTS.length > 0
@@ -279,7 +291,8 @@ if EVENTS.length > 0
     config = Toy::Json::Builder.new
     config.add_num("context", CONTEXT)
     config.add_num("steps",   STEPS)
-    config.add_raw("lr",      "0.001")
+    config.add_raw("lr",      LR.to_s)
+    config.add_num("warmup",  WARMUP)
     config.add_num("seed",    SEED)
     rs.add_obj("config", config)
     fr = Toy::Json::Builder.new
@@ -333,6 +346,11 @@ while step < STEPS
     corpus_off = corpus_off + CONTEXT * 4
     m_labels = Toy::Labels.next_token_guarded(seq_ids, VOCAB, CONTEXT, 1)
   end
+  if WARMUP > 0 && step < WARMUP
+    # linear ramp; at step WARMUP-1 the factor is exactly 1.0 -> LR
+    adamw.lr = LR * ((step + 1).to_f / WARMUP.to_f)
+    m_hp = adamw.hp(0)
+  end
   recipe.ff_cache.franken_refresh_b!   # toy#117: B leaves are per-step uploads
   loss = recipe.step!(seq_ids, positions, m_labels, m_hp, step == 0)
   final_loss = loss
@@ -347,7 +365,7 @@ while step < STEPS
     es.add_num("t",       TinyNN.tnn_events_now_seconds)
     es.add_num("step",    step + 1)
     es.add_raw("loss",    num_or_null(loss))
-    es.add_raw("lr",      "0.001")
+    es.add_raw("lr",      adamw.lr.to_s)
     es.add_num("tokens",  CONTEXT)
     es.add_num("wall_us", step_wall_us)
     TinyNN.tnn_events_emit(es.dump)

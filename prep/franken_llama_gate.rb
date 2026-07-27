@@ -183,6 +183,33 @@ Dir.mktmpdir("franken_ae_gate") do |dir|
 end
 puts failures.empty? ? "  ok: --align-every thins align emissions (24 @ N=3/6 steps; step events untouched)" : "  FAIL: align-every leg"
 
+# ---- toy#126: --lr / --warmup (the F7b LR-sweep surface) ----
+# --lr: deterministic, actually moves the curve (default 0.001 stays
+# byte-null via leg 1). --warmup: linear ramp reaches LR at step N —
+# pinned via the step events' lr field (the ramp is Ruby-side; the
+# events are the observable), and the ramped curve differs from flat.
+lr_env = { "STEPS" => "6", "FRANKEN_LR" => "0.01" }
+lr1 = run_franken_llama(lr_env, nil).lines.select { |l| l.start_with?("step ") }
+lr2 = run_franken_llama(lr_env, nil).lines.select { |l| l.start_with?("step ") }
+d6  = run_franken_llama({ "STEPS" => "6" }, nil).lines.select { |l| l.start_with?("step ") }
+failures << "lr: not deterministic" unless lr1 == lr2 && lr1.length == 6
+failures << "lr: curve identical to default 0.001 (knob dead)" if lr1 == d6
+wu_env = lr_env.merge("FRANKEN_WARMUP" => "4")
+wu1 = nil
+Dir.mktmpdir("franken_lr_gate") do |dir|
+  wu1 = run_franken_llama(wu_env, dir).lines.select { |l| l.start_with?("step ") }
+  evs = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+  lrs = evs.select { |e| e["kind"] == "step" }.map { |e| e["lr"] }
+  want = [1, 2, 3, 4].map { |t| 0.01 * (t.to_f / 4.0) } + [0.01, 0.01]
+  ramp_ok = lrs.length == 6 && lrs.zip(want).all? { |g, w| g.is_a?(Numeric) && (g - w).abs < 1.0e-12 }
+  failures << "warmup: step-event lr ramp #{lrs.inspect} (want #{want.inspect})" unless ramp_ok
+  failures << "warmup: run_start config warmup/lr wrong" unless evs.first.dig("config", "warmup") == 4 && (evs.first.dig("config", "lr").to_f - 0.01).abs < 1.0e-12
+end
+wu2 = run_franken_llama(wu_env, nil).lines.select { |l| l.start_with?("step ") }
+failures << "warmup: not deterministic" unless wu1 == wu2
+failures << "warmup: curve identical to flat lr (ramp dead)" if wu1 == lr1
+puts failures.empty? ? "  ok: --lr moves the curve (deterministic); --warmup ramps to LR @N (events pin the ramp, curve differs from flat)" : "  FAIL: lr/warmup leg"
+
 # ---- toy#124: shape presets, byte-pinned per preset ----
 %w[wide deep].each do |sh|
   fx = File.join(ROOT, "prep", "fixtures", "franken_#{sh}_baseline.txt")
@@ -206,7 +233,7 @@ failures << "byte-repro: outputs differ" unless r1 == r2
 puts "  ok: byte-repro — two policy runs identical" if r1 == r2
 
 if failures.empty?
-  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + shape presets (toy#124) + byte-repro (toy#112/#113)"
+  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + shape presets (toy#124) + lr/warmup (toy#126) + byte-repro (toy#112/#113)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-llama]: #{f}" }

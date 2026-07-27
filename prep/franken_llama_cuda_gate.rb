@@ -90,8 +90,16 @@ wl = curve(w1).map { |l| l[/loss=(\S+)/, 1].to_f }
 failures << "shape-wide: NaN/short" unless wl.length == 6 && wl.none?(&:nan?)
 puts failures.empty? ? "  ok: --shape wide + --corpus on CUDA — deterministic, trains" : "  FAIL: cuda shape leg"
 
+# ---- toy#126: lr/warmup on the CUDA twin (determinism-scoped) ----
+l1 = run_bin(FRK, { "FRANKEN_LR" => "0.01", "FRANKEN_WARMUP" => "3", "STEPS" => "6" })
+l2 = run_bin(FRK, { "FRANKEN_LR" => "0.01", "FRANKEN_WARMUP" => "3", "STEPS" => "6" })
+failures << "lr/warmup: cuda not deterministic" unless l1 == l2
+d6 = run_bin(FRK, { "STEPS" => "6" })
+failures << "lr/warmup: curve identical to default (knob dead on cuda)" if curve(l1) == curve(d6)
+puts failures.empty? ? "  ok: --lr/--warmup on CUDA — deterministic, moves the curve" : "  FAIL: cuda lr leg"
+
 if failures.empty?
-  puts "GATE PASS [franken-llama-cuda]: parity(seed 0+1) + dfa-arm + determinism + bundle + shape/corpus (toy#109/#122/#124 CUDA leg)"
+  puts "GATE PASS [franken-llama-cuda]: parity(seed 0+1) + dfa-arm + determinism + bundle + shape/corpus + lr/warmup (toy#109/#122/#124/#126 CUDA leg)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-llama-cuda]: #{f}" }

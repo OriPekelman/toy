@@ -109,6 +109,8 @@ module Toy
           @dfa_b_scale = nil
           @align_events = false
           @align_every  = nil   # franken: thin align/mask emissions (toy#122)
+          @lr           = nil   # franken: hp-slot-0 override (toy#126)
+          @warmup       = nil   # franken: linear lr ramp over N steps (toy#126)
           @shape        = nil   # franken/franken-moe: preset (toy#124)
           @routing    = nil   # franken-moe: dense | top1
           @moe_policy = nil   # franken-moe: chain | dfa-experts
@@ -269,7 +271,9 @@ module Toy
                              "FRANKEN_ALIGN"   => (@align_events ? "1" : ""),
                              "FRANKEN_ALIGN_EVERY" => (@align_every || 1).to_s,
                              "FRANKEN_SHAPE"   => (@shape || "base"),
-                             "CORPUS"          => (@corpus || ""))
+                             "CORPUS"          => (@corpus || ""),
+                             "FRANKEN_LR"      => (@lr || ""),
+                             "FRANKEN_WARMUP"  => (@warmup || 0).to_s)
           else
             # from-scratch — byte-identical to today plus the harmless RECIPE key.
             env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s)
@@ -439,6 +443,26 @@ module Toy
               val = @argv[i]
               return bad_arg("--corpus requires a value") if val.nil?
               @corpus = val
+            when "--lr"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--lr requires a value") if val.nil?
+              return bad_arg("--lr must be a positive number, got #{val.inspect}") unless val =~ /\A\d*\.?\d+([eE][+-]?\d+)?\z/ && val.to_f > 0
+              @lr = val
+            when /\A--lr=(.*)\z/
+              val = $1
+              return bad_arg("--lr must be a positive number, got #{val.inspect}") unless val =~ /\A\d*\.?\d+([eE][+-]?\d+)?\z/ && val.to_f > 0
+              @lr = val
+            when "--warmup"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--warmup requires a value") if val.nil?
+              return bad_arg("--warmup must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i > 0
+              @warmup = val.to_i
+            when /\A--warmup=(.*)\z/
+              val = $1
+              return bad_arg("--warmup must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i > 0
+              @warmup = val.to_i
             when "--init"
               i += 1
               val = @argv[i]
@@ -503,6 +527,9 @@ module Toy
           end
           if @recipe != "franken" && @align_every
             return bad_arg("--align-every is only valid with recipe 'franken'")
+          end
+          if @recipe != "franken" && (@lr || @warmup)
+            return bad_arg("--lr/--warmup are only valid with recipe 'franken' (toy#126)")
           end
           if !%w[franken franken-moe].include?(@recipe) && @shape
             return bad_arg("--shape is only valid with recipe 'franken' or 'franken-moe'")
