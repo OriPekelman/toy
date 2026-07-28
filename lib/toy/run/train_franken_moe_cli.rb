@@ -136,6 +136,23 @@ module Toy
             puts "toy-train-franken-moe: --no-shadow + align events — align compares DFA grads against the chain shadow acc, which a no-shadow build does not create. Drop one."
             return 1
           end
+          # toy#130: END-OF-RUN held-out eval — the MoE instrument has no
+          # GGUF writer (the vit-tiny #169 precedent), so checkpoint-
+          # boundary evals cannot carry this lane; instead the runner
+          # evals AFTER training completes (lr=0 windows on the SAME
+          # graph — the Adam moments it mutates are dead at that point,
+          # so the toy#122 pollution objection is moot). Unset = off,
+          # byte-null.
+          ev_corpus = ENV["FRANKEN_EVAL_CORPUS"] || ""
+          ev_tok_s = ENV["FRANKEN_EVAL_TOKENS"] || ""
+          ev_tokens_raw = ev_tok_s.length > 0 ? ev_tok_s.to_i : 0
+          ev_tokens = ev_tokens_raw > 0 ? ev_tokens_raw : 4096   # 0 = unset (the CLI's default)
+          ev_off_s = ENV["FRANKEN_EVAL_OFFSET"] || ""
+          ev_offset = ev_off_s.length > 0 ? ev_off_s.to_i : 0
+          if ev_corpus.length > 0 && !File.exist?(ev_corpus)
+            puts "toy-train-franken-moe: eval corpus not found: " + ev_corpus
+            return 1
+          end
 
           pol_name = mode_s
           if top1
@@ -206,6 +223,14 @@ module Toy
           if esel < 2
             puts "FRANKEN_MOE_EXPERTS must be >= 2, got " + ex_s
             return 1
+          end
+          if ev_corpus.length > 0
+            ev_hdr_v = ToyCorpusLoader.probe_vocab(ev_corpus)
+            if ev_hdr_v > 0 && ev_hdr_v != vsel
+              puts "toy-train-franken-moe: eval pack vocab " + ev_hdr_v.to_s +
+                   " (TOYC header) != instrument vocab " + vsel.to_s
+              return 1
+            end
           end
           if shape_s == "wide"
             shape_init(256, 512, vsel, esel, ctx)
@@ -703,6 +728,68 @@ module Toy
               end
             end
             s = s + 1
+          end
+
+          # toy#130: end-of-run held-out eval (lr=0 windows; weights
+          # frozen — AdamW with lr=0 is a weight no-op).
+          if ev_corpus.length > 0
+            ev_base  = ToyCorpusLoader.data_offset(ev_corpus)
+            ev_bytes = File.size(ev_corpus)
+            ev_hp = [0.0, b1, b2, 1.0e-8, 0.0, b1, b2]
+            ev_want = ev_tokens / tv
+            ev_sum = 0.0
+            ev_done = 0
+            ev_o = ev_base + ev_offset * 4
+            evw = 0
+            while evw < ev_want
+              if ev_o + tv * 4 > ev_bytes
+                break
+              end
+              ev_ids = ToyCorpusLoader.read_seq(ev_corpus, ev_o, tv)
+              ev_o = ev_o + tv * 4
+              evk = 0
+              while evk < tv
+                if ev_ids[evk] < 0 || ev_ids[evk] >= vocabv
+                  puts "toy-train-franken-moe: eval token id " + ev_ids[evk].to_s +
+                       " outside [0, " + vocabv.to_s + ") — pack/instrument mismatch"
+                  return 1
+                end
+                evk = evk + 1
+              end
+              ev_lab = Toy::Labels.next_token_guarded(ev_ids, vocabv, tv, 1)
+              TinyNN.tnn_graph_reset_grads_only(sess)
+              TinyNN.upload_int_array(sess, t_tok, ev_ids)
+              TinyNN.tnn_upload_from_float_array(sess, t_labels, ev_lab.flat, vocabv * tv)
+              TinyNN.tnn_upload_from_float_array(sess, t_hp, ev_hp, 7)
+              if top1
+                TinyNN.tnn_upload_from_float_array(sess, t_f, fvec, nev)
+              end
+              TinyNN.tnn_compute_backward(sess)
+              TinyNN.tnn_download(sess, tw.t_loss)
+              ev_sum = ev_sum + TinyNN.tnn_scratch_get(sess, 0)
+              ev_done = ev_done + 1
+              evw = evw + 1
+            end
+            if ev_done == 0
+              puts "toy-train-franken-moe: zero eval windows (offset past the pack end)"
+              return 1
+            end
+            ev_ce = ev_sum / ev_done.to_f
+            puts "eval_ce: windows=" + ev_done.to_s +
+                 " tokens=" + (ev_done * tv).to_s +
+                 " ce=" + ev_ce.to_s
+            if events.length > 0
+              eve = Toy::Json::Builder.new
+              eve.add_str("kind",  "eval")
+              eve.add_str("phase", "eval")
+              eve.add_num("t",       TinyNN.tnn_events_now_seconds)
+              eve.add_str("name",    "eval-ce")
+              eve.add_num("step",    steps)
+              eve.add_raw("loss",    num_or_null_cli(ev_ce))
+              eve.add_num("windows", ev_done)
+              eve.add_num("tokens",  ev_done * tv)
+              TinyNN.tnn_events_emit(eve.dump)
+            end
           end
 
           if events.length > 0 && TinyNN.tnn_events_active == 1

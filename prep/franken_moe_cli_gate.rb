@@ -353,6 +353,30 @@ _oc2, stc2 = Open3.capture2e(CLEAN, *argv_ctx, chdir: ROOT)
 failures << "pack: --context without --corpus not rejected" if stc2.success?
 puts failures.length == n0 ? "  ok: TOYC pack — vocab 50257 + ctx 16 on the MoE CLI (deterministic, provenance); context-without-corpus rejected" : "  FAIL: pack leg"
 
+# ---- toy#130: end-of-run held-out eval (--eval-corpus) ----
+# The MoE lane has no GGUF writer, so held-out CE runs IN-RUNNER after
+# training (lr=0 windows; Adam moments are dead then). Byte-null on
+# training: the step curve must byte-equal the no-eval run; the
+# eval_ce line + eval event (before run_end) carry the read.
+n0 = failures.length
+ev_args = %w[--steps 8 --seed 0 --corpus data/fineweb_gpt2_smoke.bin --context 16 --routing top1 --moe-policy bp-spine]
+no_ev = run_cli(ev_args, {}, nil)
+Dir.mktmpdir("moe_cli_eval") do |dir|
+  ev1 = run_cli(ev_args + %w[--eval-corpus data/fineweb_gpt2_smoke.bin --eval-tokens 256 --eval-offset 150000], {}, dir)
+  ev2 = run_cli(ev_args + %w[--eval-corpus data/fineweb_gpt2_smoke.bin --eval-tokens 256 --eval-offset 150000], {}, nil)
+  failures << "eval: training curve differs from no-eval run (eval not byte-null on training)" unless losses(ev1) == losses(no_ev)
+  ce1 = ev1.lines.select { |l| l.start_with?("eval_ce:") }
+  ce2 = ev2.lines.select { |l| l.start_with?("eval_ce:") }
+  failures << "eval: no eval_ce line" unless ce1.length == 1
+  failures << "eval: not deterministic\n1: #{ce1.join}2: #{ce2.join}" unless ce1 == ce2
+  evs = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+  evx = evs.find { |e| e["kind"] == "eval" }
+  failures << "eval: no eval event" if evx.nil?
+  failures << "eval: eval event malformed" unless evx && evx["name"] == "eval-ce" && evx["loss"].is_a?(Numeric) && evx["windows"] == 16
+  failures << "eval: run_end not last" unless evs.last && evs.last["kind"] == "run_end"
+  puts failures.length == n0 ? "  ok: --eval-corpus — end-of-run held-out CE (#{ce1.first.to_s.strip}); training byte-null; eval event before run_end" : "  FAIL: eval leg"
+end
+
 # ---- 6. bundle structure + run-id passthrough ----
 n0 = failures.length
 Dir.mktmpdir("moe_cli_bundle") do |dir|
@@ -389,7 +413,7 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
 end
 
 if failures.empty?
-  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + bundle (toy#120/#121)"
+  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + bundle (toy#120/#121)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe-cli]: #{f}" }

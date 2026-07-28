@@ -114,6 +114,9 @@ module Toy
           @no_shadow    = false # franken/franken-moe: skip dfa shadow (toy#129)
           @context      = nil   # franken/franken-moe: context override (toy#129)
           @ckpt_every   = nil   # franken: mid-run checkpoint cadence (toy#129)
+          @eval_corpus  = nil   # franken-moe: end-of-run held-out eval (toy#130)
+          @eval_tokens  = nil
+          @eval_offset  = nil
           @vocab        = nil   # franken/franken-moe: headerless-pack vocab (toy#129)
           @shape        = nil   # franken/franken-moe: preset (toy#124)
           @routing    = nil   # franken-moe: dense | top1
@@ -265,6 +268,9 @@ module Toy
                              "FRANKEN_NO_SHADOW"   => (@no_shadow ? "1" : ""),
                              "FRANKEN_CONTEXT"     => (@context || 0).to_s,
                              "FRANKEN_VOCAB"       => (@vocab || 0).to_s,
+                             "FRANKEN_EVAL_CORPUS" => (@eval_corpus || ""),
+                             "FRANKEN_EVAL_TOKENS" => (@eval_tokens || 0).to_s,
+                             "FRANKEN_EVAL_OFFSET" => (@eval_offset || 0).to_s,
                              "FRANKEN_SHAPE"       => (@shape || "base"),
                              "FRANKEN_B_SEED"      => (@dfa_b_seed || 1234).to_s,
                              "FRANKEN_B_DIST"      => (@dfa_b_dist || ""),
@@ -308,7 +314,9 @@ module Toy
             return fail_out("runner exited #{how}:\n#{tail}")
           end
 
-          losses = out.lines.select { |l| l.start_with?("step ") }.map(&:chomp)
+          # toy#130: the end-of-run eval_ce summary rides stdout alongside
+          # the byte-gated step lines.
+          losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") }.map(&:chomp)
           emit(run_id, run_dir, losses)
         end
 
@@ -404,6 +412,33 @@ module Toy
               return bad_arg("--ckpt-every requires a value") if val.nil?
               return bad_arg("--ckpt-every must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i > 0
               @ckpt_every = val.to_i
+            when "--eval-corpus"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--eval-corpus requires a value") if val.nil?
+              @eval_corpus = val
+            when /\A--eval-corpus=(.*)\z/m
+              @eval_corpus = $1
+            when "--eval-tokens"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--eval-tokens requires a value") if val.nil?
+              return bad_arg("--eval-tokens must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i > 0
+              @eval_tokens = val.to_i
+            when /\A--eval-tokens=(.*)\z/
+              val = $1
+              return bad_arg("--eval-tokens must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i > 0
+              @eval_tokens = val.to_i
+            when "--eval-offset"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--eval-offset requires a value") if val.nil?
+              return bad_arg("--eval-offset must be a non-negative integer (tokens), got #{val.inspect}") unless val =~ /\A\d+\z/
+              @eval_offset = val.to_i
+            when /\A--eval-offset=(.*)\z/
+              val = $1
+              return bad_arg("--eval-offset must be a non-negative integer (tokens), got #{val.inspect}") unless val =~ /\A\d+\z/
+              @eval_offset = val.to_i
             when /\A--ckpt-every=(.*)\z/
               val = $1
               return bad_arg("--ckpt-every must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i > 0
@@ -595,6 +630,15 @@ module Toy
           end
           if @recipe != "franken" && @ckpt_every
             return bad_arg("--ckpt-every is only valid with recipe 'franken' (the MoE instrument has no GGUF writer, toy#120)")
+          end
+          if @recipe != "franken-moe" && (@eval_corpus || @eval_tokens || @eval_offset)
+            return bad_arg("--eval-corpus/--eval-tokens/--eval-offset are only valid with recipe 'franken-moe' (toy#130; the llama lane evals checkpoints offline via `toy eval ce`)")
+          end
+          if (@eval_tokens || @eval_offset) && @eval_corpus.nil?
+            return bad_arg("--eval-tokens/--eval-offset need --eval-corpus")
+          end
+          if @eval_corpus && !File.file?(@eval_corpus)
+            return bad_arg("no such file: #{@eval_corpus} (--eval-corpus streams packed-i32 tokens)")
           end
           if @vocab && @corpus.nil?
             return bad_arg("--vocab needs --corpus (it names a headerless pack's vocab; TOYC packs declare their own)")

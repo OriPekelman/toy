@@ -356,6 +356,16 @@ libexec/toy-eval-lmc: lib/toy/run/eval_lmc.rb lib/toy/llm/adamw.rb vendor/spinel
 	$(SPINEL) $< -o $@
 toy-eval-lmc: libexec/toy-eval-lmc
 
+# toy#130 — CE-over-pack evaluator (the consuming half of the toy#129
+# item-3 eval seam). Own unit (landmine #16); CPU-only like eval/lmc.
+libexec/toy-eval-ce: lib/toy/run/eval_ce.rb lib/toy/llm/adamw.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb lib/toy/io/toy_corpus_loader.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy.rb lib/toy/models/transformer.rb lib/toy/train/toy_drift_grad.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) $< -o $@
+.PHONY: toy-eval-ce
+toy-eval-ce: libexec/toy-eval-ce
+.PHONY: gate-eval-ce
+gate-eval-ce: libexec/toy-eval-ce libexec/toy-train-franken-llama
+	ruby prep/eval_ce_gate.rb
+
 # CUDA siblings of toy-infer / toy-eval — selected by the CRuby CLI shell when
 # invoked with `--device cuda` (lib/toy/core/cli/{infer,eval}.rb derive the
 # target). PER-DEVICE binaries (not one polymorphic runner): a single source

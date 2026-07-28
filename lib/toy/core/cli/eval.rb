@@ -24,6 +24,7 @@
 
 require "json"
 require "open3"
+require "fileutils"
 require_relative "exit_codes"
 require_relative "../toy_root"
 
@@ -44,6 +45,11 @@ module Toy
         LMC_RUNNER_TARGET = "libexec/toy-eval-lmc"
         DEFAULT_ALPHAS    = "0,0.25,0.5,0.75,1.0"
 
+        # CE subcommand (`toy eval ce --ckpt <gguf> --corpus <pack> ...`) —
+        # toy#130: mean next-token CE over disjoint held-out windows.
+        # CPU-only like lmc.
+        CE_RUNNER_TARGET = "libexec/toy-eval-ce"
+
         def initialize(argv)
           @argv = argv
           @json = false
@@ -59,6 +65,7 @@ module Toy
           # LMC subcommand dispatch — `toy eval lmc ...`. The single-model path
           # below is BYTE-UNCHANGED for the non-lmc case.
           return run_lmc(@argv.drop(1)) if @argv.first == "lmc"
+          return run_ce(@argv.drop(1)) if @argv.first == "ce"
 
           parsed = parse_args
           return parsed unless parsed == true
@@ -253,6 +260,158 @@ module Toy
             lines.each { |l| puts l }
           end
           EXIT_OK
+        end
+
+        # toy#130 — `toy eval ce`: checkpoint + pack → mean held-out CE.
+        # Mirrors run_lmc's shape (parse → validate → build → controlled
+        # env → parse the gated line).
+        def run_ce(argv)
+          ce_ckpt = nil
+          ce_pack = nil
+          ce_context = 32
+          ce_tokens = 8192
+          ce_offset = 0
+          ce_out = nil
+          i = 0
+          while i < argv.length
+            tok = argv[i]
+            case tok
+            when "--json"
+              @json = true
+            when "--ckpt"
+              i += 1
+              val = argv[i]
+              return bad_arg_ce("--ckpt requires a value") if val.nil?
+              ce_ckpt = val
+            when /\A--ckpt=(.*)\z/m
+              ce_ckpt = $1
+            when "--corpus"
+              i += 1
+              val = argv[i]
+              return bad_arg_ce("--corpus requires a value") if val.nil?
+              ce_pack = val
+            when /\A--corpus=(.*)\z/m
+              ce_pack = $1
+            when "--context"
+              i += 1
+              val = argv[i]
+              return bad_arg_ce("--context requires a value") if val.nil?
+              return bad_arg_ce("--context must be an integer >= 2, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= 2
+              ce_context = val.to_i
+            when /\A--context=(.*)\z/
+              val = $1
+              return bad_arg_ce("--context must be an integer >= 2, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= 2
+              ce_context = val.to_i
+            when "--eval-tokens"
+              i += 1
+              val = argv[i]
+              return bad_arg_ce("--eval-tokens requires a value") if val.nil?
+              return bad_arg_ce("--eval-tokens must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i > 0
+              ce_tokens = val.to_i
+            when /\A--eval-tokens=(.*)\z/
+              val = $1
+              return bad_arg_ce("--eval-tokens must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i > 0
+              ce_tokens = val.to_i
+            when "--offset"
+              i += 1
+              val = argv[i]
+              return bad_arg_ce("--offset requires a value") if val.nil?
+              return bad_arg_ce("--offset must be a non-negative integer (tokens), got #{val.inspect}") unless val =~ /\A\d+\z/
+              ce_offset = val.to_i
+            when /\A--offset=(.*)\z/
+              val = $1
+              return bad_arg_ce("--offset must be a non-negative integer (tokens), got #{val.inspect}") unless val =~ /\A\d+\z/
+              ce_offset = val.to_i
+            when "--out"
+              i += 1
+              val = argv[i]
+              return bad_arg_ce("--out requires a value") if val.nil?
+              ce_out = val
+            when /\A--out=(.*)\z/m
+              ce_out = $1
+            when "--device", /\A--device(=.*)?\z/
+              return bad_arg_ce("--device is not supported for ce (cpu-only in this slice)")
+            when /\A-/
+              return bad_arg_ce("unknown flag #{tok.inspect}")
+            else
+              return bad_arg_ce("unexpected argument #{tok.inspect} (ce takes no positionals)")
+            end
+            i += 1
+          end
+
+          return bad_arg_ce("--ckpt is required (a fused-llama checkpoint GGUF)") if ce_ckpt.nil?
+          return bad_arg_ce("--corpus is required (a packed-i32/TOYC pack)") if ce_pack.nil?
+          ckpt_path = File.expand_path(ce_ckpt)
+          pack_path = File.expand_path(ce_pack)
+          return bad_arg_ce("no such file: #{ckpt_path}") unless File.file?(ckpt_path)
+          return bad_arg_ce("no such file: #{pack_path}") unless File.file?(pack_path)
+
+          root = ToyRoot.locate_root
+          unless root
+            return fail_out_ce(
+              "could not locate toy's install root. Set TOY_HOME to a toy " \
+              "checkout (one with a Makefile + tinynn/tinynn_ggml.c), or run " \
+              "from inside the toy source tree. Then `toy install` to build " \
+              "the backend."
+            )
+          end
+          ok, err = ToyRoot.ensure_built(root, CE_RUNNER_TARGET, quiet: @json)
+          return fail_out_ce(err) unless ok
+          runner = File.join(root, CE_RUNNER_TARGET)
+          unless File.file?(runner) && File.executable?(runner)
+            return fail_out_ce("runner missing after build: #{runner}. Run `toy install`, then retry.")
+          end
+
+          env = { "GGUF" => ckpt_path, "PACK" => pack_path,
+                  "CONTEXT" => ce_context.to_s, "EVAL_TOKENS" => ce_tokens.to_s,
+                  "EVAL_OFFSET" => ce_offset.to_s }
+          if ce_out
+            FileUtils.mkdir_p(ce_out)
+            env = env.merge("TAO_RUN_DIR" => File.expand_path(ce_out))
+          end
+          out, status = Open3.capture2e(env, runner)
+          unless status.success?
+            tail = out.lines.last(20).join
+            return fail_out_ce("runner exited #{status.exitstatus}:\n#{tail}")
+          end
+          lines = out.lines.map(&:chomp).select { |l| l.start_with?("eval_ce:") }
+          if lines.empty?
+            tail = out.lines.last(20).join
+            return fail_out_ce("runner produced no `eval_ce:` line; output was:\n#{tail}")
+          end
+          if @json
+            body = lines.first[("eval_ce:".length)..].strip
+            fields = {}
+            body.split(" ").each do |kv|
+              k, v = kv.split("=", 2)
+              fields[k] = v
+            end
+            payload = { "format" => FORMAT, "mode" => "ce", "ckpt" => ckpt_path,
+                        "corpus" => pack_path, "windows" => fields["windows"].to_i,
+                        "tokens" => fields["tokens"].to_i, "ce" => fields["ce"].to_f }
+            puts JSON.pretty_generate(payload)
+          else
+            lines.each { |l| puts l }
+          end
+          EXIT_OK
+        end
+
+        def bad_arg_ce(msg)
+          if @json
+            puts JSON.pretty_generate("format" => FORMAT, "error" => msg)
+          else
+            $stderr.puts "toy eval ce: #{msg}"
+          end
+          EXIT_BAD_INPUT
+        end
+
+        def fail_out_ce(msg)
+          if @json
+            puts JSON.pretty_generate("format" => FORMAT, "error" => msg)
+          else
+            $stderr.puts "toy eval ce: #{msg}"
+          end
+          EXIT_FAILURE
         end
 
         # Bad CLI input for the lmc subcommand → exit 2, "toy eval lmc:" prefix.
