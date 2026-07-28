@@ -289,6 +289,22 @@ _o2, st2 = Open3.capture2e({ "STEPS" => "1", "FRANKEN_POLICY" => "chain,maskdfa:
 failures << "no-shadow: mask mode + NO_SHADOW not rejected" if st2.success?
 puts failures.empty? ? "  ok: --no-shadow — applied updates byte-equal shadow (the null), provenance shadow=false, align/mask guards fail loud" : "  FAIL: no-shadow leg"
 
+# ---- toy#129 item 3 (enabling seam): --ckpt-every ----
+# Mid-run checkpoints at boundaries + THE null: the write (downloads +
+# a fresh plain-storage session, freed) must not disturb the training
+# sched — curve byte-equals the no-ckpt run.
+ck_base = run_franken_llama({ "STEPS" => "5", "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42" }, nil)
+Dir.mktmpdir("franken_ck_gate") do |dir|
+  ck_out = run_franken_llama({ "STEPS" => "5", "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42", "FRANKEN_CKPT_EVERY" => "2" }, dir)
+  ck_c = ck_out.lines.select { |l| l.start_with?("step ") }
+  base_c = ck_base.lines.select { |l| l.start_with?("step ") }
+  failures << "ckpt-every: curve differs from no-ckpt run (write disturbs training)" unless ck_c == base_c
+  %w[step_2.gguf step_4.gguf step_5.gguf].each do |ck|
+    failures << "ckpt-every: missing weights/#{ck}" unless File.file?(File.join(dir, "weights", ck))
+  end
+end
+puts failures.empty? ? "  ok: --ckpt-every — boundary checkpoints written; curve byte-equals no-ckpt (write is sched-null)" : "  FAIL: ckpt-every leg"
+
 # ---- 4. byte-repro ----
 r1 = run_franken_llama({ "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42" }, nil)
 r2 = run_franken_llama({ "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42" }, nil)
@@ -296,7 +312,7 @@ failures << "byte-repro: outputs differ" unless r1 == r2
 puts "  ok: byte-repro — two policy runs identical" if r1 == r2
 
 if failures.empty?
-  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + shape presets (toy#124) + lr/warmup (toy#126) + no-shadow/pack-header (toy#129) + byte-repro (toy#112/#113)"
+  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + shape presets (toy#124) + lr/warmup (toy#126) + no-shadow/pack-header/ckpt-every (toy#129) + byte-repro (toy#112/#113)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-llama]: #{f}" }

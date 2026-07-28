@@ -113,6 +113,15 @@ nsc = curve(run_bin(FRK, nsc_env.merge("FRANKEN_NO_SHADOW" => "1")))
 failures << "no-shadow: cuda applied updates differ from shadow build" unless shc == nsc && nsc.length == 6
 puts failures.empty? ? "  ok: --no-shadow on CUDA — applied updates byte-equal shadow" : "  FAIL: cuda no-shadow leg"
 
+# ---- toy#129 item 3: ckpt-every on the CUDA twin (sched-null) ----
+ckc_base = curve(run_bin(FRK, { "STEPS" => "5", "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42" }))
+Dir.mktmpdir("franken_cuda_ck") do |dir|
+  ckc = curve(run_bin(FRK, { "STEPS" => "5", "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42", "FRANKEN_CKPT_EVERY" => "2" }, dir))
+  failures << "ckpt-every: cuda curve differs from no-ckpt run" unless ckc == ckc_base
+  failures << "ckpt-every: missing mid-run checkpoint" unless File.file?(File.join(dir, "weights", "step_2.gguf"))
+end
+puts failures.empty? ? "  ok: --ckpt-every on CUDA — boundary checkpoint + sched-null curve" : "  FAIL: cuda ckpt leg"
+
 if failures.empty?
   puts "GATE PASS [franken-llama-cuda]: parity(seed 0+1) + dfa-arm + determinism + bundle + shape/corpus + lr/warmup + no-shadow (toy#109/#122/#124/#126/#129 CUDA leg)"
   exit 0

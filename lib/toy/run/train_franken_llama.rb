@@ -74,6 +74,15 @@ WARMUP = wu_raw < 0 ? 0 : wu_raw
 # telemetry has nothing to compare against, so ALIGN + NO_SHADOW
 # fails loud below. Modes 2/3/4 fail loud engine-side.
 NO_SHADOW = (ENV["FRANKEN_NO_SHADOW"] || "") == "1"
+# toy#129 item 3 (the enabling seam): FRANKEN_CKPT_EVERY=N writes the
+# standard fused-llama checkpoint (lens folded, heads fused — the same
+# writer as the final one) every N steps to weights/step_<s>.gguf.
+# Checkpoint-boundary held-out evals ride these OFFLINE (the in-process
+# eval seam collides with the global sched / F1.1 one-alloc landmines);
+# 0 = off, byte-null. The write is downloads + a fresh plain-storage
+# session (freed after) — no sched compute, gated byte-null vs no-ckpt.
+ck_raw = (ENV["FRANKEN_CKPT_EVERY"] || "0").to_i
+CKPT_EVERY = ck_raw < 0 ? 0 : ck_raw
 if NO_SHADOW && ALIGN_ON
   puts "toy-train-franken: FRANKEN_ALIGN=1 + FRANKEN_NO_SHADOW=1 — align telemetry compares the DFA grad against the chain shadow acc, which a no-shadow build does not create. Drop one."
   exit 1
@@ -494,6 +503,17 @@ while step < STEPS
       TinyNN.tnn_events_emit(ae.dump)
       ai = ai + 1
     end
+  end
+  if CKPT_EVERY > 0 && TAO_RUN_DIR.length > 0 &&
+     ((step + 1) % CKPT_EVERY) == 0 && (step + 1) < STEPS
+    ck_rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
+    ck_sess = TinyNN.tnn_session_new(0)
+    ck_plist = ToyGGUFFuser.build_lens_folded_into_write_session(recipe.ff_cache, ck_sess, true)
+    ck_rc = ToyGGUFWriter.write_step(cfg, ck_plist, TAO_RUN_DIR + "/weights", ck_rid, step + 1)
+    if ck_rc != 0
+      puts "checkpoint write failed: step=" + (step + 1).to_s + " rc=" + ck_rc.to_s
+    end
+    TinyNN.tnn_session_free(ck_sess)
   end
   step = step + 1
 end

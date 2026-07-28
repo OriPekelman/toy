@@ -113,6 +113,7 @@ module Toy
           @warmup       = nil   # franken: linear lr ramp over N steps (toy#126)
           @no_shadow    = false # franken/franken-moe: skip dfa shadow (toy#129)
           @context      = nil   # franken/franken-moe: context override (toy#129)
+          @ckpt_every   = nil   # franken: mid-run checkpoint cadence (toy#129)
           @vocab        = nil   # franken/franken-moe: headerless-pack vocab (toy#129)
           @shape        = nil   # franken/franken-moe: preset (toy#124)
           @routing    = nil   # franken-moe: dense | top1
@@ -285,7 +286,8 @@ module Toy
                              "FRANKEN_WARMUP"  => (@warmup || 0).to_s,
                              "FRANKEN_NO_SHADOW" => (@no_shadow ? "1" : ""),
                              "FRANKEN_CONTEXT" => (@context || 0).to_s,
-                             "FRANKEN_VOCAB"   => (@vocab || 0).to_s)
+                             "FRANKEN_VOCAB"   => (@vocab || 0).to_s,
+                             "FRANKEN_CKPT_EVERY" => (@ckpt_every || 0).to_s)
           else
             # from-scratch — byte-identical to today plus the harmless RECIPE key.
             env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s)
@@ -396,6 +398,16 @@ module Toy
               @align_events = true
             when "--no-shadow"
               @no_shadow = true
+            when "--ckpt-every"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--ckpt-every requires a value") if val.nil?
+              return bad_arg("--ckpt-every must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i > 0
+              @ckpt_every = val.to_i
+            when /\A--ckpt-every=(.*)\z/
+              val = $1
+              return bad_arg("--ckpt-every must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i > 0
+              @ckpt_every = val.to_i
             when "--shape"
               i += 1
               val = @argv[i]
@@ -580,6 +592,9 @@ module Toy
           end
           if !%w[franken franken-moe].include?(@recipe) && (@context || @vocab)
             return bad_arg("--context/--vocab are only valid with recipe 'franken' or 'franken-moe' (toy#129)")
+          end
+          if @recipe != "franken" && @ckpt_every
+            return bad_arg("--ckpt-every is only valid with recipe 'franken' (the MoE instrument has no GGUF writer, toy#120)")
           end
           if @vocab && @corpus.nil?
             return bad_arg("--vocab needs --corpus (it names a headerless pack's vocab; TOYC packs declare their own)")
