@@ -321,11 +321,12 @@ module Toy; module LLM; module Blocks
       cache.ft_add_2d(self, self.t_seq_w_down, seq_d_model, seq_d_ff)
       cache.ft_name_last(self, prefix + "ffn_down.weight")
 
-      wi = 0
-      while wi < self.ft_weights.length
-        TinyNN.tnn_set_param(self.ft_weights[wi])
-        wi = wi + 1
-      end
+      # toy#129 item 2: param MARKING moved to the engine call sites --
+      # the engine knows the credit-assignment policy and (no-shadow
+      # mode) skips the flag on dfa qkv weights so build_backward never
+      # expands their chain grads. Flag-set order is numerics-neutral
+      # (all flags land before finalize_weights); shadow mode marks
+      # everything, exactly as the old in-block loop did.
     end
 
     # P2-finish — full fine-tune per-block alloc. Lifted VERBATIM from

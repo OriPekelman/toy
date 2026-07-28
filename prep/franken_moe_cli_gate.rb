@@ -215,6 +215,35 @@ Dir.mktmpdir("moe_cli_ae") do |dir|
   puts failures.length == n0 ? "  ok: --align-every thins align emissions (8 @ N=3/6 steps; step/route events untouched)" : "  FAIL: align-every leg"
 end
 
+# ---- toy#129 item 2: --no-shadow (dense dfa-experts) ----
+# The applied-updates null: dense dfa-experts with --no-shadow (experts
+# late-param via the top1 wire, no chain accs) byte-equals the shadow
+# build. top1 + --no-shadow fails loud (already shadow-free); provenance
+# franken_moe.shadow says true (shadow dfa-experts) / false (no-shadow,
+# and every top1 lane).
+n0 = failures.length
+sh_dfa = losses(run_cli(%w[--steps 8 --seed 0 --moe-policy dfa-experts], {}, nil))
+Dir.mktmpdir("moe_cli_ns") do |dir|
+  ns_out = run_cli(%w[--steps 8 --seed 0 --moe-policy dfa-experts --no-shadow], {}, dir)
+  failures << "no-shadow: applied updates differ from shadow build" unless losses(ns_out) == sh_dfa && sh_dfa.length == 8
+  rs0 = JSON.parse(File.readlines(File.join(dir, "events.jsonl")).first)
+  failures << "no-shadow: provenance shadow #{rs0.dig('franken_moe', 'shadow').inspect} (want false)" unless rs0.dig("franken_moe", "shadow") == false
+end
+Dir.mktmpdir("moe_cli_ns2") do |dir|
+  run_cli(%w[--steps 2 --seed 0 --moe-policy dfa-experts --align-events], {}, dir)
+  rs1 = JSON.parse(File.readlines(File.join(dir, "events.jsonl")).first)
+  failures << "no-shadow: shadow dfa-experts provenance #{rs1.dig('franken_moe', 'shadow').inspect} (want true)" unless rs1.dig("franken_moe", "shadow") == true
+end
+Dir.mktmpdir("moe_cli_ns3") do |dir|
+  run_cli(%w[--steps 2 --seed 0 --routing top1 --moe-policy bp-spine], {}, dir)
+  rs2 = JSON.parse(File.readlines(File.join(dir, "events.jsonl")).first)
+  failures << "no-shadow: top1 provenance shadow #{rs2.dig('franken_moe', 'shadow').inspect} (want false)" unless rs2.dig("franken_moe", "shadow") == false
+end
+argv_bad = [TOY, "train", "franken-moe", "--steps", "1", "--routing", "top1", "--no-shadow"]
+_ob, stb = Open3.capture2e(CLEAN, *argv_bad, chdir: ROOT)
+failures << "no-shadow: top1 + --no-shadow not rejected" if stb.success?
+puts failures.length == n0 ? "  ok: --no-shadow — dense dfa-experts byte-equals shadow, provenance true/false/false, top1 combo rejected" : "  FAIL: no-shadow leg"
+
 # ---- toy#125: --corpus (the F8 data surface) ----
 # The corpus feed runs the frozen-vocab contract (627, toy#123) — the
 # vocab-16 fixed-seq embed cannot take the stream's ids — so the leg
@@ -344,7 +373,7 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
 end
 
 if failures.empty?
-  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + bundle (toy#120/#121)"
+  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow (toy#129) + bundle (toy#120/#121)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe-cli]: #{f}" }

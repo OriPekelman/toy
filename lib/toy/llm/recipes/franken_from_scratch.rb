@@ -26,6 +26,12 @@ module Toy; module LLM; module Recipes
     end
 
     def realize!(cfg, opts)
+      # toy#129 item 2: a no-shadow run must tell the engine BEFORE
+      # realize so alloc skips the dfa qkv param flags (the engine
+      # fail-louds on a half-applied state).
+      if opts.no_shadow == 1
+        @ff_cache.franken_no_shadow_init(opts.credit_assignment)
+      end
       @ff_cache.realize_for_random_init(cfg, opts.t_seq, opts.t_batch,
                                         opts.weight_dtype, opts.untied,
                                         opts.qkv_bias, opts.seed,
@@ -33,7 +39,8 @@ module Toy; module LLM; module Recipes
       result       = @ff_cache.build_training_step_franken(
                        opts.credit_assignment, opts.dfa_b_seed,
                        opts.dfa_b_dist, opts.dfa_b_scale, opts.dfa_b_sigma,
-                       opts.dfa_mix_alpha, opts.dfa_mask_tau)
+                       opts.dfa_mix_alpha, opts.dfa_mask_tau,
+                       opts.no_shadow)
       @ff_t_loss   = result[0]
       @ff_t_labels = result[1]
       @ff_t_hp     = result[2]

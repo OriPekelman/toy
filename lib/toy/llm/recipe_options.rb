@@ -68,6 +68,14 @@ module Toy; module LLM
                   # 3=mask-dfa(|g_bp|>tau) 4=mask-bp(|g_dfa|>tau)
                   :credit_assignment, :dfa_b_seed, :dfa_b_dist,
                   :dfa_b_scale, :dfa_b_sigma, :dfa_mix_alpha, :dfa_mask_tau,
+                  # toy#129 item 2 — no_shadow=1: dfa-policied qkv weights
+                  # leave the autodiff param set (no chain grad-acc, no
+                  # backward expansion — the production cost shape; the
+                  # late-param idiom feeds opt_step_adamw). Only sound for
+                  # modes 0/1 (mix/mask read the chain acc — fail loud),
+                  # and align telemetry is unavailable. 0 = shadow-shaped
+                  # (byte-gated legacy).
+                  :no_shadow,
                   # GDN reintegration: 0-based indices of layers built as
                   # Gated-DeltaNet blocks (empty = all-attention, the
                   # byte-gated default). Read by FromScratch + Franken.
@@ -88,6 +96,7 @@ module Toy; module LLM
       @dfa_b_sigma  = 0.0
       @dfa_mix_alpha = 0.5
       @dfa_mask_tau  = 0.0
+      @no_shadow     = 0
       @gdn_layers = [0]; @gdn_layers.pop   # typed-empty IntArray
     end
   end

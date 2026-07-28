@@ -98,8 +98,15 @@ d6 = run_bin(FRK, { "STEPS" => "6" })
 failures << "lr/warmup: curve identical to default (knob dead on cuda)" if curve(l1) == curve(d6)
 puts failures.empty? ? "  ok: --lr/--warmup on CUDA — deterministic, moves the curve" : "  FAIL: cuda lr leg"
 
+# ---- toy#129 item 2: no-shadow on the CUDA twin (the applied-updates null) ----
+nsc_env = { "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42", "STEPS" => "6" }
+shc = curve(run_bin(FRK, nsc_env))
+nsc = curve(run_bin(FRK, nsc_env.merge("FRANKEN_NO_SHADOW" => "1")))
+failures << "no-shadow: cuda applied updates differ from shadow build" unless shc == nsc && nsc.length == 6
+puts failures.empty? ? "  ok: --no-shadow on CUDA — applied updates byte-equal shadow" : "  FAIL: cuda no-shadow leg"
+
 if failures.empty?
-  puts "GATE PASS [franken-llama-cuda]: parity(seed 0+1) + dfa-arm + determinism + bundle + shape/corpus + lr/warmup (toy#109/#122/#124/#126 CUDA leg)"
+  puts "GATE PASS [franken-llama-cuda]: parity(seed 0+1) + dfa-arm + determinism + bundle + shape/corpus + lr/warmup + no-shadow (toy#109/#122/#124/#126/#129 CUDA leg)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-llama-cuda]: #{f}" }

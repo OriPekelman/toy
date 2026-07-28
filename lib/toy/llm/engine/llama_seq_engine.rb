@@ -158,6 +158,11 @@ class LlamaSeqEngine
     @seq_lora_q_rank          = 0
     @seq_lora_q_adamw_enabled = false
     @seq_full_finetune_enabled = false
+    # toy#129 item 2: no-shadow policy recorded BEFORE realize (empty =
+    # shadow-shaped legacy — every weight is an autodiff param). Lives
+    # in initialize — build_gdn_flags!/realize must NOT reset it (the
+    # setter runs before realize).
+    @seq_franken_noshadow_policy = [0]; @seq_franken_noshadow_policy.pop
     @ft_globals_weights = [TinyNN.tnn_null_ptr]; @ft_globals_weights.pop
     @ft_globals_m       = [TinyNN.tnn_null_ptr]; @ft_globals_m.pop
     @ft_globals_v       = [TinyNN.tnn_null_ptr]; @ft_globals_v.pop
@@ -709,6 +714,23 @@ class LlamaSeqEngine
         blk.alloc_trainable_f32_weights!(@sess, self, prefix,
                                          @seq_d_model, @seq_d_ff, @seq_d_head,
                                          @seq_n_heads, @seq_n_kv)
+        # toy#129 item 2: param marking (moved out of the block alloc).
+        # Shadow mode (empty noshadow policy) marks every weight —
+        # byte-identical to the old in-block loop. No-shadow: dfa qkv
+        # weights stay OUT of the param set (late-param at build time,
+        # the MoE-top1 idiom) so build_backward never expands them.
+        ns_mode = 0
+        if li < @seq_franken_noshadow_policy.length
+          ns_mode = @seq_franken_noshadow_policy[li]
+        end
+        wp = 0
+        while wp < blk.ft_weights.length
+          skip_qkv = ns_mode > 0 && wp >= 2 && wp < 2 + @seq_n_heads + 2 * @seq_n_kv
+          if !skip_qkv
+            TinyNN.tnn_set_param(blk.ft_weights[wp])
+          end
+          wp = wp + 1
+        end
       end
       li = li + 1
     end
@@ -1323,6 +1345,20 @@ class LlamaSeqEngine
   # explosion in the mask arms (the labels contract — inputs live only if
   # re-uploaded per step — applies to EVERY graph-input leaf). Call at
   # the top of each training step, before compute.
+  # toy#129 item 2: record the credit-assignment policy BEFORE
+  # realize_for_random_init so the alloc-time param marking can skip
+  # the dfa qkv weights (no chain grad-acc, no backward expansion).
+  # Call ONLY for a no-shadow run; not calling = shadow-shaped legacy.
+  def franken_no_shadow_init(policy)
+    @seq_franken_noshadow_policy = [0]; @seq_franken_noshadow_policy.pop
+    pi = 0
+    while pi < policy.length
+      @seq_franken_noshadow_policy.push(policy[pi])
+      pi = pi + 1
+    end
+    0
+  end
+
   def franken_refresh_b!
     bi = 0
     while bi < @franken_b_handles.length
@@ -1367,10 +1403,20 @@ class LlamaSeqEngine
   # never reshuffles another's B. qkv_bias + dfa is unsupported (fail
   # loud); dfa on a non-attention (GDN) layer fails loud.
   def build_training_step_franken(policy, b_seed, b_dist, b_scale, b_sigma,
-                                  mix_alpha, mask_tau)
+                                  mix_alpha, mask_tau, no_shadow)
     if !@seq_full_finetune_enabled
       puts "build_training_step_franken: requires realize_for_random_init (full-finetune arm only)"
       return nil
+    end
+    # toy#129 item 2: the no-shadow contract is a TWO-phase agreement —
+    # alloc skipped the dfa qkv param flags (franken_no_shadow_init
+    # before realize) and this build late-params them. A half-applied
+    # state silently rebuilds the shadow, so both directions fail loud.
+    if no_shadow == 1 && @seq_franken_noshadow_policy.length == 0
+      raise "build_training_step_franken: no_shadow=1 but franken_no_shadow_init was not called before realize (alloc marked every param — the shadow would silently persist)"
+    end
+    if no_shadow == 0 && @seq_franken_noshadow_policy.length > 0
+      raise "build_training_step_franken: shadow build requested but the alloc ran no-shadow (dfa qkv weights lack param flags)"
     end
     TinyNN.tnn_reset_for_rebuild(@sess)
     build_forward_in_current_ctx
@@ -1453,6 +1499,9 @@ class LlamaSeqEngine
         # q×n_heads, (k,v)×n_kv interleaved, o, gate, up, down].
         is_qkv = wi >= 2 && wi < 2 + nh + 2 * nkv
         if mode > 0 && is_qkv
+          if no_shadow == 1 && mode > 1
+            raise "build_training_step_franken: no_shadow supports modes 0/1 only (mode " + mode.to_s + " reads the chain grad-acc)"
+          end
           t_b = TinyNN.tnn_input_2d_f32(@sess, @seq_d_head, @seq_vocab_size)
           TinyNN.tnn_set_output(t_b)
           t_delta = TinyNN.tnn_matmul(@sess, t_b, t_e)
@@ -1496,20 +1545,28 @@ class LlamaSeqEngine
             @franken_mask_wis.push(wi)
           end
           TinyNN.tnn_set_output(t_g)
+          if no_shadow == 1
+            # late-param (the MoE-top1 idiom): the flag lands AFTER
+            # build_backward so the walker never expanded this weight;
+            # opt_step_adamw's PARAM assert is satisfied.
+            TinyNN.tnn_set_param(tw)
+          end
           to = TinyNN.tnn_opt_step_adamw(@sess, tw, t_g,
                                           blk.ft_m[wi], blk.ft_v[wi], t_hp)
           TinyNN.tnn_extend_backward_graph(@sess, to)
           b_handles.push(t_b)
           b_seeds.push(b_seed + li * 1000 + wi)
-          @franken_align_grads.push(t_g)
-          # PIN the shadow acc: for pure-:dfa weights it has NO consumer
-          # (the opt reads t_g), so sched aliases its slot and the align
-          # download reads zeros (P0 pin-read-backs lesson, engine form).
-          t_acc_rec = TinyNN.tnn_tensor_grad(@sess, tw)
-          TinyNN.tnn_set_output(t_acc_rec)
-          @franken_align_accs.push(t_acc_rec)
-          @franken_align_lis.push(li)
-          @franken_align_wis.push(wi)
+          if no_shadow == 0
+            @franken_align_grads.push(t_g)
+            # PIN the shadow acc: for pure-:dfa weights it has NO consumer
+            # (the opt reads t_g), so sched aliases its slot and the align
+            # download reads zeros (P0 pin-read-backs lesson, engine form).
+            t_acc_rec = TinyNN.tnn_tensor_grad(@sess, tw)
+            TinyNN.tnn_set_output(t_acc_rec)
+            @franken_align_accs.push(t_acc_rec)
+            @franken_align_lis.push(li)
+            @franken_align_wis.push(wi)
+          end
         else
           tg = TinyNN.tnn_tensor_grad(@sess, tw)
           to = TinyNN.tnn_opt_step_adamw(@sess, tw, tg,
@@ -1533,7 +1590,8 @@ class LlamaSeqEngine
     # Loud wiring summary (never-mask: an empty dfa count under a
     # non-empty policy is a bug, not a quiet fallback).
     puts "franken: policy_len=" + policy.length.to_s +
-         " dfa_wired=" + b_handles.length.to_s
+         " dfa_wired=" + b_handles.length.to_s +
+         " shadow=" + (no_shadow == 1 ? "off" : "on")
 
     TinyNN.tnn_pin_all_graph_b_nodes(@sess)
     TinyNN.tnn_realize_backward(@sess)

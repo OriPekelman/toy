@@ -234,6 +234,32 @@ puts failures.empty? ? "  ok: --lr moves the curve (deterministic); --warmup ram
   failures << "shape-#{sh}: seed=1 not deterministic" unless s1 == s2
 end
 
+# ---- toy#129 item 2: --no-shadow ----
+# THE null (the roadmap's own criterion): applied updates byte-identical
+# shadow vs no-shadow at the same policy/seed — the mode changes the
+# graph SHAPE (no chain grad-accs on dfa weights), never the numbers.
+# Plus: summary says shadow=off, provenance carries shadow=false, and
+# the two impossible asks fail loud (align needs the acc; mask modes
+# read it).
+ns_env = { "STEPS" => "6", "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42" }
+sh6 = run_franken_llama(ns_env, nil)
+ns6 = run_franken_llama(ns_env.merge("FRANKEN_NO_SHADOW" => "1"), nil)
+sh6_c = sh6.lines.select { |l| l.start_with?("step ") }
+ns6_c = ns6.lines.select { |l| l.start_with?("step ") }
+failures << "no-shadow: applied updates differ from the shadow build\nsh: #{sh6_c.join}ns: #{ns6_c.join}" unless sh6_c == ns6_c && ns6_c.length == 6
+failures << "no-shadow: summary does not say shadow=off" unless ns6.include?("shadow=off")
+failures << "no-shadow: shadow summary does not say shadow=on" unless sh6.include?("shadow=on")
+Dir.mktmpdir("franken_ns_gate") do |dir|
+  run_franken_llama({ "STEPS" => "2", "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42", "FRANKEN_NO_SHADOW" => "1" }, dir)
+  rs0 = JSON.parse(File.readlines(File.join(dir, "events.jsonl")).first)
+  failures << "no-shadow: provenance franken.shadow #{rs0.dig('franken', 'shadow').inspect} (want false)" unless rs0.dig("franken", "shadow") == false
+end
+_o1, st1 = Open3.capture2e({ "STEPS" => "1", "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42", "FRANKEN_ALIGN" => "1", "FRANKEN_NO_SHADOW" => "1" }, RUNNER, chdir: ROOT)
+failures << "no-shadow: ALIGN + NO_SHADOW not rejected" if st1.success?
+_o2, st2 = Open3.capture2e({ "STEPS" => "1", "FRANKEN_POLICY" => "chain,maskdfa:0.5", "FRANKEN_B_SEED" => "42", "FRANKEN_NO_SHADOW" => "1" }, RUNNER, chdir: ROOT)
+failures << "no-shadow: mask mode + NO_SHADOW not rejected" if st2.success?
+puts failures.empty? ? "  ok: --no-shadow — applied updates byte-equal shadow (the null), provenance shadow=false, align/mask guards fail loud" : "  FAIL: no-shadow leg"
+
 # ---- 4. byte-repro ----
 r1 = run_franken_llama({ "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42" }, nil)
 r2 = run_franken_llama({ "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42" }, nil)
@@ -241,7 +267,7 @@ failures << "byte-repro: outputs differ" unless r1 == r2
 puts "  ok: byte-repro — two policy runs identical" if r1 == r2
 
 if failures.empty?
-  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + shape presets (toy#124) + lr/warmup (toy#126) + byte-repro (toy#112/#113)"
+  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + shape presets (toy#124) + lr/warmup (toy#126) + no-shadow (toy#129) + byte-repro (toy#112/#113)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-llama]: #{f}" }

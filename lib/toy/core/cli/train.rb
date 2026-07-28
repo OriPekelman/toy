@@ -111,6 +111,7 @@ module Toy
           @align_every  = nil   # franken: thin align/mask emissions (toy#122)
           @lr           = nil   # franken: hp-slot-0 override (toy#126)
           @warmup       = nil   # franken: linear lr ramp over N steps (toy#126)
+          @no_shadow    = false # franken/franken-moe: skip dfa shadow (toy#129)
           @shape        = nil   # franken/franken-moe: preset (toy#124)
           @routing    = nil   # franken-moe: dense | top1
           @moe_policy = nil   # franken-moe: chain | dfa-experts
@@ -258,6 +259,7 @@ module Toy
                              "FRANKEN_MOE"         => (@moe_policy || "chain"),
                              "FRANKEN_MOE_AUX"     => (@moe_aux || "0"),
                              "FRANKEN_MOE_EXPERTS" => (@experts || 2).to_s,
+                             "FRANKEN_NO_SHADOW"   => (@no_shadow ? "1" : ""),
                              "FRANKEN_SHAPE"       => (@shape || "base"),
                              "FRANKEN_B_SEED"      => (@dfa_b_seed || 1234).to_s,
                              "FRANKEN_B_DIST"      => (@dfa_b_dist || ""),
@@ -276,7 +278,8 @@ module Toy
                              "FRANKEN_SHAPE"   => (@shape || "base"),
                              "CORPUS"          => (@corpus || ""),
                              "FRANKEN_LR"      => (@lr || ""),
-                             "FRANKEN_WARMUP"  => (@warmup || 0).to_s)
+                             "FRANKEN_WARMUP"  => (@warmup || 0).to_s,
+                             "FRANKEN_NO_SHADOW" => (@no_shadow ? "1" : ""))
           else
             # from-scratch — byte-identical to today plus the harmless RECIPE key.
             env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s)
@@ -385,6 +388,8 @@ module Toy
               @dfa_b_scale = $1
             when "--align-events"
               @align_events = true
+            when "--no-shadow"
+              @no_shadow = true
             when "--shape"
               i += 1
               val = @argv[i]
@@ -543,6 +548,12 @@ module Toy
           end
           if @recipe != "franken" && (@lr || @warmup)
             return bad_arg("--lr/--warmup are only valid with recipe 'franken' (toy#126)")
+          end
+          if !%w[franken franken-moe].include?(@recipe) && @no_shadow
+            return bad_arg("--no-shadow is only valid with recipe 'franken' or 'franken-moe' (toy#129)")
+          end
+          if @no_shadow && @align_events
+            return bad_arg("--no-shadow + --align-events: align telemetry compares DFA grads against the chain shadow acc, which a no-shadow build does not create — drop one")
           end
           if !%w[franken franken-moe].include?(@recipe) && @shape
             return bad_arg("--shape is only valid with recipe 'franken' or 'franken-moe'")

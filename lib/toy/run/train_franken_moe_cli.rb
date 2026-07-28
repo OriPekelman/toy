@@ -110,6 +110,13 @@ module Toy
           bseed_s = ENV["FRANKEN_B_SEED"] || ""
           b_seed = bseed_s.length > 0 ? bseed_s.to_i : 1234
           align_on = (ENV["FRANKEN_ALIGN"] || "") == "1"
+          # toy#129 item 2: FRANKEN_NO_SHADOW=1 — dense dfa-experts
+          # drop the expert weights from the autodiff param set
+          # (late-param via the top1 wire, no chain grad-acc, no
+          # backward expansion through the experts). top1 lanes are
+          # ALREADY shadow-free by construction (zero-param build, the
+          # F4/F5 design) — the flag is meaningless there, fail loud.
+          no_shadow = (ENV["FRANKEN_NO_SHADOW"] || "") == "1"
           # toy#127: the toy#122 thinning, MoE-side — every Nth step
           # skips the align DOWNLOADS and emissions both (the shadow
           # readback is the cost); step/route events stay per-step.
@@ -117,6 +124,18 @@ module Toy
           align_every = ae_raw < 1 ? 1 : ae_raw
           events = run_dir.length > 0 ? (run_dir + "/events.jsonl") : ""
           lr = 0.02
+          if no_shadow && top1
+            puts "toy-train-franken-moe: --no-shadow is meaningless under --routing top1 — top1 lanes are already shadow-free (zero-param build, the F4/F5 design)"
+            return 1
+          end
+          if no_shadow && !dfa_experts
+            puts "toy-train-franken-moe: --no-shadow requires --moe-policy dfa-experts (dense chain has no DFA segments to unshadow)"
+            return 1
+          end
+          if no_shadow && align_on
+            puts "toy-train-franken-moe: --no-shadow + align events — align compares DFA grads against the chain shadow acc, which a no-shadow build does not create. Drop one."
+            return 1
+          end
 
           pol_name = mode_s
           if top1
@@ -201,10 +220,17 @@ module Toy
           # late-param DFA — the walker must never need mul_mat_id).
           gi = 0
           while gi < tw.pp.length
-            # dense: every weight. bp-spine: the whole spine 0..8 (embed,
-            # fnorm, attention, rn2, Wr) — experts 9..12 stay late-param
-            # DFA behind the detach cut.
-            if !top1 || (bp_spine && gi < 9)
+            # dense: every weight — EXCEPT no-shadow drops the experts
+            # (gi >= 9; late-param at wire time). bp-spine: the whole
+            # spine 0..8 (embed, fnorm, attention, rn2, Wr) — experts
+            # stay late-param DFA behind the detach cut.
+            mark = false
+            if top1
+              mark = bp_spine && gi < 9
+            else
+              mark = !(no_shadow && gi >= 9)
+            end
+            if mark
               TinyNN.tnn_set_param(tw.pp[gi])
             end
             gi = gi + 1
@@ -358,11 +384,20 @@ module Toy
                 idx = idx + 1
               end
               # toy#128: per-expert dense DFA wires; each down_i reads
-              # its own dense act tap (tap_as[i]).
+              # its own dense act tap (tap_as[i]). toy#129: no-shadow
+              # reuses the top1 wire (late-param, NO acc recording,
+              # null mask) — the DFA grad math is identical, so applied
+              # updates byte-match the shadow build (gated).
+              np3 = TinyNN.tnn_null_ptr
               ei = 0
               while ei < nev
-                wire_dfa(sess, tw, t_hp, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_h2,    dmv,  dfv, "up" + (ei + 1).to_s)
-                wire_dfa(sess, tw, t_hp, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_as[ei], dfv, dmv,  "down" + (ei + 1).to_s)
+                if no_shadow
+                  wire_dfa_top1(sess, tw, t_hp, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_h2,     dmv,  dfv, np3)
+                  wire_dfa_top1(sess, tw, t_hp, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_as[ei], dfv, dmv,  np3)
+                else
+                  wire_dfa(sess, tw, t_hp, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_h2,    dmv,  dfv, "up" + (ei + 1).to_s)
+                  wire_dfa(sess, tw, t_hp, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_as[ei], dfv, dmv,  "down" + (ei + 1).to_s)
+                end
                 ei = ei + 1
               end
             else
@@ -437,6 +472,10 @@ module Toy
               fm.add_num("b_dist",    dist_c)
               fm.add_num("b_scale",   Toy::Train::DfaB::SCALE_INV_SQRT_FAN)
               fm.add_num("b_sigma",   0.0)
+              # toy#129: shadow = whether dfa segments carry chain
+              # grad-accs (dense dfa-experts without --no-shadow).
+              # top1 lanes and dense chain have none — false.
+              fm.add_bool("shadow",   dfa_experts && !top1 && !no_shadow)
               rs.add_obj("franken_moe", fm)
               TinyNN.tnn_events_emit(rs.dump)
             else
@@ -652,10 +691,18 @@ module Toy
             puts "FRANKEN-MOE-CLI: NaN loss"
           end
           puts "FRANKEN-MOE-CLI DONE"
+          0
         end
       end
     end
   end
 end
 
-Toy::LLM::Run::TrainFrankenMoe.run_cli
+# toy#129 fallout fix: run_cli's error paths `return 1` — that return
+# value was silently DROPPED, so validation failures exited 0 (latent
+# since toy#124's unknown-shape guard; first observable when the gate
+# asserted a rejection). The exit status now carries it.
+rc_main = Toy::LLM::Run::TrainFrankenMoe.run_cli
+if rc_main != 0
+  exit 1
+end

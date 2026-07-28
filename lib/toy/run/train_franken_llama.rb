@@ -67,6 +67,17 @@ LR_S = ENV["FRANKEN_LR"] || ""
 LR   = LR_S.length > 0 ? LR_S.to_f : 0.001
 wu_raw = (ENV["FRANKEN_WARMUP"] || "0").to_i
 WARMUP = wu_raw < 0 ? 0 : wu_raw
+# toy#129 item 2: FRANKEN_NO_SHADOW=1 drops dfa-policied qkv weights
+# from the autodiff param set (no chain grad-acc, no backward
+# expansion — the production cost shape). Applied updates are
+# byte-identical to the shadow build (the gate pins it); align
+# telemetry has nothing to compare against, so ALIGN + NO_SHADOW
+# fails loud below. Modes 2/3/4 fail loud engine-side.
+NO_SHADOW = (ENV["FRANKEN_NO_SHADOW"] || "") == "1"
+if NO_SHADOW && ALIGN_ON
+  puts "toy-train-franken: FRANKEN_ALIGN=1 + FRANKEN_NO_SHADOW=1 — align telemetry compares the DFA grad against the chain shadow acc, which a no-shadow build does not create. Drop one."
+  exit 1
+end
 
 # Model shape — toy#124 presets (F7/F8 escalation). base = the gate
 # shape, identical to train.rb (the F0 contract, byte-null); wide/deep
@@ -208,6 +219,7 @@ opts = Toy::LLM::RecipeOptions.new
 opts.t_seq  = CONTEXT
 opts.untied = true
 opts.seed   = SEED
+opts.no_shadow = NO_SHADOW ? 1 : 0
 pi = 0
 while pi < policy.length
   opts.credit_assignment.push(policy[pi])
@@ -323,6 +335,7 @@ if EVENTS.length > 0
     fr.add_num("b_sigma",   opts.dfa_b_sigma)
     fr.add_num("mix_alpha", mix_alpha)
     fr.add_num("mask_tau",  mask_tau)
+    fr.add_bool("shadow",   !NO_SHADOW)
     rs.add_obj("franken", fr)
     TinyNN.tnn_events_emit(rs.dump)
   else
