@@ -70,6 +70,14 @@ Dir.mktmpdir("franken_llama_gate") do |dir|
     failures << "bundle: last event not run_end" unless events.last && events.last["kind"] == "run_end"
     rs = events.first || {}
     failures << "bundle: schema != toy/v1" unless rs["schema"] == "toy/v1"
+    # toy#129 item 4: derived cost accounting rides run_start
+    co = rs["cost"]
+    if co.nil?
+      failures << "bundle: run_start has no cost object (toy#129)"
+    else
+      failures << "bundle: cost fields not positive (#{co.inspect})" unless %w[total_params active_params flops_per_token].all? { |k| co[k].is_a?(Numeric) && co[k] > 0 }
+      failures << "bundle: llama cost active != total (#{co.inspect})" unless co["active_params"] == co["total_params"]
+    end
     fr = rs["franken"]
     if fr.nil?
       failures << "bundle: run_start has no franken object"

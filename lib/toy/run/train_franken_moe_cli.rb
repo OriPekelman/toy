@@ -409,6 +409,26 @@ module Toy
               config.add_num("lr",      lr)
               config.add_num("seed",    seed)
               rs.add_obj("config", config)
+              # toy#129 item 4: derived cost accounting. total = tied
+              # embed vocab*dm + norms 3dm + attention 4dm^2 + router
+              # E*dm + E expert pairs 2*dm*dff. active swaps E -> the
+              # per-token expert count (top1 routes 1; dense mixes all
+              # E). flops_per_token = FORWARD, 2 flops/MAC: attention
+              # matmuls + scores/combine at T + router + active experts
+              # + tied logits.
+              act_e = top1 ? 1 : nev
+              cost_total  = vocabv * dmv + 3 * dmv + 4 * dmv * dmv +
+                            nev * dmv + nev * 2 * dmv * dfv
+              cost_active = vocabv * dmv + 3 * dmv + 4 * dmv * dmv +
+                            nev * dmv + act_e * 2 * dmv * dfv
+              cost_flops  = 2 * (4 * dmv * dmv) + 4 * dmv * T +
+                            2 * nev * dmv + act_e * 2 * (2 * dmv * dfv) +
+                            2 * vocabv * dmv
+              cost = Toy::Json::Builder.new
+              cost.add_num("total_params",    cost_total)
+              cost.add_num("active_params",   cost_active)
+              cost.add_num("flops_per_token", cost_flops)
+              rs.add_obj("cost", cost)
               fm = Toy::Json::Builder.new
               fm.add_str("routing",   top1 ? "top1" : "dense")
               fm.add_str("policy",    pol_name)

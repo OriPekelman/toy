@@ -295,6 +295,25 @@ if EVENTS.length > 0
     config.add_num("warmup",  WARMUP)
     config.add_num("seed",    SEED)
     rs.add_obj("config", config)
+    # toy#129 item 4: derived cost accounting — auditable FLOP-matching
+    # from the bundle. params = embed(vocab*donor) + lens(donor*d) +
+    # L*(4d^2 attn + 3*d*dff swiglu + 2d norms) + final norm d + untied
+    # head d*vocab. flops_per_token = FORWARD, 2 flops/MAC: lens +
+    # per-layer matmuls + attention scores/combine at full context +
+    # head (embed row lookup ~0). Every param is trainable under every
+    # policy arm (DFA changes the update rule, not the active set), so
+    # active == total here — the MoE runner is where they diverge.
+    cost_params = VOCAB * DONOR_D + DONOR_D * D_MODEL +
+                  N_LAYERS * (4 * D_MODEL * D_MODEL + 3 * D_MODEL * D_FF + 2 * D_MODEL) +
+                  D_MODEL + D_MODEL * VOCAB
+    cost_flops  = 2 * DONOR_D * D_MODEL +
+                  N_LAYERS * (2 * (4 * D_MODEL * D_MODEL + 3 * D_MODEL * D_FF) + 4 * D_MODEL * CONTEXT) +
+                  2 * D_MODEL * VOCAB
+    cost = Toy::Json::Builder.new
+    cost.add_num("total_params",    cost_params)
+    cost.add_num("active_params",   cost_params)
+    cost.add_num("flops_per_token", cost_flops)
+    rs.add_obj("cost", cost)
     fr = Toy::Json::Builder.new
     fr.add_raw("policy",    Toy::Json.from_int_array(policy))
     fr.add_num("b_seed",    B_SEED)

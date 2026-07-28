@@ -324,6 +324,13 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
     else
       failures << "bundle: wrong provenance #{fm.inspect}" unless fm["routing"] == "top1" && fm["aux_alpha"] == 0.05 && fm["b_seed"] == 1234
     end
+    co = rs["cost"]
+    if co.nil?
+      failures << "bundle: run_start has no cost object (toy#129)"
+    else
+      failures << "bundle: cost fields not positive (#{co.inspect})" unless %w[total_params active_params flops_per_token].all? { |k| co[k].is_a?(Numeric) && co[k] > 0 }
+      failures << "bundle: top1 active_params not < total (#{co.inspect})" unless co["active_params"] < co["total_params"]
+    end
     failures << "bundle: #{evs.count { |e| e['kind'] == 'step' }} step events (want 5)" unless evs.count { |e| e["kind"] == "step" } == 5
     failures << "bundle: #{evs.count { |e| e['kind'] == 'route' }} route events (want 5)" unless evs.count { |e| e["kind"] == "route" } == 5
     failures << "bundle: last event not run_end" unless evs.last && evs.last["kind"] == "run_end"
