@@ -123,7 +123,17 @@ module Toy
           ae_raw = (ENV["FRANKEN_ALIGN_EVERY"] || "1").to_i
           align_every = ae_raw < 1 ? 1 : ae_raw
           events = run_dir.length > 0 ? (run_dir + "/events.jsonl") : ""
-          lr = 0.02
+          # toy#132 (toy#126 parity): FRANKEN_LR overrides the recipe's
+          # lr (default 0.02, byte-null without the flag); FRANKEN_WARMUP
+          # ramps linearly over the first N steps (lr_t = LR*(t+1)/N,
+          # reaching LR exactly at step N) — the hp vector is rebuilt
+          # per step already, so the ramp is zero engine work (the
+          # 8ba447d pattern). The end-of-run eval (toy#130) pins its own
+          # lr=0 hp and is untouched.
+          lr_s = ENV["FRANKEN_LR"] || ""
+          lr = lr_s.length > 0 ? lr_s.to_f : 0.02
+          wu_raw = (ENV["FRANKEN_WARMUP"] || "0").to_i
+          warmup = wu_raw < 0 ? 0 : wu_raw
           if no_shadow && top1
             puts "toy-train-franken-moe: --no-shadow is meaningless under --routing top1 — top1 lanes are already shadow-free (zero-param build, the F4/F5 design)"
             return 1
@@ -496,6 +506,7 @@ module Toy
               config.add_num("context", tv)
               config.add_num("steps",   steps)
               config.add_num("lr",      lr)
+              config.add_num("warmup",  warmup)
               config.add_num("seed",    seed)
               rs.add_obj("config", config)
               # toy#129 item 4: derived cost accounting. total = tied
@@ -571,7 +582,12 @@ module Toy
               TinyNN.tnn_graph_reset_grads_only(sess)
             end
             t = (s + 1).to_f
-            hp = [lr, b1, b2, 1.0e-8, 0.0,
+            lr_t = lr
+            if warmup > 0 && s < warmup
+              # linear ramp; at step warmup-1 the factor is exactly 1.0
+              lr_t = lr * ((s + 1).to_f / warmup.to_f)
+            end
+            hp = [lr_t, b1, b2, 1.0e-8, 0.0,
                   1.0 / (1.0 - (b1 ** t)), 1.0 / (1.0 - (b2 ** t))]
             if corpus_s.length > 0
               # rotating-window stream: restart at 0 BEFORE the window
@@ -605,6 +621,7 @@ module Toy
               es.add_num("t",     TinyNN.tnn_events_now_seconds)
               es.add_num("step",  s + 1)
               es.add_raw("loss",  num_or_null_cli(loss))
+              es.add_raw("lr",    lr_t.to_s)
               TinyNN.tnn_events_emit(es.dump)
             end
 

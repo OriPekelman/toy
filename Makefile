@@ -366,6 +366,12 @@ toy-eval-ce: libexec/toy-eval-ce
 gate-eval-ce: libexec/toy-eval-ce libexec/toy-train-franken-llama
 	ruby prep/eval_ce_gate.rb
 
+# toy#132 — the flag x recipe matrix, asserted against reality (pure
+# CRuby CLI validation; no runner builds — every probe fails pre-build).
+.PHONY: gate-train-cli-matrix
+gate-train-cli-matrix:
+	ruby prep/train_cli_matrix_gate.rb
+
 # CUDA siblings of toy-infer / toy-eval — selected by the CRuby CLI shell when
 # invoked with `--device cuda` (lib/toy/core/cli/{infer,eval}.rb derive the
 # target). PER-DEVICE binaries (not one polymorphic runner): a single source

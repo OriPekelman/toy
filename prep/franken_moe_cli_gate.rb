@@ -353,6 +353,31 @@ _oc2, stc2 = Open3.capture2e(CLEAN, *argv_ctx, chdir: ROOT)
 failures << "pack: --context without --corpus not rejected" if stc2.success?
 puts failures.length == n0 ? "  ok: TOYC pack — vocab 50257 + ctx 16 on the MoE CLI (deterministic, provenance); context-without-corpus rejected" : "  FAIL: pack leg"
 
+# ---- toy#132: --lr/--warmup (toy#126 parity, MoE-side) ----
+# --lr moves the curve deterministically; explicit --lr 0.02 byte-
+# equals the default (0.02 IS the recipe default — flag-null); warmup
+# ramps to LR at step N, pinned via the step events' new lr field.
+n0 = failures.length
+lr1 = losses(run_cli(%w[--steps 8 --seed 0 --lr 0.05], {}, nil))
+lr2 = losses(run_cli(%w[--steps 8 --seed 0 --lr 0.05], {}, nil))
+failures << "lr: not deterministic" unless lr1 == lr2 && lr1.length == 8
+failures << "lr: curve identical to default 0.02 (knob dead)" if lr1 == cli_chain0
+lr_null = losses(run_cli(%w[--steps 8 --seed 0 --lr 0.02], {}, nil))
+failures << "lr: explicit 0.02 differs from default (flag-null broken)" unless lr_null == cli_chain0
+Dir.mktmpdir("moe_cli_lr") do |dir|
+  run_cli(%w[--steps 6 --seed 0 --lr 0.05 --warmup 4], {}, dir)
+  evs = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+  lrs = evs.select { |e| e["kind"] == "step" }.map { |e| e["lr"] }
+  want = [1, 2, 3, 4].map { |t| 0.05 * (t.to_f / 4.0) } + [0.05, 0.05]
+  ramp_ok = lrs.length == 6 && lrs.zip(want).all? { |g, w| g.is_a?(Numeric) && (g - w).abs < 1.0e-12 }
+  failures << "warmup: step-event lr ramp #{lrs.inspect} (want #{want.inspect})" unless ramp_ok
+  failures << "warmup: run_start config warmup wrong" unless evs.first.dig("config", "warmup") == 4
+end
+wu1 = losses(run_cli(%w[--steps 6 --seed 0 --lr 0.05 --warmup 4], {}, nil))
+flat6 = losses(run_cli(%w[--steps 6 --seed 0 --lr 0.05], {}, nil))
+failures << "warmup: curve identical to flat lr (ramp dead)" if wu1 == flat6
+puts failures.length == n0 ? "  ok: --lr moves the curve (flag-null at 0.02); --warmup ramps to LR @N (step events pin the ramp)" : "  FAIL: lr/warmup leg"
+
 # ---- toy#130: end-of-run held-out eval (--eval-corpus) ----
 # The MoE lane has no GGUF writer, so held-out CE runs IN-RUNNER after
 # training (lr=0 windows; Adam moments are dead then). Byte-null on
@@ -413,7 +438,7 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
 end
 
 if failures.empty?
-  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + bundle (toy#120/#121)"
+  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + bundle (toy#120/#121)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe-cli]: #{f}" }

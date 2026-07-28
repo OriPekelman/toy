@@ -271,6 +271,8 @@ module Toy
                              "FRANKEN_EVAL_CORPUS" => (@eval_corpus || ""),
                              "FRANKEN_EVAL_TOKENS" => (@eval_tokens || 0).to_s,
                              "FRANKEN_EVAL_OFFSET" => (@eval_offset || 0).to_s,
+                             "FRANKEN_LR"          => (@lr || ""),
+                             "FRANKEN_WARMUP"      => (@warmup || 0).to_s,
                              "FRANKEN_SHAPE"       => (@shape || "base"),
                              "FRANKEN_B_SEED"      => (@dfa_b_seed || 1234).to_s,
                              "FRANKEN_B_DIST"      => (@dfa_b_dist || ""),
@@ -601,38 +603,37 @@ module Toy
           unless %w[from-scratch lora warm-start vit-tiny franken franken-moe].include?(@recipe)
             return bad_arg("unknown recipe #{@recipe.inspect}; supported: 'from-scratch', 'lora', 'warm-start', 'vit-tiny', 'franken', 'franken-moe'")
           end
-          if @recipe != "lora" && (!@model.nil? || !@rank.nil?)
-            return bad_arg("--model/--rank are only valid with recipe 'lora'")
-          end
-          if !%w[warm-start franken franken-moe].include?(@recipe) && !@corpus.nil?
-            return bad_arg("--corpus is only valid with recipe 'warm-start', 'franken', or 'franken-moe'")
-          end
-          if @recipe != "warm-start" && !@init.nil?
-            return bad_arg("--init is only valid with recipe 'warm-start'")
-          end
-          if !%w[franken franken-moe].include?(@recipe) && (@dfa_b_seed || @dfa_b_dist || @dfa_b_scale || @align_events)
-            return bad_arg("--dfa-b-*/--align-events are only valid with recipe 'franken' or 'franken-moe'")
-          end
-          if @recipe != "franken" && @policy
-            return bad_arg("--policy is only valid with recipe 'franken'")
-          end
-          if !%w[franken franken-moe].include?(@recipe) && @align_every
-            return bad_arg("--align-every is only valid with recipe 'franken' or 'franken-moe'")
-          end
-          if @recipe != "franken" && (@lr || @warmup)
-            return bad_arg("--lr/--warmup are only valid with recipe 'franken' (toy#126)")
-          end
-          if !%w[franken franken-moe].include?(@recipe) && @no_shadow
-            return bad_arg("--no-shadow is only valid with recipe 'franken' or 'franken-moe' (toy#129)")
-          end
-          if !%w[franken franken-moe].include?(@recipe) && (@context || @vocab)
-            return bad_arg("--context/--vocab are only valid with recipe 'franken' or 'franken-moe' (toy#129)")
-          end
-          if @recipe != "franken" && @ckpt_every
-            return bad_arg("--ckpt-every is only valid with recipe 'franken' (the MoE instrument has no GGUF writer, toy#120)")
-          end
-          if @recipe != "franken-moe" && (@eval_corpus || @eval_tokens || @eval_offset)
-            return bad_arg("--eval-corpus/--eval-tokens/--eval-offset are only valid with recipe 'franken-moe' (toy#130; the llama lane evals checkpoints offline via `toy eval ce`)")
+          # ---- toy#132: the flag x recipe MATRIX ----
+          # Four llama-first flags in a row tripped franken-moe at Tao
+          # runtime (--corpus toy#125, --align-every toy#127, --ckpt-every
+          # toy#131, --lr/--warmup toy#132) because "only valid with"
+          # checks were scattered one-per-flag. One table now: recipe
+          # parity is a CELL FLIP here (plus the runner-side env wiring),
+          # and prep/train_cli_matrix_gate.rb asserts every row rejects
+          # under a wrong recipe. CONDITIONAL rules (flag-requires-flag,
+          # top1-only, value checks) stay bespoke below — this table
+          # covers recipe membership ONLY.
+          flag_matrix = [
+            ["--model/--rank",  %w[lora],                          (!@model.nil? || !@rank.nil?), ""],
+            ["--corpus",        %w[warm-start franken franken-moe], !@corpus.nil?, ""],
+            ["--init",          %w[warm-start],                     !@init.nil?, ""],
+            ["--dfa-b-*/--align-events", %w[franken franken-moe],   (!@dfa_b_seed.nil? || !@dfa_b_dist.nil? || !@dfa_b_scale.nil? || @align_events), ""],
+            ["--policy",        %w[franken],                        !@policy.nil?, ""],
+            ["--align-every",   %w[franken franken-moe],            !@align_every.nil?, ""],
+            ["--lr/--warmup",   %w[franken franken-moe],            (!@lr.nil? || !@warmup.nil?), " (toy#126/#132)"],
+            ["--no-shadow",     %w[franken franken-moe],            @no_shadow, " (toy#129)"],
+            ["--context/--vocab", %w[franken franken-moe],          (!@context.nil? || !@vocab.nil?), " (toy#129)"],
+            ["--ckpt-every",    %w[franken],                        !@ckpt_every.nil?, " (the MoE instrument has no GGUF writer, toy#120/#131)"],
+            ["--eval-corpus/--eval-tokens/--eval-offset", %w[franken-moe], (!@eval_corpus.nil? || !@eval_tokens.nil? || !@eval_offset.nil?), " (toy#130; the llama lane evals checkpoints offline via `toy eval ce`)"],
+            ["--shape",         %w[franken franken-moe],            !@shape.nil?, ""],
+            ["--routing/--moe-policy/--moe-aux", %w[franken-moe],   (!@routing.nil? || !@moe_policy.nil? || !@moe_aux.nil?), ""],
+            ["--experts",       %w[franken-moe],                    !@experts.nil?, " (toy#128)"],
+          ]
+          flag_matrix.each do |label, recipes, used, note|
+            next unless used && !recipes.include?(@recipe)
+            names = recipes.map { |r| "'#{r}'" }.join(" or ")
+            verb = label.include?("/") ? "are" : "is"
+            return bad_arg("#{label} #{verb} only valid with recipe #{names}#{note}")
           end
           if (@eval_tokens || @eval_offset) && @eval_corpus.nil?
             return bad_arg("--eval-tokens/--eval-offset need --eval-corpus")
@@ -649,17 +650,8 @@ module Toy
           if @no_shadow && @align_events
             return bad_arg("--no-shadow + --align-events: align telemetry compares DFA grads against the chain shadow acc, which a no-shadow build does not create — drop one")
           end
-          if !%w[franken franken-moe].include?(@recipe) && @shape
-            return bad_arg("--shape is only valid with recipe 'franken' or 'franken-moe'")
-          end
           if @recipe == "franken-moe" && @shape == "deep"
             return bad_arg("--shape deep is llama-only; franken-moe takes base|wide (toy#124)")
-          end
-          if @recipe != "franken-moe" && (@routing || @moe_policy || @moe_aux)
-            return bad_arg("--routing/--moe-policy/--moe-aux are only valid with recipe 'franken-moe'")
-          end
-          if @recipe != "franken-moe" && @experts
-            return bad_arg("--experts is only valid with recipe 'franken-moe' (toy#128)")
           end
           if @recipe == "franken-moe" && @moe_aux && @routing != "top1"
             return bad_arg("--moe-aux requires --routing top1 (the aux-loss rides the hard router)")
