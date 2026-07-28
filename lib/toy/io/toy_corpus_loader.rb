@@ -18,6 +18,46 @@
 module ToyCorpusLoader
   TOKEN_BYTES = 4   # int32
 
+  # toy#129 item 1 — the self-describing pack header (written by
+  # prep/pretokenize_pack.py):
+  #   bytes 0-3   "TOYC" magic
+  #   bytes 4-7   u32 LE version (1)
+  #   bytes 8-11  u32 LE vocab
+  #   bytes 12-15 u32 LE reserved
+  # Headerless packs (ts_seqs*.bin, the toy#123 fixture) stay readable:
+  # probe_vocab returns 0 for them and data_offset returns 0.
+  TOYC_MAGIC  = 1129926484   # "TOYC" as little-endian i32
+  HEADER_I32S = 4
+  HEADER_BYTES = 16
+
+  # Returns the pack's declared vocab (TOYC v1), or 0 for a headerless
+  # legacy pack. FAILS LOUD on a TOYC pack with an unknown version —
+  # silently misreading a future format as token data is the exact
+  # never-mask failure this header exists to prevent.
+  def self.probe_vocab(path)
+    hd = Array.new(HEADER_I32S, 0)
+    got = TinyNN.tnn_read_i32_file(path, 0, HEADER_I32S, hd)
+    if got < HEADER_I32S
+      return 0
+    end
+    if hd[0] != TOYC_MAGIC
+      return 0
+    end
+    if hd[1] != 1
+      raise "ToyCorpusLoader: TOYC version " + hd[1].to_s +
+            " unsupported (this build reads v1) — " + path
+    end
+    hd[2]
+  end
+
+  # First token byte: 16 for a TOYC pack, 0 for a headerless one.
+  def self.data_offset(path)
+    if probe_vocab(path) > 0
+      return HEADER_BYTES
+    end
+    0
+  end
+
   # Read exactly n_tokens tokens starting at byte_offset. Returns the
   # tokens Array<Int>. If reading would short-cut at EOF, wraps to 0
   # and retries; if even that fails (corpus < n_tokens), pads with 0s

@@ -25,8 +25,9 @@ module Toy
         # spec-callable runner can widen (base d8/ff16, wide d256/ff512)
         # without a second compiled unit. EVERY runner calls shape_init
         # FIRST (the rig pins base; the CLI reads FRANKEN_SHAPE).
-        # NE/T stay pinned — F8's width question is expert/dm width, and
-        # the instrument's batch contract does not move.
+        # NE stays pinned per shape preset; T (context) joined the
+        # runtime state in toy#129 item 1 (the corpus feed at ctx>=8;
+        # the fixed-seq feed pins T=4, byte-null).
         #
         # toy#125: vocab joined the runtime state — the corpus feed
         # streams the frozen-vocab contract (627, toy#123), and vocab-16
@@ -38,11 +39,12 @@ module Toy
         # E>=8 is the F9 target). The rig pins NE (2, byte-null); the
         # CLI reads FRANKEN_MOE_EXPERTS. Experts live at pp[9+2i]
         # (up_i) / pp[10+2i] (down_i); the spine stays 0..8.
-        def self.shape_init(dm, dff, vocab, ne)
+        def self.shape_init(dm, dff, vocab, ne, t)
           @sh_dm = dm
           @sh_df = dff
           @sh_vocab = vocab
           @sh_ne = ne
+          @sh_t = t
           0
         end
 
@@ -60,6 +62,10 @@ module Toy
 
         def self.nev
           @sh_ne
+        end
+
+        def self.tv
+          @sh_t
         end
 
         def self.fillv(n, seed)
@@ -233,7 +239,7 @@ module Toy
           TinyNN.tnn_set_output(probs)
           tw.t_gates = probs
           ids   = TinyNN.tnn_argmax(sess, r_logits)               # I32 [T]
-          ids2  = TinyNN.tnn_reshape_3d(sess, ids, 1, T, 1)       # [1, T]
+          ids2  = TinyNN.tnn_reshape_3d(sess, ids, 1, tv, 1)       # [1, T]
           oneh  = TinyNN.tnn_get_rows(sess, eye, ids)             # [NE, T]
           TinyNN.tnn_set_output(oneh)
           tw.t_onehots = oneh
@@ -256,12 +262,12 @@ module Toy
           if cut == 1
             h_exp = TinyNN.tnn_detach(sess, h2)
           end
-          h3    = TinyNN.tnn_reshape_3d(sess, h_exp, dmv, 1, T)
+          h3    = TinyNN.tnn_reshape_3d(sess, h_exp, dmv, 1, tv)
           upo   = TinyNN.tnn_mul_mat_id(sess, up_stack, h3, ids2)    # [DFF,1,T]
           a     = TinyNN.tnn_gelu(sess, upo)
-          tw.tap_a1 = TinyNN.tnn_reshape_3d(sess, a, dfv, T, 1)      # routed acts [DFF,T]
+          tw.tap_a1 = TinyNN.tnn_reshape_3d(sess, a, dfv, tv, 1)      # routed acts [DFF,T]
           dno   = TinyNN.tnn_mul_mat_id(sess, dn_stack, a, ids2)     # [DM,1,T]
-          eo    = TinyNN.tnn_reshape_3d(sess, dno, dmv, T, 1)         # [DM,T]
+          eo    = TinyNN.tnn_reshape_3d(sess, dno, dmv, tv, 1)         # [DM,T]
           TinyNN.tnn_add(sess, t_x, TinyNN.tnn_mul(sess, eo, gate))
         end
 
@@ -295,8 +301,8 @@ module Toy
         # weight's ne=[d_in, d_out]; B ne=[VOCAB, d_out].
         def self.dfa_grad(sess, b, e, a_in, d_in, d_out)
           delta  = TinyNN.tnn_matmul(sess, b, e)                        # [d_out, T]
-          a_in_t = TinyNN.tnn_cont_2d(sess, TinyNN.tnn_transpose(sess, a_in), T, d_in)
-          delt_t = TinyNN.tnn_cont_2d(sess, TinyNN.tnn_transpose(sess, delta), T, d_out)
+          a_in_t = TinyNN.tnn_cont_2d(sess, TinyNN.tnn_transpose(sess, a_in), tv, d_in)
+          delt_t = TinyNN.tnn_cont_2d(sess, TinyNN.tnn_transpose(sess, delta), tv, d_out)
           TinyNN.tnn_matmul(sess, a_in_t, delt_t)                       # [d_in, d_out]
         end
 
@@ -315,8 +321,8 @@ module Toy
           if mask != TinyNN.tnn_null_ptr
             delta = TinyNN.tnn_mul(sess, delta, mask)
           end
-          a_in_t = TinyNN.tnn_cont_2d(sess, TinyNN.tnn_transpose(sess, a_in), T, d_in)
-          delt_t = TinyNN.tnn_cont_2d(sess, TinyNN.tnn_transpose(sess, delta), T, d_out)
+          a_in_t = TinyNN.tnn_cont_2d(sess, TinyNN.tnn_transpose(sess, a_in), tv, d_in)
+          delt_t = TinyNN.tnn_cont_2d(sess, TinyNN.tnn_transpose(sess, delta), tv, d_out)
           g = TinyNN.tnn_matmul(sess, a_in_t, delt_t)
           TinyNN.tnn_set_output(g)
           TinyNN.tnn_set_param(tw.pp[idx])

@@ -164,11 +164,40 @@ module Toy
             puts "  --corpus streams packed-i32 tokens (the warm-start reader)."
             return 1
           end
-          # toy#125: the corpus stream is the frozen-vocab contract
-          # (627, toy#123); the fixed-seq feed stays vocab 16 byte-null.
+          # toy#129 item 1: context joins the runtime state — corpus
+          # mode takes FRANKEN_CONTEXT (>= 2); the fixed-seq feed is
+          # the byte-gated 4-token contract, so a context override
+          # without a corpus fails loud.
+          ctx_s = ENV["FRANKEN_CONTEXT"] || ""
+          ctx_raw = ctx_s.length > 0 ? ctx_s.to_i : 0
+          ctx = ctx_raw > 0 ? ctx_raw : T   # 0 = unset (the CLI's default)
+          if ctx != T && corpus_s.length == 0
+            puts "toy-train-franken-moe: --context needs --corpus (the fixed-seq feed is the byte-gated 4-token contract)"
+            return 1
+          end
+          if ctx < 2
+            puts "toy-train-franken-moe: --context must be >= 2, got " + ctx.to_s
+            return 1
+          end
+          # toy#125/#129: corpus vocab — a TOYC pack declares it in the
+          # header (authoritative; a conflicting --vocab fails loud);
+          # headerless packs default to the frozen-vocab contract (627,
+          # toy#123) unless --vocab overrides. Fixed-seq stays vocab 16.
           vsel = VOCAB
           if corpus_s.length > 0
+            hdr_v = ToyCorpusLoader.probe_vocab(corpus_s)
+            env_v = (ENV["FRANKEN_VOCAB"] || "0").to_i
+            if hdr_v > 0 && env_v > 0 && hdr_v != env_v
+              puts "toy-train-franken-moe: --vocab " + env_v.to_s + " conflicts with the pack header (TOYC vocab " + hdr_v.to_s + ")"
+              return 1
+            end
             vsel = 627
+            if hdr_v > 0
+              vsel = hdr_v
+            end
+            if hdr_v == 0 && env_v > 0
+              vsel = env_v
+            end
           end
           # toy#128: expert count (the demonstrator's E axis; default 2
           # byte-null — the rig shape).
@@ -179,9 +208,9 @@ module Toy
             return 1
           end
           if shape_s == "wide"
-            shape_init(256, 512, vsel, esel)
+            shape_init(256, 512, vsel, esel, ctx)
           else
-            shape_init(DM_BASE, DFF_BASE, vsel, esel)
+            shape_init(DM_BASE, DFF_BASE, vsel, esel, ctx)
           end
 
           sess = TinyNN.tnn_session_new(0)
@@ -213,7 +242,7 @@ module Toy
           b_av  = TinyNN.tnn_input_2d_f32_persistent(sess, dmv, vocabv)
           b_ao  = TinyNN.tnn_input_2d_f32_persistent(sess, dmv, vocabv)
           b_r   = TinyNN.tnn_input_2d_f32_persistent(sess, nev, vocabv)
-          ones_t = TinyNN.tnn_input_2d_f32_persistent(sess, 1, T)   # ne=[T,1]
+          ones_t = TinyNN.tnn_input_2d_f32_persistent(sess, 1, tv)   # ne=[tv,1]
 
           # params: dense = every weight (shadow-shaped when dfa-experts);
           # top1 = Wr ONLY (the aux backward path; everything else is
@@ -295,17 +324,17 @@ module Toy
             TinyNN.tnn_upload_from_float_array(sess, b_av, Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 23, dist_c, sig_dm), dmv * vocabv)
             TinyNN.tnn_upload_from_float_array(sess, b_ao, Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 24, dist_c, sig_dm), dmv * vocabv)
             TinyNN.tnn_upload_from_float_array(sess, b_r,  Toy::Train::DfaB.fill(nev * vocabv, b_seed + 25, dist_c, sig_e),  nev * vocabv)
-            onesv = zeros(T)
+            onesv = zeros(tv)
             oi = 0
-            while oi < T
+            while oi < tv
               onesv[oi] = 1.0
               oi = oi + 1
             end
-            TinyNN.tnn_upload_from_float_array(sess, ones_t, onesv, T)
+            TinyNN.tnn_upload_from_float_array(sess, ones_t, onesv, tv)
           end
 
-          t_tok    = TinyNN.tnn_input_1d_i32(sess, T)
-          t_labels = TinyNN.tnn_input_2d_f32(sess, T, vocabv)
+          t_tok    = TinyNN.tnn_input_1d_i32(sess, tv)
+          t_labels = TinyNN.tnn_input_2d_f32(sess, tv, vocabv)
           t_hp     = TinyNN.tnn_input_1d_f32(sess, 7)
           t_f      = TinyNN.tnn_input_2d_f32(sess, 1, nev)   # ne=[NE,1]
           forward_tower(sess, tw, t_tok, t_labels, sels, eye, top1, bp_spine ? 1 : 0)
@@ -321,7 +350,7 @@ module Toy
           if top1
             m_fp  = TinyNN.tnn_mul(sess, tw.t_gates, t_f)
             s_tok = TinyNN.tnn_sum_rows(sess, m_fp)
-            s_col = TinyNN.tnn_reshape_3d(sess, s_tok, T, 1, 1)
+            s_col = TinyNN.tnn_reshape_3d(sess, s_tok, tv, 1, 1)
             t_aux = TinyNN.tnn_matmul(sess, s_col, ones_t)
             TinyNN.tnn_set_output(t_aux)
             TinyNN.tnn_set_loss(t_aux)
@@ -334,7 +363,7 @@ module Toy
 
           if top1
             p_sm = TinyNN.tnn_softmax(sess, tw.t_logits)
-            e_b  = TinyNN.tnn_scale(sess, TinyNN.tnn_sub(sess, p_sm, t_labels), 1.0 / T.to_f)
+            e_b  = TinyNN.tnn_scale(sess, TinyNN.tnn_sub(sess, p_sm, t_labels), 1.0 / tv.to_f)
             np2 = TinyNN.tnn_null_ptr
             if bp_spine
               # the whole spine is chain: embed/fnorm/attention/rn2 + Wr
@@ -377,7 +406,7 @@ module Toy
           else
             if dfa_experts
               p_sm = TinyNN.tnn_softmax(sess, tw.t_logits)
-              e_b  = TinyNN.tnn_scale(sess, TinyNN.tnn_sub(sess, p_sm, t_labels), 1.0 / T.to_f)
+              e_b  = TinyNN.tnn_scale(sess, TinyNN.tnn_sub(sess, p_sm, t_labels), 1.0 / tv.to_f)
               idx = 0
               while idx < 9
                 wire_chain(sess, tw, t_hp, idx)
@@ -439,7 +468,7 @@ module Toy
               model.add_num("d_ff",     dfv)
               rs.add_obj("model", model)
               config = Toy::Json::Builder.new
-              config.add_num("context", T)
+              config.add_num("context", tv)
               config.add_num("steps",   steps)
               config.add_num("lr",      lr)
               config.add_num("seed",    seed)
@@ -456,7 +485,7 @@ module Toy
                             nev * dmv + nev * 2 * dmv * dfv
               cost_active = vocabv * dmv + 3 * dmv + 4 * dmv * dmv +
                             nev * dmv + act_e * 2 * dmv * dfv
-              cost_flops  = 2 * (4 * dmv * dmv) + 4 * dmv * T +
+              cost_flops  = 2 * (4 * dmv * dmv) + 4 * dmv * tv +
                             2 * nev * dmv + act_e * 2 * (2 * dmv * dfv) +
                             2 * vocabv * dmv
               cost = Toy::Json::Builder.new
@@ -484,25 +513,26 @@ module Toy
           end
 
           ids = [1, 2, 3, 4]
-          labels = zeros(vocabv * T)
+          labels = zeros(vocabv * tv)
           tt = 0
-          while tt < T
+          while tt < tv
             tgt = (ids[tt] + 1) % vocabv
             labels[tgt + vocabv * tt] = 1.0
             tt = tt + 1
           end
-          corpus_off   = 0
+          corpus_base  = corpus_s.length > 0 ? ToyCorpusLoader.data_offset(corpus_s) : 0
+          corpus_off   = corpus_base
           corpus_bytes = corpus_s.length > 0 ? File.size(corpus_s) : 0
 
           n_dfa = tw.dfa_grads.length
           gbuf = zeros(dmv * dfv)
           abuf = zeros(dmv * dfv)
-          gates_buf = zeros(nev * T)
+          gates_buf = zeros(nev * tv)
           share_v = zeros(nev)
           fvec = zeros(nev)
           fi = 0
           while fi < nev
-            fvec[fi] = aux_alpha / T.to_f
+            fvec[fi] = aux_alpha / tv.to_f
             fi = fi + 1
           end
           aux_buf = zeros(1)
@@ -523,16 +553,16 @@ module Toy
               # would run past EOF (read_seq's own EOF-wrap otherwise
               # pins every later step to the first window — the toy#122
               # stuck-window failure mode).
-              if corpus_off + T * 4 > corpus_bytes
-                corpus_off = 0
+              if corpus_off + tv * 4 > corpus_bytes
+                corpus_off = corpus_base
               end
-              ids = ToyCorpusLoader.read_seq(corpus_s, corpus_off, T)
-              corpus_off = corpus_off + T * 4
-              m_lab = Toy::Labels.next_token_guarded(ids, vocabv, T, 1)
+              ids = ToyCorpusLoader.read_seq(corpus_s, corpus_off, tv)
+              corpus_off = corpus_off + tv * 4
+              m_lab = Toy::Labels.next_token_guarded(ids, vocabv, tv, 1)
               labels = m_lab.flat
             end
             TinyNN.upload_int_array(sess, t_tok, ids)
-            TinyNN.tnn_upload_from_float_array(sess, t_labels, labels, vocabv * T)
+            TinyNN.tnn_upload_from_float_array(sess, t_labels, labels, vocabv * tv)
             TinyNN.tnn_upload_from_float_array(sess, t_hp, hp, 7)
             if top1
               TinyNN.tnn_upload_from_float_array(sess, t_f, fvec, nev)
@@ -559,37 +589,37 @@ module Toy
             # per expert (E=2 keeps shares[0] exactly; shares[1] is now
             # measured, not 1-shares[0]).
             if top1
-              TinyNN.tnn_download_to_f64_array(sess, tw.t_onehots, gates_buf, nev * T)
+              TinyNN.tnn_download_to_f64_array(sess, tw.t_onehots, gates_buf, nev * tv)
               ei = 0
               while ei < nev
                 cs = 0.0
                 ti2 = 0
-                while ti2 < T
+                while ti2 < tv
                   cs = cs + gates_buf[ti2 * nev + ei]
                   ti2 = ti2 + 1
                 end
-                share_v[ei] = cs / T.to_f
+                share_v[ei] = cs / tv.to_f
                 ei = ei + 1
               end
             end
-            TinyNN.tnn_download_to_f64_array(sess, tw.t_gates, gates_buf, nev * T)
+            TinyNN.tnn_download_to_f64_array(sess, tw.t_gates, gates_buf, nev * tv)
             g0 = 0.0
             ti = 0
-            while ti < T
+            while ti < tv
               g0 = g0 + gates_buf[ti * nev]
               ti = ti + 1
             end
-            g0 = g0 / T.to_f
+            g0 = g0 / tv.to_f
             if !top1
               ei = 0
               while ei < nev
                 cs = 0.0
                 ti2 = 0
-                while ti2 < T
+                while ti2 < tv
                   cs = cs + gates_buf[ti2 * nev + ei]
                   ti2 = ti2 + 1
                 end
-                share_v[ei] = cs / T.to_f
+                share_v[ei] = cs / tv.to_f
                 ei = ei + 1
               end
             end
@@ -598,16 +628,16 @@ module Toy
               TinyNN.tnn_download_to_f64_array(sess, t_aux, aux_buf, 1)
               aux_v = num_or_null_cli(aux_buf[0])
               # lag-1 f' from this step's routing
-              TinyNN.tnn_download_to_f64_array(sess, tw.t_onehots, gates_buf, nev * T)
+              TinyNN.tnn_download_to_f64_array(sess, tw.t_onehots, gates_buf, nev * tv)
               ei = 0
               while ei < nev
                 cnt = 0.0
                 ti3 = 0
-                while ti3 < T
+                while ti3 < tv
                   cnt = cnt + gates_buf[ti3 * nev + ei]
                   ti3 = ti3 + 1
                 end
-                fvec[ei] = aux_alpha * nev.to_f * cnt / (T.to_f * T.to_f)
+                fvec[ei] = aux_alpha * nev.to_f * cnt / (tv.to_f * tv.to_f)
                 ei = ei + 1
               end
             end

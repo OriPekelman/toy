@@ -337,6 +337,22 @@ wc = run_cli(%w[--steps 8 --seed 0 --experts 4 --shape wide --corpus data/ts_seq
 failures << "experts: wide+corpus composition failed" unless losses(wc).length == 8 && losses(wc).map(&:to_f).none?(&:nan?)
 puts failures.length == n0 ? "  ok: --experts — E=2 flag-null; E=4 aux bracket (collapse vs >=0.1 floor @0.2), bp-spine escapes plateau, 8 dfa wires named, wide+corpus compose" : "  FAIL: experts leg"
 
+# ---- toy#129 item 1: TOYC pack + context on the MoE CLI ----
+n0 = failures.length
+abort "franken gate: data/fineweb_gpt2_smoke.bin missing — generate it: uv run prep/pretokenize_pack.py --tokens 200_000 --out data/fineweb_gpt2_smoke.bin" unless File.file?(File.join(ROOT, "data", "fineweb_gpt2_smoke.bin"))
+Dir.mktmpdir("moe_cli_pack") do |dir|
+  pk_out = run_cli(%w[--steps 3 --seed 0 --corpus data/fineweb_gpt2_smoke.bin --context 16 --routing top1 --moe-policy bp-spine], {}, dir)
+  pk_out2 = run_cli(%w[--steps 3 --seed 0 --corpus data/fineweb_gpt2_smoke.bin --context 16 --routing top1 --moe-policy bp-spine], {}, nil)
+  failures << "pack: not deterministic" unless losses(pk_out) == losses(pk_out2) && losses(pk_out).length == 3
+  rsp = JSON.parse(File.readlines(File.join(dir, "events.jsonl")).first)
+  failures << "pack: model.vocab #{rsp.dig('model', 'vocab').inspect} (want 50257)" unless rsp.dig("model", "vocab") == 50257
+  failures << "pack: config.context #{rsp.dig('config', 'context').inspect} (want 16)" unless rsp.dig("config", "context") == 16
+end
+argv_ctx = [TOY, "train", "franken-moe", "--steps", "1", "--context", "16"]
+_oc2, stc2 = Open3.capture2e(CLEAN, *argv_ctx, chdir: ROOT)
+failures << "pack: --context without --corpus not rejected" if stc2.success?
+puts failures.length == n0 ? "  ok: TOYC pack — vocab 50257 + ctx 16 on the MoE CLI (deterministic, provenance); context-without-corpus rejected" : "  FAIL: pack leg"
+
 # ---- 6. bundle structure + run-id passthrough ----
 n0 = failures.length
 Dir.mktmpdir("moe_cli_bundle") do |dir|
@@ -373,7 +389,7 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
 end
 
 if failures.empty?
-  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow (toy#129) + bundle (toy#120/#121)"
+  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + bundle (toy#120/#121)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe-cli]: #{f}" }

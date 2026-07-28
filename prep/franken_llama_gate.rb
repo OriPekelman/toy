@@ -234,6 +234,35 @@ puts failures.empty? ? "  ok: --lr moves the curve (deterministic); --warmup ram
   failures << "shape-#{sh}: seed=1 not deterministic" unless s1 == s2
 end
 
+# ---- toy#129 item 1: TOYC pack header + context/vocab unpinning ----
+# The committed GPT-2 smoke pack (data/fineweb_gpt2_smoke.bin, TOYC v1
+# vocab 50257) drives the instrument's vocab from the HEADER; context
+# comes from FRANKEN_CONTEXT. Deterministic; provenance carries both;
+# a conflicting FRANKEN_VOCAB fails loud; a headerless pack + explicit
+# FRANKEN_VOCAB=627 byte-equals the implicit-627 run (the flag is a
+# name for what already happens, not a new code path).
+abort "franken gate: data/fineweb_gpt2_smoke.bin missing — generate it: uv run prep/pretokenize_pack.py --tokens 200_000 --out data/fineweb_gpt2_smoke.bin" unless File.file?(File.join(ROOT, "data", "fineweb_gpt2_smoke.bin"))
+pk_env = { "STEPS" => "3", "CORPUS" => "data/fineweb_gpt2_smoke.bin", "FRANKEN_CONTEXT" => "64" }
+pk1 = nil
+Dir.mktmpdir("franken_pack_gate") do |dir|
+  pk1 = run_franken_llama(pk_env, dir)
+  rsp = JSON.parse(File.readlines(File.join(dir, "events.jsonl")).first)
+  failures << "pack: model.vocab #{rsp.dig('model', 'vocab').inspect} (want 50257 from the TOYC header)" unless rsp.dig("model", "vocab") == 50257
+  failures << "pack: config.context #{rsp.dig('config', 'context').inspect} (want 64)" unless rsp.dig("config", "context") == 64
+end
+pk2 = run_franken_llama(pk_env, nil)
+pk1_c = pk1.lines.select { |l| l.start_with?("step ") }
+pk2_c = pk2.lines.select { |l| l.start_with?("step ") }
+failures << "pack: not deterministic" unless pk1_c == pk2_c && pk1_c.length == 3
+l0 = pk1_c.first[/loss=(\S+)/, 1].to_f
+failures << "pack: first loss #{l0} not ~ln(50257)" unless l0 > 9.0 && l0 < 12.5
+_oc, stc = Open3.capture2e({ "STEPS" => "1", "CORPUS" => "data/fineweb_gpt2_smoke.bin", "FRANKEN_VOCAB" => "100" }, RUNNER, chdir: ROOT)
+failures << "pack: conflicting FRANKEN_VOCAB not rejected" if stc.success?
+hv1 = run_franken_llama({ "STEPS" => "3", "CORPUS" => "data/ts_seqs.bin", "FRANKEN_VOCAB" => "627" }, nil)
+hv0 = run_franken_llama({ "STEPS" => "3", "CORPUS" => "data/ts_seqs.bin" }, nil)
+failures << "pack: explicit FRANKEN_VOCAB=627 differs from implicit (headerless null broken)" unless hv1.lines.select { |l| l.start_with?("step ") } == hv0.lines.select { |l| l.start_with?("step ") }
+puts failures.empty? ? "  ok: TOYC pack — vocab 50257 from header, ctx 64, deterministic; vocab-conflict rejected; headerless --vocab null" : "  FAIL: pack leg"
+
 # ---- toy#129 item 2: --no-shadow ----
 # THE null (the roadmap's own criterion): applied updates byte-identical
 # shadow vs no-shadow at the same policy/seed — the mode changes the
@@ -267,7 +296,7 @@ failures << "byte-repro: outputs differ" unless r1 == r2
 puts "  ok: byte-repro — two policy runs identical" if r1 == r2
 
 if failures.empty?
-  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + shape presets (toy#124) + lr/warmup (toy#126) + no-shadow (toy#129) + byte-repro (toy#112/#113)"
+  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + shape presets (toy#124) + lr/warmup (toy#126) + no-shadow/pack-header (toy#129) + byte-repro (toy#112/#113)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-llama]: #{f}" }

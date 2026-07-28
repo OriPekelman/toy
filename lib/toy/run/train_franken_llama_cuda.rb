@@ -90,13 +90,39 @@ if SHAPE_S != "base" && SHAPE_S != "wide" && SHAPE_S != "deep"
   exit 1
 end
 BIG      = SHAPE_S != "base"
-VOCAB    = 627
 D_MODEL  = BIG ? 256 : 64
 DONOR_D  = BIG ? 512 : 128
 N_HEADS  = BIG ? 8 : 4
 D_FF     = BIG ? 512 : 128
 N_LAYERS = SHAPE_S == "deep" ? 6 : 2
-CONTEXT  = 32
+
+# toy#129 item 1: context + vocab join the runtime surface — the F9
+# capacity fixture needs ctx >= 256 and a real-tokenizer vocab.
+# Context: FRANKEN_CONTEXT (default 32, the byte-gated contract).
+# Vocab: a TOYC pack header is authoritative (prep/pretokenize_pack.py;
+# a conflicting FRANKEN_VOCAB fails loud); headerless packs keep the
+# frozen-vocab contract (627, toy#123) unless FRANKEN_VOCAB overrides.
+# No corpus -> 627, byte-null.
+ctx_raw = (ENV["FRANKEN_CONTEXT"] || "0").to_i
+if ctx_raw != 0 && ctx_raw < 2
+  puts "toy-train-franken-cuda: FRANKEN_CONTEXT must be >= 2, got " + ctx_raw.to_s
+  exit 1
+end
+CONTEXT = ctx_raw > 0 ? ctx_raw : 32
+hdr_v = CORPUS.length > 0 ? ToyCorpusLoader.probe_vocab(CORPUS) : 0
+env_v = (ENV["FRANKEN_VOCAB"] || "0").to_i
+if hdr_v > 0 && env_v > 0 && hdr_v != env_v
+  puts "toy-train-franken-cuda: FRANKEN_VOCAB " + env_v.to_s + " conflicts with the pack header (TOYC vocab " + hdr_v.to_s + ")"
+  exit 1
+end
+vsel0 = 627
+if hdr_v > 0
+  vsel0 = hdr_v
+end
+if hdr_v == 0 && env_v > 0
+  vsel0 = env_v
+end
+VOCAB = vsel0
 
 EVENTS = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/events.jsonl") : ""
 
@@ -362,7 +388,8 @@ if ALIGN_ON && n_align > 0
 end
 
 final_loss = 0.0
-corpus_off   = 0
+corpus_base  = CORPUS.length > 0 ? ToyCorpusLoader.data_offset(CORPUS) : 0
+corpus_off   = corpus_base
 corpus_bytes = CORPUS.length > 0 ? File.size(CORPUS) : 0
 step = 0
 while step < STEPS
@@ -372,7 +399,7 @@ while step < STEPS
     # past EOF (read_seq's own EOF-wrap otherwise pins every later step
     # to the first window — the stuck-window failure mode).
     if corpus_off + CONTEXT * 4 > corpus_bytes
-      corpus_off = 0
+      corpus_off = corpus_base
     end
     seq_ids  = ToyCorpusLoader.read_seq(CORPUS, corpus_off, CONTEXT)
     corpus_off = corpus_off + CONTEXT * 4

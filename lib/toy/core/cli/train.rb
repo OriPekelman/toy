@@ -112,6 +112,8 @@ module Toy
           @lr           = nil   # franken: hp-slot-0 override (toy#126)
           @warmup       = nil   # franken: linear lr ramp over N steps (toy#126)
           @no_shadow    = false # franken/franken-moe: skip dfa shadow (toy#129)
+          @context      = nil   # franken/franken-moe: context override (toy#129)
+          @vocab        = nil   # franken/franken-moe: headerless-pack vocab (toy#129)
           @shape        = nil   # franken/franken-moe: preset (toy#124)
           @routing    = nil   # franken-moe: dense | top1
           @moe_policy = nil   # franken-moe: chain | dfa-experts
@@ -260,6 +262,8 @@ module Toy
                              "FRANKEN_MOE_AUX"     => (@moe_aux || "0"),
                              "FRANKEN_MOE_EXPERTS" => (@experts || 2).to_s,
                              "FRANKEN_NO_SHADOW"   => (@no_shadow ? "1" : ""),
+                             "FRANKEN_CONTEXT"     => (@context || 0).to_s,
+                             "FRANKEN_VOCAB"       => (@vocab || 0).to_s,
                              "FRANKEN_SHAPE"       => (@shape || "base"),
                              "FRANKEN_B_SEED"      => (@dfa_b_seed || 1234).to_s,
                              "FRANKEN_B_DIST"      => (@dfa_b_dist || ""),
@@ -279,7 +283,9 @@ module Toy
                              "CORPUS"          => (@corpus || ""),
                              "FRANKEN_LR"      => (@lr || ""),
                              "FRANKEN_WARMUP"  => (@warmup || 0).to_s,
-                             "FRANKEN_NO_SHADOW" => (@no_shadow ? "1" : ""))
+                             "FRANKEN_NO_SHADOW" => (@no_shadow ? "1" : ""),
+                             "FRANKEN_CONTEXT" => (@context || 0).to_s,
+                             "FRANKEN_VOCAB"   => (@vocab || 0).to_s)
           else
             # from-scratch — byte-identical to today plus the harmless RECIPE key.
             env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s)
@@ -477,6 +483,26 @@ module Toy
               return bad_arg("--experts requires a value") if val.nil?
               return bad_arg("--experts must be an integer >= 2, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= 2
               @experts = val.to_i
+            when "--context"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--context requires a value") if val.nil?
+              return bad_arg("--context must be an integer >= 2, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= 2
+              @context = val.to_i
+            when /\A--context=(.*)\z/
+              val = $1
+              return bad_arg("--context must be an integer >= 2, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= 2
+              @context = val.to_i
+            when "--vocab"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--vocab requires a value") if val.nil?
+              return bad_arg("--vocab must be an integer >= 2, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= 2
+              @vocab = val.to_i
+            when /\A--vocab=(.*)\z/
+              val = $1
+              return bad_arg("--vocab must be an integer >= 2, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= 2
+              @vocab = val.to_i
             when /\A--experts=(.*)\z/
               val = $1
               return bad_arg("--experts must be an integer >= 2, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= 2
@@ -551,6 +577,15 @@ module Toy
           end
           if !%w[franken franken-moe].include?(@recipe) && @no_shadow
             return bad_arg("--no-shadow is only valid with recipe 'franken' or 'franken-moe' (toy#129)")
+          end
+          if !%w[franken franken-moe].include?(@recipe) && (@context || @vocab)
+            return bad_arg("--context/--vocab are only valid with recipe 'franken' or 'franken-moe' (toy#129)")
+          end
+          if @vocab && @corpus.nil?
+            return bad_arg("--vocab needs --corpus (it names a headerless pack's vocab; TOYC packs declare their own)")
+          end
+          if @recipe == "franken-moe" && @context && @corpus.nil?
+            return bad_arg("--context needs --corpus for franken-moe (the fixed-seq feed is the byte-gated 4-token contract)")
           end
           if @no_shadow && @align_events
             return bad_arg("--no-shadow + --align-events: align telemetry compares DFA grads against the chain shadow acc, which a no-shadow build does not create — drop one")
