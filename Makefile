@@ -372,6 +372,19 @@ gate-eval-ce: libexec/toy-eval-ce libexec/toy-train-franken-llama
 gate-train-cli-matrix:
 	ruby prep/train_cli_matrix_gate.rb
 
+# toy#137 (K2a) — the KDA recurrence + decay parameterization, proven by
+# REDUCTION against the (kernel-verified) GDN scalar-decay path.
+prep/smokes/smoke_kda_recurrence: prep/smokes/smoke_kda_recurrence.rb lib/toy.rb lib/toy/ffi/tinynn.rb \
+		lib/toy/llm/primitives/rms_norm.rb lib/toy/llm/primitives/gdn.rb \
+		lib/toy/llm/primitives/kda.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+.PHONY: gate-kda
+gate-kda: prep/smokes/smoke_kda_recurrence
+	@out="$$(./prep/smokes/smoke_kda_recurrence 2>&1)"; \
+	echo "$$out"; \
+	echo "$$out" | grep -q "^kda-recurrence: ok$$" || { echo "GATE FAIL [kda]"; exit 1; }; \
+	echo "GATE PASS [kda]: reduction-to-GDN + channel-wise live + lower-bounded decay + 2-head striding (toy#137)"
+
 # CUDA siblings of toy-infer / toy-eval — selected by the CRuby CLI shell when
 # invoked with `--device cuda` (lib/toy/core/cli/{infer,eval}.rb derive the
 # target). PER-DEVICE binaries (not one polymorphic runner): a single source
