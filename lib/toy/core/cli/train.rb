@@ -121,6 +121,10 @@ module Toy
           @vocab        = nil   # franken/franken-moe: headerless-pack vocab (toy#129)
           @batch        = nil   # franken/franken-moe: windows per step (toy#133)
           @load_ckpt    = nil   # franken-moe: eval-only checkpoint reload (toy#131)
+          @act          = nil   # franken: swiglu | situ-glu (toy#136/K1)
+          @rope         = nil   # franken: rope | nope (toy#136/K1)
+          @schedule     = nil   # franken/franken-moe: const | cosine (toy#136/K1)
+          @moe_balance  = nil   # franken-moe: aux | qb | none (toy#136/K1)
           @shape        = nil   # franken/franken-moe: preset (toy#124)
           @routing    = nil   # franken-moe: dense | top1
           @moe_policy = nil   # franken-moe: chain | dfa-experts
@@ -277,6 +281,8 @@ module Toy
                              "FRANKEN_EVAL_OFFSET" => (@eval_offset || 0).to_s,
                              "FRANKEN_LR"          => (@lr || ""),
                              "FRANKEN_WARMUP"      => (@warmup || 0).to_s,
+                             "FRANKEN_SCHEDULE"    => (@schedule || ""),
+                             "FRANKEN_MOE_BALANCE" => (@moe_balance || ""),
                              "FRANKEN_CKPT_EVERY"  => (@ckpt_every || 0).to_s,
                              "FRANKEN_MOE_LOAD"    => (@load_ckpt || ""),
                              "FRANKEN_SHAPE"       => (@shape || "base"),
@@ -302,6 +308,9 @@ module Toy
                              "FRANKEN_CONTEXT" => (@context || 0).to_s,
                              "FRANKEN_VOCAB"   => (@vocab || 0).to_s,
                              "FRANKEN_BATCH"   => (@batch || 0).to_s,
+                             "FRANKEN_ACT"     => (@act || ""),
+                             "FRANKEN_NOPE"    => (@rope == "nope" ? "1" : ""),
+                             "FRANKEN_SCHEDULE" => (@schedule || ""),
                              "FRANKEN_CKPT_EVERY" => (@ckpt_every || 0).to_s)
           else
             # from-scratch — byte-identical to today plus the harmless RECIPE key.
@@ -419,6 +428,46 @@ module Toy
               @align_events = true
             when "--no-shadow"
               @no_shadow = true
+            when "--act"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--act requires a value") if val.nil?
+              return bad_arg("--act must be swiglu or situ-glu, got #{val.inspect}") unless %w[swiglu situ-glu].include?(val)
+              @act = val
+            when /\A--act=(.*)\z/
+              val = $1
+              return bad_arg("--act must be swiglu or situ-glu, got #{val.inspect}") unless %w[swiglu situ-glu].include?(val)
+              @act = val
+            when "--rope"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--rope requires a value") if val.nil?
+              return bad_arg("--rope must be rope or nope, got #{val.inspect}") unless %w[rope nope].include?(val)
+              @rope = val
+            when /\A--rope=(.*)\z/
+              val = $1
+              return bad_arg("--rope must be rope or nope, got #{val.inspect}") unless %w[rope nope].include?(val)
+              @rope = val
+            when "--schedule"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--schedule requires a value") if val.nil?
+              return bad_arg("--schedule must be const or cosine, got #{val.inspect}") unless %w[const cosine].include?(val)
+              @schedule = val
+            when /\A--schedule=(.*)\z/
+              val = $1
+              return bad_arg("--schedule must be const or cosine, got #{val.inspect}") unless %w[const cosine].include?(val)
+              @schedule = val
+            when "--moe-balance"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--moe-balance requires a value") if val.nil?
+              return bad_arg("--moe-balance must be aux, qb, or none, got #{val.inspect}") unless %w[aux qb none].include?(val)
+              @moe_balance = val
+            when /\A--moe-balance=(.*)\z/
+              val = $1
+              return bad_arg("--moe-balance must be aux, qb, or none, got #{val.inspect}") unless %w[aux qb none].include?(val)
+              @moe_balance = val
             when "--ckpt-every"
               i += 1
               val = @argv[i]
@@ -652,6 +701,10 @@ module Toy
             ["--no-shadow",     %w[franken franken-moe],            @no_shadow, " (toy#129)"],
             ["--context/--vocab", %w[franken franken-moe],          (!@context.nil? || !@vocab.nil?), " (toy#129)"],
             ["--batch",         %w[franken franken-moe],            !@batch.nil?, " (toy#133)"],
+            ["--act",           %w[franken],                        !@act.nil?, " (toy#136/K1; MoE experts get their GLU in K4)"],
+            ["--rope",          %w[franken],                        !@rope.nil?, " (toy#136/K1)"],
+            ["--schedule",      %w[franken franken-moe],            !@schedule.nil?, " (toy#136/K1)"],
+            ["--moe-balance",   %w[franken-moe],                    !@moe_balance.nil?, " (toy#136/K1)"],
             ["--ckpt-every",    %w[franken franken-moe],            !@ckpt_every.nil?, " (toy#129/#131)"],
             ["--load-ckpt",     %w[franken-moe],                    !@load_ckpt.nil?, " (toy#131; eval-only — pass --steps 0 + --eval-corpus)"],
             ["--eval-corpus/--eval-tokens/--eval-offset", %w[franken-moe], (!@eval_corpus.nil? || !@eval_tokens.nil? || !@eval_offset.nil?), " (toy#130; the llama lane evals checkpoints offline via `toy eval ce`)"],

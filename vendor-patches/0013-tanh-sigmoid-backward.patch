@@ -1,0 +1,27 @@
+--- a/src/ggml.c
++++ b/src/ggml.c
+@@ -6893,6 +6893,24 @@
+                         ggml_add_or_set(ctx, cgraph, isrc0, ggml_mul(ctx, tensor, grad));
+                     }
+                 } break;
++                case GGML_UNARY_OP_TANH: {
++                    // toy vendor-patch 0013: d/dx tanh(x) = 1 - tanh(x)^2;
++                    // composed as grad - grad*tanh^2 from ops with kernels
++                    // on every backend (no new kernel needed).
++                    if (src0_needs_grads) {
++                        ggml_add_or_set(ctx, cgraph, isrc0,
++                            ggml_sub(ctx, grad, ggml_mul(ctx, grad, ggml_mul(ctx, tensor, tensor))));
++                    }
++                } break;
++                case GGML_UNARY_OP_SIGMOID: {
++                    // toy vendor-patch 0013: d/dx sigmoid(x) = s*(1-s);
++                    // composed as grad*s - (grad*s)*s.
++                    if (src0_needs_grads) {
++                        struct ggml_tensor * gs = ggml_mul(ctx, grad, tensor);
++                        ggml_add_or_set(ctx, cgraph, isrc0,
++                            ggml_sub(ctx, gs, ggml_mul(ctx, gs, tensor)));
++                    }
++                } break;
+                 case GGML_UNARY_OP_EXPM1: {
+                     if (src0_needs_grads) {
+                         ggml_add_or_set(ctx, cgraph, isrc0, ggml_mul(ctx, grad, ggml_exp(ctx, src0)));

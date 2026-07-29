@@ -32,6 +32,14 @@ module Toy; module LLM; module Recipes
       if opts.no_shadow == 1
         @ff_cache.franken_no_shadow_init(opts.credit_assignment)
       end
+      # toy#136: activation / positional-encoding axes (defaults 0/0 =
+      # byte-null; set BEFORE realize so build_forward sees them).
+      if opts.act != 0
+        @ff_cache.seq_act_init(opts.act)
+      end
+      if opts.rope_nope != 0
+        @ff_cache.seq_nope_init(opts.rope_nope)
+      end
       @ff_cache.realize_for_random_init(cfg, opts.t_seq, opts.t_batch,
                                         opts.weight_dtype, opts.untied,
                                         opts.qkv_bias, opts.seed,
@@ -57,7 +65,9 @@ module Toy; module LLM; module Recipes
         TinyNN.tnn_graph_reset_grads_only(s)
       end
       TinyNN.upload_int_array(s, @ff_cache.t_seq_token_ids, seq_ids)
-      TinyNN.upload_int_array(s, @ff_cache.t_seq_positions, positions)
+      if @ff_cache.seq_nope_flag == 0
+        TinyNN.upload_int_array(s, @ff_cache.t_seq_positions, positions)
+      end
       TinyNN.upload_row_major(s, @ff_t_labels, m_labels)
       TinyNN.upload_row_major(s, @ff_t_hp,     m_hp)
       TinyNN.tnn_compute_backward(s)

@@ -62,12 +62,15 @@ module Toy; module LLM; module Blocks
     attr_accessor :seq_scale, :seq_eps, :seq_n_kv, :seq_n_heads, :seq_group_size,
                   :seq_has_qkv_bias, :seq_weight_dtype, :seq_lora_q_enabled,
                   :t_seq_positions, :t_seq_rope_freq_factors, :seq_rope_cfg,
-                  :seq_t, :seq_b, :t_seq_attn_mask
+                  :seq_t, :seq_b, :t_seq_attn_mask,
+                  :seq_act, :seq_nope
 
+    # toy#136 (K1): seq_act 0=swiglu (byte-gated default) | 1=situ-glu;
+    # seq_nope 0=rope (default) | 1=skip positional encoding entirely.
     def initialize(seq_scale, seq_eps, seq_n_kv, seq_n_heads, seq_group_size,
                    seq_has_qkv_bias, seq_weight_dtype, seq_lora_q_enabled,
                    t_seq_positions, t_seq_rope_freq_factors, seq_rope_cfg,
-                   seq_t, seq_b, t_seq_attn_mask)
+                   seq_t, seq_b, t_seq_attn_mask, seq_act, seq_nope)
       @seq_scale               = seq_scale
       @seq_eps                 = seq_eps
       @seq_n_kv                = seq_n_kv
@@ -82,6 +85,8 @@ module Toy; module LLM; module Blocks
       @seq_t                   = seq_t
       @seq_b                   = seq_b
       @t_seq_attn_mask         = t_seq_attn_mask
+      @seq_act                 = seq_act
+      @seq_nope                = seq_nope
     end
   end
 
@@ -184,9 +189,12 @@ module Toy; module LLM; module Blocks
         # ne[2]==T*B, then reshape back after rope. Reshape is metadata-
         # only (no copy) on contiguous tensors. At T=1, B=1 this is a
         # no-op (1 == 1).
-        t_k = Toy::LLM::Primitives::RoPE.apply_2d(
-                sess, t_k_pre, ctx.t_seq_positions,
-                ctx.t_seq_rope_freq_factors, ctx.seq_rope_cfg, ctx.seq_t, ctx.seq_b)
+        t_k = t_k_pre
+        if ctx.seq_nope == 0
+          t_k = Toy::LLM::Primitives::RoPE.apply_2d(
+                  sess, t_k_pre, ctx.t_seq_positions,
+                  ctx.t_seq_rope_freq_factors, ctx.seq_rope_cfg, ctx.seq_t, ctx.seq_b)
+        end
         t_k_per_kv.push(t_k)
 
         t_v_raw = mp_matmul(sess, ctx.seq_weight_dtype, self.t_seq_w_v[hkv], t_h)
@@ -225,7 +233,12 @@ module Toy; module LLM; module Blocks
       t_h2    = Toy::LLM::Primitives::RMSNorm.build(sess, t_x_attn, self.t_seq_rn2_gamma, ctx.seq_eps)
       t_gate  = mp_matmul(sess, ctx.seq_weight_dtype, self.t_seq_w_gate, t_h2)
       t_up    = mp_matmul(sess, ctx.seq_weight_dtype, self.t_seq_w_up,   t_h2)
-      t_gated = Toy::LLM::Primitives::SwiGLU.gate(sess, t_gate, t_up)
+      t_gated = TinyNN.tnn_null_ptr
+      if ctx.seq_act == 1
+        t_gated = Toy::LLM::Primitives::SiTUGLU.gate(sess, t_gate, t_up)
+      else
+        t_gated = Toy::LLM::Primitives::SwiGLU.gate(sess, t_gate, t_up)
+      end
       t_dn    = mp_matmul(sess, ctx.seq_weight_dtype, self.t_seq_w_down, t_gated)
       # GH#15 — tap the FFN output (pre-residual). set_output to pin.
       self.tap_ffn_out = t_dn
@@ -847,9 +860,12 @@ module Toy; module LLM; module Blocks
         t_q_pre = t_q_raw
       end
       # Same rope-shape lift as the K path; see comment in build_forward.
-      t_q = Toy::LLM::Primitives::RoPE.apply_2d(
-              sess, t_q_pre, ctx.t_seq_positions,
-              ctx.t_seq_rope_freq_factors, ctx.seq_rope_cfg, ctx.seq_t, ctx.seq_b)
+      t_q = t_q_pre
+      if ctx.seq_nope == 0
+        t_q = Toy::LLM::Primitives::RoPE.apply_2d(
+                sess, t_q_pre, ctx.t_seq_positions,
+                ctx.t_seq_rope_freq_factors, ctx.seq_rope_cfg, ctx.seq_t, ctx.seq_b)
+      end
 
       # Attention math (scores -> scaled+masked softmax -> weighted V).
       # GQA KV-head selection (hkv) stays on the block; the primitive

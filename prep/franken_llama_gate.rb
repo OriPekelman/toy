@@ -303,6 +303,42 @@ _ob, stb = Open3.capture2e({ "STEPS" => "1", "FRANKEN_BATCH" => "2" }, RUNNER, c
 failures << "batch: B>1 without corpus not rejected" if stb.success?
 puts failures.length == n0 ? "  ok: --batch — order-swap isolation null exact-class, B=1 flag-null, B=4 deterministic, corpus guard" : "  FAIL: batch leg"
 
+# ---- toy#136 (K1): --act / --rope / --schedule ----
+# situ-glu + nope each train deterministically and move the curve (the
+# swiglu/rope defaults stay byte-null via F0); cosine's per-step lr is
+# pinned via step events (formula-checked at both ends); provenance
+# carries all three axes.
+n0 = failures.length
+k1_pairs = [
+  ["situ-glu", { "FRANKEN_ACT" => "situ-glu" }],
+  ["nope",     { "FRANKEN_NOPE" => "1" }],
+]
+d6k = run_franken_llama({ "STEPS" => "6" }, nil).lines.select { |l| l.start_with?("step ") }
+k1_pairs.each do |name, env|
+  a = run_franken_llama({ "STEPS" => "6" }.merge(env), nil).lines.select { |l| l.start_with?("step ") }
+  b = run_franken_llama({ "STEPS" => "6" }.merge(env), nil).lines.select { |l| l.start_with?("step ") }
+  failures << "k1 #{name}: not deterministic" unless a == b && a.length == 6
+  failures << "k1 #{name}: NaN" if a.any? { |l| l[/loss=(\S+)/, 1].to_f.nan? }
+  failures << "k1 #{name}: curve identical to default (axis dead)" if a == d6k
+end
+Dir.mktmpdir("franken_k1_gate") do |dir|
+  run_franken_llama({ "STEPS" => "6", "FRANKEN_ACT" => "situ-glu", "FRANKEN_NOPE" => "1",
+                      "FRANKEN_SCHEDULE" => "cosine", "FRANKEN_LR" => "0.01" }, dir)
+  evs = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+  cfg = evs.first["config"] || {}
+  failures << "k1: provenance act #{cfg['act'].inspect}" unless cfg["act"] == "situ-glu"
+  failures << "k1: provenance rope #{cfg['rope'].inspect}" unless cfg["rope"] == "nope"
+  failures << "k1: provenance schedule #{cfg['schedule'].inspect}" unless cfg["schedule"] == "cosine"
+  lrs = evs.select { |e| e["kind"] == "step" }.map { |e| e["lr"] }
+  # cosine, no warmup: lr_0 = LR (cos(0)=1); lr_5 = min + 0.5*(LR-min)*(1+cos(pi*5/6))
+  min_lr = 0.001
+  want_last = min_lr + 0.5 * (0.01 - min_lr) * (1.0 + Math.cos(Math::PI * 5.0 / 6.0))
+  failures << "k1: cosine lr[0] #{lrs.first} != 0.01" unless (lrs.first - 0.01).abs < 1.0e-12
+  failures << "k1: cosine lr[5] #{lrs.last} != #{want_last}" unless (lrs.last - want_last).abs < 1.0e-9
+  failures << "k1: cosine lr not decreasing" unless lrs.each_cons(2).all? { |x, y| y < x }
+end
+puts failures.length == n0 ? "  ok: K1 axes — situ-glu + nope move the curve deterministically; cosine lr event-pinned; provenance carries act/rope/schedule" : "  FAIL: K1 leg"
+
 # ---- toy#129 item 2: --no-shadow ----
 # THE null (the roadmap's own criterion): applied updates byte-identical
 # shadow vs no-shadow at the same policy/seed — the mode changes the
@@ -352,7 +388,7 @@ failures << "byte-repro: outputs differ" unless r1 == r2
 puts "  ok: byte-repro — two policy runs identical" if r1 == r2
 
 if failures.empty?
-  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + shape presets (toy#124) + lr/warmup (toy#126) + no-shadow/pack-header/ckpt-every (toy#129) + batch (toy#133) + byte-repro (toy#112/#113)"
+  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + shape presets (toy#124) + lr/warmup (toy#126) + no-shadow/pack-header/ckpt-every (toy#129) + batch (toy#133) + K1 axes (toy#136) + byte-repro (toy#112/#113)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-llama]: #{f}" }

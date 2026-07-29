@@ -1317,7 +1317,8 @@ GGML_PATCHES := \
 	vendor-patches/0009-sched-unsupported-node-diagnostic.patch \
 	vendor-patches/0010-cuda-buffer_from_ptr-skip-init_tensor-padding-memset.patch \
 	vendor-patches/0011-tensor-flag-detached.patch \
-	vendor-patches/0012-cuda-out-prod-k1-sger-fallback.patch
+	vendor-patches/0012-cuda-out-prod-k1-sger-fallback.patch \
+	vendor-patches/0013-tanh-sigmoid-backward.patch
 
 # Sentinel file marking that all $(GGML_PATCHES) have been applied to
 # the vendored tree. Build targets depend on it through CMakeLists.txt

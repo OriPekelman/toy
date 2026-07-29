@@ -87,7 +87,12 @@ module Toy; module LLM; module Archs
                   # seq_donor_d_in; the shared ctx reads seq_rope_cfg.
                   # The cache wrapper sets both from the realize-set
                   # values before build_forward runs.
-                  :seq_donor_d_in, :seq_rope_cfg
+                  :seq_donor_d_in, :seq_rope_cfg,
+                  # toy#136 (K1): activation + positional-encoding axes —
+                  # the engine overwrites these BEFORE build_forward
+                  # (exactly the seq_rope_cfg pattern). 0 = the
+                  # byte-gated defaults (swiglu, rope).
+                  :seq_act, :seq_nope
 
     def initialize
       @t_seq_token_embed      = TinyNN.tnn_null_ptr
@@ -109,6 +114,8 @@ module Toy; module LLM; module Archs
       # The cache overwrites seq_rope_cfg with the real RoPE::Cfg before
       # build_forward runs (each realize prologue rebuilds it).
       @seq_rope_cfg           = TinyNN.tnn_null_ptr
+      @seq_act                = 0
+      @seq_nope               = 0
     end
 
     # Reset @seq_blocks_ffi and fill it with exactly n_layers fresh
@@ -243,7 +250,7 @@ module Toy; module LLM; module Archs
         scale, eps, seq_n_kv, seq_n_heads, seq_group_size,
         seq_has_qkv_bias, seq_weight_dtype, seq_lora_q_enabled,
         t_positions, t_rope_freq_factors, self.seq_rope_cfg,
-        seq_t, seq_b, t_attn_mask)
+        seq_t, seq_b, t_attn_mask, self.seq_act, self.seq_nope)
 
       x_embed = TinyNN.tnn_get_rows(sess, self.t_seq_token_embed, t_token_ids)
       TinyNN.tnn_set_output(x_embed)

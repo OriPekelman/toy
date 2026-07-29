@@ -24,6 +24,7 @@ require_relative "../primitives/rms_norm"
 require_relative "../../train/dfa_b"
 require_relative "../primitives/rope"
 require_relative "../primitives/swiglu"
+require_relative "../primitives/situ_glu"
 require_relative "../primitives/gqa"
 require_relative "../blocks/transformer_block"
 require_relative "../primitives/gdn"
@@ -163,6 +164,7 @@ class LlamaSeqEngine
     # in initialize — build_gdn_flags!/realize must NOT reset it (the
     # setter runs before realize).
     @seq_franken_noshadow_policy = [0]; @seq_franken_noshadow_policy.pop
+    @seq_nope_flag = 0
     @ft_globals_weights = [TinyNN.tnn_null_ptr]; @ft_globals_weights.pop
     @ft_globals_m       = [TinyNN.tnn_null_ptr]; @ft_globals_m.pop
     @ft_globals_v       = [TinyNN.tnn_null_ptr]; @ft_globals_v.pop
@@ -1349,6 +1351,27 @@ class LlamaSeqEngine
   # realize_for_random_init so the alloc-time param marking can skip
   # the dfa qkv weights (no chain grad-acc, no backward expansion).
   # Call ONLY for a no-shadow run; not calling = shadow-shaped legacy.
+  # toy#136 (K1): activation + positional-encoding axes. Call BEFORE
+  # build (the seq_rope_cfg pattern — the arch field feeds the shared
+  # block ctx). 0/0 = the byte-gated defaults.
+  def seq_act_init(v)
+    @seq_arch.seq_act = v
+    0
+  end
+
+  def seq_nope_init(v)
+    @seq_arch.seq_nope = v
+    @seq_nope_flag = v
+    0
+  end
+
+  # toy#136: read by the recipe's step! — under NoPE the positions
+  # tensor never enters the graph, so it has NO backing buffer and an
+  # upload would hit unallocated storage (found the hard way).
+  def seq_nope_flag
+    @seq_nope_flag
+  end
+
   def franken_no_shadow_init(policy)
     @seq_franken_noshadow_policy = [0]; @seq_franken_noshadow_policy.pop
     pi = 0

@@ -104,6 +104,7 @@ module Toy
           attr_accessor :pp, :pm, :pv
           attr_accessor :t_loss, :t_logits, :t_gates
           attr_accessor :tap_h2, :tap_a1, :tap_a2, :tap_ah, :tap_ctx, :t_onehots
+          attr_accessor :t_rlogits
           attr_accessor :tap_as
           attr_accessor :dfa_grads, :dfa_accs, :dfa_names
 
@@ -121,6 +122,7 @@ module Toy
             @tap_ah   = np
             @tap_ctx  = np
             @t_onehots = np
+            @t_rlogits = np   # toy#136: raw router logits (QB reads margins)
             @tap_as    = [np]; @tap_as.pop   # toy#128: per-expert dense acts
             @dfa_grads = [np]; @dfa_grads.pop
             @dfa_accs  = [np]; @dfa_accs.pop
@@ -239,16 +241,27 @@ module Toy
         # tnn_detach — forward-identity, gradient-opaque — so chain
         # grads reach attention/embeds via the residual + router
         # branches while the walker never needs mul_mat_id backward.
-        def self.moe_block_top1(sess, tw, t_x, eye, cut)
+        # toy#136 (K1): qb_bias — NULL = legacy argmax(r_logits)
+        # (byte-null); a real [NE,1] bias tensor shifts the SELECTION
+        # scores only (K3 §2.3.3 Quantile Balancing: the mixture prob
+        # stays softmax of the UNBIASED logits — routing dispatch moves,
+        # mixture weights and router gradients do not).
+        def self.moe_block_top1(sess, tw, t_x, eye, cut, qb_bias)
           rn2 = tw.pp[7]
           wr  = tw.pp[8]
           h2 = Toy::LLM::Primitives::RMSNorm.build(sess, t_x, rn2, EPS)
           tw.tap_h2 = h2
           r_logits = TinyNN.tnn_matmul(sess, wr, h2)              # [NE, T]
+          TinyNN.tnn_set_output(r_logits)
+          tw.t_rlogits = r_logits
           probs    = TinyNN.tnn_softmax(sess, r_logits)
           TinyNN.tnn_set_output(probs)
           tw.t_gates = probs
-          ids   = TinyNN.tnn_argmax(sess, r_logits)               # I32 [T]
+          sel_scores = r_logits
+          if qb_bias != TinyNN.tnn_null_ptr
+            sel_scores = TinyNN.tnn_add(sess, r_logits, qb_bias)  # broadcast [NE,T]+[NE,1]
+          end
+          ids   = TinyNN.tnn_argmax(sess, sel_scores)             # I32 [T]
           ids2  = TinyNN.tnn_reshape_3d(sess, ids, 1, tv, 1)       # [1, T]
           oneh  = TinyNN.tnn_get_rows(sess, eye, ids)             # [NE, T]
           TinyNN.tnn_set_output(oneh)
@@ -281,14 +294,14 @@ module Toy
           TinyNN.tnn_add(sess, t_x, TinyNN.tnn_mul(sess, eo, gate))
         end
 
-        def self.forward_tower(sess, tw, t_tok, t_labels, sels, eye, top1, cut, mask)
+        def self.forward_tower(sess, tw, t_tok, t_labels, sels, eye, top1, cut, mask, qb_bias)
           x = TinyNN.tnn_get_rows(sess, tw.pp[0], t_tok)
           atrip = attention_block(sess, x, tw.pp[2], tw.pp[3], tw.pp[4], tw.pp[5], tw.pp[6], mask)
           x = atrip[0]
           tw.tap_ah  = atrip[1]
           tw.tap_ctx = atrip[2]
           if top1
-            x = moe_block_top1(sess, tw, x, eye, cut)
+            x = moe_block_top1(sess, tw, x, eye, cut, qb_bias)
           else
             x = moe_block(sess, tw, x, sels)
           end

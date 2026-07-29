@@ -91,6 +91,26 @@ CKPT_EVERY = ck_raw < 0 ? 0 : ck_raw
 # legacy diag_mask path). NOTE the mask approach computes (T*B)^2
 # attention, not B*T^2 — the B-fold redundancy is real compute,
 # reflected in run_start.cost.
+# toy#136 (K1): FRANKEN_ACT ""|swiglu (default) | situ-glu (K3 M6,
+# softcap both GLU factors); FRANKEN_NOPE=1 skips rope entirely (K3
+# M8 — position from data order; the ablation axis until KDA lands);
+# FRANKEN_SCHEDULE ""|const (default) | cosine (K3 M9 finding —
+# cosine decays LR -> 0.1*LR over the post-warmup steps; NOTE libm
+# cos is not cross-platform byte-stable, so cosine curves are
+# platform-scoped — the const default stays byte-exact).
+ACT_S = ENV["FRANKEN_ACT"] || ""
+if ACT_S.length > 0 && ACT_S != "swiglu" && ACT_S != "situ-glu"
+  puts "toy-train-franken: unknown FRANKEN_ACT " + ACT_S + " (swiglu|situ-glu)"
+  exit 1
+end
+ACT_CODE = ACT_S == "situ-glu" ? 1 : 0
+NOPE_ON = (ENV["FRANKEN_NOPE"] || "") == "1"
+SCHED_S = ENV["FRANKEN_SCHEDULE"] || ""
+if SCHED_S.length > 0 && SCHED_S != "const" && SCHED_S != "cosine"
+  puts "toy-train-franken: unknown FRANKEN_SCHEDULE " + SCHED_S + " (const|cosine)"
+  exit 1
+end
+COSINE_ON = SCHED_S == "cosine"
 b_raw = (ENV["FRANKEN_BATCH"] || "0").to_i
 BATCH = b_raw > 0 ? b_raw : 1
 if BATCH > 1 && CORPUS.length == 0
@@ -270,6 +290,8 @@ opts.t_batch = BATCH
 opts.untied = true
 opts.seed   = SEED
 opts.no_shadow = NO_SHADOW ? 1 : 0
+opts.act       = ACT_CODE
+opts.rope_nope = NOPE_ON ? 1 : 0
 pi = 0
 while pi < policy.length
   opts.credit_assignment.push(policy[pi])
@@ -361,6 +383,9 @@ if EVENTS.length > 0
     config.add_num("steps",   STEPS)
     config.add_raw("lr",      LR.to_s)
     config.add_num("warmup",  WARMUP)
+    config.add_str("schedule", COSINE_ON ? "cosine" : "const")
+    config.add_str("act",      ACT_CODE == 1 ? "situ-glu" : "swiglu")
+    config.add_str("rope",     NOPE_ON ? "nope" : "rope")
     config.add_num("seed",    SEED)
     rs.add_obj("config", config)
     # toy#129 item 4: derived cost accounting — auditable FLOP-matching
@@ -473,6 +498,13 @@ while step < STEPS
   if WARMUP > 0 && step < WARMUP
     # linear ramp; at step WARMUP-1 the factor is exactly 1.0 -> LR
     adamw.lr = LR * ((step + 1).to_f / WARMUP.to_f)
+    m_hp = adamw.hp(0)
+  elsif COSINE_ON
+    # toy#136: cosine decay LR -> 0.1*LR over the post-warmup span.
+    span = STEPS - WARMUP
+    prog = span > 0 ? ((step - WARMUP).to_f / span.to_f) : 1.0
+    min_lr = LR * 0.1
+    adamw.lr = min_lr + 0.5 * (LR - min_lr) * (1.0 + Math.cos(3.141592653589793 * prog))
     m_hp = adamw.hp(0)
   end
   recipe.ff_cache.franken_refresh_b!   # toy#117: B leaves are per-step uploads

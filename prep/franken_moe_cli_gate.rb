@@ -464,6 +464,45 @@ Dir.mktmpdir("moe_cli_ck") do |dir|
 end
 puts failures.length == n0 ? "  ok: --ckpt-every/--load-ckpt — boundary ckpts, training byte-null, round-trip eval byte-equal, mismatch+resume rejected" : "  FAIL: ckpt leg"
 
+# ---- toy#136 (K1): --moe-balance qb + --schedule ----
+# QB (K3 quantile balancing, aux-FREE): at E=8/120 steps the
+# no-balance control collapses to <=3 active experts while QB keeps
+# >=4 active (deterministic — pinnable); provenance balance=qb;
+# qb+dense and qb+aux fail loud; cosine schedule provenance.
+n0 = failures.length
+Dir.mktmpdir("moe_cli_qb") do |dir|
+  qb_args = %w[--steps 120 --seed 0 --experts 8 --routing top1 --moe-balance qb]
+  o1 = run_cli(qb_args, {}, dir)
+  o2 = run_cli(qb_args, {}, nil)
+  failures << "qb: not deterministic" unless losses(o1) == losses(o2)
+  evs = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+  failures << "qb: provenance balance #{evs.first.dig('franken_moe', 'balance').inspect}" unless evs.first.dig("franken_moe", "balance") == "qb"
+  tail = evs.select { |e| e["kind"] == "route" }.drop(20)
+  qb_active = (0...8).count { |e| (tail.map { |r| r["shares"][e] }.sum / tail.length) > 0.05 }
+  failures << "qb: only #{qb_active} active experts (want >= 4)" unless qb_active >= 4
+end
+Dir.mktmpdir("moe_cli_qbc") do |dir|
+  run_cli(%w[--steps 120 --seed 0 --experts 8 --routing top1], {}, dir)
+  evs = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+  tail = evs.select { |e| e["kind"] == "route" }.drop(20)
+  nb_active = (0...8).count { |e| (tail.map { |r| r["shares"][e] }.sum / tail.length) > 0.05 }
+  failures << "qb: no-balance control has #{nb_active} active (want <= 3 — the collapse control moved)" unless nb_active <= 3
+end
+argv_qd = [TOY, "train", "franken-moe", "--steps", "1", "--moe-balance", "qb"]
+_oq, sq = Open3.capture2e(CLEAN, *argv_qd, chdir: ROOT)
+failures << "qb: dense + qb not rejected" if sq.success?
+argv_qa = [TOY, "train", "franken-moe", "--steps", "1", "--routing", "top1", "--moe-balance", "qb", "--moe-aux", "0.1"]
+_oa, sa = Open3.capture2e(CLEAN, *argv_qa, chdir: ROOT)
+failures << "qb: qb + aux not rejected" if sa.success?
+Dir.mktmpdir("moe_cli_cos") do |dir|
+  run_cli(%w[--steps 4 --seed 0 --schedule cosine --lr 0.05], {}, dir)
+  evs = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+  failures << "schedule: provenance #{evs.first.dig('config', 'schedule').inspect}" unless evs.first.dig("config", "schedule") == "cosine"
+  lrs = evs.select { |e| e["kind"] == "step" }.map { |e| e["lr"] }
+  failures << "schedule: lr not decreasing (#{lrs.inspect})" unless lrs.each_cons(2).all? { |x, y| y < x }
+end
+puts failures.length == n0 ? "  ok: QB balances at E=8 (>=4 active vs <=3 collapse control), deterministic, guards; cosine provenance + decreasing lr" : "  FAIL: qb/schedule leg"
+
 # ---- 6. bundle structure + run-id passthrough ----
 n0 = failures.length
 Dir.mktmpdir("moe_cli_bundle") do |dir|
@@ -500,7 +539,7 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
 end
 
 if failures.empty?
-  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + bundle (toy#120/#121)"
+  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule (toy#136) + bundle (toy#120/#121)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe-cli]: #{f}" }

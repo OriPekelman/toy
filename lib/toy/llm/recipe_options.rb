@@ -76,6 +76,11 @@ module Toy; module LLM
                   # and align telemetry is unavailable. 0 = shadow-shaped
                   # (byte-gated legacy).
                   :no_shadow,
+                  # toy#136 (K1, the K-series axes): act 0=swiglu |
+                  # 1=situ-glu (K3 §2.3.2, softcap both GLU factors);
+                  # rope_nope 0=rope | 1=NoPE (K3 §2.1.2/§3.4 — position
+                  # from data order only). Both byte-null at 0.
+                  :act, :rope_nope,
                   # GDN reintegration: 0-based indices of layers built as
                   # Gated-DeltaNet blocks (empty = all-attention, the
                   # byte-gated default). Read by FromScratch + Franken.
@@ -97,6 +102,8 @@ module Toy; module LLM
       @dfa_mix_alpha = 0.5
       @dfa_mask_tau  = 0.0
       @no_shadow     = 0
+      @act           = 0
+      @rope_nope     = 0
       @gdn_layers = [0]; @gdn_layers.pop   # typed-empty IntArray
     end
   end

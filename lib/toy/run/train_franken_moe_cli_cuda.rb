@@ -141,6 +141,27 @@ module Toy
           # per step already, so the ramp is zero engine work (the
           # 8ba447d pattern). The end-of-run eval (toy#130) pins its own
           # lr=0 hp and is untouched.
+          # toy#136 (K1): FRANKEN_MOE_BALANCE ""|aux (legacy default —
+          # the Switch aux-loss, α from FRANKEN_MOE_AUX) | qb (K3
+          # §2.3.3 Quantile Balancing: aux-loss-FREE — a per-expert
+          # bias on the SELECTION scores only, set each step from the
+          # (1−k/n)-quantile of score margins vs the Top-(k+1) cutoff,
+          # lag-1 like the aux f'; exact quantile at toy scale; bias
+          # frozen for the end-of-run eval) | none. qb requires top1.
+          bal_s = ENV["FRANKEN_MOE_BALANCE"] || ""
+          if bal_s.length > 0 && bal_s != "aux" && bal_s != "qb" && bal_s != "none"
+            puts "toy-train-franken-moe-cuda: unknown FRANKEN_MOE_BALANCE " + bal_s + " (aux|qb|none)"
+            return 1
+          end
+          qb_on = bal_s == "qb"
+          # FRANKEN_SCHEDULE ""|const|cosine (K3 M9; cosine decays LR
+          # -> 0.1*LR post-warmup; libm cos => platform-scoped curves).
+          sched_s = ENV["FRANKEN_SCHEDULE"] || ""
+          if sched_s.length > 0 && sched_s != "const" && sched_s != "cosine"
+            puts "toy-train-franken-moe-cuda: unknown FRANKEN_SCHEDULE " + sched_s + " (const|cosine)"
+            return 1
+          end
+          cosine_on = sched_s == "cosine"
           lr_s = ENV["FRANKEN_LR"] || ""
           lr = lr_s.length > 0 ? lr_s.to_f : 0.02
           # toy#131: the toy#120 deviation come due — a NATIVE-form GGUF
@@ -173,6 +194,14 @@ module Toy
           end
           if no_shadow && align_on
             puts "toy-train-franken-moe-cuda: --no-shadow + align events — align compares DFA grads against the chain shadow acc, which a no-shadow build does not create. Drop one."
+            return 1
+          end
+          if qb_on && !top1
+            puts "toy-train-franken-moe-cuda: --moe-balance qb requires --routing top1 (QB biases hard SELECTION; dense has no selection to bias)"
+            return 1
+          end
+          if qb_on && aux_alpha > 0.0
+            puts "toy-train-franken-moe-cuda: --moe-balance qb replaces the aux loss — drop --moe-aux (K3 runs QB aux-free)"
             return 1
           end
           # toy#130: END-OF-RUN held-out eval — the MoE instrument has no
@@ -350,6 +379,12 @@ module Toy
           if batch > 1
             attn_mask = TinyNNCuda.tnn_input_2d_f32_persistent(sess, tv, tv)
           end
+          # toy#136: QB selection-bias — persistent (alloc BEFORE
+          # finalize, the toy#133 lesson), uploaded per step (lag-1).
+          qb_bias_t = TinyNNCuda.tnn_null_ptr
+          if qb_on
+            qb_bias_t = TinyNNCuda.tnn_input_2d_f32_persistent(sess, 1, nev)   # ne=[NE,1] — broadcasts over T
+          end
 
           # params: dense = every weight (shadow-shaped when dfa-experts);
           # top1 = Wr ONLY (the aux backward path; everything else is
@@ -460,6 +495,10 @@ module Toy
             ei = ei + 1
           end
           TinyNNCuda.tnn_upload_from_float_array(sess, eye, ey, nev * nev)
+          qb_bias = zeros(nev)
+          if qb_on
+            TinyNNCuda.tnn_upload_from_float_array(sess, qb_bias_t, qb_bias, nev)
+          end
           # toy#133: block-causal mask VALUES (the GH#7 fill, verbatim
           # orientation — the order-swap isolation null gates it).
           if batch > 1
@@ -504,7 +543,7 @@ module Toy
           t_labels = TinyNNCuda.tnn_input_2d_f32(sess, tv, vocabv)
           t_hp     = TinyNNCuda.tnn_input_1d_f32(sess, 7)
           t_f      = TinyNNCuda.tnn_input_2d_f32(sess, 1, nev)   # ne=[NE,1]
-          forward_tower(sess, tw, t_tok, t_labels, sels, eye, top1, bp_spine ? 1 : 0, attn_mask)
+          forward_tower(sess, tw, t_tok, t_labels, sels, eye, top1, bp_spine ? 1 : 0, attn_mask, qb_bias_t)
           if bp_router || bp_spine
             # toy#121: the task CE joins the loss roots — backward reaches
             # Wr through gate = sum_rows(oneh*probs) -> softmax -> matmul,
@@ -640,6 +679,7 @@ module Toy
               config.add_num("steps",   steps)
               config.add_num("lr",      lr)
               config.add_num("warmup",  warmup)
+              config.add_str("schedule", cosine_on ? "cosine" : "const")
               config.add_num("seed",    seed)
               rs.add_obj("config", config)
               # toy#129 item 4: derived cost accounting. total = tied
@@ -674,6 +714,7 @@ module Toy
               # grad-accs (dense dfa-experts without --no-shadow).
               # top1 lanes and dense chain have none — false.
               fm.add_bool("shadow",   dfa_experts && !top1 && !no_shadow)
+              fm.add_str("balance",   qb_on ? "qb" : (bal_s == "none" ? "none" : "aux"))
               rs.add_obj("franken_moe", fm)
               TinyNNCuda.tnn_events_emit(rs.dump)
             else
@@ -725,6 +766,11 @@ module Toy
             if warmup > 0 && s < warmup
               # linear ramp; at step warmup-1 the factor is exactly 1.0
               lr_t = lr * ((s + 1).to_f / warmup.to_f)
+            elsif cosine_on
+              span = steps - warmup
+              prog = span > 0 ? ((s - warmup).to_f / span.to_f) : 1.0
+              min_lr = lr * 0.1
+              lr_t = min_lr + 0.5 * (lr - min_lr) * (1.0 + Math.cos(3.141592653589793 * prog))
             end
             hp = [lr_t, b1, b2, 1.0e-8, 0.0,
                   1.0 / (1.0 - (b1 ** t)), 1.0 / (1.0 - (b2 ** t))]
@@ -835,6 +881,66 @@ module Toy
                 fvec[ei] = aux_alpha * nev.to_f * cnt / (tv.to_f * tv.to_f)
                 ei = ei + 1
               end
+            end
+            # toy#136 QB update (lag-1, exact at toy scale): for k=1 the
+            # Top-(k+1) cutoff per token is the 2nd-largest BIASED score;
+            # margins m_ij = s_ij − cutoff_i; next bias b_j = −quantile
+            # at rank ceil(m·k/n) of expert j's margins (so its expected
+            # load matches q = m·k/n tokens), then mean-centered.
+            if qb_on
+              rl_buf = zeros(nev * tv)
+              TinyNNCuda.tnn_download_to_f64_array(sess, tw.t_rlogits, rl_buf, nev * tv)
+              cutoffs = zeros(tv)
+              ti4 = 0
+              while ti4 < tv
+                best = -1.0e30
+                second = -1.0e30
+                ei4 = 0
+                while ei4 < nev
+                  v = rl_buf[ti4 * nev + ei4] + qb_bias[ei4]
+                  if v > best
+                    second = best
+                    best = v
+                  elsif v > second
+                    second = v
+                  end
+                  ei4 = ei4 + 1
+                end
+                cutoffs[ti4] = second
+                ti4 = ti4 + 1
+              end
+              qtarget = tv / nev
+              if qtarget < 1
+                qtarget = 1
+              end
+              nb_sum = 0.0
+              nb = zeros(nev)
+              ei4 = 0
+              while ei4 < nev
+                margins = zeros(tv)
+                ti4 = 0
+                while ti4 < tv
+                  margins[ti4] = rl_buf[ti4 * nev + ei4] - cutoffs[ti4]
+                  ti4 = ti4 + 1
+                end
+                margins.sort!
+                # rank: exactly qtarget margins should exceed -b_j ->
+                # -b_j = the (qtarget+1)-th largest = margins[tv-qtarget-1]
+                idx4 = tv - qtarget - 1
+                if idx4 < 0
+                  idx4 = 0
+                end
+                nb[ei4] = 0.0 - margins[idx4]
+                nb_sum = nb_sum + nb[ei4]
+                ei4 = ei4 + 1
+              end
+              nb_mean = nb_sum / nev.to_f
+              ei4 = 0
+              while ei4 < nev
+                qb_bias[ei4] = nb[ei4] - nb_mean
+                ei4 = ei4 + 1
+              end
+              TinyNNCuda.tnn_upload_from_float_array(sess, qb_bias_t, qb_bias, nev)
             end
             if events.length > 0
               re2 = Toy::Json::Builder.new
