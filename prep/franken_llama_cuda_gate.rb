@@ -106,6 +106,12 @@ pkc2 = curve(run_bin(FRK, pkc_env))
 failures << "pack: cuda not deterministic" unless pkc1 == pkc2 && pkc1.length == 3
 puts failures.empty? ? "  ok: TOYC pack + ctx 64 on CUDA — deterministic" : "  FAIL: cuda pack leg"
 
+# ---- toy#133: batch on the CUDA twin (determinism-scoped) ----
+bt1 = curve(run_bin(FRK, { "STEPS" => "3", "CORPUS" => "data/fineweb_gpt2_smoke.bin", "FRANKEN_BATCH" => "4" }))
+bt2 = curve(run_bin(FRK, { "STEPS" => "3", "CORPUS" => "data/fineweb_gpt2_smoke.bin", "FRANKEN_BATCH" => "4" }))
+failures << "batch: cuda B=4 not deterministic" unless bt1 == bt2 && bt1.length == 3
+puts failures.empty? ? "  ok: --batch B=4 on CUDA — deterministic" : "  FAIL: cuda batch leg"
+
 # ---- toy#129 item 2: no-shadow on the CUDA twin (the applied-updates null) ----
 nsc_env = { "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42", "STEPS" => "6" }
 shc = curve(run_bin(FRK, nsc_env))

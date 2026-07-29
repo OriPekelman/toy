@@ -263,6 +263,46 @@ hv0 = run_franken_llama({ "STEPS" => "3", "CORPUS" => "data/ts_seqs.bin" }, nil)
 failures << "pack: explicit FRANKEN_VOCAB=627 differs from implicit (headerless null broken)" unless hv1.lines.select { |l| l.start_with?("step ") } == hv0.lines.select { |l| l.start_with?("step ") }
 puts failures.empty? ? "  ok: TOYC pack — vocab 50257 from header, ctx 64, deterministic; vocab-conflict rejected; headerless --vocab null" : "  FAIL: pack leg"
 
+# ---- toy#133: --batch (B corpus windows per step) ----
+# THE isolation null: with distinct windows W and X, batched [W,X] and
+# the order-swap [X,W] must BOTH equal the mean of the two B=1 losses —
+# any cross-window attention leak breaks order-invariance first (the
+# lesson: a mis-allocated mask read zeros and B=2 ran fully unmasked;
+# this leg would have caught it). Plus B=1 flag-null and B=4
+# determinism.
+n0 = failures.length
+Dir.mktmpdir("franken_batch_gate") do |dir|
+  raw = File.binread(File.join(ROOT, "data", "fineweb_gpt2_smoke.bin"))
+  w = raw[16, 32 * 4]
+  x = raw[16 + 5000 * 4, 32 * 4]
+  File.binwrite(File.join(dir, "w.bin"), w)
+  File.binwrite(File.join(dir, "x.bin"), x)
+  File.binwrite(File.join(dir, "wx.bin"), w + x)
+  File.binwrite(File.join(dir, "xw.bin"), x + w)
+  get1 = lambda do |env|
+    out = run_franken_llama(env, nil)
+    out.lines.select { |l| l.start_with?("step ") }.first[/loss=(\S+)/, 1].to_f
+  end
+  base_env = { "STEPS" => "1", "FRANKEN_VOCAB" => "50257" }
+  lw = get1.call(base_env.merge("CORPUS" => File.join(dir, "w.bin")))
+  lx = get1.call(base_env.merge("CORPUS" => File.join(dir, "x.bin")))
+  lwx = get1.call(base_env.merge("CORPUS" => File.join(dir, "wx.bin"), "FRANKEN_BATCH" => "2"))
+  lxw = get1.call(base_env.merge("CORPUS" => File.join(dir, "xw.bin"), "FRANKEN_BATCH" => "2"))
+  mean = (lw + lx) / 2.0
+  failures << "batch: [W,X] #{lwx} != mean #{mean} (leak or wrong labels)" unless (lwx - mean).abs < 1.0e-4
+  failures << "batch: order-swap [X,W] #{lxw} != [W,X] #{lwx} (cross-window leak)" unless (lxw - lwx).abs < 1.0e-4
+end
+bn1 = run_franken_llama({ "STEPS" => "4", "CORPUS" => "data/fineweb_gpt2_smoke.bin", "FRANKEN_BATCH" => "1" }, nil)
+bn0 = run_franken_llama({ "STEPS" => "4", "CORPUS" => "data/fineweb_gpt2_smoke.bin" }, nil)
+failures << "batch: FRANKEN_BATCH=1 differs from no-flag (flag-null broken)" unless bn1.lines.select { |l| l.start_with?("step ") } == bn0.lines.select { |l| l.start_with?("step ") }
+b4a = run_franken_llama({ "STEPS" => "4", "CORPUS" => "data/fineweb_gpt2_smoke.bin", "FRANKEN_BATCH" => "4" }, nil).lines.select { |l| l.start_with?("step ") }
+b4b = run_franken_llama({ "STEPS" => "4", "CORPUS" => "data/fineweb_gpt2_smoke.bin", "FRANKEN_BATCH" => "4" }, nil).lines.select { |l| l.start_with?("step ") }
+failures << "batch: B=4 not deterministic" unless b4a == b4b && b4a.length == 4
+failures << "batch: B=4 NaN" if b4a.any? { |l| l[/loss=(\S+)/, 1].to_f.nan? }
+_ob, stb = Open3.capture2e({ "STEPS" => "1", "FRANKEN_BATCH" => "2" }, RUNNER, chdir: ROOT)
+failures << "batch: B>1 without corpus not rejected" if stb.success?
+puts failures.length == n0 ? "  ok: --batch — order-swap isolation null exact-class, B=1 flag-null, B=4 deterministic, corpus guard" : "  FAIL: batch leg"
+
 # ---- toy#129 item 2: --no-shadow ----
 # THE null (the roadmap's own criterion): applied updates byte-identical
 # shadow vs no-shadow at the same policy/seed — the mode changes the
@@ -312,7 +352,7 @@ failures << "byte-repro: outputs differ" unless r1 == r2
 puts "  ok: byte-repro — two policy runs identical" if r1 == r2
 
 if failures.empty?
-  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + shape presets (toy#124) + lr/warmup (toy#126) + no-shadow/pack-header/ckpt-every (toy#129) + byte-repro (toy#112/#113)"
+  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + shape presets (toy#124) + lr/warmup (toy#126) + no-shadow/pack-header/ckpt-every (toy#129) + batch (toy#133) + byte-repro (toy#112/#113)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-llama]: #{f}" }

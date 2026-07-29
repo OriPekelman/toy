@@ -35,6 +35,7 @@ REJECT = [
   [%w[vit-tiny --warmup 2],               "--lr/--warmup"],
   [%w[warm-start --no-shadow],            "--no-shadow"],
   [%w[from-scratch --context 64],         "--context/--vocab"],
+  [%w[from-scratch --batch 4],            "--batch"],
   [%w[franken-moe --ckpt-every 2],        "--ckpt-every"],
   [%w[franken --eval-corpus x.bin],       "--eval-corpus"],
   [%w[from-scratch --shape wide],         "--shape"],

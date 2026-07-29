@@ -83,6 +83,20 @@ NO_SHADOW = (ENV["FRANKEN_NO_SHADOW"] || "") == "1"
 # session (freed after) — no sched compute, gated byte-null vs no-ckpt.
 ck_raw = (ENV["FRANKEN_CKPT_EVERY"] || "0").to_i
 CKPT_EVERY = ck_raw < 0 ? 0 : ck_raw
+# toy#133: FRANKEN_BATCH=B — B corpus windows per step, laid flat
+# [T*B] with the GH#7 block-causal attention mask (window-isolated;
+# smoke_gate_b_gt_1 pins the engine path) and WINDOW-LOCAL labels.
+# The fixed-seq feed is the byte-gated single-window contract, so
+# B>1 requires CORPUS. B=1 is byte-null (the mask stays NULL, the
+# legacy diag_mask path). NOTE the mask approach computes (T*B)^2
+# attention, not B*T^2 — the B-fold redundancy is real compute,
+# reflected in run_start.cost.
+b_raw = (ENV["FRANKEN_BATCH"] || "0").to_i
+BATCH = b_raw > 0 ? b_raw : 1
+if BATCH > 1 && CORPUS.length == 0
+  puts "toy-train-franken: FRANKEN_BATCH > 1 needs CORPUS (the fixed-seq feed is the byte-gated single-window contract)"
+  exit 1
+end
 if NO_SHADOW && ALIGN_ON
   puts "toy-train-franken: FRANKEN_ALIGN=1 + FRANKEN_NO_SHADOW=1 — align telemetry compares the DFA grad against the chain shadow acc, which a no-shadow build does not create. Drop one."
   exit 1
@@ -252,6 +266,7 @@ cfg.donor_d_in = DONOR_D
 
 opts = Toy::LLM::RecipeOptions.new
 opts.t_seq  = CONTEXT
+opts.t_batch = BATCH
 opts.untied = true
 opts.seed   = SEED
 opts.no_shadow = NO_SHADOW ? 1 : 0
@@ -301,7 +316,11 @@ end
 while seq_ids.length < CONTEXT; seq_ids.push(0); end
 
 positions = [0]; positions.pop
-p = 0; while p < CONTEXT; positions.push(p); p = p + 1; end
+b_pos = 0
+while b_pos < BATCH
+  p = 0; while p < CONTEXT; positions.push(p); p = p + 1; end
+  b_pos = b_pos + 1
+end
 
 m_labels = Toy::Labels.next_token(seq_ids, VOCAB, CONTEXT, 1)
 adamw = Toy::AdamW.for_from_scratch
@@ -338,6 +357,7 @@ if EVENTS.length > 0
     rs.add_obj("model", model)
     config = Toy::Json::Builder.new
     config.add_num("context", CONTEXT)
+    config.add_num("batch",   BATCH)
     config.add_num("steps",   STEPS)
     config.add_raw("lr",      LR.to_s)
     config.add_num("warmup",  WARMUP)
@@ -355,7 +375,7 @@ if EVENTS.length > 0
                   N_LAYERS * (4 * D_MODEL * D_MODEL + 3 * D_MODEL * D_FF + 2 * D_MODEL) +
                   D_MODEL + D_MODEL * VOCAB
     cost_flops  = 2 * DONOR_D * D_MODEL +
-                  N_LAYERS * (2 * (4 * D_MODEL * D_MODEL + 3 * D_MODEL * D_FF) + 4 * D_MODEL * CONTEXT) +
+                  N_LAYERS * (2 * (4 * D_MODEL * D_MODEL + 3 * D_MODEL * D_FF) + 4 * D_MODEL * CONTEXT * BATCH) +
                   2 * D_MODEL * VOCAB
     cost = Toy::Json::Builder.new
     cost.add_num("total_params",    cost_params)
@@ -398,6 +418,16 @@ if ALIGN_ON && n_align > 0
 end
 
 final_loss = 0.0
+# toy#133: incremental batched one-hot (the eval_ce trick) — the Mat
+# is allocated once; per step only the previous CONTEXT*BATCH scatter
+# positions are cleared, never a ctx*batch*vocab refill (at B=32/
+# ctx256/vocab50257 the refill was 412M writes per step — it dominated
+# the CUDA step time). Values are byte-identical to
+# next_token_guarded_batched; the batch gate's isolation null and the
+# corpus byte-legs pin it.
+lab_inc = CORPUS.length > 0 ? Mat.new(CONTEXT * BATCH, VOCAB) : Mat.new(1, 1)
+lab_prev = [0]; lab_prev.pop
+lp = 0; while lp < CONTEXT * BATCH; lab_prev.push(-1); lp = lp + 1; end
 corpus_base  = CORPUS.length > 0 ? ToyCorpusLoader.data_offset(CORPUS) : 0
 corpus_off   = corpus_base
 corpus_bytes = CORPUS.length > 0 ? File.size(CORPUS) : 0
@@ -408,12 +438,37 @@ while step < STEPS
     # rotating-window stream: restart at 0 BEFORE the window would run
     # past EOF (read_seq's own EOF-wrap otherwise pins every later step
     # to the first window — the stuck-window failure mode).
-    if corpus_off + CONTEXT * 4 > corpus_bytes
-      corpus_off = corpus_base
+    seq_ids = [0]; seq_ids.pop
+    bw = 0
+    while bw < BATCH
+      if corpus_off + CONTEXT * 4 > corpus_bytes
+        corpus_off = corpus_base
+      end
+      wnd = ToyCorpusLoader.read_seq(CORPUS, corpus_off, CONTEXT)
+      corpus_off = corpus_off + CONTEXT * 4
+      wk = 0
+      while wk < CONTEXT
+        seq_ids.push(wnd[wk])
+        wk = wk + 1
+      end
+      bw = bw + 1
     end
-    seq_ids  = ToyCorpusLoader.read_seq(CORPUS, corpus_off, CONTEXT)
-    corpus_off = corpus_off + CONTEXT * 4
-    m_labels = Toy::Labels.next_token_guarded(seq_ids, VOCAB, CONTEXT, 1)
+    k2 = 0
+    while k2 < CONTEXT * BATCH
+      if lab_prev[k2] >= 0
+        lab_inc.flat[k2 * VOCAB + lab_prev[k2]] = 0.0
+      end
+      wpos = k2 % CONTEXT
+      tgt = (wpos + 1 < CONTEXT) ? seq_ids[k2 + 1] : seq_ids[k2]
+      if tgt >= 0 && tgt < VOCAB
+        lab_inc.flat[k2 * VOCAB + tgt] = 1.0
+        lab_prev[k2] = tgt
+      else
+        lab_prev[k2] = -1
+      end
+      k2 = k2 + 1
+    end
+    m_labels = lab_inc
   end
   if WARMUP > 0 && step < WARMUP
     # linear ramp; at step WARMUP-1 the factor is exactly 1.0 -> LR
@@ -435,7 +490,7 @@ while step < STEPS
     es.add_num("step",    step + 1)
     es.add_raw("loss",    num_or_null(loss))
     es.add_raw("lr",      adamw.lr.to_s)
-    es.add_num("tokens",  CONTEXT)
+    es.add_num("tokens",  CONTEXT * BATCH)
     es.add_num("wall_us", step_wall_us)
     TinyNN.tnn_events_emit(es.dump)
   end

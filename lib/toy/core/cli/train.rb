@@ -118,6 +118,7 @@ module Toy
           @eval_tokens  = nil
           @eval_offset  = nil
           @vocab        = nil   # franken/franken-moe: headerless-pack vocab (toy#129)
+          @batch        = nil   # franken/franken-moe: windows per step (toy#133)
           @shape        = nil   # franken/franken-moe: preset (toy#124)
           @routing    = nil   # franken-moe: dense | top1
           @moe_policy = nil   # franken-moe: chain | dfa-experts
@@ -268,6 +269,7 @@ module Toy
                              "FRANKEN_NO_SHADOW"   => (@no_shadow ? "1" : ""),
                              "FRANKEN_CONTEXT"     => (@context || 0).to_s,
                              "FRANKEN_VOCAB"       => (@vocab || 0).to_s,
+                             "FRANKEN_BATCH"       => (@batch || 0).to_s,
                              "FRANKEN_EVAL_CORPUS" => (@eval_corpus || ""),
                              "FRANKEN_EVAL_TOKENS" => (@eval_tokens || 0).to_s,
                              "FRANKEN_EVAL_OFFSET" => (@eval_offset || 0).to_s,
@@ -295,6 +297,7 @@ module Toy
                              "FRANKEN_NO_SHADOW" => (@no_shadow ? "1" : ""),
                              "FRANKEN_CONTEXT" => (@context || 0).to_s,
                              "FRANKEN_VOCAB"   => (@vocab || 0).to_s,
+                             "FRANKEN_BATCH"   => (@batch || 0).to_s,
                              "FRANKEN_CKPT_EVERY" => (@ckpt_every || 0).to_s)
           else
             # from-scratch — byte-identical to today plus the harmless RECIPE key.
@@ -538,6 +541,16 @@ module Toy
               return bad_arg("--context requires a value") if val.nil?
               return bad_arg("--context must be an integer >= 2, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= 2
               @context = val.to_i
+            when "--batch"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--batch requires a value") if val.nil?
+              return bad_arg("--batch must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i > 0
+              @batch = val.to_i
+            when /\A--batch=(.*)\z/
+              val = $1
+              return bad_arg("--batch must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i > 0
+              @batch = val.to_i
             when /\A--context=(.*)\z/
               val = $1
               return bad_arg("--context must be an integer >= 2, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= 2
@@ -623,6 +636,7 @@ module Toy
             ["--lr/--warmup",   %w[franken franken-moe],            (!@lr.nil? || !@warmup.nil?), " (toy#126/#132)"],
             ["--no-shadow",     %w[franken franken-moe],            @no_shadow, " (toy#129)"],
             ["--context/--vocab", %w[franken franken-moe],          (!@context.nil? || !@vocab.nil?), " (toy#129)"],
+            ["--batch",         %w[franken franken-moe],            !@batch.nil?, " (toy#133)"],
             ["--ckpt-every",    %w[franken],                        !@ckpt_every.nil?, " (the MoE instrument has no GGUF writer, toy#120/#131)"],
             ["--eval-corpus/--eval-tokens/--eval-offset", %w[franken-moe], (!@eval_corpus.nil? || !@eval_tokens.nil? || !@eval_offset.nil?), " (toy#130; the llama lane evals checkpoints offline via `toy eval ce`)"],
             ["--shape",         %w[franken franken-moe],            !@shape.nil?, ""],
@@ -646,6 +660,9 @@ module Toy
           end
           if @recipe == "franken-moe" && @context && @corpus.nil?
             return bad_arg("--context needs --corpus for franken-moe (the fixed-seq feed is the byte-gated 4-token contract)")
+          end
+          if @batch && @batch > 1 && @corpus.nil?
+            return bad_arg("--batch > 1 needs --corpus (the fixed-seq feed is the byte-gated single-window contract)")
           end
           if @no_shadow && @align_events
             return bad_arg("--no-shadow + --align-events: align telemetry compares DFA grads against the chain shadow acc, which a no-shadow build does not create — drop one")

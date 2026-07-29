@@ -206,6 +206,19 @@ module Toy
             puts "toy-train-franken-moe: --context must be >= 2, got " + ctx.to_s
             return 1
           end
+          # toy#133: B windows per step. Reading ctx*B contiguous tokens
+          # IS reading B windows (the MoE instrument is position-free);
+          # only the attention MASK (block-causal, window-isolated) and
+          # the labels (window-local) distinguish batched from one long
+          # window. B=1 is byte-null (NULL mask = the diag_mask path).
+          bat_s = ENV["FRANKEN_BATCH"] || ""
+          bat_raw = bat_s.length > 0 ? bat_s.to_i : 0
+          batch = bat_raw > 0 ? bat_raw : 1
+          if batch > 1 && corpus_s.length == 0
+            puts "toy-train-franken-moe: FRANKEN_BATCH > 1 needs --corpus (the fixed-seq feed is the byte-gated single-window contract)"
+            return 1
+          end
+          tbv = ctx * batch
           # toy#125/#129: corpus vocab — a TOYC pack declares it in the
           # header (authoritative; a conflicting --vocab fails loud);
           # headerless packs default to the frozen-vocab contract (627,
@@ -243,9 +256,9 @@ module Toy
             end
           end
           if shape_s == "wide"
-            shape_init(256, 512, vsel, esel, ctx)
+            shape_init(256, 512, vsel, esel, tbv)
           else
-            shape_init(DM_BASE, DFF_BASE, vsel, esel, ctx)
+            shape_init(DM_BASE, DFF_BASE, vsel, esel, tbv)
           end
 
           sess = TinyNN.tnn_session_new(0)
@@ -278,6 +291,15 @@ module Toy
           b_ao  = TinyNN.tnn_input_2d_f32_persistent(sess, dmv, vocabv)
           b_r   = TinyNN.tnn_input_2d_f32_persistent(sess, nev, vocabv)
           ones_t = TinyNN.tnn_input_2d_f32_persistent(sess, 1, tv)   # ne=[tv,1]
+          # toy#133: block-causal attention mask — ALLOCATED here
+          # (persistent inputs must precede finalize_weights; an alloc
+          # after finalize has no backing buffer and silently reads
+          # ZEROS — found the hard way: add(scaled, 0) is a no-op and
+          # B=2 ran fully-unmasked).
+          attn_mask = TinyNN.tnn_null_ptr
+          if batch > 1
+            attn_mask = TinyNN.tnn_input_2d_f32_persistent(sess, tv, tv)
+          end
 
           # params: dense = every weight (shadow-shaped when dfa-experts);
           # top1 = Wr ONLY (the aux backward path; everything else is
@@ -351,6 +373,29 @@ module Toy
             ei = ei + 1
           end
           TinyNN.tnn_upload_from_float_array(sess, eye, ey, nev * nev)
+          # toy#133: block-causal mask VALUES (the GH#7 fill, verbatim
+          # orientation — the order-swap isolation null gates it).
+          if batch > 1
+            mvals = zeros(tv * tv)
+            mi1 = 0
+            while mi1 < tv
+              bq = mi1 / ctx
+              pq = mi1 % ctx
+              mi0 = 0
+              while mi0 < tv
+                bk = mi0 / ctx
+                pk = mi0 % ctx
+                if bk == bq && pk <= pq
+                  mvals[mi1 * tv + mi0] = 0.0
+                else
+                  mvals[mi1 * tv + mi0] = -1.0e30
+                end
+                mi0 = mi0 + 1
+              end
+              mi1 = mi1 + 1
+            end
+            TinyNN.tnn_upload_from_float_array(sess, attn_mask, mvals, tv * tv)
+          end
           if top1
             sig_dm = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, vocabv, dmv, 0.0)
             sig_e  = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, vocabv, nev, 0.0)
@@ -372,7 +417,7 @@ module Toy
           t_labels = TinyNN.tnn_input_2d_f32(sess, tv, vocabv)
           t_hp     = TinyNN.tnn_input_1d_f32(sess, 7)
           t_f      = TinyNN.tnn_input_2d_f32(sess, 1, nev)   # ne=[NE,1]
-          forward_tower(sess, tw, t_tok, t_labels, sels, eye, top1, bp_spine ? 1 : 0)
+          forward_tower(sess, tw, t_tok, t_labels, sels, eye, top1, bp_spine ? 1 : 0, attn_mask)
           if bp_router || bp_spine
             # toy#121: the task CE joins the loss roots — backward reaches
             # Wr through gate = sum_rows(oneh*probs) -> softmax -> matmul,
@@ -503,7 +548,8 @@ module Toy
               model.add_num("d_ff",     dfv)
               rs.add_obj("model", model)
               config = Toy::Json::Builder.new
-              config.add_num("context", tv)
+              config.add_num("context", ctx)
+              config.add_num("batch",   batch)
               config.add_num("steps",   steps)
               config.add_num("lr",      lr)
               config.add_num("warmup",  warmup)
@@ -556,6 +602,12 @@ module Toy
             labels[tgt + vocabv * tt] = 1.0
             tt = tt + 1
           end
+          # toy#133: incremental batched one-hot (the eval_ce trick) —
+          # clear only the previous tv scatter positions per step, never
+          # a tv*vocab refill. Values byte-identical to the builder.
+          lab_inc = corpus_s.length > 0 ? Mat.new(tv, vocabv) : Mat.new(1, 1)
+          lab_prev = [0]; lab_prev.pop
+          lp = 0; while lp < tv; lab_prev.push(-1); lp = lp + 1; end
           corpus_base  = corpus_s.length > 0 ? ToyCorpusLoader.data_offset(corpus_s) : 0
           corpus_off   = corpus_base
           corpus_bytes = corpus_s.length > 0 ? File.size(corpus_s) : 0
@@ -599,8 +651,22 @@ module Toy
               end
               ids = ToyCorpusLoader.read_seq(corpus_s, corpus_off, tv)
               corpus_off = corpus_off + tv * 4
-              m_lab = Toy::Labels.next_token_guarded(ids, vocabv, tv, 1)
-              labels = m_lab.flat
+              k2 = 0
+              while k2 < tv
+                if lab_prev[k2] >= 0
+                  lab_inc.flat[k2 * vocabv + lab_prev[k2]] = 0.0
+                end
+                wpos = k2 % ctx
+                tgt = (wpos + 1 < ctx) ? ids[k2 + 1] : ids[k2]
+                if tgt >= 0 && tgt < vocabv
+                  lab_inc.flat[k2 * vocabv + tgt] = 1.0
+                  lab_prev[k2] = tgt
+                else
+                  lab_prev[k2] = -1
+                end
+                k2 = k2 + 1
+              end
+              labels = lab_inc.flat
             end
             TinyNN.upload_int_array(sess, t_tok, ids)
             TinyNN.tnn_upload_from_float_array(sess, t_labels, labels, vocabv * tv)
@@ -773,7 +839,7 @@ module Toy
                 end
                 evk = evk + 1
               end
-              ev_lab = Toy::Labels.next_token_guarded(ev_ids, vocabv, tv, 1)
+              ev_lab = Toy::Labels.next_token_guarded_batched(ev_ids, vocabv, ctx, batch)
               TinyNN.tnn_graph_reset_grads_only(sess)
               TinyNN.upload_int_array(sess, t_tok, ev_ids)
               TinyNN.tnn_upload_from_float_array(sess, t_labels, ev_lab.flat, vocabv * tv)

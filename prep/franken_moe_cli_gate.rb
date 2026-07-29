@@ -402,6 +402,38 @@ Dir.mktmpdir("moe_cli_eval") do |dir|
   puts failures.length == n0 ? "  ok: --eval-corpus — end-of-run held-out CE (#{ce1.first.to_s.strip}); training byte-null; eval event before run_end" : "  FAIL: eval leg"
 end
 
+# ---- toy#133: --batch on the MoE CLI ----
+# Same order-swap isolation null (the mask-alloc-after-finalize bug
+# read zeros and ran unmasked — this leg pins the fix), plus B=1
+# flag-null and determinism.
+n0 = failures.length
+Dir.mktmpdir("moe_cli_batch") do |dir|
+  raw = File.binread(File.join(ROOT, "data", "fineweb_gpt2_smoke.bin"))
+  w = raw[16, 32 * 4]
+  x = raw[16 + 5000 * 4, 32 * 4]
+  File.binwrite(File.join(dir, "w.bin"), w)
+  File.binwrite(File.join(dir, "x.bin"), x)
+  File.binwrite(File.join(dir, "wx.bin"), w + x)
+  File.binwrite(File.join(dir, "xw.bin"), x + w)
+  get1 = lambda do |args|
+    losses(run_cli(args, {}, nil)).first.to_f
+  end
+  lw = get1.call(["--steps", "1", "--seed", "0", "--corpus", File.join(dir, "w.bin"), "--context", "32", "--vocab", "50257"])
+  lx = get1.call(["--steps", "1", "--seed", "0", "--corpus", File.join(dir, "x.bin"), "--context", "32", "--vocab", "50257"])
+  lwx = get1.call(["--steps", "1", "--seed", "0", "--corpus", File.join(dir, "wx.bin"), "--context", "32", "--vocab", "50257", "--batch", "2"])
+  lxw = get1.call(["--steps", "1", "--seed", "0", "--corpus", File.join(dir, "xw.bin"), "--context", "32", "--vocab", "50257", "--batch", "2"])
+  mean = (lw + lx) / 2.0
+  failures << "batch: [W,X] #{lwx} != mean #{mean}" unless (lwx - mean).abs < 1.0e-4
+  failures << "batch: order-swap #{lxw} != #{lwx} (cross-window leak)" unless (lxw - lwx).abs < 1.0e-4
+end
+mb1 = losses(run_cli(%w[--steps 4 --seed 0 --corpus data/fineweb_gpt2_smoke.bin --context 16 --batch 1 --routing top1 --moe-policy bp-spine], {}, nil))
+mb0 = losses(run_cli(%w[--steps 4 --seed 0 --corpus data/fineweb_gpt2_smoke.bin --context 16 --routing top1 --moe-policy bp-spine], {}, nil))
+failures << "batch: --batch 1 differs from no-flag (flag-null broken)" unless mb1 == mb0
+mb4a = losses(run_cli(%w[--steps 4 --seed 0 --corpus data/fineweb_gpt2_smoke.bin --context 16 --batch 4 --routing top1 --moe-policy bp-spine], {}, nil))
+mb4b = losses(run_cli(%w[--steps 4 --seed 0 --corpus data/fineweb_gpt2_smoke.bin --context 16 --batch 4 --routing top1 --moe-policy bp-spine], {}, nil))
+failures << "batch: B=4 not deterministic" unless mb4a == mb4b && mb4a.length == 4
+puts failures.length == n0 ? "  ok: --batch — order-swap isolation null, flag-null, B=4 deterministic" : "  FAIL: batch leg"
+
 # ---- 6. bundle structure + run-id passthrough ----
 n0 = failures.length
 Dir.mktmpdir("moe_cli_bundle") do |dir|
@@ -438,7 +470,7 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
 end
 
 if failures.empty?
-  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + bundle (toy#120/#121)"
+  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + bundle (toy#120/#121)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe-cli]: #{f}" }

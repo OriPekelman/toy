@@ -169,14 +169,24 @@ module Toy
         end
 
         # returns [out, h, ctx] — the DFA taps (dense mode ignores 1/2).
-        def self.attention_block(sess, t_x, rn, wq, wk, wv, wo)
+        # toy#133: `mask` — NULL keeps the byte-gated diag_mask_inf path
+        # (B=1); a real [tb, tb] block-causal mask (0 within-window
+        # causal, -1e30 elsewhere — the GH#7 values) is ADDED before
+        # softmax so B windows never attend across each other. The
+        # duplicated-window isolation null gates the orientation.
+        def self.attention_block(sess, t_x, rn, wq, wk, wv, wo, mask)
           h = Toy::LLM::Primitives::RMSNorm.build(sess, t_x, rn, EPS)
           q = TinyNN.tnn_matmul(sess, wq, h)
           k = TinyNN.tnn_matmul(sess, wk, h)
           v = TinyNN.tnn_matmul(sess, wv, h)
           scores = TinyNN.tnn_matmul(sess, k, q)
           scaled = TinyNN.tnn_scale(sess, scores, 1.0 / Math.sqrt(dmv.to_f))
-          masked = TinyNN.tnn_diag_mask_inf(sess, scaled, 0)
+          masked = TinyNN.tnn_null_ptr
+          if mask == TinyNN.tnn_null_ptr
+            masked = TinyNN.tnn_diag_mask_inf(sess, scaled, 0)
+          else
+            masked = TinyNN.tnn_add(sess, scaled, mask)
+          end
           attn   = TinyNN.tnn_softmax(sess, masked)
           v_t    = TinyNN.tnn_transpose(sess, v)
           ctx    = TinyNN.tnn_matmul(sess, v_t, attn)
@@ -271,9 +281,9 @@ module Toy
           TinyNN.tnn_add(sess, t_x, TinyNN.tnn_mul(sess, eo, gate))
         end
 
-        def self.forward_tower(sess, tw, t_tok, t_labels, sels, eye, top1, cut)
+        def self.forward_tower(sess, tw, t_tok, t_labels, sels, eye, top1, cut, mask)
           x = TinyNN.tnn_get_rows(sess, tw.pp[0], t_tok)
-          atrip = attention_block(sess, x, tw.pp[2], tw.pp[3], tw.pp[4], tw.pp[5], tw.pp[6])
+          atrip = attention_block(sess, x, tw.pp[2], tw.pp[3], tw.pp[4], tw.pp[5], tw.pp[6], mask)
           x = atrip[0]
           tw.tap_ah  = atrip[1]
           tw.tap_ctx = atrip[2]

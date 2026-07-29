@@ -94,6 +94,40 @@ module Toy
       m
     end
 
+    # BATCHED in-vocab-guarded shift-by-one one-hot (toy#133): the GH#7
+    # batched layout — Mat(context*batch, vocab), windows laid side by
+    # side, targets WINDOW-LOCAL (the last position of each window
+    # targets itself; labels never bridge windows, matching the
+    # block-causal attention mask). batch=1 builds exactly
+    # next_token_guarded's Mat. This is the named batched contract the
+    # unbatched methods deliberately fail loud about (toy#64 item 5) —
+    # here `batch` IS multiplied into the row count.
+    def self.next_token_guarded_batched(seq_ids, vocab, context, batch)
+      if batch < 1
+        raise "Toy::Labels.next_token_guarded_batched: batch " + batch.to_s + " < 1"
+      end
+      m = Mat.new(context * batch, vocab)
+      j = 0
+      while j < context * batch * vocab
+        m.flat[j] = 0.0
+        j = j + 1
+      end
+      w = 0
+      while w < batch
+        base = w * context
+        k = 0
+        while k < context
+          target = (k + 1 < context) ? seq_ids[base + k + 1] : seq_ids[base + k]
+          if target >= 0 && target < vocab
+            m.flat[(base + k) * vocab + target] = 1.0
+          end
+          k = k + 1
+        end
+        w = w + 1
+      end
+      m
+    end
+
     # FIXED-TARGET one-hot (toy#73 item 3): every one of the `context`
     # positions targets the SAME id — the lora-smoke objective
     # (examples/03_lora.rb: push every position of a fixed prompt
