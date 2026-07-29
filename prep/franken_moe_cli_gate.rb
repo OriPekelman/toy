@@ -503,6 +503,41 @@ Dir.mktmpdir("moe_cli_cos") do |dir|
 end
 puts failures.length == n0 ? "  ok: QB balances at E=8 (>=4 active vs <=3 collapse control), deterministic, guards; cosine provenance + decreasing lr" : "  FAIL: qb/schedule leg"
 
+# ---- toy#136 K1.1: --attn-gate (K3 attention output gate) ----
+# W_g lands at the TAIL index (9+2E) so the spine 0..8 and the expert
+# pairs keep their indices AND their DfaB seeds — the off-path is
+# byte-null (leg 1's cross-binary rig anchor pins it). On: the curve
+# moves, bp-spine STILL escapes the plateau (W_g is chain-wired into
+# the spine), provenance + cost params grow, and the fully-DFA lane
+# rejects (no tap for W_g's input).
+n0 = failures.length
+Dir.mktmpdir("moe_cli_gate") do |dir|
+  g_args = %w[--steps 60 --seed 0 --routing top1 --moe-policy bp-spine --attn-gate]
+  g1 = run_cli(g_args, {}, dir)
+  g2 = run_cli(g_args, {}, nil)
+  failures << "attn-gate: not deterministic" unless losses(g1) == losses(g2)
+  gl = losses(g1).map(&:to_f)
+  failures << "attn-gate: NaN" if gl.any?(&:nan?)
+  ungated = losses(run_cli(%w[--steps 60 --seed 0 --routing top1 --moe-policy bp-spine], {}, nil))
+  failures << "attn-gate: curve identical to ungated (gate dead)" if losses(g1) == ungated
+  failures << "attn-gate: bp-spine no longer escapes the plateau (#{gl.last})" unless gl.last < 0.5
+  evs = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+  failures << "attn-gate: provenance attn_gate #{evs.first.dig('franken_moe', 'attn_gate').inspect}" unless evs.first.dig("franken_moe", "attn_gate") == true
+  ug_dir_params = nil
+  Dir.mktmpdir("moe_cli_gate_off") do |d2|
+    run_cli(%w[--steps 2 --seed 0 --routing top1 --moe-policy bp-spine], {}, d2)
+    e2 = File.readlines(File.join(d2, "events.jsonl")).map { |l| JSON.parse(l) }
+    ug_dir_params = e2.first.dig("cost", "total_params")
+    failures << "attn-gate: off-path provenance attn_gate true" unless e2.first.dig("franken_moe", "attn_gate") == false
+  end
+  gp = evs.first.dig("cost", "total_params")
+  failures << "attn-gate: cost params did not grow (#{ug_dir_params} -> #{gp})" unless gp > ug_dir_params
+end
+argv_gd = [TOY, "train", "franken-moe", "--steps", "2", "--routing", "top1", "--attn-gate"]
+_og, sg = Open3.capture2e(CLEAN, *argv_gd, chdir: ROOT)
+failures << "attn-gate: fully-DFA lane + gate not rejected" if sg.success?
+puts failures.length == n0 ? "  ok: --attn-gate — tail-index W_g joins the spine (bp-spine still escapes), deterministic, provenance + cost grow, fully-DFA rejected" : "  FAIL: attn-gate leg"
+
 # ---- 6. bundle structure + run-id passthrough ----
 n0 = failures.length
 Dir.mktmpdir("moe_cli_bundle") do |dir|
@@ -539,7 +574,7 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
 end
 
 if failures.empty?
-  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule (toy#136) + bundle (toy#120/#121)"
+  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule/attn-gate (toy#136) + bundle (toy#120/#121)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe-cli]: #{f}" }

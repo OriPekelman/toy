@@ -68,6 +68,26 @@ module Toy
           @sh_t
         end
 
+        # toy#136 K1.1: attention output gate (K3 eq 7, the MLA form —
+        # y = W_o[σ(W_g x) ⊙ õ], no RMSNorm; the KDA form's head-wise
+        # RMSNorm arrives with KDA in K2). 0 = off, byte-null: the gate
+        # weight is not even ALLOCATED, so every other weight keeps its
+        # index AND its init stream. When on, W_g lands at the TAIL
+        # (9 + 2E) — appending is what keeps the spine 0..8 and the
+        # expert pairs 9+2i/10+2i (and their stable DfaB seeds) intact.
+        def self.attn_gate_init(v)
+          @sh_gate = v
+          0
+        end
+
+        def self.gatev
+          @sh_gate
+        end
+
+        def self.gate_idx
+          9 + 2 * nev
+        end
+
         def self.fillv(n, seed)
           a = [0.0]; a.pop
           i = 0
@@ -167,6 +187,9 @@ module Toy
             reg2(sess, tw, dmv, dfv)   # 10+2i down_i
             ei = ei + 1
           end
+          if gatev == 1
+            reg2(sess, tw, dmv, dmv)   # 9+2E  wg (attention output gate)
+          end
           tw
         end
 
@@ -176,7 +199,7 @@ module Toy
         # causal, -1e30 elsewhere — the GH#7 values) is ADDED before
         # softmax so B windows never attend across each other. The
         # duplicated-window isolation null gates the orientation.
-        def self.attention_block(sess, t_x, rn, wq, wk, wv, wo, mask)
+        def self.attention_block(sess, t_x, rn, wq, wk, wv, wo, mask, wg)
           h = Toy::LLM::Primitives::RMSNorm.build(sess, t_x, rn, EPS)
           q = TinyNN.tnn_matmul(sess, wq, h)
           k = TinyNN.tnn_matmul(sess, wk, h)
@@ -192,8 +215,17 @@ module Toy
           attn   = TinyNN.tnn_softmax(sess, masked)
           v_t    = TinyNN.tnn_transpose(sess, v)
           ctx    = TinyNN.tnn_matmul(sess, v_t, attn)
-          out    = TinyNN.tnn_matmul(sess, wo, ctx)
-          [TinyNN.tnn_add(sess, t_x, out), h, ctx]
+          # toy#136 K1.1: data-dependent channel-wise output gate. The
+          # tap returned as tap_ctx is W_o's ACTUAL input (gated when
+          # the gate is on) — the DFA wire for wo reads that tap, so
+          # the local grad stays (B·e)·a_inᵀ with the true a_in.
+          ctx_in = ctx
+          if wg != TinyNN.tnn_null_ptr
+            g_att  = TinyNN.tnn_sigmoid(sess, TinyNN.tnn_matmul(sess, wg, t_x))
+            ctx_in = TinyNN.tnn_mul(sess, g_att, ctx)
+          end
+          out    = TinyNN.tnn_matmul(sess, wo, ctx_in)
+          [TinyNN.tnn_add(sess, t_x, out), h, ctx_in]
         end
 
         # Dense soft-mixture MoE block; records taps + gates on the tower.
@@ -296,7 +328,11 @@ module Toy
 
         def self.forward_tower(sess, tw, t_tok, t_labels, sels, eye, top1, cut, mask, qb_bias)
           x = TinyNN.tnn_get_rows(sess, tw.pp[0], t_tok)
-          atrip = attention_block(sess, x, tw.pp[2], tw.pp[3], tw.pp[4], tw.pp[5], tw.pp[6], mask)
+          wg_t = TinyNN.tnn_null_ptr
+          if gatev == 1
+            wg_t = tw.pp[gate_idx]
+          end
+          atrip = attention_block(sess, x, tw.pp[2], tw.pp[3], tw.pp[4], tw.pp[5], tw.pp[6], mask, wg_t)
           x = atrip[0]
           tw.tap_ah  = atrip[1]
           tw.tap_ctx = atrip[2]

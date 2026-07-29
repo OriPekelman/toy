@@ -170,6 +170,11 @@ module Toy
           # (1−k/n)-quantile of score margins vs the Top-(k+1) cutoff,
           # lag-1 like the aux f'; exact quantile at toy scale; bias
           # frozen for the end-of-run eval) | none. qb requires top1.
+          # toy#136 K1.1: FRANKEN_ATTN_GATE=1 — K3's data-dependent
+          # attention output gate (eq 7 MLA form). W_g joins the SPINE
+          # (chain-wired under bp-spine, param under dense) at the tail
+          # index 9+2E; off = not allocated (byte-null).
+          attn_gate = (ENV["FRANKEN_ATTN_GATE"] || "") == "1"
           bal_s = ENV["FRANKEN_MOE_BALANCE"] || ""
           if bal_s.length > 0 && bal_s != "aux" && bal_s != "qb" && bal_s != "none"
             puts "toy-train-franken-moe: unknown FRANKEN_MOE_BALANCE " + bal_s + " (aux|qb|none)"
@@ -344,6 +349,13 @@ module Toy
           else
             shape_init(DM_BASE, DFF_BASE, vsel, esel, tbv)
           end
+          attn_gate_init(attn_gate ? 1 : 0)
+          # toy#136 K1.1: the spine bound. Without the gate the spine is
+          # 0..8 (embed/fnorm/attention/rn2/Wr); with it, W_g at 9+2E
+          # joins — so spine membership is "gi < 9 || gi == gate_idx"
+          # and the all-chain wire bound grows by one.
+          gate_i = attn_gate ? gate_idx : -1
+          n_all = 9 + 2 * esel + (attn_gate ? 1 : 0)
 
           sess = TinyNN.tnn_session_new(0)
           TinyNN.tnn_session_set_graph_capacity(sess, 262144)
@@ -365,6 +377,9 @@ module Toy
             TinyNN.tnn_tensor_set_name(tw.pp[9 + 2 * nmi],  "moe.expert_" + nmi.to_s + ".up")
             TinyNN.tnn_tensor_set_name(tw.pp[10 + 2 * nmi], "moe.expert_" + nmi.to_s + ".down")
             nmi = nmi + 1
+          end
+          if attn_gate
+            TinyNN.tnn_tensor_set_name(tw.pp[gate_idx], "moe.attn_gate")
           end
 
           # toy#128: per-expert B mats + one-hot selectors as arrays
@@ -419,7 +434,7 @@ module Toy
             # stay late-param DFA behind the detach cut.
             mark = false
             if top1
-              mark = bp_spine && gi < 9
+              mark = bp_spine && (gi < 9 || gi == gate_i)
             else
               mark = !(no_shadow && gi >= 9)
             end
@@ -430,6 +445,15 @@ module Toy
           end
           if top1 && !bp_spine
             TinyNN.tnn_set_param(tw.pp[8])
+          end
+          # toy#136 K1.1: in the fully-DFA / bp-router top1 lanes W_g is
+          # FROZEN at init (no DFA wire): its input is the embedding
+          # output, a tap the DFA plumbing does not carry, and the gate
+          # is a bp-spine-context mechanism in K3. Fail loud rather than
+          # silently training a dead weight.
+          if attn_gate && top1 && !bp_spine
+            puts "toy-train-franken-moe: --attn-gate needs --moe-policy bp-spine under top1 (the fully-DFA/bp-router lanes have no tap for W_g's input — it would sit frozen)"
+            return 1
           end
           TinyNN.tnn_finalize_weights(sess)
 
@@ -600,6 +624,9 @@ module Toy
                 wire_chain(sess, tw, t_hp, sp)
                 sp = sp + 1
               end
+              if gate_i >= 0
+                wire_chain(sess, tw, t_hp, gate_i)
+              end
             else
               wire_dfa_top1(sess, tw, t_hp, 3, b_aq, e_b, tw.tap_ah,  dmv, dmv, np2)
               wire_dfa_top1(sess, tw, t_hp, 4, b_ak, e_b, tw.tap_ah,  dmv, dmv, np2)
@@ -640,6 +667,9 @@ module Toy
                 wire_chain(sess, tw, t_hp, idx)
                 idx = idx + 1
               end
+              if gate_i >= 0
+                wire_chain(sess, tw, t_hp, gate_i)
+              end
               # toy#128: per-expert dense DFA wires; each down_i reads
               # its own dense act tap (tap_as[i]). toy#129: no-shadow
               # reuses the top1 wire (late-param, NO acc recording,
@@ -659,7 +689,7 @@ module Toy
               end
             else
               idx = 0
-              while idx < 9 + 2 * nev
+              while idx < n_all
                 wire_chain(sess, tw, t_hp, idx)
                 idx = idx + 1
               end
@@ -712,11 +742,12 @@ module Toy
               # matmuls + scores/combine at T + router + active experts
               # + tied logits.
               act_e = top1 ? 1 : nev
-              cost_total  = vocabv * dmv + 3 * dmv + 4 * dmv * dmv +
+              gate_p = attn_gate ? dmv * dmv : 0
+              cost_total  = vocabv * dmv + 3 * dmv + 4 * dmv * dmv + gate_p +
                             nev * dmv + nev * 2 * dmv * dfv
-              cost_active = vocabv * dmv + 3 * dmv + 4 * dmv * dmv +
+              cost_active = vocabv * dmv + 3 * dmv + 4 * dmv * dmv + gate_p +
                             nev * dmv + act_e * 2 * dmv * dfv
-              cost_flops  = 2 * (4 * dmv * dmv) + 4 * dmv * tv +
+              cost_flops  = 2 * (4 * dmv * dmv) + 2 * gate_p + 4 * dmv * tv +
                             2 * nev * dmv + act_e * 2 * (2 * dmv * dfv) +
                             2 * vocabv * dmv
               cost = Toy::Json::Builder.new
@@ -737,6 +768,7 @@ module Toy
               # top1 lanes and dense chain have none — false.
               fm.add_bool("shadow",   dfa_experts && !top1 && !no_shadow)
               fm.add_str("balance",   qb_on ? "qb" : (bal_s == "none" ? "none" : "aux"))
+              fm.add_bool("attn_gate", attn_gate)
               rs.add_obj("franken_moe", fm)
               TinyNN.tnn_events_emit(rs.dump)
             else

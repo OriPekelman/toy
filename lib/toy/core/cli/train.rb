@@ -125,6 +125,7 @@ module Toy
           @rope         = nil   # franken: rope | nope (toy#136/K1)
           @schedule     = nil   # franken/franken-moe: const | cosine (toy#136/K1)
           @moe_balance  = nil   # franken-moe: aux | qb | none (toy#136/K1)
+          @attn_gate    = false # franken-moe: K3 attention output gate (toy#136/K1.1)
           @shape        = nil   # franken/franken-moe: preset (toy#124)
           @routing    = nil   # franken-moe: dense | top1
           @moe_policy = nil   # franken-moe: chain | dfa-experts
@@ -283,6 +284,7 @@ module Toy
                              "FRANKEN_WARMUP"      => (@warmup || 0).to_s,
                              "FRANKEN_SCHEDULE"    => (@schedule || ""),
                              "FRANKEN_MOE_BALANCE" => (@moe_balance || ""),
+                             "FRANKEN_ATTN_GATE"   => (@attn_gate ? "1" : ""),
                              "FRANKEN_CKPT_EVERY"  => (@ckpt_every || 0).to_s,
                              "FRANKEN_MOE_LOAD"    => (@load_ckpt || ""),
                              "FRANKEN_SHAPE"       => (@shape || "base"),
@@ -428,6 +430,8 @@ module Toy
               @align_events = true
             when "--no-shadow"
               @no_shadow = true
+            when "--attn-gate"
+              @attn_gate = true
             when "--act"
               i += 1
               val = @argv[i]
@@ -705,6 +709,7 @@ module Toy
             ["--rope",          %w[franken],                        !@rope.nil?, " (toy#136/K1)"],
             ["--schedule",      %w[franken franken-moe],            !@schedule.nil?, " (toy#136/K1)"],
             ["--moe-balance",   %w[franken-moe],                    !@moe_balance.nil?, " (toy#136/K1)"],
+            ["--attn-gate",     %w[franken-moe],                    @attn_gate, " (toy#136/K1.1; the llama lane's gate arrives with KDA in K2)"],
             ["--ckpt-every",    %w[franken franken-moe],            !@ckpt_every.nil?, " (toy#129/#131)"],
             ["--load-ckpt",     %w[franken-moe],                    !@load_ckpt.nil?, " (toy#131; eval-only — pass --steps 0 + --eval-corpus)"],
             ["--eval-corpus/--eval-tokens/--eval-offset", %w[franken-moe], (!@eval_corpus.nil? || !@eval_tokens.nil? || !@eval_offset.nil?), " (toy#130; the llama lane evals checkpoints offline via `toy eval ce`)"],
