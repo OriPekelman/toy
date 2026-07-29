@@ -89,6 +89,39 @@ module Toy
           end
         end
 
+        # toy#131: native-form MoE checkpoint — per-tensor moe.* names,
+        # toy-moe/v1 metadata, NO fusion and NO second session
+        # (tnn_gguf_w_add_tensor reads the CPU session buffers in
+        # place, so the write cannot touch the sched).
+        def self.write_moe_ckpt(tw, path, run_id, step, shape_s, pol_name, routing_name, dm2, df2, vo2, ne2, ctx2, batch2)
+          ctxw = TinyNN.tnn_gguf_w_init
+          if ctxw == nil || ctxw == TinyNN.tnn_null_ptr
+            return -1
+          end
+          TinyNN.tnn_gguf_w_set_str(ctxw, "general.architecture", "toy-moe")
+          TinyNN.tnn_gguf_w_set_str(ctxw, "general.name", "franken-moe-instrument")
+          TinyNN.tnn_gguf_w_set_str(ctxw, "general.run_id", run_id)
+          TinyNN.tnn_gguf_w_set_u32(ctxw, "general.step", step)
+          TinyNN.tnn_gguf_w_set_str(ctxw, "toy.checkpoint_format", "toy-moe/v1")
+          TinyNN.tnn_gguf_w_set_u32(ctxw, "toy.moe.d_model", dm2)
+          TinyNN.tnn_gguf_w_set_u32(ctxw, "toy.moe.d_ff", df2)
+          TinyNN.tnn_gguf_w_set_u32(ctxw, "toy.moe.vocab_size", vo2)
+          TinyNN.tnn_gguf_w_set_u32(ctxw, "toy.moe.n_experts", ne2)
+          TinyNN.tnn_gguf_w_set_u32(ctxw, "toy.moe.context", ctx2)
+          TinyNN.tnn_gguf_w_set_u32(ctxw, "toy.moe.batch", batch2)
+          TinyNN.tnn_gguf_w_set_str(ctxw, "toy.moe.shape", shape_s)
+          TinyNN.tnn_gguf_w_set_str(ctxw, "toy.moe.routing", routing_name)
+          TinyNN.tnn_gguf_w_set_str(ctxw, "toy.moe.policy", pol_name)
+          gi2 = 0
+          while gi2 < tw.pp.length
+            TinyNN.tnn_gguf_w_add_tensor(ctxw, tw.pp[gi2])
+            gi2 = gi2 + 1
+          end
+          rc = TinyNN.tnn_gguf_w_finalize(ctxw, path)
+          TinyNN.tnn_gguf_w_free(ctxw)
+          rc
+        end
+
         def self.run_cli
           steps_s = ENV["STEPS"] || ""
           steps = steps_s.length > 0 ? steps_s.to_i : 40
@@ -132,6 +165,24 @@ module Toy
           # lr=0 hp and is untouched.
           lr_s = ENV["FRANKEN_LR"] || ""
           lr = lr_s.length > 0 ? lr_s.to_f : 0.02
+          # toy#131: the toy#120 deviation come due — a NATIVE-form GGUF
+          # checkpoint (per-tensor moe.* names, NO fusion, no second
+          # session: tnn_gguf_w_add_tensor reads the CPU session buffers
+          # directly, so the write cannot touch the sched). Checkpoints
+          # carry WEIGHTS only (no Adam moments) — FRANKEN_MOE_LOAD is
+          # therefore EVAL-ONLY (STEPS=0 + the toy#130 eval loop);
+          # resume fails loud.
+          ck_raw = (ENV["FRANKEN_CKPT_EVERY"] || "0").to_i
+          ckpt_every = ck_raw < 0 ? 0 : ck_raw
+          load_ckpt = ENV["FRANKEN_MOE_LOAD"] || ""
+          if load_ckpt.length > 0 && !File.exist?(load_ckpt)
+            puts "toy-train-franken-moe: no such checkpoint: " + load_ckpt
+            return 1
+          end
+          if load_ckpt.length > 0 && steps != 0
+            puts "toy-train-franken-moe: FRANKEN_MOE_LOAD is eval-only (checkpoints carry weights, not Adam moments — resume is unsupported). Pass STEPS=0 + FRANKEN_EVAL_CORPUS."
+            return 1
+          end
           wu_raw = (ENV["FRANKEN_WARMUP"] || "0").to_i
           warmup = wu_raw < 0 ? 0 : wu_raw
           if no_shadow && top1
@@ -161,6 +212,10 @@ module Toy
           ev_offset = ev_off_s.length > 0 ? ev_off_s.to_i : 0
           if ev_corpus.length > 0 && !File.exist?(ev_corpus)
             puts "toy-train-franken-moe: eval corpus not found: " + ev_corpus
+            return 1
+          end
+          if load_ckpt.length > 0 && ev_corpus.length == 0
+            puts "toy-train-franken-moe: FRANKEN_MOE_LOAD without FRANKEN_EVAL_CORPUS does nothing — pass the held-out pack"
             return 1
           end
 
@@ -265,6 +320,23 @@ module Toy
           TinyNN.tnn_session_set_graph_capacity(sess, 262144)
 
           tw = alloc_tower(sess)
+          # toy#131: names are the checkpoint contract (write by name,
+          # load by name — no positional coupling).
+          TinyNN.tnn_tensor_set_name(tw.pp[0], "moe.embed")
+          TinyNN.tnn_tensor_set_name(tw.pp[1], "moe.fnorm")
+          TinyNN.tnn_tensor_set_name(tw.pp[2], "moe.attn_rn1")
+          TinyNN.tnn_tensor_set_name(tw.pp[3], "moe.wq")
+          TinyNN.tnn_tensor_set_name(tw.pp[4], "moe.wk")
+          TinyNN.tnn_tensor_set_name(tw.pp[5], "moe.wv")
+          TinyNN.tnn_tensor_set_name(tw.pp[6], "moe.wo")
+          TinyNN.tnn_tensor_set_name(tw.pp[7], "moe.rn2")
+          TinyNN.tnn_tensor_set_name(tw.pp[8], "moe.wr")
+          nmi = 0
+          while nmi < nev
+            TinyNN.tnn_tensor_set_name(tw.pp[9 + 2 * nmi],  "moe.expert_" + nmi.to_s + ".up")
+            TinyNN.tnn_tensor_set_name(tw.pp[10 + 2 * nmi], "moe.expert_" + nmi.to_s + ".down")
+            nmi = nmi + 1
+          end
 
           # toy#128: per-expert B mats + one-hot selectors as arrays
           # (E=2 reproduces the b_up1/b_down1/b_up2/b_down2 + sel1/sel2
@@ -335,6 +407,43 @@ module Toy
             TinyNN.tnn_zero_tensor(sess, tw.pm[gi])
             TinyNN.tnn_zero_tensor(sess, tw.pv[gi])
             gi = gi + 1
+          end
+          # toy#131: eval-only reload — overwrite every pp tensor by
+          # NAME from the checkpoint; shape metadata must match the
+          # instrument exactly (fail loud, listing both sides).
+          if load_ckpt.length > 0
+            gg_l = TinyNN.tnn_gguf_load(load_ckpt)
+            if gg_l == nil || gg_l == TinyNN.tnn_null_ptr
+              puts "toy-train-franken-moe: cannot open checkpoint " + load_ckpt
+              return 1
+            end
+            ck_dm = TinyNN.tnn_gguf_get_u32(gg_l, "toy.moe.d_model")
+            ck_df = TinyNN.tnn_gguf_get_u32(gg_l, "toy.moe.d_ff")
+            ck_vo = TinyNN.tnn_gguf_get_u32(gg_l, "toy.moe.vocab_size")
+            ck_ne = TinyNN.tnn_gguf_get_u32(gg_l, "toy.moe.n_experts")
+            if ck_dm != dmv || ck_df != dfv || ck_vo != vocabv || ck_ne != nev
+              puts "toy-train-franken-moe: checkpoint shape mismatch — ckpt d_model=" + ck_dm.to_s +
+                   " d_ff=" + ck_df.to_s + " vocab=" + ck_vo.to_s + " experts=" + ck_ne.to_s +
+                   " vs instrument d_model=" + dmv.to_s + " d_ff=" + dfv.to_s +
+                   " vocab=" + vocabv.to_s + " experts=" + nev.to_s +
+                   " (pass the matching --shape/--corpus/--vocab/--experts)"
+              return 1
+            end
+            gi3 = 0
+            while gi3 < tw.pp.length
+              nm = TinyNN.tnn_tensor_name(tw.pp[gi3])
+              idx3 = TinyNN.tnn_gguf_find_index(gg_l, nm)
+              if idx3 < 0
+                puts "toy-train-franken-moe: checkpoint missing tensor " + nm
+                return 1
+              end
+              nel3 = TinyNN.tnn_tensor_nelements(tw.pp[gi3])
+              mv3 = Mat.new(1, nel3)
+              TinyNN.tnn_gguf_read_f32_to_doubles(gg_l, idx3, mv3.flat, nel3)
+              TinyNN.tnn_upload_from_float_array(sess, tw.pp[gi3], mv3.flat, nel3)
+              gi3 = gi3 + 1
+            end
+            puts "loaded checkpoint: " + load_ckpt
           end
           dist_c = b_dist_code
           sig_up   = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, vocabv, dfv, 0.0)
@@ -810,7 +919,30 @@ module Toy
                 ai = ai + 1
               end
             end
+            if ckpt_every > 0 && run_dir.length > 0 &&
+               ((s + 1) % ckpt_every) == 0 && (s + 1) < steps
+              ck_dir = run_dir + "/weights"
+              TinyNN.tnn_filesystem_mkdir(ck_dir)
+              ck_rid = run_id_s.length > 0 ? run_id_s : "anonymous"
+              rc_ck = write_moe_ckpt(tw, ck_dir + "/step_" + (s + 1).to_s + ".gguf", ck_rid, s + 1,
+                                     shape_s, pol_name, (top1 ? "top1" : "dense"),
+                                     dmv, dfv, vocabv, nev, ctx, batch)
+              if rc_ck != 0
+                puts "checkpoint write failed: step=" + (s + 1).to_s + " rc=" + rc_ck.to_s
+              end
+            end
             s = s + 1
+          end
+          if ckpt_every > 0 && run_dir.length > 0 && steps > 0
+            ck_dir = run_dir + "/weights"
+            TinyNN.tnn_filesystem_mkdir(ck_dir)
+            ck_rid = run_id_s.length > 0 ? run_id_s : "anonymous"
+            rc_ck = write_moe_ckpt(tw, ck_dir + "/step_" + steps.to_s + ".gguf", ck_rid, steps,
+                                   shape_s, pol_name, (top1 ? "top1" : "dense"),
+                                   dmv, dfv, vocabv, nev, ctx, batch)
+            if rc_ck != 0
+              puts "checkpoint write failed: step=" + steps.to_s + " rc=" + rc_ck.to_s
+            end
           end
 
           # toy#130: end-of-run held-out eval (lr=0 windows; weights

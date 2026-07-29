@@ -434,6 +434,36 @@ mb4b = losses(run_cli(%w[--steps 4 --seed 0 --corpus data/fineweb_gpt2_smoke.bin
 failures << "batch: B=4 not deterministic" unless mb4a == mb4b && mb4a.length == 4
 puts failures.length == n0 ? "  ok: --batch — order-swap isolation null, flag-null, B=4 deterministic" : "  FAIL: batch leg"
 
+# ---- toy#131: checkpoint writer + --ckpt-every + --load-ckpt ----
+# Boundary checkpoints (toy-moe/v1 GGUF, native per-tensor form);
+# training curve byte-null vs no-ckpt (the write reads session buffers
+# in place — no sched touch); THE round-trip null: eval-after-reload
+# byte-equals the training run's own end-of-run eval. Shape-mismatch
+# and resume (steps>0) fail loud.
+n0 = failures.length
+ck_args = %w[--steps 8 --seed 0 --corpus data/fineweb_gpt2_smoke.bin --context 16 --shape wide --experts 4 --routing top1 --moe-policy bp-spine]
+ev_args2 = %w[--eval-corpus data/fineweb_gpt2_smoke.bin --eval-tokens 256 --eval-offset 150000]
+no_ck = run_cli(ck_args + ev_args2, {}, nil)
+Dir.mktmpdir("moe_cli_ck") do |dir|
+  ck_out = run_cli(ck_args + %w[--ckpt-every 4] + ev_args2, {}, dir)
+  failures << "ckpt: curve differs from no-ckpt run (write disturbs training)" unless losses(ck_out) == losses(no_ck)
+  %w[step_4.gguf step_8.gguf].each do |ck|
+    failures << "ckpt: missing weights/#{ck}" unless File.file?(File.join(dir, "weights", ck))
+  end
+  train_ce = ck_out.lines.select { |l| l.start_with?("eval_ce:") }
+  ck8 = File.join(dir, "weights", "step_8.gguf")
+  rl_out = run_cli(%w[--steps 0 --seed 0 --corpus data/fineweb_gpt2_smoke.bin --context 16 --shape wide --experts 4 --routing top1 --moe-policy bp-spine] + ["--load-ckpt", ck8] + ev_args2, {}, nil)
+  rl_ce = rl_out.lines.select { |l| l.start_with?("eval_ce:") }
+  failures << "ckpt: round-trip eval differs\ntrain: #{train_ce.join}reload: #{rl_ce.join}" unless rl_ce == train_ce && rl_ce.length == 1
+  argv_mm = [TOY, "train", "franken-moe", "--steps", "0", "--seed", "0", "--corpus", "data/fineweb_gpt2_smoke.bin", "--context", "16", "--shape", "wide", "--experts", "2", "--routing", "top1", "--moe-policy", "bp-spine", "--load-ckpt", ck8] + ev_args2
+  _om, stm = Open3.capture2e(CLEAN, *argv_mm, chdir: ROOT)
+  failures << "ckpt: shape mismatch (E=2 vs E=4 checkpoint) not rejected" if stm.success?
+  argv_rs = [TOY, "train", "franken-moe", "--steps", "4", "--seed", "0", "--corpus", "data/fineweb_gpt2_smoke.bin", "--context", "16", "--shape", "wide", "--experts", "4", "--routing", "top1", "--moe-policy", "bp-spine", "--load-ckpt", ck8] + ev_args2
+  _or, str2 = Open3.capture2e(CLEAN, *argv_rs, chdir: ROOT)
+  failures << "ckpt: resume (steps>0 with --load-ckpt) not rejected" if str2.success?
+end
+puts failures.length == n0 ? "  ok: --ckpt-every/--load-ckpt — boundary ckpts, training byte-null, round-trip eval byte-equal, mismatch+resume rejected" : "  FAIL: ckpt leg"
+
 # ---- 6. bundle structure + run-id passthrough ----
 n0 = failures.length
 Dir.mktmpdir("moe_cli_bundle") do |dir|
@@ -470,7 +500,7 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
 end
 
 if failures.empty?
-  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + bundle (toy#120/#121)"
+  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + bundle (toy#120/#121)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe-cli]: #{f}" }

@@ -119,6 +119,7 @@ module Toy
           @eval_offset  = nil
           @vocab        = nil   # franken/franken-moe: headerless-pack vocab (toy#129)
           @batch        = nil   # franken/franken-moe: windows per step (toy#133)
+          @load_ckpt    = nil   # franken-moe: eval-only checkpoint reload (toy#131)
           @shape        = nil   # franken/franken-moe: preset (toy#124)
           @routing    = nil   # franken-moe: dense | top1
           @moe_policy = nil   # franken-moe: chain | dfa-experts
@@ -275,6 +276,8 @@ module Toy
                              "FRANKEN_EVAL_OFFSET" => (@eval_offset || 0).to_s,
                              "FRANKEN_LR"          => (@lr || ""),
                              "FRANKEN_WARMUP"      => (@warmup || 0).to_s,
+                             "FRANKEN_CKPT_EVERY"  => (@ckpt_every || 0).to_s,
+                             "FRANKEN_MOE_LOAD"    => (@load_ckpt || ""),
                              "FRANKEN_SHAPE"       => (@shape || "base"),
                              "FRANKEN_B_SEED"      => (@dfa_b_seed || 1234).to_s,
                              "FRANKEN_B_DIST"      => (@dfa_b_dist || ""),
@@ -342,7 +345,9 @@ module Toy
               i += 1
               val = @argv[i]
               return bad_arg("--steps requires a value") if val.nil?
-              return bad_arg("--steps must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i > 0
+              # toy#131: 0 is legal for the eval-only reload path
+              # (--load-ckpt); the runner rejects 0 everywhere else.
+              return bad_arg("--steps must be a non-negative integer, got #{val.inspect}") unless val =~ /\A\d+\z/
               @steps = val.to_i
             when "--seed"
               i += 1
@@ -367,7 +372,9 @@ module Toy
               @arch = val
             when /\A--steps=(.*)\z/
               val = $1
-              return bad_arg("--steps must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i > 0
+              # toy#131: 0 is legal for the eval-only reload path
+              # (--load-ckpt); the runner rejects 0 everywhere else.
+              return bad_arg("--steps must be a non-negative integer, got #{val.inspect}") unless val =~ /\A\d+\z/
               @steps = val.to_i
             when /\A--seed=(.*)\z/
               val = $1
@@ -417,6 +424,13 @@ module Toy
               return bad_arg("--ckpt-every requires a value") if val.nil?
               return bad_arg("--ckpt-every must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i > 0
               @ckpt_every = val.to_i
+            when "--load-ckpt"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--load-ckpt requires a value") if val.nil?
+              @load_ckpt = val
+            when /\A--load-ckpt=(.*)\z/m
+              @load_ckpt = $1
             when "--eval-corpus"
               i += 1
               val = @argv[i]
@@ -637,7 +651,8 @@ module Toy
             ["--no-shadow",     %w[franken franken-moe],            @no_shadow, " (toy#129)"],
             ["--context/--vocab", %w[franken franken-moe],          (!@context.nil? || !@vocab.nil?), " (toy#129)"],
             ["--batch",         %w[franken franken-moe],            !@batch.nil?, " (toy#133)"],
-            ["--ckpt-every",    %w[franken],                        !@ckpt_every.nil?, " (the MoE instrument has no GGUF writer, toy#120/#131)"],
+            ["--ckpt-every",    %w[franken franken-moe],            !@ckpt_every.nil?, " (toy#129/#131)"],
+            ["--load-ckpt",     %w[franken-moe],                    !@load_ckpt.nil?, " (toy#131; eval-only — pass --steps 0 + --eval-corpus)"],
             ["--eval-corpus/--eval-tokens/--eval-offset", %w[franken-moe], (!@eval_corpus.nil? || !@eval_tokens.nil? || !@eval_offset.nil?), " (toy#130; the llama lane evals checkpoints offline via `toy eval ce`)"],
             ["--shape",         %w[franken franken-moe],            !@shape.nil?, ""],
             ["--routing/--moe-policy/--moe-aux", %w[franken-moe],   (!@routing.nil? || !@moe_policy.nil? || !@moe_aux.nil?), ""],
@@ -660,6 +675,12 @@ module Toy
           end
           if @recipe == "franken-moe" && @context && @corpus.nil?
             return bad_arg("--context needs --corpus for franken-moe (the fixed-seq feed is the byte-gated 4-token contract)")
+          end
+          if @steps == 0 && @load_ckpt.nil?
+            return bad_arg("--steps 0 is only meaningful with --load-ckpt (the eval-only reload, toy#131)")
+          end
+          if @load_ckpt && !File.file?(@load_ckpt)
+            return bad_arg("no such file: #{@load_ckpt} (--load-ckpt takes a toy-moe/v1 checkpoint from --ckpt-every)")
           end
           if @batch && @batch > 1 && @corpus.nil?
             return bad_arg("--batch > 1 needs --corpus (the fixed-seq feed is the byte-gated single-window contract)")
