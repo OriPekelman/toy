@@ -40,6 +40,11 @@ module Toy; module LLM; module Recipes
       if opts.rope_nope != 0
         @ff_cache.seq_nope_init(opts.rope_nope)
       end
+      # toy#137 K2c: 1 = ShortConv on KDA q/k/v (the faithful default);
+      # the option carries 0 only when the caller disabled it.
+      if opts.kda_conv == 0
+        @ff_cache.kda_conv_init(0)
+      end
       @ff_cache.realize_for_random_init(cfg, opts.t_seq, opts.t_batch,
                                         opts.weight_dtype, opts.untied,
                                         opts.qkv_bias, opts.seed,

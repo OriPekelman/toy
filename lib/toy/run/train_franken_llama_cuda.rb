@@ -118,8 +118,25 @@ COSINE_ON = SCHED_S == "cosine"
 # credit-assignment wiring is attention-shaped) — KDA layers train
 # chain; "KDA under DFA" is its own K-series question.
 KDA_S = ENV["KDA_LAYERS"] || ""
+# toy#137 K2c: KDA_CONV=0 disables the ShortConv on KDA q/k/v (default
+# on = the faithful K3 form; identity-inited so step 1 is a forward
+# no-op either way).
+KDA_CONV_OFF = (ENV["KDA_CONV"] || "") == "0"
+KDA_LIST = [0]; KDA_LIST.pop
+if KDA_S.length > 0
+  kl_parts = KDA_S.split(",")
+  klp = 0
+  while klp < kl_parts.length
+    KDA_LIST.push(kl_parts[klp].to_i)
+    klp = klp + 1
+  end
+end
 b_raw = (ENV["FRANKEN_BATCH"] || "0").to_i
 BATCH = b_raw > 0 ? b_raw : 1
+if KDA_LIST.length > 0 && BATCH > 1
+  puts "toy-train-franken-cuda: KDA_LAYERS with FRANKEN_BATCH > 1 is unsupported — the KDA block reshapes on the window length (B=1, like GDN); run KDA cells at --batch 1"
+  exit 1
+end
 if BATCH > 1 && CORPUS.length == 0
   puts "toy-train-franken-cuda: FRANKEN_BATCH > 1 needs CORPUS (the fixed-seq feed is the byte-gated single-window contract)"
   exit 1
@@ -299,6 +316,7 @@ opts.seed   = SEED
 opts.no_shadow = NO_SHADOW ? 1 : 0
 opts.act       = ACT_CODE
 opts.rope_nope = NOPE_ON ? 1 : 0
+opts.kda_conv  = KDA_CONV_OFF ? 0 : 1
 pi = 0
 while pi < policy.length
   opts.credit_assignment.push(policy[pi])
@@ -311,13 +329,10 @@ opts.dfa_b_sigma   = scale_sigma(B_SCALE_S)
 opts.dfa_mix_alpha = mix_alpha
 opts.dfa_mask_tau  = mask_tau
 
-if KDA_S.length > 0
-  kparts = KDA_S.split(",")
-  kp = 0
-  while kp < kparts.length
-    opts.kda_layers.push(kparts[kp].to_i)
-    kp = kp + 1
-  end
+kp = 0
+while kp < KDA_LIST.length
+  opts.kda_layers.push(KDA_LIST[kp])
+  kp = kp + 1
 end
 
 recipe = Toy::LLM::Recipes::FrankenFromScratchCuda.new
@@ -408,6 +423,7 @@ if EVENTS.length > 0
     config.add_str("act",      ACT_CODE == 1 ? "situ-glu" : "swiglu")
     config.add_str("rope",     NOPE_ON ? "nope" : "rope")
     config.add_str("kda_layers", KDA_S)
+    config.add_bool("kda_conv", !KDA_CONV_OFF)
     config.add_num("seed",    SEED)
     rs.add_obj("config", config)
     # toy#129 item 4: derived cost accounting — auditable FLOP-matching
@@ -418,11 +434,58 @@ if EVENTS.length > 0
     # head (embed row lookup ~0). Every param is trainable under every
     # policy arm (DFA changes the update rule, not the active set), so
     # active == total here — the MoE runner is where they diverge.
+    # toy#137 K2c: a KDA layer's parameter set is NOT an attention
+    # layer's — count each kind. attn layer = 4d² (qkvo) + 3·d·dff
+    # (swiglu) + 2d (norms). KDA layer = rn_gamma d + 4·d·inner
+    # (q/k/v/gate) + d·H (write) + d·r + r·inner (low-rank decay pair)
+    # + b_α inner + A_h H + go_gamma inner + inner·d (out) + the conv's
+    # 12·inner taps when enabled.
+    n_kda_p = 0
+    kp_i = 0
+    while kp_i < KDA_LIST.length
+      if KDA_LIST[kp_i] >= 0 && KDA_LIST[kp_i] < N_LAYERS
+        n_kda_p = n_kda_p + 1
+      end
+      kp_i = kp_i + 1
+    end
+    n_attn_p = N_LAYERS - n_kda_p
+    dh_p     = D_MODEL / N_HEADS
+    inner_p  = N_HEADS * dh_p
+    conv_p   = KDA_CONV_OFF ? 0 : 12 * inner_p
+    kda_params  = D_MODEL + 4 * D_MODEL * inner_p + D_MODEL * N_HEADS +
+                  D_MODEL * dh_p + dh_p * inner_p + inner_p + N_HEADS +
+                  inner_p + inner_p * D_MODEL + conv_p
+    attn_params = 4 * D_MODEL * D_MODEL + 3 * D_MODEL * D_FF + 2 * D_MODEL
     cost_params = VOCAB * DONOR_D + DONOR_D * D_MODEL +
-                  N_LAYERS * (4 * D_MODEL * D_MODEL + 3 * D_MODEL * D_FF + 2 * D_MODEL) +
+                  n_attn_p * attn_params + n_kda_p * kda_params +
                   D_MODEL + D_MODEL * VOCAB
+    # toy#137 K2c: KDA layers are LINEAR-attention — O(T·d²) per
+    # sequence, i.e. NO T-proportional term per token (the recurrent
+    # state is d_head×d_head per head, updated in O(d²) per token),
+    # whereas a full-attention layer carries the 4·d·(T·B) scores +
+    # combine term. Per KDA layer, per token: 5 projections
+    # (q/k/v/gate/write) + the low-rank decay pair + the state ops
+    # (2 matmuls of d_head² per head for u and o, plus the k⊗d outer)
+    # + the out projection. Counted at 2 flops/MAC like the rest.
+    n_kda = 0
+    kl_i = 0
+    while kl_i < KDA_LIST.length
+      if KDA_LIST[kl_i] >= 0 && KDA_LIST[kl_i] < N_LAYERS
+        n_kda = n_kda + 1
+      end
+      kl_i = kl_i + 1
+    end
+    n_attn = N_LAYERS - n_kda
+    d_head_c = D_MODEL / N_HEADS
+    kda_inner = N_HEADS * d_head_c
+    kda_flops = 2 * (5 * D_MODEL * kda_inner) +
+                2 * (D_MODEL * d_head_c + kda_inner * d_head_c) +
+                2 * (3 * N_HEADS * d_head_c * d_head_c) +
+                2 * (kda_inner * D_MODEL) +
+                (KDA_CONV_OFF ? 0 : 21 * kda_inner)   # 3 streams x (4 mul + 3 add)
     cost_flops  = 2 * DONOR_D * D_MODEL +
-                  N_LAYERS * (2 * (4 * D_MODEL * D_MODEL + 3 * D_MODEL * D_FF) + 4 * D_MODEL * CONTEXT * BATCH) +
+                  n_attn * (2 * (4 * D_MODEL * D_MODEL + 3 * D_MODEL * D_FF) + 4 * D_MODEL * CONTEXT * BATCH) +
+                  n_kda * kda_flops +
                   2 * D_MODEL * VOCAB
     cost = Toy::Json::Builder.new
     cost.add_num("total_params",    cost_params)

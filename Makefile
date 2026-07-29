@@ -2382,6 +2382,12 @@ gate-franken-moe-cli: libexec/toy-train-franken-moe-cli libexec/toy-train-franke
 libexec/toy-train-franken-llama: lib/toy/run/train_franken_llama.rb lib/toy.rb lib/toy/ffi/tinynn.rb \
 		lib/toy/io/json_builder.rb lib/toy/io/json.rb lib/toy/io/toy_events.rb \
 		lib/toy/llm/engine/llama_seq_engine.rb lib/toy/llm/recipes/franken_from_scratch.rb \
+		lib/toy/llm/archs/llama_arch.rb lib/toy/llm/archs/layer_spec.rb \
+		lib/toy/llm/blocks/transformer_block.rb lib/toy/llm/blocks/gdn_block.rb \
+		lib/toy/llm/blocks/kda_block.rb lib/toy/llm/primitives/kda.rb \
+		lib/toy/llm/primitives/gdn.rb lib/toy/llm/primitives/situ_glu.rb \
+		lib/toy/llm/primitives/swiglu.rb lib/toy/llm/primitives/rms_norm.rb \
+		lib/toy/llm/primitives/rope.rb lib/toy/llm/primitives/gqa.rb \
 		lib/toy/llm/recipe_options.rb lib/toy/dev/toy_describe_flow.rb lib/toy/train/dfa_b.rb \
 		lib/toy/train/toy_gguf_writer.rb lib/toy/train/toy_gguf_fuse.rb \
 		tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
@@ -2424,6 +2430,9 @@ gates: $(GATES)
 # (`toy train franken --device cuda`). Force-link keeps the CUDA backend
 # registration alive (same as every CUDA trainer).
 libexec/toy-train-franken-llama-cuda: lib/toy/run/train_franken_llama_cuda.rb lib/toy.rb \
+		lib/toy/llm/primitives/kda.rb lib/toy/llm/blocks/kda_block.rb \
+		lib/toy/llm/primitives/situ_glu.rb lib/toy/llm/archs/llama_arch.rb \
+		lib/toy/llm/blocks/transformer_block.rb \
 		lib/toy/ffi/tinynn_cuda.rb lib/toy/io/json_builder.rb lib/toy/io/json.rb \
 		lib/toy/io/toy_events.rb lib/toy/llm/recipe_options.rb lib/toy/dev/toy_describe_flow.rb lib/toy/train/dfa_b.rb \
 		lib/toy/train/toy_gguf_writer.rb lib/toy/train/toy_gguf_fuse.rb \

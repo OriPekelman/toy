@@ -369,7 +369,31 @@ Dir.mktmpdir("franken_kda_gate") do |dir|
   evs = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
   failures << "kda: provenance kda_layers #{evs.first.dig('config', 'kda_layers').inspect}" unless evs.first.dig("config", "kda_layers") == "1"
 end
-puts failures.length == n0 ? "  ok: KDA_LAYERS — a KDA layer trains through the engine (#{kl.first.round(3)} -> #{kl.last.round(3)}), deterministic, differs from all-attention; dfa-policy rejected" : "  FAIL: KDA leg"
+# toy#137 K2c: ShortConv identity null + the batch guard + the cost
+# split. The conv is identity-inited (tap0=1, taps1..3=0), so a
+# conv-ON run's STEP-1 loss must BYTE-EQUAL a conv-OFF run's — then
+# diverge as the taps train. That is a forward-identity null on a
+# mechanism whose whole risk is the shifted-view plumbing.
+kc_on  = run_franken_llama({ "STEPS" => "3", "SEED" => "0", "KDA_LAYERS" => "1" }, nil).lines.select { |l| l.start_with?("step ") }
+kc_off = run_franken_llama({ "STEPS" => "3", "SEED" => "0", "KDA_LAYERS" => "1", "KDA_CONV" => "0" }, nil).lines.select { |l| l.start_with?("step ") }
+failures << "kda-conv: step-1 differs from conv-off (identity init broken)\non: #{kc_on.first}off: #{kc_off.first}" unless kc_on.first == kc_off.first
+failures << "kda-conv: curve identical to conv-off (taps never train)" if kc_on == kc_off
+_ob3, stb3 = Open3.capture2e({ "STEPS" => "1", "KDA_LAYERS" => "1", "FRANKEN_BATCH" => "4",
+                               "CORPUS" => "data/fineweb_gpt2_smoke.bin" }, RUNNER, chdir: ROOT)
+failures << "kda: --batch > 1 with KDA layers not rejected" if stb3.success?
+Dir.mktmpdir("franken_kda_cost") do |dir|
+  FileUtils.mkdir_p(File.join(dir, "weights"))
+  run_franken_llama({ "STEPS" => "1", "SEED" => "0", "KDA_LAYERS" => "1" }, dir)
+  ck = JSON.parse(File.readlines(File.join(dir, "events.jsonl")).first)["cost"]
+  Dir.mktmpdir("franken_attn_cost") do |d2|
+    FileUtils.mkdir_p(File.join(d2, "weights"))
+    run_franken_llama({ "STEPS" => "1", "SEED" => "0" }, d2)
+    ca = JSON.parse(File.readlines(File.join(d2, "events.jsonl")).first)["cost"]
+    failures << "kda-cost: flops not lower than all-attention (#{ck['flops_per_token']} vs #{ca['flops_per_token']})" unless ck["flops_per_token"] < ca["flops_per_token"]
+    failures << "kda-cost: params identical to all-attention (formula not kind-aware)" if ck["total_params"] == ca["total_params"]
+  end
+end
+puts failures.length == n0 ? "  ok: KDA_LAYERS — a KDA layer trains through the engine (#{kl.first.round(3)} -> #{kl.last.round(3)}), deterministic, differs from all-attention; conv identity-null + batch guard + linear-attention cost; dfa-policy rejected" : "  FAIL: KDA leg"
 
 # ---- toy#129 item 2: --no-shadow ----
 # THE null (the roadmap's own criterion): applied updates byte-identical

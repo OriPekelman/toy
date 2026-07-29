@@ -19,9 +19,14 @@
 # GDN.recur_unrolled with the decay view widened to [S_v,1]; the identity
 # and its byte-exact reduction null live in prep/smokes/smoke_kda_recurrence.rb.
 #
-# DEFERRED (same rationale GDNBlock records for its own): the ShortConv
-# K3 applies before Swish on q/k/v — a locality prior orthogonal to the
-# recurrence, and ggml_conv_1d's backward story wants its own gate.
+# ShortConv (K3 eq 2) IS wired (toy#137 K2c): a depthwise causal K=4
+# conv on q/k/v before Swish, composed from shifted views
+# (Primitives::KDA.short_conv) so its backward comes free. IDENTITY
+# INIT (w[:,0]=1, rest 0) makes it a step-1 forward no-op — the null
+# the gate pins — after which the taps train. kda_conv=0 disables it.
+#
+# STILL B=1: the projections reshape on seq_t (like GDNBlock), so one
+# window per step. The runner fails loud on --batch > 1 + KDA layers.
 #
 # Shapes (single seq, B=1):
 #   x            [d_model, T]
@@ -45,18 +50,27 @@ module Toy; module LLM; module Blocks
                   :t_w_q, :t_w_k, :t_w_v, :t_w_g, :t_w_b,
                   :t_w_ad, :t_w_au, :t_b_alpha, :t_a_log,
                   :t_go_gamma, :t_w_o,
+                  :t_cq0, :t_cq1, :t_cq2, :t_cq3,
+                  :t_ck0, :t_ck1, :t_ck2, :t_ck3,
+                  :t_cv0, :t_cv1, :t_cv2, :t_cv3,
+                  :t_zpad,
                   :t_state0,
-                  :kda_d_model, :kda_s_v, :kda_n_heads,
+                  :kda_d_model, :kda_s_v, :kda_n_heads, :kda_conv,
                   :ft_weights, :ft_m, :ft_v
 
     def initialize
-      @kda_d_model = 0; @kda_s_v = 0; @kda_n_heads = 0
+      @kda_d_model = 0; @kda_s_v = 0; @kda_n_heads = 0; @kda_conv = 1
+      np = TinyNN.tnn_null_ptr
+      @t_cq0 = np; @t_cq1 = np; @t_cq2 = np; @t_cq3 = np
+      @t_ck0 = np; @t_ck1 = np; @t_ck2 = np; @t_ck3 = np
+      @t_cv0 = np; @t_cv1 = np; @t_cv2 = np; @t_cv3 = np
       @t_rn_gamma = TinyNN.tnn_null_ptr
       @t_w_q = TinyNN.tnn_null_ptr; @t_w_k = TinyNN.tnn_null_ptr; @t_w_v = TinyNN.tnn_null_ptr
       @t_w_g = TinyNN.tnn_null_ptr; @t_w_b = TinyNN.tnn_null_ptr
       @t_w_ad = TinyNN.tnn_null_ptr; @t_w_au = TinyNN.tnn_null_ptr
       @t_b_alpha = TinyNN.tnn_null_ptr; @t_a_log = TinyNN.tnn_null_ptr
       @t_go_gamma = TinyNN.tnn_null_ptr; @t_w_o = TinyNN.tnn_null_ptr
+      @t_zpad = TinyNN.tnn_null_ptr
       @t_state0 = TinyNN.tnn_null_ptr
       @ft_weights = [TinyNN.tnn_null_ptr]; @ft_weights.pop
       @ft_m       = [TinyNN.tnn_null_ptr]; @ft_m.pop
@@ -68,8 +82,12 @@ module Toy; module LLM; module Blocks
     # its purpose is parameter economy at d=7168; keeping the structure
     # here keeps the mechanism faithful and the rank an honest knob).
     # state0 is a zeroed [s_v, s_v*n_heads] constant carry, NOT a param.
-    def alloc_trainable_f32_weights!(sess, d_model, s_v, n_heads)
+    # KSIZE: K3's ShortConv kernel width (4, from Kimi Linear).
+    KSIZE = 4
+
+    def alloc_trainable_f32_weights!(sess, d_model, s_v, n_heads, conv_on)
       @kda_d_model = d_model; @kda_s_v = s_v; @kda_n_heads = n_heads
+      @kda_conv = conv_on
       inner = s_v * n_heads
       rank  = s_v
       # input_2d_f32_persistent(rows, cols) -> ne0=cols, ne1=rows: pass
@@ -86,6 +104,20 @@ module Toy; module LLM; module Blocks
       @t_a_log    = reg4(sess, 1, n_heads, 1, 1)  # per-head log-scale A_h
       @t_go_gamma = reg1(sess, inner)
       @t_w_o = reg2(sess, d_model, inner)
+      if conv_on == 1
+        # WHOLE 1d [inner] tensors per tap — never views of one packed
+        # weight (a view as a mul operand breaks the backward; see
+        # Primitives::KDA.short_conv4).
+        @t_cq0 = reg1(sess, inner); @t_cq1 = reg1(sess, inner)
+        @t_cq2 = reg1(sess, inner); @t_cq3 = reg1(sess, inner)
+        @t_ck0 = reg1(sess, inner); @t_ck1 = reg1(sess, inner)
+        @t_ck2 = reg1(sess, inner); @t_ck3 = reg1(sess, inner)
+        @t_cv0 = reg1(sess, inner); @t_cv1 = reg1(sess, inner)
+        @t_cv2 = reg1(sess, inner); @t_cv3 = reg1(sess, inner)
+        # The conv's zero pad: a [inner, KSIZE-1] NON-param leaf (zeroed
+        # in zero_state!). Not scale(x,0) — see short_conv4's note.
+        @t_zpad = TinyNN.tnn_input_2d_f32_persistent(sess, KSIZE - 1, inner)
+      end
       @t_state0 = TinyNN.tnn_input_2d_f32_persistent(sess, s_v, s_v * n_heads)
     end
 
@@ -126,6 +158,9 @@ module Toy; module LLM; module Blocks
 
     def zero_state!(sess)
       TinyNN.tnn_zero_tensor(sess, @t_state0)
+      if @kda_conv == 1
+        TinyNN.tnn_zero_tensor(sess, @t_zpad)
+      end
     end
 
     # Forward: residual update for x [d_model, T] (B=1). Returns [d_model, T].
@@ -147,6 +182,13 @@ module Toy; module LLM; module Blocks
       zu = TinyNN.tnn_matmul(sess, @t_w_au, zd) # [inner, T]
       z2 = TinyNN.tnn_add(sess, zu, @t_b_alpha) # + b_α  ([inner] broadcasts)
 
+      # ShortConv on q/k/v (K3 eq 2), before Swish. Identity-inited, so
+      # step 1 is a forward no-op vs kda_conv=0.
+      if @kda_conv == 1
+        q2 = Toy::LLM::Primitives::KDA.short_conv4(sess, q2, @t_cq0, @t_cq1, @t_cq2, @t_cq3, @t_zpad, inner, seq_t)
+        k2 = Toy::LLM::Primitives::KDA.short_conv4(sess, k2, @t_ck0, @t_ck1, @t_ck2, @t_ck3, @t_zpad, inner, seq_t)
+        v2 = Toy::LLM::Primitives::KDA.short_conv4(sess, v2, @t_cv0, @t_cv1, @t_cv2, @t_cv3, @t_zpad, inner, seq_t)
+      end
       q3 = TinyNN.tnn_reshape_3d(sess, q2, s_v, n_heads, seq_t)
       k3 = TinyNN.tnn_reshape_3d(sess, k2, s_v, n_heads, seq_t)
       v3 = TinyNN.tnn_reshape_3d(sess, v2, s_v, n_heads, seq_t)

@@ -169,6 +169,7 @@ class LlamaSeqEngine
     # setter runs before realize).
     @seq_franken_noshadow_policy = [0]; @seq_franken_noshadow_policy.pop
     @seq_nope_flag = 0
+    @seq_kda_conv = 1        # toy#137 K2c: ShortConv on KDA q/k/v (K3 eq 2)
     @ft_globals_weights = [TinyNN.tnn_null_ptr]; @ft_globals_weights.pop
     @ft_globals_m       = [TinyNN.tnn_null_ptr]; @ft_globals_m.pop
     @ft_globals_v       = [TinyNN.tnn_null_ptr]; @ft_globals_v.pop
@@ -202,6 +203,14 @@ class LlamaSeqEngine
   # all-attention, byte-identical to before.
   def add_kda_layer!(idx)
     @seq_kda_layer_indices.push(idx)
+  end
+
+  # toy#137 K2c: 0 disables the ShortConv on KDA q/k/v. Call BEFORE
+  # realize. Default 1 = the faithful K3 form (identity-inited, so a
+  # conv-on run is a step-1 forward no-op vs conv-off).
+  def kda_conv_init(v)
+    @seq_kda_conv = v
+    0
   end
 
   def build_gdn_flags!
@@ -748,7 +757,7 @@ class LlamaSeqEngine
       elsif @seq_is_kda[li]
         kblk = self.seq_kda_blocks_ffi_ref[li]
         kblk.alloc_trainable_f32_weights!(@sess, @seq_d_model, @seq_d_head,
-                                          @seq_n_heads)
+                                          @seq_n_heads, @seq_kda_conv)
         kblk.set_params!
       else
         blk = self.seq_blocks_ffi[li]
@@ -901,6 +910,22 @@ class LlamaSeqEngine
         upload_constant(kblk.t_a_log,   @seq_n_heads, 0.0)
         upload_constant(kblk.t_go_gamma, inner_k, 1.0)
         upload_gaussian(kblk.t_w_o, @seq_d_model * inner_k, inv_sqrt_d, state)
+        if @seq_kda_conv == 1
+          # IDENTITY: tap 0 = 1.0, taps 1..3 = 0.0 (an exact forward
+          # no-op at step 1; the taps train away from it).
+          upload_constant(kblk.t_cq0, inner_k, 1.0)
+          upload_constant(kblk.t_cq1, inner_k, 0.0)
+          upload_constant(kblk.t_cq2, inner_k, 0.0)
+          upload_constant(kblk.t_cq3, inner_k, 0.0)
+          upload_constant(kblk.t_ck0, inner_k, 1.0)
+          upload_constant(kblk.t_ck1, inner_k, 0.0)
+          upload_constant(kblk.t_ck2, inner_k, 0.0)
+          upload_constant(kblk.t_ck3, inner_k, 0.0)
+          upload_constant(kblk.t_cv0, inner_k, 1.0)
+          upload_constant(kblk.t_cv1, inner_k, 0.0)
+          upload_constant(kblk.t_cv2, inner_k, 0.0)
+          upload_constant(kblk.t_cv3, inner_k, 0.0)
+        end
         li = li + 1
         next
       end
@@ -938,6 +963,24 @@ class LlamaSeqEngine
   # including 0 (the raw [seed] xorshift state had a zero fixed point that
   # froze +-37sigma inits into the historical baselines).
   # Constant-fill upload (gammas to 1.0, biases/decays to 0.0).
+  # toy#137 K2c: IDENTITY init for a [inner, KSIZE] short-conv weight —
+  # tap 0 = 1.0, later taps 0.0 (ne=[inner,K] so tap i occupies
+  # indices [i*inner, (i+1)*inner)). Makes the conv an exact forward
+  # no-op at step 1; the taps train away from it.
+  def upload_conv_identity(t, inner, ksize)
+    vals = [0.0]; vals.pop
+    i = 0
+    while i < inner * ksize
+      if i < inner
+        vals.push(1.0)
+      else
+        vals.push(0.0)
+      end
+      i = i + 1
+    end
+    TinyNN.tnn_upload_from_float_array(@sess, t, vals, inner * ksize)
+  end
+
   def upload_constant(tensor, n, v)
     buf = [0.0]; buf.pop
     i = 0

@@ -38,10 +38,9 @@
 # The recurrence here exponentiates the LOG-decay per token (the GDN
 # kernel contract), so decay_logits returns g, not α.
 #
-# q/k/v prep (K3 eq 2): Swish then L2Norm on q/k, Swish on v. The
-# ShortConv that K3 applies before Swish is deferred with the same
-# rationale the GDN block already records for its own conv (it is a
-# locality prior, orthogonal to the recurrence; K2b).
+# q/k/v prep (K3 eq 2): ShortConv, then Swish, then L2Norm on q/k
+# (Swish only on v). short_conv below is the depthwise causal form,
+# composed from shifted views so its backward comes free.
 #
 # Pure module, `self.` methods only; no Cfg ctor / default args
 # (landmine #4); no require_relative "tinynn" (the loader picks the
@@ -58,6 +57,60 @@ module Toy
         # K3 fixes the log-decay floor at -5 (α ≥ e^-5 ≈ 6.7e-3, so the
         # cumulative decay over a 16-token tile stays in (-80, 0)).
         G_MIN = -5.0
+
+        # DEPTHWISE CAUSAL SHORT CONV over the token axis (K3 eq 2's
+        # ShortConv, applied to q/k/v before Swish). Kernel size 4, one
+        # per-channel weight per tap:
+        #   y[c,t] = Σ_{i<4} w_i[c] · x[c, t−i]        (x[c,<0] = 0)
+        #
+        # COMPOSED from shifted copies + mul + add rather than
+        # ggml_conv_1d: every op has a backward (training comes free —
+        # the l2_train/sigmoid precedent), and it is depthwise by
+        # construction.
+        #
+        # WHY FOUR EXPLICIT WEIGHT ARGS (not one [inner,K] tensor
+        # sliced by views): a strided VIEW of a weight used as a mul
+        # operand poisons the backward — the grad path through
+        # GGML_OP_VIEW reaches a ggml_scale on non-contiguous storage
+        # and trips GGML_ASSERT(ggml_is_padded_1d) (ggml.c:3392, the
+        # same assert the recurrence's fold-the-scale-into-q note
+        # records). Whole 1d [inner] tensors broadcast over the token
+        # axis with no view in sight. Fixed arity also keeps the call
+        # monomorphic and avoids ptr-ARRAY params (the Spinel
+        # IntArray-lock landmine the GDN header warns about).
+        #
+        # IDENTITY INIT (w0 = 1, w1..w3 = 0) makes this an exact
+        # forward no-op — the null the gate pins.
+        #
+        # Causal over the FLAT token axis, i.e. one window per step
+        # (B=1); the runner fails loud on --batch > 1 with KDA layers.
+        def self.short_conv4(sess, x, w0, w1, w2, w3, zpad, inner, n_tokens)
+          acc = TinyNN.tnn_mul(sess, x, w0)
+          acc = TinyNN.tnn_add(sess, acc, TinyNN.tnn_mul(sess, shift1(sess, x, zpad, inner, n_tokens, 1), w1))
+          acc = TinyNN.tnn_add(sess, acc, TinyNN.tnn_mul(sess, shift1(sess, x, zpad, inner, n_tokens, 2), w2))
+          TinyNN.tnn_add(sess, acc, TinyNN.tnn_mul(sess, shift1(sess, x, zpad, inner, n_tokens, 3), w3))
+        end
+
+        # x shifted RIGHT by i tokens along ne1, zero-padded at the
+        # front: rows 0..T-i-1 of x land at rows i..T-1.
+        #
+        # The pad comes from a DEDICATED ZERO LEAF (the block's
+        # [inner, 3] zpad tensor, zeroed once and never a param), NOT
+        # from scale(x_slice, 0.0). Reason, found the hard way: concat's
+        # BACKWARD hands each src a strided VIEW of the incoming grad,
+        # and ggml_scale's backward then scales that view — tripping
+        # GGML_ASSERT(ggml_is_padded_1d) (ggml.c:3392). A non-param
+        # leaf has no grad path at all, so the problem disappears
+        # instead of moving.
+        def self.shift1(sess, x, zpad, inner, n_tokens, i)
+          fbytes = 4
+          row = inner * fbytes
+          keep = TinyNN.tnn_cont_2d(sess,
+                   TinyNN.tnn_view_2d(sess, x, inner, n_tokens - i, row, 0),
+                   inner, n_tokens - i)
+          zsl = TinyNN.tnn_view_2d(sess, zpad, inner, i, row, 0)
+          TinyNN.tnn_concat(sess, zsl, keep, 1)
+        end
 
         # Swish/SiLU then trainable L2Norm over ne0 — the q/k path.
         # (l2_train, not the fused L2_NORM op, because the fused op has
