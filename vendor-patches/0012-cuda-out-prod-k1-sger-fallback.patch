@@ -1,0 +1,37 @@
+diff --git a/src/ggml-cuda/out-prod.cu b/src/ggml-cuda/out-prod.cu
+index 499903d..ad7c567 100644
+--- a/src/ggml-cuda/out-prod.cu
++++ b/src/ggml-cuda/out-prod.cu
+@@ -54,6 +54,32 @@ void ggml_cuda_out_prod(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+     const int64_t dps2 = ne2 / ne02;
+     const int64_t dps3 = ne3 / ne03;
+ 
++    // toy vendor-patch 0012: k == 1 makes this an OUTER PRODUCT, and the
++    // generic sgemm path below can hit CUBLAS_STATUS_INVALID_VALUE when
++    // src1 is a view whose leading dimension violates cublas' ldb >=
++    // max(1, n) requirement for the OP_T operand (observed shape:
++    // dst[2,4] = src0[2,1] x src1[4,1] with ldb == 1 < n == 4, from the
++    // backward of a [1,NE] x [NE,T] matmul — the MoE dense gating path).
++    // cublasSger is the rank-1 update with NO leading-dimension
++    // constraint on the vectors; beta == 0 semantics come from zeroing
++    // the (ldc-pitched) dst tile first.
++    if (ne01 == 1) {
++        const int64_t incx = nb00 / sizeof(float);
++        const int64_t incy = nb10 / sizeof(float);
++        for (int64_t i3 = 0; i3 < ne3; ++i3) {
++            for (int64_t i2 = 0; i2 < ne2; ++i2) {
++                float * dst_ptr = dst_d + i3*s3 + i2*s2;
++                CUDA_CHECK(cudaMemset2DAsync(dst_ptr, ldc*sizeof(float), 0,
++                                             ne0*sizeof(float), ne1, stream));
++                CUBLAS_CHECK(cublasSger(handle, ne0, ne1, &alpha,
++                        src0_d + (i3/dps3)*s03 + (i2/dps2)*s02, incx,
++                        src1_d +  i3      *s13 +  i2      *s12, incy,
++                        dst_ptr, ldc));
++            }
++        }
++        return;
++    }
++
+     if (dps2 == 1 && ne2 > 1) {
+         // src0 has uniform stride s02 along dim 2; batch the inner loop with a strided GEMM
+         GGML_ASSERT(ne2 <= std::numeric_limits<int>::max());

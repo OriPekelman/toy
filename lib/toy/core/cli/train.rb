@@ -78,6 +78,7 @@ module Toy
         FRANKEN_RUNNER_TARGET = "libexec/toy-train-franken-llama"
         FRANKEN_CUDA_RUNNER_TARGET = "libexec/toy-train-franken-llama-cuda"
         FRANKEN_MOE_RUNNER_TARGET = "libexec/toy-train-franken-moe-cli"
+        FRANKEN_MOE_CUDA_RUNNER_TARGET = "libexec/toy-train-franken-moe-cli-cuda"
         # GPT-2 GPU twins (--arch gpt2 --device cuda|metal). SEPARATE single-type
         # binaries (landmine #16); link the generated CUDA/Metal engine mirrors.
         # The GELU/LayerNorm backward ops fall back to the CPU backend on GPU.
@@ -189,7 +190,7 @@ module Toy
           #   metal (fs only)  -> toy-train-metal
           #   cpu fs/warm-start-> toy-train
           target = if @recipe == "franken-moe"
-                     FRANKEN_MOE_RUNNER_TARGET
+                     @device == "cuda" ? FRANKEN_MOE_CUDA_RUNNER_TARGET : FRANKEN_MOE_RUNNER_TARGET
                    elsif @recipe == "franken"
                      @device == "cuda" ? FRANKEN_CUDA_RUNNER_TARGET : FRANKEN_RUNNER_TARGET
                    elsif @recipe == "lora"
@@ -714,8 +715,8 @@ module Toy
           end
           # vit-tiny is CPU-only in this slice: reject cuda AND metal as clean
           # bad-input (the --device allow-list already caught unknown devices).
-          if @recipe == "franken-moe" && @device != "cpu"
-            return bad_arg("--device #{@device.inspect} is not supported for recipe 'franken-moe' (cpu-only instrument)")
+          if @recipe == "franken-moe" && @device == "metal"
+            return bad_arg("franken-moe has no metal runner yet (CUDA + CPU only, toy#134)")
           end
           if @recipe == "vit-tiny" && @device != "cpu"
             return bad_arg("--device #{@device.inspect} is not supported for recipe 'vit-tiny' (cpu-only in this slice)")

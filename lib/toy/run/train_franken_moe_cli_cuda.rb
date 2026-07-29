@@ -1,0 +1,1018 @@
+# lib/toy/run/train_franken_moe_cli_cuda.rb — CUDA twin of
+# train_franken_moe_cli.rb (toy#134: the F9-r2 critical path). HAND-
+# MIRRORED like train_franken_llama_cuda.rb: TinyNN->TinyNNCuda for
+# compute, CUDA session (tnn_session_new(1)), CPU write-session staging
+# for the toy#131 checkpoint seam (the one non-mechanical divergence —
+# see write_moe_ckpt). Own compilation unit (landmine #16). CUDA curves
+# are platform-scoped: gated by determinism/structure legs, never
+# compared to CPU fixtures.
+
+require_relative "franken_moe_parts_cuda"
+require_relative "../io/json_builder"
+require_relative "../io/json"
+require_relative "../io/toy_events"
+require_relative "../llm/labels"
+require_relative "../io/toy_corpus_loader"
+require_relative "../dev/toy_describe_flow"
+
+module Toy
+  module LLM
+    module Run
+      module TrainFrankenMoe
+        def self.num_or_null_cli(x)
+          d = x - x
+          if d == 0.0
+            x.to_s
+          else
+            "null"
+          end
+        end
+
+        # toy#131: native-form MoE checkpoint — per-tensor moe.* names,
+        # toy-moe/v1 metadata, NO fusion and NO second session
+        # (tnn_gguf_w_add_tensor reads the CPU session buffers in
+        # place, so the write cannot touch the sched).
+        def self.write_moe_ckpt(sess, tw, path, run_id, step, shape_s, pol_name, routing_name, dm2, df2, vo2, ne2, ctx2, batch2)
+          # CUDA twin divergence (toy#134): tnn_gguf_w_add_tensor reads
+          # tensor->data on the HOST, but a CUDA compute tensor's buffer
+          # is device memory — so the twin STAGES values through a CPU
+          # write session (the llama-cuda checkpoint seam): download
+          # each pp via the CUDA shim, upload into CPU persistent twins
+          # with the same names, write those, free the session.
+          wsess = TinyNN.tnn_session_new(0)
+          cpu_pp = [TinyNN.tnn_null_ptr]; cpu_pp.pop
+          gi2 = 0
+          while gi2 < tw.pp.length
+            nel = TinyNNCuda.tnn_tensor_nelements(tw.pp[gi2])
+            ne0 = TinyNNCuda.tnn_tensor_ne0(tw.pp[gi2])
+            ne1 = nel / ne0
+            t2 = TinyNN.tnn_null_ptr
+            if ne1 == 1
+              t2 = TinyNN.tnn_input_1d_f32_persistent(wsess, ne0)
+            else
+              t2 = TinyNN.tnn_input_2d_f32_persistent(wsess, ne0, ne1)
+            end
+            TinyNN.tnn_tensor_set_name(t2, TinyNNCuda.tnn_tensor_name(tw.pp[gi2]))
+            cpu_pp.push(t2)
+            gi2 = gi2 + 1
+          end
+          TinyNN.tnn_finalize_weights(wsess)
+          gi2 = 0
+          while gi2 < tw.pp.length
+            nel = TinyNNCuda.tnn_tensor_nelements(tw.pp[gi2])
+            stage = Mat.new(1, nel)
+            rc_d = TinyNNCuda.tnn_download_to_f64_array(sess, tw.pp[gi2], stage.flat, nel)
+            if rc_d != 0
+              puts "checkpoint stage download failed: rc=" + rc_d.to_s
+              TinyNN.tnn_session_free(wsess)
+              return -1
+            end
+            TinyNN.tnn_upload_from_float_array(wsess, cpu_pp[gi2], stage.flat, nel)
+            gi2 = gi2 + 1
+          end
+          ctxw = TinyNN.tnn_gguf_w_init
+          if ctxw == nil || ctxw == TinyNN.tnn_null_ptr
+            TinyNN.tnn_session_free(wsess)
+            return -1
+          end
+          TinyNN.tnn_gguf_w_set_str(ctxw, "general.architecture", "toy-moe")
+          TinyNN.tnn_gguf_w_set_str(ctxw, "general.name", "franken-moe-instrument")
+          TinyNN.tnn_gguf_w_set_str(ctxw, "general.run_id", run_id)
+          TinyNN.tnn_gguf_w_set_u32(ctxw, "general.step", step)
+          TinyNN.tnn_gguf_w_set_str(ctxw, "toy.checkpoint_format", "toy-moe/v1")
+          TinyNN.tnn_gguf_w_set_u32(ctxw, "toy.moe.d_model", dm2)
+          TinyNN.tnn_gguf_w_set_u32(ctxw, "toy.moe.d_ff", df2)
+          TinyNN.tnn_gguf_w_set_u32(ctxw, "toy.moe.vocab_size", vo2)
+          TinyNN.tnn_gguf_w_set_u32(ctxw, "toy.moe.n_experts", ne2)
+          TinyNN.tnn_gguf_w_set_u32(ctxw, "toy.moe.context", ctx2)
+          TinyNN.tnn_gguf_w_set_u32(ctxw, "toy.moe.batch", batch2)
+          TinyNN.tnn_gguf_w_set_str(ctxw, "toy.moe.shape", shape_s)
+          TinyNN.tnn_gguf_w_set_str(ctxw, "toy.moe.routing", routing_name)
+          TinyNN.tnn_gguf_w_set_str(ctxw, "toy.moe.policy", pol_name)
+          gi2 = 0
+          while gi2 < cpu_pp.length
+            TinyNN.tnn_gguf_w_add_tensor(ctxw, cpu_pp[gi2])
+            gi2 = gi2 + 1
+          end
+          rc = TinyNN.tnn_gguf_w_finalize(ctxw, path)
+          TinyNN.tnn_gguf_w_free(ctxw)
+          TinyNN.tnn_session_free(wsess)
+          rc
+        end
+
+        def self.run_cli
+          steps_s = ENV["STEPS"] || ""
+          steps = steps_s.length > 0 ? steps_s.to_i : 40
+          seed_s = ENV["SEED"] || ""
+          seed = seed_s.length > 0 ? seed_s.to_i : 0
+          run_dir = ENV["TAO_RUN_DIR"] || ""
+          run_id_s = ENV["TOY_RUN_ID"] || ""
+          routing_s = ENV["FRANKEN_MOE_ROUTING"] || ""
+          top1 = routing_s == "top1"
+          mode_s = ENV["FRANKEN_MOE"] || ""
+          if mode_s.length == 0
+            mode_s = "chain"
+          end
+          dfa_experts = mode_s == "dfa-experts"
+          bp_router = top1 && mode_s == "bp-router-dfa-experts"
+          bp_spine  = top1 && mode_s == "bp-spine"
+          aux_s = ENV["FRANKEN_MOE_AUX"] || ""
+          aux_alpha = aux_s.length > 0 ? aux_s.to_f : 0.0
+          bseed_s = ENV["FRANKEN_B_SEED"] || ""
+          b_seed = bseed_s.length > 0 ? bseed_s.to_i : 1234
+          align_on = (ENV["FRANKEN_ALIGN"] || "") == "1"
+          # toy#129 item 2: FRANKEN_NO_SHADOW=1 — dense dfa-experts
+          # drop the expert weights from the autodiff param set
+          # (late-param via the top1 wire, no chain grad-acc, no
+          # backward expansion through the experts). top1 lanes are
+          # ALREADY shadow-free by construction (zero-param build, the
+          # F4/F5 design) — the flag is meaningless there, fail loud.
+          no_shadow = (ENV["FRANKEN_NO_SHADOW"] || "") == "1"
+          # toy#127: the toy#122 thinning, MoE-side — every Nth step
+          # skips the align DOWNLOADS and emissions both (the shadow
+          # readback is the cost); step/route events stay per-step.
+          ae_raw = (ENV["FRANKEN_ALIGN_EVERY"] || "1").to_i
+          align_every = ae_raw < 1 ? 1 : ae_raw
+          events = run_dir.length > 0 ? (run_dir + "/events.jsonl") : ""
+          # toy#132 (toy#126 parity): FRANKEN_LR overrides the recipe's
+          # lr (default 0.02, byte-null without the flag); FRANKEN_WARMUP
+          # ramps linearly over the first N steps (lr_t = LR*(t+1)/N,
+          # reaching LR exactly at step N) — the hp vector is rebuilt
+          # per step already, so the ramp is zero engine work (the
+          # 8ba447d pattern). The end-of-run eval (toy#130) pins its own
+          # lr=0 hp and is untouched.
+          lr_s = ENV["FRANKEN_LR"] || ""
+          lr = lr_s.length > 0 ? lr_s.to_f : 0.02
+          # toy#131: the toy#120 deviation come due — a NATIVE-form GGUF
+          # checkpoint (per-tensor moe.* names, NO fusion, no second
+          # session: tnn_gguf_w_add_tensor reads the CPU session buffers
+          # directly, so the write cannot touch the sched). Checkpoints
+          # carry WEIGHTS only (no Adam moments) — FRANKEN_MOE_LOAD is
+          # therefore EVAL-ONLY (STEPS=0 + the toy#130 eval loop);
+          # resume fails loud.
+          ck_raw = (ENV["FRANKEN_CKPT_EVERY"] || "0").to_i
+          ckpt_every = ck_raw < 0 ? 0 : ck_raw
+          load_ckpt = ENV["FRANKEN_MOE_LOAD"] || ""
+          if load_ckpt.length > 0 && !File.exist?(load_ckpt)
+            puts "toy-train-franken-moe-cuda: no such checkpoint: " + load_ckpt
+            return 1
+          end
+          if load_ckpt.length > 0 && steps != 0
+            puts "toy-train-franken-moe-cuda: FRANKEN_MOE_LOAD is eval-only (checkpoints carry weights, not Adam moments — resume is unsupported). Pass STEPS=0 + FRANKEN_EVAL_CORPUS."
+            return 1
+          end
+          wu_raw = (ENV["FRANKEN_WARMUP"] || "0").to_i
+          warmup = wu_raw < 0 ? 0 : wu_raw
+          if no_shadow && top1
+            puts "toy-train-franken-moe-cuda: --no-shadow is meaningless under --routing top1 — top1 lanes are already shadow-free (zero-param build, the F4/F5 design)"
+            return 1
+          end
+          if no_shadow && !dfa_experts
+            puts "toy-train-franken-moe-cuda: --no-shadow requires --moe-policy dfa-experts (dense chain has no DFA segments to unshadow)"
+            return 1
+          end
+          if no_shadow && align_on
+            puts "toy-train-franken-moe-cuda: --no-shadow + align events — align compares DFA grads against the chain shadow acc, which a no-shadow build does not create. Drop one."
+            return 1
+          end
+          # toy#130: END-OF-RUN held-out eval — the MoE instrument has no
+          # GGUF writer (the vit-tiny #169 precedent), so checkpoint-
+          # boundary evals cannot carry this lane; instead the runner
+          # evals AFTER training completes (lr=0 windows on the SAME
+          # graph — the Adam moments it mutates are dead at that point,
+          # so the toy#122 pollution objection is moot). Unset = off,
+          # byte-null.
+          ev_corpus = ENV["FRANKEN_EVAL_CORPUS"] || ""
+          ev_tok_s = ENV["FRANKEN_EVAL_TOKENS"] || ""
+          ev_tokens_raw = ev_tok_s.length > 0 ? ev_tok_s.to_i : 0
+          ev_tokens = ev_tokens_raw > 0 ? ev_tokens_raw : 4096   # 0 = unset (the CLI's default)
+          ev_off_s = ENV["FRANKEN_EVAL_OFFSET"] || ""
+          ev_offset = ev_off_s.length > 0 ? ev_off_s.to_i : 0
+          if ev_corpus.length > 0 && !File.exist?(ev_corpus)
+            puts "toy-train-franken-moe-cuda: eval corpus not found: " + ev_corpus
+            return 1
+          end
+          if load_ckpt.length > 0 && ev_corpus.length == 0
+            puts "toy-train-franken-moe-cuda: FRANKEN_MOE_LOAD without FRANKEN_EVAL_CORPUS does nothing — pass the held-out pack"
+            return 1
+          end
+
+          pol_name = mode_s
+          if top1
+            pol_name = "top1-dfa"
+            if bp_router
+              pol_name = "bp-router-dfa-experts"
+            end
+            if bp_spine
+              pol_name = "bp-spine"
+            end
+          end
+          puts "franken-moe: routing=" + (top1 ? "top1" : "dense") +
+               " policy=" + pol_name +
+               " aux=" + aux_alpha.to_s + " steps=" + steps.to_s +
+               " seed=" + seed.to_s + " b_seed=" + b_seed.to_s +
+               " experts=" + (ENV["FRANKEN_MOE_EXPERTS"] || "2")
+
+          shape_s = ENV["FRANKEN_SHAPE"] || "base"
+          if shape_s != "base" && shape_s != "wide"
+            puts "unknown FRANKEN_SHAPE: " + shape_s + " (franken-moe takes base|wide)"
+            return 1
+          end
+          corpus_s = ENV["CORPUS"] || ""
+          if corpus_s.length > 0 && !File.exist?(corpus_s)
+            puts "toy-train-franken-moe-cuda: corpus not found: " + corpus_s
+            puts "  --corpus streams packed-i32 tokens (the warm-start reader)."
+            return 1
+          end
+          # toy#129 item 1: context joins the runtime state — corpus
+          # mode takes FRANKEN_CONTEXT (>= 2); the fixed-seq feed is
+          # the byte-gated 4-token contract, so a context override
+          # without a corpus fails loud.
+          ctx_s = ENV["FRANKEN_CONTEXT"] || ""
+          ctx_raw = ctx_s.length > 0 ? ctx_s.to_i : 0
+          ctx = ctx_raw > 0 ? ctx_raw : T   # 0 = unset (the CLI's default)
+          if ctx != T && corpus_s.length == 0
+            puts "toy-train-franken-moe-cuda: --context needs --corpus (the fixed-seq feed is the byte-gated 4-token contract)"
+            return 1
+          end
+          if ctx < 2
+            puts "toy-train-franken-moe-cuda: --context must be >= 2, got " + ctx.to_s
+            return 1
+          end
+          # toy#133: B windows per step. Reading ctx*B contiguous tokens
+          # IS reading B windows (the MoE instrument is position-free);
+          # only the attention MASK (block-causal, window-isolated) and
+          # the labels (window-local) distinguish batched from one long
+          # window. B=1 is byte-null (NULL mask = the diag_mask path).
+          bat_s = ENV["FRANKEN_BATCH"] || ""
+          bat_raw = bat_s.length > 0 ? bat_s.to_i : 0
+          batch = bat_raw > 0 ? bat_raw : 1
+          if batch > 1 && corpus_s.length == 0
+            puts "toy-train-franken-moe-cuda: FRANKEN_BATCH > 1 needs --corpus (the fixed-seq feed is the byte-gated single-window contract)"
+            return 1
+          end
+          tbv = ctx * batch
+          # toy#125/#129: corpus vocab — a TOYC pack declares it in the
+          # header (authoritative; a conflicting --vocab fails loud);
+          # headerless packs default to the frozen-vocab contract (627,
+          # toy#123) unless --vocab overrides. Fixed-seq stays vocab 16.
+          vsel = VOCAB
+          if corpus_s.length > 0
+            hdr_v = ToyCorpusLoader.probe_vocab(corpus_s)
+            env_v = (ENV["FRANKEN_VOCAB"] || "0").to_i
+            if hdr_v > 0 && env_v > 0 && hdr_v != env_v
+              puts "toy-train-franken-moe-cuda: --vocab " + env_v.to_s + " conflicts with the pack header (TOYC vocab " + hdr_v.to_s + ")"
+              return 1
+            end
+            vsel = 627
+            if hdr_v > 0
+              vsel = hdr_v
+            end
+            if hdr_v == 0 && env_v > 0
+              vsel = env_v
+            end
+          end
+          # toy#128: expert count (the demonstrator's E axis; default 2
+          # byte-null — the rig shape).
+          ex_s = ENV["FRANKEN_MOE_EXPERTS"] || ""
+          esel = ex_s.length > 0 ? ex_s.to_i : NE
+          if esel < 2
+            puts "FRANKEN_MOE_EXPERTS must be >= 2, got " + ex_s
+            return 1
+          end
+          if ev_corpus.length > 0
+            ev_hdr_v = ToyCorpusLoader.probe_vocab(ev_corpus)
+            if ev_hdr_v > 0 && ev_hdr_v != vsel
+              puts "toy-train-franken-moe-cuda: eval pack vocab " + ev_hdr_v.to_s +
+                   " (TOYC header) != instrument vocab " + vsel.to_s
+              return 1
+            end
+          end
+          if shape_s == "wide"
+            shape_init(256, 512, vsel, esel, tbv)
+          else
+            shape_init(DM_BASE, DFF_BASE, vsel, esel, tbv)
+          end
+
+          sess = TinyNNCuda.tnn_session_new(1)
+          TinyNNCuda.tnn_session_set_graph_capacity(sess, 262144)
+
+          tw = alloc_tower(sess)
+          # toy#131: names are the checkpoint contract (write by name,
+          # load by name — no positional coupling).
+          TinyNNCuda.tnn_tensor_set_name(tw.pp[0], "moe.embed")
+          TinyNNCuda.tnn_tensor_set_name(tw.pp[1], "moe.fnorm")
+          TinyNNCuda.tnn_tensor_set_name(tw.pp[2], "moe.attn_rn1")
+          TinyNNCuda.tnn_tensor_set_name(tw.pp[3], "moe.wq")
+          TinyNNCuda.tnn_tensor_set_name(tw.pp[4], "moe.wk")
+          TinyNNCuda.tnn_tensor_set_name(tw.pp[5], "moe.wv")
+          TinyNNCuda.tnn_tensor_set_name(tw.pp[6], "moe.wo")
+          TinyNNCuda.tnn_tensor_set_name(tw.pp[7], "moe.rn2")
+          TinyNNCuda.tnn_tensor_set_name(tw.pp[8], "moe.wr")
+          nmi = 0
+          while nmi < nev
+            TinyNNCuda.tnn_tensor_set_name(tw.pp[9 + 2 * nmi],  "moe.expert_" + nmi.to_s + ".up")
+            TinyNNCuda.tnn_tensor_set_name(tw.pp[10 + 2 * nmi], "moe.expert_" + nmi.to_s + ".down")
+            nmi = nmi + 1
+          end
+
+          # toy#128: per-expert B mats + one-hot selectors as arrays
+          # (E=2 reproduces the b_up1/b_down1/b_up2/b_down2 + sel1/sel2
+          # allocation order exactly).
+          np0 = TinyNNCuda.tnn_null_ptr
+          b_ups   = [np0]; b_ups.pop
+          b_downs = [np0]; b_downs.pop
+          ei = 0
+          while ei < nev
+            b_ups.push(TinyNNCuda.tnn_input_2d_f32_persistent(sess, dfv, vocabv))
+            b_downs.push(TinyNNCuda.tnn_input_2d_f32_persistent(sess, dmv, vocabv))
+            ei = ei + 1
+          end
+          sels = [np0]; sels.pop
+          ei = 0
+          while ei < nev
+            sels.push(TinyNNCuda.tnn_input_2d_f32_persistent(sess, 1, nev))
+            ei = ei + 1
+          end
+          eye   = TinyNNCuda.tnn_input_2d_f32_persistent(sess, nev, nev)
+          b_aq  = TinyNNCuda.tnn_input_2d_f32_persistent(sess, dmv, vocabv)
+          b_ak  = TinyNNCuda.tnn_input_2d_f32_persistent(sess, dmv, vocabv)
+          b_av  = TinyNNCuda.tnn_input_2d_f32_persistent(sess, dmv, vocabv)
+          b_ao  = TinyNNCuda.tnn_input_2d_f32_persistent(sess, dmv, vocabv)
+          b_r   = TinyNNCuda.tnn_input_2d_f32_persistent(sess, nev, vocabv)
+          ones_t = TinyNNCuda.tnn_input_2d_f32_persistent(sess, 1, tv)   # ne=[tv,1]
+          # toy#133: block-causal attention mask — ALLOCATED here
+          # (persistent inputs must precede finalize_weights; an alloc
+          # after finalize has no backing buffer and silently reads
+          # ZEROS — found the hard way: add(scaled, 0) is a no-op and
+          # B=2 ran fully-unmasked).
+          attn_mask = TinyNNCuda.tnn_null_ptr
+          if batch > 1
+            attn_mask = TinyNNCuda.tnn_input_2d_f32_persistent(sess, tv, tv)
+          end
+
+          # params: dense = every weight (shadow-shaped when dfa-experts);
+          # top1 = Wr ONLY (the aux backward path; everything else is
+          # late-param DFA — the walker must never need mul_mat_id).
+          gi = 0
+          while gi < tw.pp.length
+            # dense: every weight — EXCEPT no-shadow drops the experts
+            # (gi >= 9; late-param at wire time). bp-spine: the whole
+            # spine 0..8 (embed, fnorm, attention, rn2, Wr) — experts
+            # stay late-param DFA behind the detach cut.
+            mark = false
+            if top1
+              mark = bp_spine && gi < 9
+            else
+              mark = !(no_shadow && gi >= 9)
+            end
+            if mark
+              TinyNNCuda.tnn_set_param(tw.pp[gi])
+            end
+            gi = gi + 1
+          end
+          if top1 && !bp_spine
+            TinyNNCuda.tnn_set_param(tw.pp[8])
+          end
+          TinyNNCuda.tnn_finalize_weights(sess)
+
+          # weight init: rig stream, seed-mixed (seed=0 == rig lane A)
+          gi = 0
+          while gi < tw.pp.length
+            n = TinyNNCuda.tnn_tensor_nelements(tw.pp[gi])
+            vals = fillv(n, seed * 131 + gi * 7 + 1)
+            TinyNNCuda.tnn_upload_from_float_array(sess, tw.pp[gi], vals, n)
+            TinyNNCuda.tnn_zero_tensor(sess, tw.pm[gi])
+            TinyNNCuda.tnn_zero_tensor(sess, tw.pv[gi])
+            gi = gi + 1
+          end
+          # toy#131: eval-only reload — overwrite every pp tensor by
+          # NAME from the checkpoint; shape metadata must match the
+          # instrument exactly (fail loud, listing both sides).
+          if load_ckpt.length > 0
+            gg_l = TinyNNCuda.tnn_gguf_load(load_ckpt)
+            if gg_l == nil || gg_l == TinyNNCuda.tnn_null_ptr
+              puts "toy-train-franken-moe-cuda: cannot open checkpoint " + load_ckpt
+              return 1
+            end
+            ck_dm = TinyNNCuda.tnn_gguf_get_u32(gg_l, "toy.moe.d_model")
+            ck_df = TinyNNCuda.tnn_gguf_get_u32(gg_l, "toy.moe.d_ff")
+            ck_vo = TinyNNCuda.tnn_gguf_get_u32(gg_l, "toy.moe.vocab_size")
+            ck_ne = TinyNNCuda.tnn_gguf_get_u32(gg_l, "toy.moe.n_experts")
+            if ck_dm != dmv || ck_df != dfv || ck_vo != vocabv || ck_ne != nev
+              puts "toy-train-franken-moe-cuda: checkpoint shape mismatch — ckpt d_model=" + ck_dm.to_s +
+                   " d_ff=" + ck_df.to_s + " vocab=" + ck_vo.to_s + " experts=" + ck_ne.to_s +
+                   " vs instrument d_model=" + dmv.to_s + " d_ff=" + dfv.to_s +
+                   " vocab=" + vocabv.to_s + " experts=" + nev.to_s +
+                   " (pass the matching --shape/--corpus/--vocab/--experts)"
+              return 1
+            end
+            gi3 = 0
+            while gi3 < tw.pp.length
+              nm = TinyNNCuda.tnn_tensor_name(tw.pp[gi3])
+              idx3 = TinyNNCuda.tnn_gguf_find_index(gg_l, nm)
+              if idx3 < 0
+                puts "toy-train-franken-moe-cuda: checkpoint missing tensor " + nm
+                return 1
+              end
+              nel3 = TinyNNCuda.tnn_tensor_nelements(tw.pp[gi3])
+              mv3 = Mat.new(1, nel3)
+              TinyNNCuda.tnn_gguf_read_f32_to_doubles(gg_l, idx3, mv3.flat, nel3)
+              TinyNNCuda.tnn_upload_from_float_array(sess, tw.pp[gi3], mv3.flat, nel3)
+              gi3 = gi3 + 1
+            end
+            puts "loaded checkpoint: " + load_ckpt
+          end
+          dist_c = b_dist_code
+          sig_up   = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, vocabv, dfv, 0.0)
+          sig_down = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, vocabv, dmv, 0.0)
+          # toy#128 per-expert B seeds — STABLE in the expert index (the
+          # standing DfaB discipline: re-policying one expert never
+          # reshuffles another). Experts 0/1 keep the legacy offsets
+          # +11/+12/+13/+14 (E=2 byte-null); experts >= 2 jump to
+          # +101+10i / +102+10i — the legacy stride would collide with
+          # the attention/router B offsets (+21..+25) from expert 5 on.
+          ei = 0
+          while ei < nev
+            us = b_seed + 11 + 2 * ei
+            ds = b_seed + 12 + 2 * ei
+            if ei >= 2
+              us = b_seed + 101 + 10 * ei
+              ds = b_seed + 102 + 10 * ei
+            end
+            TinyNNCuda.tnn_upload_from_float_array(sess, b_ups[ei],
+              Toy::Train::DfaB.fill(dfv * vocabv, us, dist_c, sig_up), dfv * vocabv)
+            TinyNNCuda.tnn_upload_from_float_array(sess, b_downs[ei],
+              Toy::Train::DfaB.fill(dmv * vocabv, ds, dist_c, sig_down), dmv * vocabv)
+            ei = ei + 1
+          end
+          ei = 0
+          while ei < nev
+            sv = zeros(nev)
+            sv[ei] = 1.0
+            TinyNNCuda.tnn_upload_from_float_array(sess, sels[ei], sv, nev)
+            ei = ei + 1
+          end
+          ey = zeros(nev * nev)
+          ei = 0
+          while ei < nev
+            ey[ei * nev + ei] = 1.0
+            ei = ei + 1
+          end
+          TinyNNCuda.tnn_upload_from_float_array(sess, eye, ey, nev * nev)
+          # toy#133: block-causal mask VALUES (the GH#7 fill, verbatim
+          # orientation — the order-swap isolation null gates it).
+          if batch > 1
+            mvals = zeros(tv * tv)
+            mi1 = 0
+            while mi1 < tv
+              bq = mi1 / ctx
+              pq = mi1 % ctx
+              mi0 = 0
+              while mi0 < tv
+                bk = mi0 / ctx
+                pk = mi0 % ctx
+                if bk == bq && pk <= pq
+                  mvals[mi1 * tv + mi0] = 0.0
+                else
+                  mvals[mi1 * tv + mi0] = -1.0e30
+                end
+                mi0 = mi0 + 1
+              end
+              mi1 = mi1 + 1
+            end
+            TinyNNCuda.tnn_upload_from_float_array(sess, attn_mask, mvals, tv * tv)
+          end
+          if top1
+            sig_dm = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, vocabv, dmv, 0.0)
+            sig_e  = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, vocabv, nev, 0.0)
+            TinyNNCuda.tnn_upload_from_float_array(sess, b_aq, Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 21, dist_c, sig_dm), dmv * vocabv)
+            TinyNNCuda.tnn_upload_from_float_array(sess, b_ak, Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 22, dist_c, sig_dm), dmv * vocabv)
+            TinyNNCuda.tnn_upload_from_float_array(sess, b_av, Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 23, dist_c, sig_dm), dmv * vocabv)
+            TinyNNCuda.tnn_upload_from_float_array(sess, b_ao, Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 24, dist_c, sig_dm), dmv * vocabv)
+            TinyNNCuda.tnn_upload_from_float_array(sess, b_r,  Toy::Train::DfaB.fill(nev * vocabv, b_seed + 25, dist_c, sig_e),  nev * vocabv)
+            onesv = zeros(tv)
+            oi = 0
+            while oi < tv
+              onesv[oi] = 1.0
+              oi = oi + 1
+            end
+            TinyNNCuda.tnn_upload_from_float_array(sess, ones_t, onesv, tv)
+          end
+
+          t_tok    = TinyNNCuda.tnn_input_1d_i32(sess, tv)
+          t_labels = TinyNNCuda.tnn_input_2d_f32(sess, tv, vocabv)
+          t_hp     = TinyNNCuda.tnn_input_1d_f32(sess, 7)
+          t_f      = TinyNNCuda.tnn_input_2d_f32(sess, 1, nev)   # ne=[NE,1]
+          forward_tower(sess, tw, t_tok, t_labels, sels, eye, top1, bp_spine ? 1 : 0, attn_mask)
+          if bp_router || bp_spine
+            # toy#121: the task CE joins the loss roots — backward reaches
+            # Wr through gate = sum_rows(oneh*probs) -> softmax -> matmul,
+            # never mul_mat_id (eo's subtree stays out of grads_needed).
+            TinyNNCuda.tnn_set_loss(tw.t_loss)
+          end
+
+          # top1: aux loss root (always built; alpha=0 -> zero f' vector).
+          t_aux = TinyNNCuda.tnn_null_ptr
+          if top1
+            m_fp  = TinyNNCuda.tnn_mul(sess, tw.t_gates, t_f)
+            s_tok = TinyNNCuda.tnn_sum_rows(sess, m_fp)
+            s_col = TinyNNCuda.tnn_reshape_3d(sess, s_tok, tv, 1, 1)
+            t_aux = TinyNNCuda.tnn_matmul(sess, s_col, ones_t)
+            TinyNNCuda.tnn_set_output(t_aux)
+            TinyNNCuda.tnn_set_loss(t_aux)
+            TinyNNCuda.tnn_add_to_graph(sess, tw.t_loss)
+            TinyNNCuda.tnn_build_forward_only(sess, t_aux)
+          else
+            TinyNNCuda.tnn_build_forward_only(sess, tw.t_loss)
+          end
+          TinyNNCuda.tnn_build_backward(sess)
+
+          if top1
+            p_sm = TinyNNCuda.tnn_softmax(sess, tw.t_logits)
+            e_b  = TinyNNCuda.tnn_scale(sess, TinyNNCuda.tnn_sub(sess, p_sm, t_labels), 1.0 / tv.to_f)
+            np2 = TinyNNCuda.tnn_null_ptr
+            if bp_spine
+              # the whole spine is chain: embed/fnorm/attention/rn2 + Wr
+              sp = 0
+              while sp < 9
+                wire_chain(sess, tw, t_hp, sp)
+                sp = sp + 1
+              end
+            else
+              wire_dfa_top1(sess, tw, t_hp, 3, b_aq, e_b, tw.tap_ah,  dmv, dmv, np2)
+              wire_dfa_top1(sess, tw, t_hp, 4, b_ak, e_b, tw.tap_ah,  dmv, dmv, np2)
+              wire_dfa_top1(sess, tw, t_hp, 5, b_av, e_b, tw.tap_ah,  dmv, dmv, np2)
+              wire_dfa_top1(sess, tw, t_hp, 6, b_ao, e_b, tw.tap_ctx, dmv, dmv, np2)
+            end
+            if bp_spine
+              # router already chain-wired above; experts follow below
+            elsif bp_router
+              # toy#121: router credit is PURE BP — the acc already holds
+              # task-BP + aux-BP (both loss roots backward into it).
+              wire_chain(sess, tw, t_hp, 8)
+            else
+              # F4 lane: router = DFA task signal + BP aux signal
+              g_dfa_r = dfa_grad(sess, b_r, e_b, tw.tap_h2, dmv, nev)
+              acc_r   = TinyNNCuda.tnn_tensor_grad(sess, tw.pp[8])
+              g_tot   = TinyNNCuda.tnn_add(sess, g_dfa_r, acc_r)
+              TinyNNCuda.tnn_set_output(g_tot)
+              to_r = TinyNNCuda.tnn_opt_step_adamw(sess, tw.pp[8], g_tot, tw.pm[8], tw.pv[8], t_hp)
+              TinyNNCuda.tnn_extend_backward_graph(sess, to_r)
+            end
+            # toy#128: per-expert routed-mask DFA wires (E=2 == the old
+            # m1/m2 + 9..12 sequence; both downs read tap_a1 = the
+            # routed acts from mul_mat_id).
+            ei = 0
+            while ei < nev
+              m_i = TinyNNCuda.tnn_matmul(sess, sels[ei], tw.t_onehots)
+              wire_dfa_top1(sess, tw, t_hp, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_h2, dmv,  dfv, m_i)
+              wire_dfa_top1(sess, tw, t_hp, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_a1, dfv, dmv,  m_i)
+              ei = ei + 1
+            end
+          else
+            if dfa_experts
+              p_sm = TinyNNCuda.tnn_softmax(sess, tw.t_logits)
+              e_b  = TinyNNCuda.tnn_scale(sess, TinyNNCuda.tnn_sub(sess, p_sm, t_labels), 1.0 / tv.to_f)
+              idx = 0
+              while idx < 9
+                wire_chain(sess, tw, t_hp, idx)
+                idx = idx + 1
+              end
+              # toy#128: per-expert dense DFA wires; each down_i reads
+              # its own dense act tap (tap_as[i]). toy#129: no-shadow
+              # reuses the top1 wire (late-param, NO acc recording,
+              # null mask) — the DFA grad math is identical, so applied
+              # updates byte-match the shadow build (gated).
+              np3 = TinyNNCuda.tnn_null_ptr
+              ei = 0
+              while ei < nev
+                if no_shadow
+                  wire_dfa_top1(sess, tw, t_hp, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_h2,     dmv,  dfv, np3)
+                  wire_dfa_top1(sess, tw, t_hp, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_as[ei], dfv, dmv,  np3)
+                else
+                  wire_dfa(sess, tw, t_hp, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_h2,    dmv,  dfv, "up" + (ei + 1).to_s)
+                  wire_dfa(sess, tw, t_hp, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_as[ei], dfv, dmv,  "down" + (ei + 1).to_s)
+                end
+                ei = ei + 1
+              end
+            else
+              idx = 0
+              while idx < 9 + 2 * nev
+                wire_chain(sess, tw, t_hp, idx)
+                idx = idx + 1
+              end
+            end
+          end
+
+          TinyNNCuda.tnn_pin_all_graph_b_nodes(sess)
+          TinyNNCuda.tnn_realize_backward(sess)
+
+          ToyDescribeFlow.emit_flow_json(run_dir, sess)
+
+          # run_start
+          if events.length > 0
+            rc = TinyNNCuda.tnn_events_open(events)
+            if rc == 0
+              rid = run_id_s.length > 0 ? run_id_s : "anonymous"
+              rs = Toy::Json::Builder.new
+              rs.add_str("kind", "run_start")
+              rs.add_str("schema", "toy/v1")
+              rs.add_num("t", TinyNNCuda.tnn_events_now_seconds)
+              rs.add_str("started_at", TinyNNCuda.tnn_events_iso8601_now)
+              rs.add_str("run_id", rid)
+              rs.add_str("phase", "train")
+              Toy::Events.add_provenance(rs,
+                TinyNNCuda.tnn_provenance_host_name, TinyNNCuda.tnn_provenance_host_os,
+                TinyNNCuda.tnn_provenance_host_arch, TinyNNCuda.tnn_backend_name(sess))
+              model = Toy::Json::Builder.new
+              model.add_str("arch", "franken-moe")
+              model.add_str("shape", shape_s)
+              model.add_str("name", "franken-moe-instrument")
+              model.add_num("vocab",    vocabv)
+              model.add_num("d_model",  dmv)
+              model.add_num("n_experts", nev)
+              model.add_num("d_ff",     dfv)
+              rs.add_obj("model", model)
+              config = Toy::Json::Builder.new
+              config.add_num("context", ctx)
+              config.add_num("batch",   batch)
+              config.add_num("steps",   steps)
+              config.add_num("lr",      lr)
+              config.add_num("warmup",  warmup)
+              config.add_num("seed",    seed)
+              rs.add_obj("config", config)
+              # toy#129 item 4: derived cost accounting. total = tied
+              # embed vocab*dm + norms 3dm + attention 4dm^2 + router
+              # E*dm + E expert pairs 2*dm*dff. active swaps E -> the
+              # per-token expert count (top1 routes 1; dense mixes all
+              # E). flops_per_token = FORWARD, 2 flops/MAC: attention
+              # matmuls + scores/combine at T + router + active experts
+              # + tied logits.
+              act_e = top1 ? 1 : nev
+              cost_total  = vocabv * dmv + 3 * dmv + 4 * dmv * dmv +
+                            nev * dmv + nev * 2 * dmv * dfv
+              cost_active = vocabv * dmv + 3 * dmv + 4 * dmv * dmv +
+                            nev * dmv + act_e * 2 * dmv * dfv
+              cost_flops  = 2 * (4 * dmv * dmv) + 4 * dmv * tv +
+                            2 * nev * dmv + act_e * 2 * (2 * dmv * dfv) +
+                            2 * vocabv * dmv
+              cost = Toy::Json::Builder.new
+              cost.add_num("total_params",    cost_total)
+              cost.add_num("active_params",   cost_active)
+              cost.add_num("flops_per_token", cost_flops)
+              rs.add_obj("cost", cost)
+              fm = Toy::Json::Builder.new
+              fm.add_str("routing",   top1 ? "top1" : "dense")
+              fm.add_str("policy",    pol_name)
+              fm.add_num("aux_alpha", aux_alpha)
+              fm.add_num("b_seed",    b_seed)
+              fm.add_num("b_dist",    dist_c)
+              fm.add_num("b_scale",   Toy::Train::DfaB::SCALE_INV_SQRT_FAN)
+              fm.add_num("b_sigma",   0.0)
+              # toy#129: shadow = whether dfa segments carry chain
+              # grad-accs (dense dfa-experts without --no-shadow).
+              # top1 lanes and dense chain have none — false.
+              fm.add_bool("shadow",   dfa_experts && !top1 && !no_shadow)
+              rs.add_obj("franken_moe", fm)
+              TinyNNCuda.tnn_events_emit(rs.dump)
+            else
+              puts "events_open failed: rc=" + rc.to_s + " (path=" + events + ")"
+            end
+          end
+
+          ids = [1, 2, 3, 4]
+          labels = zeros(vocabv * tv)
+          tt = 0
+          while tt < tv
+            tgt = (ids[tt] + 1) % vocabv
+            labels[tgt + vocabv * tt] = 1.0
+            tt = tt + 1
+          end
+          # toy#133: incremental batched one-hot (the eval_ce trick) —
+          # clear only the previous tv scatter positions per step, never
+          # a tv*vocab refill. Values byte-identical to the builder.
+          lab_inc = corpus_s.length > 0 ? Mat.new(tv, vocabv) : Mat.new(1, 1)
+          lab_prev = [0]; lab_prev.pop
+          lp = 0; while lp < tv; lab_prev.push(-1); lp = lp + 1; end
+          corpus_base  = corpus_s.length > 0 ? ToyCorpusLoader.data_offset(corpus_s) : 0
+          corpus_off   = corpus_base
+          corpus_bytes = corpus_s.length > 0 ? File.size(corpus_s) : 0
+
+          n_dfa = tw.dfa_grads.length
+          gbuf = zeros(dmv * dfv)
+          abuf = zeros(dmv * dfv)
+          gates_buf = zeros(nev * tv)
+          share_v = zeros(nev)
+          fvec = zeros(nev)
+          fi = 0
+          while fi < nev
+            fvec[fi] = aux_alpha / tv.to_f
+            fi = fi + 1
+          end
+          aux_buf = zeros(1)
+          b1 = 0.9; b2 = 0.95
+          final_loss = 0.0
+          s = 0
+          while s < steps
+            if s == 0
+              TinyNNCuda.tnn_graph_reset(sess)
+            else
+              TinyNNCuda.tnn_graph_reset_grads_only(sess)
+            end
+            t = (s + 1).to_f
+            lr_t = lr
+            if warmup > 0 && s < warmup
+              # linear ramp; at step warmup-1 the factor is exactly 1.0
+              lr_t = lr * ((s + 1).to_f / warmup.to_f)
+            end
+            hp = [lr_t, b1, b2, 1.0e-8, 0.0,
+                  1.0 / (1.0 - (b1 ** t)), 1.0 / (1.0 - (b2 ** t))]
+            if corpus_s.length > 0
+              # rotating-window stream: restart at 0 BEFORE the window
+              # would run past EOF (read_seq's own EOF-wrap otherwise
+              # pins every later step to the first window — the toy#122
+              # stuck-window failure mode).
+              if corpus_off + tv * 4 > corpus_bytes
+                corpus_off = corpus_base
+              end
+              ids = ToyCorpusLoader.read_seq(corpus_s, corpus_off, tv)
+              corpus_off = corpus_off + tv * 4
+              k2 = 0
+              while k2 < tv
+                if lab_prev[k2] >= 0
+                  lab_inc.flat[k2 * vocabv + lab_prev[k2]] = 0.0
+                end
+                wpos = k2 % ctx
+                tgt = (wpos + 1 < ctx) ? ids[k2 + 1] : ids[k2]
+                if tgt >= 0 && tgt < vocabv
+                  lab_inc.flat[k2 * vocabv + tgt] = 1.0
+                  lab_prev[k2] = tgt
+                else
+                  lab_prev[k2] = -1
+                end
+                k2 = k2 + 1
+              end
+              labels = lab_inc.flat
+            end
+            TinyNNCuda.upload_int_array(sess, t_tok, ids)
+            TinyNNCuda.tnn_upload_from_float_array(sess, t_labels, labels, vocabv * tv)
+            TinyNNCuda.tnn_upload_from_float_array(sess, t_hp, hp, 7)
+            if top1
+              TinyNNCuda.tnn_upload_from_float_array(sess, t_f, fvec, nev)
+            end
+            TinyNNCuda.tnn_compute_backward(sess)
+            TinyNNCuda.tnn_download(sess, tw.t_loss)
+            loss = TinyNNCuda.tnn_scratch_get(sess, 0)
+            final_loss = loss
+            puts "step " + (s + 1).to_s + ": loss=" + loss.to_s
+
+            if events.length > 0
+              es = Toy::Json::Builder.new
+              es.add_str("kind",  "step")
+              es.add_str("phase", "train")
+              es.add_num("t",     TinyNNCuda.tnn_events_now_seconds)
+              es.add_num("step",  s + 1)
+              es.add_raw("loss",  num_or_null_cli(loss))
+              es.add_raw("lr",    lr_t.to_s)
+              TinyNNCuda.tnn_events_emit(es.dump)
+            end
+
+            # route event: shares + router health, both routings.
+            # toy#128: shares is the true per-expert vector (length E) —
+            # top1 = hard one-hot token shares, dense = mean soft gate
+            # per expert (E=2 keeps shares[0] exactly; shares[1] is now
+            # measured, not 1-shares[0]).
+            if top1
+              TinyNNCuda.tnn_download_to_f64_array(sess, tw.t_onehots, gates_buf, nev * tv)
+              ei = 0
+              while ei < nev
+                cs = 0.0
+                ti2 = 0
+                while ti2 < tv
+                  cs = cs + gates_buf[ti2 * nev + ei]
+                  ti2 = ti2 + 1
+                end
+                share_v[ei] = cs / tv.to_f
+                ei = ei + 1
+              end
+            end
+            TinyNNCuda.tnn_download_to_f64_array(sess, tw.t_gates, gates_buf, nev * tv)
+            g0 = 0.0
+            ti = 0
+            while ti < tv
+              g0 = g0 + gates_buf[ti * nev]
+              ti = ti + 1
+            end
+            g0 = g0 / tv.to_f
+            if !top1
+              ei = 0
+              while ei < nev
+                cs = 0.0
+                ti2 = 0
+                while ti2 < tv
+                  cs = cs + gates_buf[ti2 * nev + ei]
+                  ti2 = ti2 + 1
+                end
+                share_v[ei] = cs / tv.to_f
+                ei = ei + 1
+              end
+            end
+            aux_v = "null"
+            if top1
+              TinyNNCuda.tnn_download_to_f64_array(sess, t_aux, aux_buf, 1)
+              aux_v = num_or_null_cli(aux_buf[0])
+              # lag-1 f' from this step's routing
+              TinyNNCuda.tnn_download_to_f64_array(sess, tw.t_onehots, gates_buf, nev * tv)
+              ei = 0
+              while ei < nev
+                cnt = 0.0
+                ti3 = 0
+                while ti3 < tv
+                  cnt = cnt + gates_buf[ti3 * nev + ei]
+                  ti3 = ti3 + 1
+                end
+                fvec[ei] = aux_alpha * nev.to_f * cnt / (tv.to_f * tv.to_f)
+                ei = ei + 1
+              end
+            end
+            if events.length > 0
+              re2 = Toy::Json::Builder.new
+              re2.add_str("kind",  "route")
+              re2.add_str("phase", "train")
+              re2.add_num("t",     TinyNNCuda.tnn_events_now_seconds)
+              re2.add_num("step",  s + 1)
+              sh_s = "["
+              ei = 0
+              while ei < nev
+                if ei > 0
+                  sh_s = sh_s + ","
+                end
+                sh_s = sh_s + num_or_null_cli(share_v[ei])
+                ei = ei + 1
+              end
+              sh_s = sh_s + "]"
+              re2.add_raw("shares", sh_s)
+              re2.add_raw("g0_mean", num_or_null_cli(g0))
+              re2.add_raw("aux",     aux_v)
+              TinyNNCuda.tnn_events_emit(re2.dump)
+            end
+
+            # align events (dense dfa-experts, opt-in; toy#127 thinned)
+            if align_on && events.length > 0 && n_dfa > 0 && (s % align_every) == 0
+              ai = 0
+              while ai < n_dfa
+                nw = TinyNNCuda.tnn_tensor_nelements(tw.dfa_grads[ai])
+                rc_g = TinyNNCuda.tnn_download_to_f64_array(sess, tw.dfa_grads[ai], gbuf, nw)
+                rc_a = TinyNNCuda.tnn_download_to_f64_array(sess, tw.dfa_accs[ai], abuf, nw)
+                if rc_g != 0 || rc_a != 0
+                  puts "align download failed: step=" + (s + 1).to_s +
+                       " w=" + tw.dfa_names[ai] + " rc_g=" + rc_g.to_s + " rc_a=" + rc_a.to_s
+                end
+                dot = 0.0; na = 0.0; nb = 0.0
+                ii = 0
+                while ii < nw
+                  dot = dot + gbuf[ii] * abuf[ii]
+                  na = na + gbuf[ii] * gbuf[ii]
+                  nb = nb + abuf[ii] * abuf[ii]
+                  ii = ii + 1
+                end
+                sa = Math.sqrt(na)
+                sb = Math.sqrt(nb)
+                cv = 0.0
+                d = sa * sb
+                if d > 0.0
+                  cv = dot / d
+                end
+                ae = Toy::Json::Builder.new
+                ae.add_str("kind",  "align")
+                ae.add_str("phase", "train")
+                ae.add_num("t",     TinyNNCuda.tnn_events_now_seconds)
+                ae.add_num("step",  s + 1)
+                ae.add_str("w",     tw.dfa_names[ai])
+                ae.add_raw("cos",      num_or_null_cli(cv))
+                ae.add_raw("dfa_norm", num_or_null_cli(sa))
+                ae.add_raw("bp_norm",  num_or_null_cli(sb))
+                TinyNNCuda.tnn_events_emit(ae.dump)
+                ai = ai + 1
+              end
+            end
+            if ckpt_every > 0 && run_dir.length > 0 &&
+               ((s + 1) % ckpt_every) == 0 && (s + 1) < steps
+              ck_dir = run_dir + "/weights"
+              TinyNNCuda.tnn_filesystem_mkdir(ck_dir)
+              ck_rid = run_id_s.length > 0 ? run_id_s : "anonymous"
+              rc_ck = write_moe_ckpt(sess, tw, ck_dir + "/step_" + (s + 1).to_s + ".gguf", ck_rid, s + 1,
+                                     shape_s, pol_name, (top1 ? "top1" : "dense"),
+                                     dmv, dfv, vocabv, nev, ctx, batch)
+              if rc_ck != 0
+                puts "checkpoint write failed: step=" + (s + 1).to_s + " rc=" + rc_ck.to_s
+              end
+            end
+            s = s + 1
+          end
+          if ckpt_every > 0 && run_dir.length > 0 && steps > 0
+            ck_dir = run_dir + "/weights"
+            TinyNNCuda.tnn_filesystem_mkdir(ck_dir)
+            ck_rid = run_id_s.length > 0 ? run_id_s : "anonymous"
+            rc_ck = write_moe_ckpt(sess, tw, ck_dir + "/step_" + steps.to_s + ".gguf", ck_rid, steps,
+                                   shape_s, pol_name, (top1 ? "top1" : "dense"),
+                                   dmv, dfv, vocabv, nev, ctx, batch)
+            if rc_ck != 0
+              puts "checkpoint write failed: step=" + steps.to_s + " rc=" + rc_ck.to_s
+            end
+          end
+
+          # toy#130: end-of-run held-out eval (lr=0 windows; weights
+          # frozen — AdamW with lr=0 is a weight no-op).
+          if ev_corpus.length > 0
+            ev_base  = ToyCorpusLoader.data_offset(ev_corpus)
+            ev_bytes = File.size(ev_corpus)
+            ev_hp = [0.0, b1, b2, 1.0e-8, 0.0, b1, b2]
+            ev_want = ev_tokens / tv
+            ev_sum = 0.0
+            ev_done = 0
+            ev_o = ev_base + ev_offset * 4
+            evw = 0
+            while evw < ev_want
+              if ev_o + tv * 4 > ev_bytes
+                break
+              end
+              ev_ids = ToyCorpusLoader.read_seq(ev_corpus, ev_o, tv)
+              ev_o = ev_o + tv * 4
+              evk = 0
+              while evk < tv
+                if ev_ids[evk] < 0 || ev_ids[evk] >= vocabv
+                  puts "toy-train-franken-moe-cuda: eval token id " + ev_ids[evk].to_s +
+                       " outside [0, " + vocabv.to_s + ") — pack/instrument mismatch"
+                  return 1
+                end
+                evk = evk + 1
+              end
+              ev_lab = Toy::Labels.next_token_guarded_batched(ev_ids, vocabv, ctx, batch)
+              TinyNNCuda.tnn_graph_reset_grads_only(sess)
+              TinyNNCuda.upload_int_array(sess, t_tok, ev_ids)
+              TinyNNCuda.tnn_upload_from_float_array(sess, t_labels, ev_lab.flat, vocabv * tv)
+              TinyNNCuda.tnn_upload_from_float_array(sess, t_hp, ev_hp, 7)
+              if top1
+                TinyNNCuda.tnn_upload_from_float_array(sess, t_f, fvec, nev)
+              end
+              TinyNNCuda.tnn_compute_backward(sess)
+              TinyNNCuda.tnn_download(sess, tw.t_loss)
+              ev_sum = ev_sum + TinyNNCuda.tnn_scratch_get(sess, 0)
+              ev_done = ev_done + 1
+              evw = evw + 1
+            end
+            if ev_done == 0
+              puts "toy-train-franken-moe-cuda: zero eval windows (offset past the pack end)"
+              return 1
+            end
+            ev_ce = ev_sum / ev_done.to_f
+            puts "eval_ce: windows=" + ev_done.to_s +
+                 " tokens=" + (ev_done * tv).to_s +
+                 " ce=" + ev_ce.to_s
+            if events.length > 0
+              eve = Toy::Json::Builder.new
+              eve.add_str("kind",  "eval")
+              eve.add_str("phase", "eval")
+              eve.add_num("t",       TinyNNCuda.tnn_events_now_seconds)
+              eve.add_str("name",    "eval-ce")
+              eve.add_num("step",    steps)
+              eve.add_raw("loss",    num_or_null_cli(ev_ce))
+              eve.add_num("windows", ev_done)
+              eve.add_num("tokens",  ev_done * tv)
+              TinyNNCuda.tnn_events_emit(eve.dump)
+            end
+          end
+
+          if events.length > 0 && TinyNNCuda.tnn_events_active == 1
+            re = Toy::Json::Builder.new
+            re.add_str("kind", "run_end")
+            re.add_num("t",          TinyNNCuda.tnn_events_now_seconds)
+            re.add_str("ended_at",   TinyNNCuda.tnn_events_iso8601_now)
+            re.add_str("reason",     "completed")
+            re.add_num("final_step", steps)
+            re.add_raw("final_loss", num_or_null_cli(final_loss))
+            re.add_raw("exit_code",  "0")
+            TinyNNCuda.tnn_events_emit(re.dump)
+            TinyNNCuda.tnn_events_close
+          end
+          if final_loss != final_loss
+            puts "FRANKEN-MOE-CLI: NaN loss"
+          end
+          puts "FRANKEN-MOE-CLI DONE"
+          0
+        end
+      end
+    end
+  end
+end
+
+# toy#129 fallout fix: run_cli's error paths `return 1` — that return
+# value was silently DROPPED, so validation failures exited 0 (latent
+# since toy#124's unknown-shape guard; first observable when the gate
+# asserted a rejection). The exit status now carries it.
+rc_main = Toy::LLM::Run::TrainFrankenMoe.run_cli
+if rc_main != 0
+  exit 1
+end

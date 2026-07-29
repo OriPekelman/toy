@@ -1316,7 +1316,8 @@ GGML_PATCHES := \
 	vendor-patches/0008-mul-mat-backward-mixed-precision.patch \
 	vendor-patches/0009-sched-unsupported-node-diagnostic.patch \
 	vendor-patches/0010-cuda-buffer_from_ptr-skip-init_tensor-padding-memset.patch \
-	vendor-patches/0011-tensor-flag-detached.patch
+	vendor-patches/0011-tensor-flag-detached.patch \
+	vendor-patches/0012-cuda-out-prod-k1-sger-fallback.patch
 
 # Sentinel file marking that all $(GGML_PATCHES) have been applied to
 # the vendored tree. Build targets depend on it through CMakeLists.txt
@@ -2417,3 +2418,17 @@ libexec/toy-train-franken-llama-cuda: lib/toy/run/train_franken_llama_cuda.rb li
 .PHONY: gate-franken-llama-cuda
 gate-franken-llama-cuda: libexec/toy-train-franken-llama-cuda libexec/toy-train-cuda
 	ruby prep/franken_llama_cuda_gate.rb
+
+# toy#134 — the CUDA twin of the spec-callable MoE runner (`toy train
+# franken-moe --device cuda`): the F9-r2 critical path. Force-link keeps
+# the CUDA backend registration alive (same as every CUDA trainer).
+libexec/toy-train-franken-moe-cli-cuda: lib/toy/run/train_franken_moe_cli_cuda.rb lib/toy/run/franken_moe_parts_cuda.rb \
+		lib/toy.rb lib/toy/ffi/tinynn_cuda.rb lib/toy/io/json_builder.rb lib/toy/io/json.rb \
+		lib/toy/io/toy_events.rb lib/toy/dev/toy_describe_flow.rb \
+		lib/toy/llm/primitives/rms_norm_cuda.rb lib/toy/train/dfa_b.rb \
+		lib/toy/llm/labels.rb lib/toy/io/toy_corpus_loader.rb \
+		tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
+.PHONY: gate-franken-moe-cuda
+gate-franken-moe-cuda: libexec/toy-train-franken-moe-cli-cuda
+	ruby prep/franken_moe_cuda_gate.rb
