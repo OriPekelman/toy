@@ -126,6 +126,7 @@ module Toy
           @schedule     = nil   # franken/franken-moe: const | cosine (toy#136/K1)
           @moe_balance  = nil   # franken-moe: aux | qb | none (toy#136/K1)
           @attn_gate    = false # franken-moe: K3 attention output gate (toy#136/K1.1)
+          @kda_layers   = nil   # franken: KDA layer indices (toy#137/K2b)
           @shape        = nil   # franken/franken-moe: preset (toy#124)
           @routing    = nil   # franken-moe: dense | top1
           @moe_policy = nil   # franken-moe: chain | dfa-experts
@@ -311,6 +312,7 @@ module Toy
                              "FRANKEN_VOCAB"   => (@vocab || 0).to_s,
                              "FRANKEN_BATCH"   => (@batch || 0).to_s,
                              "FRANKEN_ACT"     => (@act || ""),
+                             "KDA_LAYERS"      => (@kda_layers || ""),
                              "FRANKEN_NOPE"    => (@rope == "nope" ? "1" : ""),
                              "FRANKEN_SCHEDULE" => (@schedule || ""),
                              "FRANKEN_CKPT_EVERY" => (@ckpt_every || 0).to_s)
@@ -432,6 +434,16 @@ module Toy
               @no_shadow = true
             when "--attn-gate"
               @attn_gate = true
+            when "--kda-layers"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--kda-layers requires a value") if val.nil?
+              return bad_arg("--kda-layers must be comma-separated 0-based integers, got #{val.inspect}") unless val =~ /\A\d+(,\d+)*\z/
+              @kda_layers = val
+            when /\A--kda-layers=(.*)\z/
+              val = $1
+              return bad_arg("--kda-layers must be comma-separated 0-based integers, got #{val.inspect}") unless val =~ /\A\d+(,\d+)*\z/
+              @kda_layers = val
             when "--act"
               i += 1
               val = @argv[i]
@@ -710,6 +722,7 @@ module Toy
             ["--schedule",      %w[franken franken-moe],            !@schedule.nil?, " (toy#136/K1)"],
             ["--moe-balance",   %w[franken-moe],                    !@moe_balance.nil?, " (toy#136/K1)"],
             ["--attn-gate",     %w[franken-moe],                    @attn_gate, " (toy#136/K1.1; the llama lane's gate arrives with KDA in K2)"],
+            ["--kda-layers",    %w[franken],                        !@kda_layers.nil?, " (toy#137/K2b)"],
             ["--ckpt-every",    %w[franken franken-moe],            !@ckpt_every.nil?, " (toy#129/#131)"],
             ["--load-ckpt",     %w[franken-moe],                    !@load_ckpt.nil?, " (toy#131; eval-only — pass --steps 0 + --eval-corpus)"],
             ["--eval-corpus/--eval-tokens/--eval-offset", %w[franken-moe], (!@eval_corpus.nil? || !@eval_tokens.nil? || !@eval_offset.nil?), " (toy#130; the llama lane evals checkpoints offline via `toy eval ce`)"],

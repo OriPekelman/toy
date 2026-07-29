@@ -110,6 +110,14 @@ if SCHED_S.length > 0 && SCHED_S != "const" && SCHED_S != "cosine"
   exit 1
 end
 COSINE_ON = SCHED_S == "cosine"
+# toy#137 K2b: KDA_LAYERS="0,2" builds those layers as Kimi Delta
+# Attention blocks (K3's M1). Unset = all-attention, byte-null. The
+# indices reach the engine via runner-direct INT-arg calls below (the
+# GDN_LAYERS precedent: the opts->recipe array hop reads EMPTY here).
+# A dfa/mask POLICY on a KDA layer fails loud engine-side (the
+# credit-assignment wiring is attention-shaped) — KDA layers train
+# chain; "KDA under DFA" is its own K-series question.
+KDA_S = ENV["KDA_LAYERS"] || ""
 b_raw = (ENV["FRANKEN_BATCH"] || "0").to_i
 BATCH = b_raw > 0 ? b_raw : 1
 if BATCH > 1 && CORPUS.length == 0
@@ -303,7 +311,21 @@ opts.dfa_b_sigma   = scale_sigma(B_SCALE_S)
 opts.dfa_mix_alpha = mix_alpha
 opts.dfa_mask_tau  = mask_tau
 
+if KDA_S.length > 0
+  kparts = KDA_S.split(",")
+  kp = 0
+  while kp < kparts.length
+    opts.kda_layers.push(kparts[kp].to_i)
+    kp = kp + 1
+  end
+end
+
 recipe = Toy::LLM::Recipes::FrankenFromScratchCuda.new
+kd = 0
+while kd < opts.kda_layers.length
+  recipe.ff_cache.add_kda_layer!(opts.kda_layers[kd])
+  kd = kd + 1
+end
 recipe.realize!(cfg, opts)
 
 # tao#flow-json-emit (#25): self-describing run bundle, parallel to
@@ -385,6 +407,7 @@ if EVENTS.length > 0
     config.add_str("schedule", COSINE_ON ? "cosine" : "const")
     config.add_str("act",      ACT_CODE == 1 ? "situ-glu" : "swiglu")
     config.add_str("rope",     NOPE_ON ? "nope" : "rope")
+    config.add_str("kda_layers", KDA_S)
     config.add_num("seed",    SEED)
     rs.add_obj("config", config)
     # toy#129 item 4: derived cost accounting — auditable FLOP-matching

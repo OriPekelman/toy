@@ -84,7 +84,14 @@ module Toy; module LLM
                   # GDN reintegration: 0-based indices of layers built as
                   # Gated-DeltaNet blocks (empty = all-attention, the
                   # byte-gated default). Read by FromScratch + Franken.
-                  :gdn_layers
+                  :gdn_layers,
+                  # toy#137 K2b: 0-based indices of layers built as Kimi
+                  # Delta Attention blocks (empty = none). PROVENANCE
+                  # CARRIER only — the indices reach the engine via
+                  # runner-direct add_kda_layer!(INT) calls, per the
+                  # GDN precedent (the opts->recipe array hop reads
+                  # EMPTY in these units; spinel-dev#19 / #688 family).
+                  :kda_layers
 
     def initialize
       @t_seq        = 0
@@ -105,6 +112,7 @@ module Toy; module LLM
       @act           = 0
       @rope_nope     = 0
       @gdn_layers = [0]; @gdn_layers.pop   # typed-empty IntArray
+      @kda_layers = [0]; @kda_layers.pop   # typed-empty IntArray
     end
   end
 end; end

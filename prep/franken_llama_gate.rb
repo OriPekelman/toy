@@ -339,6 +339,38 @@ Dir.mktmpdir("franken_k1_gate") do |dir|
 end
 puts failures.length == n0 ? "  ok: K1 axes — situ-glu + nope move the curve deterministically; cosine lr event-pinned; provenance carries act/rope/schedule" : "  FAIL: K1 leg"
 
+# ---- toy#137 (K2b): KDA_LAYERS — a Kimi Delta Attention layer ----
+# Absent = all-attention, byte-null (leg 1's F0 fixture pins it). With
+# a KDA layer: it TRAINS (the whole layer — projections, low-rank decay
+# pair, per-head A_h, full-rank gate, W_o — rides one autodiff sweep),
+# deterministically, and the curve differs from all-attention. A dfa
+# POLICY on that layer must fail loud (the credit-assignment wiring is
+# attention-shaped; "KDA under DFA" is its own K-series question), and
+# (the engine also fails loud when both lists claim one layer, but this
+# runner exposes KDA_LAYERS only, so that guard is not probed here.)
+n0 = failures.length
+kda_env = { "STEPS" => "6", "SEED" => "0", "KDA_LAYERS" => "1" }
+ka = run_franken_llama(kda_env, nil).lines.select { |l| l.start_with?("step ") }
+kb = run_franken_llama(kda_env, nil).lines.select { |l| l.start_with?("step ") }
+failures << "kda: not deterministic" unless ka == kb && ka.length == 6
+kl = ka.map { |l| l[/loss=(\S+)/, 1].to_f }
+failures << "kda: NaN" if kl.any?(&:nan?)
+failures << "kda: did not train (#{kl.first} -> #{kl.last})" unless kl.last < kl.first - 0.1
+d6kda = run_franken_llama({ "STEPS" => "6", "SEED" => "0" }, nil).lines.select { |l| l.start_with?("step ") }
+failures << "kda: curve identical to all-attention (layer kind dead)" if ka == d6kda
+_ok, stk = Open3.capture2e({ "STEPS" => "2", "KDA_LAYERS" => "1", "FRANKEN_POLICY" => "chain,dfa",
+                             "FRANKEN_B_SEED" => "42" }, RUNNER, chdir: ROOT)
+failures << "kda: dfa policy on a KDA layer not rejected" if stk.success?
+# (the both-lists guard lives in build_gdn_flags! but is NOT reachable
+# from this runner — the franken runner wires KDA_LAYERS only, no
+# GDN_LAYERS — so it is asserted where it is reachable, not here.)
+Dir.mktmpdir("franken_kda_gate") do |dir|
+  run_franken_llama({ "STEPS" => "2", "SEED" => "0", "KDA_LAYERS" => "1" }, dir)
+  evs = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+  failures << "kda: provenance kda_layers #{evs.first.dig('config', 'kda_layers').inspect}" unless evs.first.dig("config", "kda_layers") == "1"
+end
+puts failures.length == n0 ? "  ok: KDA_LAYERS — a KDA layer trains through the engine (#{kl.first.round(3)} -> #{kl.last.round(3)}), deterministic, differs from all-attention; dfa-policy rejected" : "  FAIL: KDA leg"
+
 # ---- toy#129 item 2: --no-shadow ----
 # THE null (the roadmap's own criterion): applied updates byte-identical
 # shadow vs no-shadow at the same policy/seed — the mode changes the
@@ -388,7 +420,7 @@ failures << "byte-repro: outputs differ" unless r1 == r2
 puts "  ok: byte-repro — two policy runs identical" if r1 == r2
 
 if failures.empty?
-  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + shape presets (toy#124) + lr/warmup (toy#126) + no-shadow/pack-header/ckpt-every (toy#129) + batch (toy#133) + K1 axes (toy#136) + byte-repro (toy#112/#113)"
+  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + shape presets (toy#124) + lr/warmup (toy#126) + no-shadow/pack-header/ckpt-every (toy#129) + batch (toy#133) + K1 axes (toy#136) + KDA layer (toy#137) + byte-repro (toy#112/#113)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-llama]: #{f}" }

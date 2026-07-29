@@ -42,6 +42,7 @@ REJECT = [
   [%w[from-scratch --schedule cosine],    "--schedule"],
   [%w[franken --moe-balance qb],          "--moe-balance"],
   [%w[franken --attn-gate],               "--attn-gate"],
+  [%w[franken-moe --kda-layers 0],        "--kda-layers"],
   [%w[from-scratch --ckpt-every 2],       "--ckpt-every"],
   [%w[franken --load-ckpt x.gguf],        "--load-ckpt"],
   [%w[franken --eval-corpus x.bin],       "--eval-corpus"],

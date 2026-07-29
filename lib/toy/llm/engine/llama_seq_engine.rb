@@ -29,6 +29,8 @@ require_relative "../primitives/gqa"
 require_relative "../blocks/transformer_block"
 require_relative "../primitives/gdn"
 require_relative "../blocks/gdn_block"
+require_relative "../primitives/kda"
+require_relative "../blocks/kda_block"
 require_relative "../archs/layer_spec"
 require_relative "../archs/llama_arch"
 
@@ -123,6 +125,8 @@ class LlamaSeqEngine
     @seq_n_layers   = 0
     @seq_gdn_layer_indices = [0];     @seq_gdn_layer_indices.pop
     @seq_is_gdn            = [false]; @seq_is_gdn.pop
+    @seq_is_kda            = [false]; @seq_is_kda.pop
+    @seq_kda_layer_indices = [0]; @seq_kda_layer_indices.pop
     @seq_vocab_size = 0
     @seq_rope_base            = 10000.0
     @seq_rope_scaling         = Toy::RopeScaling.none
@@ -193,6 +197,13 @@ class LlamaSeqEngine
     @seq_gdn_layer_indices.push(idx)
   end
 
+  # toy#137 K2b: one KDA layer index per call, INT ARG ONLY (the #688
+  # array-param landmine that bit GDN's set_gdn_layers!). No indices =
+  # all-attention, byte-identical to before.
+  def add_kda_layer!(idx)
+    @seq_kda_layer_indices.push(idx)
+  end
+
   def build_gdn_flags!
     @seq_is_gdn = [false]; @seq_is_gdn.pop
     li = 0
@@ -208,10 +219,34 @@ class LlamaSeqEngine
       end
       k = k + 1
     end
+    # toy#137 K2b: the KDA flags ride the same pass. A layer claimed by
+    # BOTH lists fails loud rather than silently letting one kind win.
+    @seq_is_kda = [false]; @seq_is_kda.pop
+    li2 = 0
+    while li2 < @seq_n_layers
+      @seq_is_kda.push(false)
+      li2 = li2 + 1
+    end
+    k2 = 0
+    while k2 < @seq_kda_layer_indices.length
+      idx2 = @seq_kda_layer_indices[k2]
+      if idx2 >= 0 && idx2 < @seq_n_layers
+        if @seq_is_gdn[idx2]
+          raise "layer " + idx2.to_s + " claimed by BOTH gdn_layers and kda_layers"
+        end
+        @seq_is_kda[idx2] = true
+        @seq_arch.set_kda_layer!(idx2)
+      end
+      k2 = k2 + 1
+    end
   end
 
   def seq_gdn_blocks_ffi_ref
     @seq_arch.seq_gdn_blocks_ffi
+  end
+
+  def seq_kda_blocks_ffi_ref
+    @seq_arch.seq_kda_blocks_ffi
   end
 
   def enable_full_finetune_embeddings!
@@ -710,6 +745,11 @@ class LlamaSeqEngine
         gblk.alloc_trainable_f32_weights!(@sess, @seq_d_model, @seq_d_head,
                                           @seq_n_heads)
         gblk.set_params!
+      elsif @seq_is_kda[li]
+        kblk = self.seq_kda_blocks_ffi_ref[li]
+        kblk.alloc_trainable_f32_weights!(@sess, @seq_d_model, @seq_d_head,
+                                          @seq_n_heads)
+        kblk.set_params!
       else
         blk = self.seq_blocks_ffi[li]
         prefix = "blk." + li.to_s + "."
@@ -832,6 +872,35 @@ class LlamaSeqEngine
         upload_gaussian(gblk.t_dt_bias, @seq_n_heads, 0.25, state)
         upload_constant(gblk.t_go_gamma, inner, 1.0)
         upload_gaussian(gblk.t_w_o, @seq_d_model * inner, inv_sqrt_d, state)
+        li = li + 1
+        next
+      end
+      if @seq_is_kda[li]
+        # toy#137 K2b. Init notes: b_alpha ZERO and a_log ZERO put the
+        # decay at g = -5*sigmoid(z) with z from the low-rank projection
+        # — i.e. alpha starts spread through (e^-5, 1) rather than pinned,
+        # which is what K3's A_h=0 initialization intends (their b_alpha
+        # follows Kimi Linear's per-head schedule; zero is the neutral
+        # toy-scale choice and keeps the stream's own noise as the only
+        # asymmetry). The decay pair is NOT small-noise-inited like GDN's:
+        # GDN needed that because its unbounded -e^A*softplus path NaN'd
+        # from exact zeros; the bounded sigmoid cannot.
+        kblk = self.seq_kda_blocks_ffi_ref[li]
+        inner_k = @seq_n_heads * @seq_d_head
+        rank_k  = @seq_d_head
+        upload_constant(kblk.t_rn_gamma, @seq_d_model, 1.0)
+        upload_gaussian(kblk.t_w_q, inner_k * @seq_d_model, inv_sqrt_d, state)
+        upload_gaussian(kblk.t_w_k, inner_k * @seq_d_model, inv_sqrt_d, state)
+        upload_gaussian(kblk.t_w_v, inner_k * @seq_d_model, inv_sqrt_d, state)
+        upload_gaussian(kblk.t_w_g, inner_k * @seq_d_model, inv_sqrt_d, state)
+        upload_gaussian(kblk.t_w_b, @seq_n_heads * @seq_d_model, inv_sqrt_d, state)
+        upload_gaussian(kblk.t_w_ad, rank_k * @seq_d_model, inv_sqrt_d, state)
+        upload_gaussian(kblk.t_w_au, inner_k * rank_k,
+                        init_scale / Math.sqrt(rank_k.to_f), state)
+        upload_constant(kblk.t_b_alpha, inner_k, 0.0)
+        upload_constant(kblk.t_a_log,   @seq_n_heads, 0.0)
+        upload_constant(kblk.t_go_gamma, inner_k, 1.0)
+        upload_gaussian(kblk.t_w_o, @seq_d_model * inner_k, inv_sqrt_d, state)
         li = li + 1
         next
       end
@@ -1103,6 +1172,18 @@ class LlamaSeqEngine
   def ft_zero_init_adam(qkv_bias)
     li = 0
     while li < @seq_n_layers
+      if @seq_is_kda[li]
+        kblk = self.seq_kda_blocks_ffi_ref[li]
+        kblk.zero_state!(@sess)
+        ki2 = 0
+        while ki2 < kblk.ft_weights.length
+          TinyNN.tnn_zero_tensor(@sess, kblk.ft_m[ki2])
+          TinyNN.tnn_zero_tensor(@sess, kblk.ft_v[ki2])
+          ki2 = ki2 + 1
+        end
+        li = li + 1
+        next
+      end
       if @seq_is_gdn[li]
         gblk = self.seq_gdn_blocks_ffi_ref[li]
         gblk.zero_state!(@sess)
@@ -1265,6 +1346,20 @@ class LlamaSeqEngine
       # triple. The arrays are populated in realize_for_full_finetune.
       li = 0
       while li < @seq_n_layers
+        if @seq_is_kda[li]
+          kblk = self.seq_kda_blocks_ffi_ref[li]
+          wk = 0
+          while wk < kblk.ft_weights.length
+            twk = kblk.ft_weights[wk]
+            tgk = TinyNN.tnn_tensor_grad(@sess, twk)
+            tok = TinyNN.tnn_opt_step_adamw(@sess, twk, tgk,
+                                             kblk.ft_m[wk], kblk.ft_v[wk], t_hp)
+            TinyNN.tnn_extend_backward_graph(@sess, tok)
+            wk = wk + 1
+          end
+          li = li + 1
+          next
+        end
         if @seq_is_gdn[li]
           gblk = self.seq_gdn_blocks_ffi_ref[li]
           wg = 0
@@ -1498,6 +1593,20 @@ class LlamaSeqEngine
       end
       if mode > 0 && self.seq_arch.seq_layer_kinds[li] != Toy::LLM::Archs::LayerSpec::KIND_ATTENTION
         raise "build_training_step_franken: :dfa on non-attention layer " + li.to_s
+      end
+      if @seq_is_kda[li]
+        kblk = self.seq_kda_blocks_ffi_ref[li]
+        wk = 0
+        while wk < kblk.ft_weights.length
+          twk = kblk.ft_weights[wk]
+          tgk = TinyNN.tnn_tensor_grad(@sess, twk)
+          tok = TinyNN.tnn_opt_step_adamw(@sess, twk, tgk,
+                                           kblk.ft_m[wk], kblk.ft_v[wk], t_hp)
+          TinyNN.tnn_extend_backward_graph(@sess, tok)
+          wk = wk + 1
+        end
+        li = li + 1
+        next
       end
       if @seq_is_gdn[li]
         gblk = self.seq_gdn_blocks_ffi_ref[li]

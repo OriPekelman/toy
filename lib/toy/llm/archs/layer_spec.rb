@@ -29,6 +29,7 @@ module Toy; module LLM; module Archs
     # actually wires a Gated-DeltaNet block into a branch.
     KIND_ATTENTION = 0   # standard Llama-style attention + SwiGLU FFN
     KIND_GDN       = 1   # Dragon Gated-DeltaNet block (Phase 5)
+    KIND_KDA       = 2   # Kimi Delta Attention block (toy#137, K-series K2b)
 
     attr_accessor :kind
 
