@@ -167,6 +167,98 @@ module Toy
           Toy::Train::DfaB::DIST_GAUSSIAN
         end
 
+        # toy#140 (F10): DONOR EMBEDDING TRANSFER. Read a donor GGUF's
+        # token_embd.weight (V x D_donor) and project it to the
+        # instrument's width (V x D_target), returning the values ready
+        # to upload into pp[0].
+        #
+        # SAME VOCAB REQUIRED — this does NO token remapping. Our
+        # fixture is GPT-2 BPE (50257) and data/distilgpt2-f32.gguf is a
+        # GPT-2-vocab donor, so the ids line up by construction; a
+        # donor with a different vocab fails loud rather than
+        # transferring garbage.
+        #
+        # PROJECTION = FIXED SEEDED RANDOM (Johnson-Lindenstrauss), not
+        # PCA. Stated plainly because it is a deviation from granite's
+        # recipe: a random projection preserves PAIRWISE GEOMETRY in
+        # expectation (which is the transfer signal — tokens that were
+        # neighbours stay neighbours), while PCA would additionally
+        # concentrate variance in the leading directions. PCA needs an
+        # SVD of a 50257x768 matrix; JL needs one matmul. If F10 shows
+        # the transfer signal is weak, PCA is the first thing to try.
+        #
+        # SCALE-MATCHED: after projecting, the result is rescaled to the
+        # std the instrument's own random init would have produced
+        # (fillv is uniform on +/-0.5, std = 1/sqrt(12)). Without this a
+        # pure SCALE difference would move the loss and the gate would
+        # be measuring the wrong thing.
+        #
+        # The projection runs in a THROWAWAY session (one matmul on
+        # V x D_donor), freed before returning.
+        def self.donor_embed_values(donor_path, vocab, dm, seed)
+          gg = TinyNN.tnn_gguf_load(donor_path)
+          if gg == nil || gg == TinyNN.tnn_null_ptr
+            puts "donor: cannot open " + donor_path
+            return zeros(0)
+          end
+          idx = TinyNN.tnn_gguf_find_index(gg, "token_embd.weight")
+          if idx < 0
+            puts "donor: " + donor_path + " has no token_embd.weight"
+            return zeros(0)
+          end
+          d_donor = TinyNN.tnn_gguf_tensor_ne(gg, idx, 0)
+          v_donor = TinyNN.tnn_gguf_tensor_ne(gg, idx, 1)
+          if v_donor != vocab
+            puts "donor: vocab mismatch — donor " + v_donor.to_s +
+                 " vs instrument " + vocab.to_s +
+                 " (this transfer does NO token remapping; use a same-vocab donor)"
+            return zeros(0)
+          end
+          n_src = d_donor * v_donor
+          src = zeros(n_src)
+          TinyNN.tnn_gguf_read_f32_to_doubles(gg, idx, src, n_src)
+
+          dsess = TinyNN.tnn_session_new(0)
+          TinyNN.tnn_session_set_graph_capacity(dsess, 262144)
+          t_src = TinyNN.tnn_input_2d_f32_persistent(dsess, v_donor, d_donor)  # ne=[d_donor, V]
+          t_p   = TinyNN.tnn_input_2d_f32_persistent(dsess, dm, d_donor)       # ne=[d_donor, dm]
+          TinyNN.tnn_finalize_weights(dsess)
+          TinyNN.tnn_upload_from_float_array(dsess, t_src, src, n_src)
+          # JL projection matrix, seeded off the run seed so the arm is
+          # reproducible; 1/sqrt(d_donor) keeps the projected norms in
+          # the donor's range before the explicit rescale below.
+          pn = d_donor * dm
+          pv = Toy::Train::DfaB.fill(pn, seed + 909, Toy::Train::DfaB::DIST_GAUSSIAN,
+                                     1.0 / Math.sqrt(d_donor.to_f))
+          TinyNN.tnn_upload_from_float_array(dsess, t_p, pv, pn)
+          t_out = TinyNN.tnn_matmul(dsess, t_p, t_src)   # ne=[dm, V]
+          TinyNN.tnn_set_output(t_out)
+          TinyNN.tnn_build_forward_only(dsess, t_out)
+          TinyNN.tnn_compute(dsess)
+          n_dst = dm * vocab
+          dst = zeros(n_dst)
+          TinyNN.tnn_download_to_f64_array(dsess, t_out, dst, n_dst)
+          TinyNN.tnn_session_free(dsess)
+
+          # scale-match to the instrument's own init std (uniform +/-0.5)
+          ss = 0.0
+          di = 0
+          while di < n_dst
+            ss = ss + dst[di] * dst[di]
+            di = di + 1
+          end
+          cur = Math.sqrt(ss / n_dst.to_f)
+          if cur > 0.0
+            k = 0.28867513459481287 / cur
+            di = 0
+            while di < n_dst
+              dst[di] = dst[di] * k
+              di = di + 1
+            end
+          end
+          dst
+        end
+
         # Per-tower handles (uniform-typed arrays; no Struct/Card).
         class MoeTower
           attr_accessor :pp, :pm, :pv

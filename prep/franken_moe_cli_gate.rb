@@ -577,6 +577,43 @@ _ob4, sb4 = Open3.capture2e(CLEAN, *argv_bo, chdir: ROOT)
 failures << "optimizer: unknown value not rejected" if sb4.success?
 puts failures.length == n0 ? "  ok: --optimizer — adamw flag-null, muon + sgd train deterministically and differ, routing in provenance, DFA lanes compose" : "  FAIL: optimizer leg"
 
+# ---- toy#140 (F10): --donor embedding transfer ----
+# NOTE ON THE CRITERION: the ticket asked for "the donor curve starts
+# BELOW random at step 0". It does not, and it should not — with a
+# TIED embedding and a randomly-initialised spine, the step-1 loss is
+# ~ln(V) either way (the logits are embedᵀ·garbage). The transfer
+# signal lives in the DESCENT, and there it is unmistakable and
+# seed-stable: at 20 steps the donor arm sits ~1.5-2.0 nats below
+# scratch on both seeds tested. So the gate asserts THAT.
+n0 = failures.length
+don_base = %w[--steps 20 --seed 0 --corpus data/fineweb_gpt2_smoke.bin --context 32 --shape wide]
+sc = losses(run_cli(don_base, {}, nil)).map(&:to_f)
+dn_args = don_base + ["--donor", "data/distilgpt2-f32.gguf"]
+dn = losses(run_cli(dn_args, {}, nil)).map(&:to_f)
+dn2 = losses(run_cli(dn_args, {}, nil)).map(&:to_f)
+failures << "donor: not deterministic" unless dn == dn2 && dn.length == 20
+failures << "donor: NaN" if dn.any?(&:nan?)
+failures << "donor: no transfer signal — donor #{dn.last.round(3)} vs scratch #{sc.last.round(3)} @20 (want >= 0.5 nats better)" unless dn.last < sc.last - 0.5
+fr = losses(run_cli(dn_args + ["--freeze-embed"], {}, nil)).map(&:to_f)
+failures << "donor: frozen arm NaN/short" unless fr.length == 20 && fr.none?(&:nan?)
+failures << "donor: frozen arm identical to trainable (freeze had no effect)" if fr == dn
+failures << "donor: frozen arm lost the transfer signal (#{fr.last.round(3)})" unless fr.last < sc.last - 0.5
+Dir.mktmpdir("moe_cli_donor") do |dir|
+  run_cli(don_base.take(4) + %w[--corpus data/fineweb_gpt2_smoke.bin --context 32 --shape wide
+                                --donor data/distilgpt2-f32.gguf --freeze-embed], {}, dir)
+  fm = (File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }.first)["franken_moe"] || {}
+  failures << "donor: provenance donor #{fm['donor'].inspect}" unless fm["donor"].to_s.include?("distilgpt2")
+  failures << "donor: provenance projection #{fm['donor_projection'].inspect}" unless fm["donor_projection"] == "random-jl,scale-matched"
+  failures << "donor: provenance freeze_embed" unless fm["freeze_embed"] == true
+end
+argv_dm = [TOY, "train", "franken-moe", "--steps", "1", "--donor", "data/distilgpt2-f32.gguf", "--donor-mode", "untied"]
+_od, sd = Open3.capture2e(CLEAN, *argv_dm, chdir: ROOT)
+failures << "donor: --donor-mode untied not rejected" if sd.success?
+argv_fe = [TOY, "train", "franken-moe", "--steps", "1", "--freeze-embed"]
+_of, sf = Open3.capture2e(CLEAN, *argv_fe, chdir: ROOT)
+failures << "donor: --freeze-embed without --donor not rejected" if sf.success?
+puts failures.length == n0 ? "  ok: --donor — transfer signal in the DESCENT (donor #{dn.last.round(2)} vs scratch #{sc.last.round(2)} @20), frozen arm holds it, provenance, untied + bare-freeze rejected" : "  FAIL: donor leg"
+
 # ---- 6. bundle structure + run-id passthrough ----
 n0 = failures.length
 Dir.mktmpdir("moe_cli_bundle") do |dir|
@@ -613,7 +650,7 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
 end
 
 if failures.empty?
-  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule/attn-gate (toy#136) + optimizer (toy#139) + bundle (toy#120/#121)"
+  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule/attn-gate (toy#136) + optimizer (toy#139) + donor (toy#140) + bundle (toy#120/#121)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe-cli]: #{f}" }

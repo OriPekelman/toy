@@ -162,6 +162,27 @@ module Toy
           # rank-structured near-random direction that Muon's premise
           # (momentum ≈ a meaningful gradient) does not describe —
           # whether that helps or is inert IS the experiment.
+          # toy#140 (F10): --donor <gguf> initialises the spine's input
+          # embedding from a SAME-VOCAB donor, projected to this
+          # instrument's width (see parts.donor_embed_values for the
+          # projection + scale-matching choices). --freeze-embed keeps
+          # it fixed (granite's strongest arm in several results).
+          donor_s = ENV["FRANKEN_DONOR"] || ""
+          if donor_s.length > 0 && !File.exist?(donor_s)
+            puts "toy-train-franken-moe-cuda: donor not found: " + donor_s
+            return 1
+          end
+          donor_mode = ENV["FRANKEN_DONOR_MODE"] || ""
+          if donor_mode.length > 0 && donor_mode != "tied"
+            puts "toy-train-franken-moe-cuda: --donor-mode " + donor_mode +
+                 " unsupported — this instrument is TIED-embedding by construction (logits = embed^T x); an untied head is a follow-up, say if F10 needs it"
+            return 1
+          end
+          freeze_embed = (ENV["FRANKEN_FREEZE_EMBED"] || "") == "1"
+          if freeze_embed && donor_s.length == 0
+            puts "toy-train-franken-moe-cuda: --freeze-embed without --donor freezes a RANDOM embedding — pass a donor, or drop the flag"
+            return 1
+          end
           opt_s = ENV["FRANKEN_OPTIMIZER"] || ""
           if opt_s.length > 0 && opt_s != "adamw" && opt_s != "muon" && opt_s != "sgd"
             puts "toy-train-franken-moe-cuda: unknown FRANKEN_OPTIMIZER " + opt_s + " (adamw|muon|sgd)"
@@ -444,6 +465,11 @@ module Toy
             else
               mark = !(no_shadow && gi >= 9)
             end
+            # toy#140: a frozen donor embedding is not a param at all —
+            # no grad, no opt node, and (never-mask) no silent update.
+            if freeze_embed && gi == 0
+              mark = false
+            end
             if mark
               TinyNNCuda.tnn_set_param(tw.pp[gi])
             end
@@ -509,6 +535,20 @@ module Toy
               gi3 = gi3 + 1
             end
             puts "loaded checkpoint: " + load_ckpt
+          end
+          # toy#140: overwrite the randomly-initialised embed with the
+          # projected donor. AFTER the init loop so every other weight
+          # keeps its seeded stream byte-for-byte — the donor arm
+          # differs from the scratch arm in the EMBEDDING ONLY.
+          if donor_s.length > 0
+            dvals = donor_embed_values(donor_s, vocabv, dmv, seed)
+            if dvals.length != dmv * vocabv
+              puts "toy-train-franken-moe-cuda: donor projection failed"
+              return 1
+            end
+            TinyNNCuda.tnn_upload_from_float_array(sess, tw.pp[0], dvals, dmv * vocabv)
+            puts "donor: loaded " + donor_s + " -> embed " + vocabv.to_s + "x" + dmv.to_s +
+                 (freeze_embed ? " (frozen)" : " (trainable)")
           end
           dist_c = b_dist_code
           sig_up   = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, vocabv, dfv, 0.0)
@@ -627,7 +667,9 @@ module Toy
               # the whole spine is chain: embed/fnorm/attention/rn2 + Wr
               sp = 0
               while sp < 9
-                wire_chain(sess, tw, t_hp, t_hp_sgd, sp)
+                if !(freeze_embed && sp == 0)
+                  wire_chain(sess, tw, t_hp, t_hp_sgd, sp)
+                end
                 sp = sp + 1
               end
               if gate_i >= 0
@@ -670,7 +712,9 @@ module Toy
               e_b  = TinyNNCuda.tnn_scale(sess, TinyNNCuda.tnn_sub(sess, p_sm, t_labels), 1.0 / tv.to_f)
               idx = 0
               while idx < 9
-                wire_chain(sess, tw, t_hp, t_hp_sgd, idx)
+                if !(freeze_embed && idx == 0)
+                  wire_chain(sess, tw, t_hp, t_hp_sgd, idx)
+                end
                 idx = idx + 1
               end
               if gate_i >= 0
@@ -696,7 +740,9 @@ module Toy
             else
               idx = 0
               while idx < n_all
-                wire_chain(sess, tw, t_hp, t_hp_sgd, idx)
+                if !(freeze_embed && idx == 0)
+                  wire_chain(sess, tw, t_hp, t_hp_sgd, idx)
+                end
                 idx = idx + 1
               end
             end
@@ -776,6 +822,10 @@ module Toy
               fm.add_str("balance",   qb_on ? "qb" : (bal_s == "none" ? "none" : "aux"))
               fm.add_bool("attn_gate", attn_gate)
               fm.add_str("optimizer", opt_s.length > 0 ? opt_s : "adamw")
+              fm.add_str("donor", donor_s)
+              fm.add_str("donor_mode", donor_s.length > 0 ? "tied" : "")
+              fm.add_str("donor_projection", donor_s.length > 0 ? "random-jl,scale-matched" : "")
+              fm.add_bool("freeze_embed", freeze_embed)
               # the per-param-class routing, recorded so a bundle can be
               # audited without re-reading the runner (tao#139 asked).
               fm.add_str("optimizer_routing",

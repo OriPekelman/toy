@@ -131,6 +131,9 @@ module Toy
           @layer_pattern = nil  # franken: hybrid layer preset (toy#138/K3a)
           @attnres      = false # franken: attention residuals (toy#138/K3b)
           @optimizer    = nil   # franken-moe: adamw | muon | sgd (toy#139)
+          @donor        = nil   # franken-moe: donor GGUF for embed transfer (toy#140)
+          @donor_mode   = nil
+          @freeze_embed = false
           @shape        = nil   # franken/franken-moe: preset (toy#124)
           @routing    = nil   # franken-moe: dense | top1
           @moe_policy = nil   # franken-moe: chain | dfa-experts
@@ -290,6 +293,9 @@ module Toy
                              "FRANKEN_SCHEDULE"    => (@schedule || ""),
                              "FRANKEN_MOE_BALANCE" => (@moe_balance || ""),
                              "FRANKEN_OPTIMIZER"   => (@optimizer || ""),
+                             "FRANKEN_DONOR"       => (@donor || ""),
+                             "FRANKEN_DONOR_MODE"  => (@donor_mode || ""),
+                             "FRANKEN_FREEZE_EMBED" => (@freeze_embed ? "1" : ""),
                              "FRANKEN_ATTN_GATE"   => (@attn_gate ? "1" : ""),
                              "FRANKEN_CKPT_EVERY"  => (@ckpt_every || 0).to_s,
                              "FRANKEN_MOE_LOAD"    => (@load_ckpt || ""),
@@ -446,6 +452,25 @@ module Toy
               @kda_conv_off = true
             when "--attnres"
               @attnres = true
+            when "--donor"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--donor requires a value") if val.nil?
+              @donor = val
+            when /\A--donor=(.*)\z/m
+              @donor = $1
+            when "--donor-mode"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--donor-mode requires a value") if val.nil?
+              return bad_arg("--donor-mode must be tied or untied, got #{val.inspect}") unless %w[tied untied].include?(val)
+              @donor_mode = val
+            when /\A--donor-mode=(.*)\z/
+              val = $1
+              return bad_arg("--donor-mode must be tied or untied, got #{val.inspect}") unless %w[tied untied].include?(val)
+              @donor_mode = val
+            when "--freeze-embed"
+              @freeze_embed = true
             when "--optimizer"
               i += 1
               val = @argv[i]
@@ -759,6 +784,7 @@ module Toy
             ["--layer-pattern", %w[franken],                        !@layer_pattern.nil?, " (toy#138/K3a)"],
             ["--attnres",      %w[franken],                        @attnres, " (toy#138/K3b)"],
             ["--optimizer",    %w[franken-moe],                    !@optimizer.nil?, " (toy#139; the llama lane follows)"],
+            ["--donor/--donor-mode/--freeze-embed", %w[franken-moe], (!@donor.nil? || !@donor_mode.nil? || @freeze_embed), " (toy#140)"],
             ["--ckpt-every",    %w[franken franken-moe],            !@ckpt_every.nil?, " (toy#129/#131)"],
             ["--load-ckpt",     %w[franken-moe],                    !@load_ckpt.nil?, " (toy#131; eval-only — pass --steps 0 + --eval-corpus)"],
             ["--eval-corpus/--eval-tokens/--eval-offset", %w[franken-moe], (!@eval_corpus.nil? || !@eval_tokens.nil? || !@eval_offset.nil?), " (toy#130; the llama lane evals checkpoints offline via `toy eval ce`)"],
@@ -789,6 +815,12 @@ module Toy
           end
           if @load_ckpt && !File.file?(@load_ckpt)
             return bad_arg("no such file: #{@load_ckpt} (--load-ckpt takes a toy-moe/v1 checkpoint from --ckpt-every)")
+          end
+          if @donor && !File.file?(@donor)
+            return bad_arg("no such file: #{@donor} (--donor takes a SAME-VOCAB GGUF; data/distilgpt2-f32.gguf is the GPT-2-vocab donor)")
+          end
+          if @donor_mode && @donor.nil?
+            return bad_arg("--donor-mode needs --donor")
           end
           if @layer_pattern && @kda_layers
             return bad_arg("--layer-pattern and --kda-layers both set — the pattern computes the KDA layer list (toy#138)")
