@@ -378,6 +378,18 @@ prep/smokes/smoke_kda_recurrence: prep/smokes/smoke_kda_recurrence.rb lib/toy.rb
 		lib/toy/llm/primitives/rms_norm.rb lib/toy/llm/primitives/gdn.rb \
 		lib/toy/llm/primitives/kda.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
+# toy#139 — Muon's Newton-Schulz orthogonalization, proven by its
+# defining properties (fixed point / band / scale invariance).
+prep/smokes/smoke_muon_ns: prep/smokes/smoke_muon_ns.rb lib/toy.rb lib/toy/ffi/tinynn.rb \
+		lib/toy/llm/primitives/muon.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+.PHONY: gate-muon
+gate-muon: prep/smokes/smoke_muon_ns
+	@out="$$(./prep/smokes/smoke_muon_ns 2>&1)"; \
+	echo "$$out"; \
+	echo "$$out" | grep -q "^muon-ns: ok$$" || { echo "GATE FAIL [muon]"; exit 1; }; \
+	echo "GATE PASS [muon]: NS fixed-point + orthogonality band + scale invariance + non-trivial (toy#139)"
+
 .PHONY: gate-kda
 gate-kda: prep/smokes/smoke_kda_recurrence
 	@out="$$(./prep/smokes/smoke_kda_recurrence 2>&1)"; \
