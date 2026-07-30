@@ -122,6 +122,22 @@ KDA_S = ENV["KDA_LAYERS"] || ""
 # on = the faithful K3 form; identity-inited so step 1 is a forward
 # no-op either way).
 KDA_CONV_OFF = (ENV["KDA_CONV"] || "") == "0"
+# toy#138 (K3a): FRANKEN_LAYER_PATTERN=hybrid — K3's layerwise hybrid
+# (§2.1): THREE KDA layers then ONE global-attention layer, repeated,
+# with the FINAL layer always global ("An additional Gated MLA layer
+# is placed at the end of the backbone, ensuring that the final layer
+# always performs global attention"). Here the global layer is toy's
+# standard attention block; the MLA swap is its own K-series phase.
+# At N_LAYERS=6 that is KDA at 0,1,2,4 and attention at 3,5.
+LAYER_PATTERN = ENV["FRANKEN_LAYER_PATTERN"] || ""
+if LAYER_PATTERN.length > 0 && LAYER_PATTERN != "hybrid"
+  puts "toy-train-franken-cuda: unknown FRANKEN_LAYER_PATTERN " + LAYER_PATTERN + " (hybrid)"
+  exit 1
+end
+if LAYER_PATTERN.length > 0 && KDA_S.length > 0
+  puts "toy-train-franken-cuda: --layer-pattern and --kda-layers both set — pick one (the pattern COMPUTES the kda layer list)"
+  exit 1
+end
 KDA_LIST = [0]; KDA_LIST.pop
 if KDA_S.length > 0
   kl_parts = KDA_S.split(",")
@@ -131,6 +147,7 @@ if KDA_S.length > 0
     klp = klp + 1
   end
 end
+
 b_raw = (ENV["FRANKEN_BATCH"] || "0").to_i
 BATCH = b_raw > 0 ? b_raw : 1
 if KDA_LIST.length > 0 && BATCH > 1
@@ -177,6 +194,25 @@ if ctx_raw != 0 && ctx_raw < 2
   exit 1
 end
 CONTEXT = ctx_raw > 0 ? ctx_raw : 32
+# toy#138 K3a: expand the hybrid pattern now that N_LAYERS is known.
+if LAYER_PATTERN == "hybrid"
+  lpi = 0
+  while lpi < N_LAYERS
+    is_global = ((lpi + 1) % 4) == 0 || lpi == N_LAYERS - 1
+    if !is_global
+      KDA_LIST.push(lpi)
+    end
+    lpi = lpi + 1
+  end
+  if KDA_LIST.length == 0
+    puts "toy-train-franken-cuda: --layer-pattern hybrid at N_LAYERS=" + N_LAYERS.to_s + " yields no KDA layers (needs >= 2 layers)"
+    exit 1
+  end
+  if BATCH > 1
+    puts "toy-train-franken-cuda: --layer-pattern hybrid builds KDA layers, which are B=1 (see KDA_LAYERS)"
+    exit 1
+  end
+end
 hdr_v = CORPUS.length > 0 ? ToyCorpusLoader.probe_vocab(CORPUS) : 0
 env_v = (ENV["FRANKEN_VOCAB"] || "0").to_i
 if hdr_v > 0 && env_v > 0 && hdr_v != env_v
@@ -424,6 +460,7 @@ if EVENTS.length > 0
     config.add_str("rope",     NOPE_ON ? "nope" : "rope")
     config.add_str("kda_layers", KDA_S)
     config.add_bool("kda_conv", !KDA_CONV_OFF)
+    config.add_str("layer_pattern", LAYER_PATTERN)
     config.add_num("seed",    SEED)
     rs.add_obj("config", config)
     # toy#129 item 4: derived cost accounting — auditable FLOP-matching

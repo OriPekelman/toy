@@ -393,7 +393,36 @@ Dir.mktmpdir("franken_kda_cost") do |dir|
     failures << "kda-cost: params identical to all-attention (formula not kind-aware)" if ck["total_params"] == ca["total_params"]
   end
 end
-puts failures.length == n0 ? "  ok: KDA_LAYERS — a KDA layer trains through the engine (#{kl.first.round(3)} -> #{kl.last.round(3)}), deterministic, differs from all-attention; conv identity-null + batch guard + linear-attention cost; dfa-policy rejected" : "  FAIL: KDA leg"
+# toy#138 K3a: the hybrid layer pattern — K3's 3 KDA : 1 global with
+# the FINAL layer always global. At deep (L=6): KDA at 0,1,2,4 and
+# attention at 3,5. Asserted STRUCTURALLY (cost accounting counts
+# layer kinds, so params/flops pin the split) rather than by curve.
+hy = run_franken_llama({ "STEPS" => "3", "SEED" => "0", "FRANKEN_SHAPE" => "deep",
+                         "FRANKEN_LAYER_PATTERN" => "hybrid" }, nil).lines.select { |l| l.start_with?("step ") }
+hy2 = run_franken_llama({ "STEPS" => "3", "SEED" => "0", "FRANKEN_SHAPE" => "deep",
+                          "FRANKEN_LAYER_PATTERN" => "hybrid" }, nil).lines.select { |l| l.start_with?("step ") }
+failures << "hybrid: not deterministic" unless hy == hy2 && hy.length == 3
+failures << "hybrid: NaN" if hy.any? { |l| l[/loss=(\S+)/, 1].to_f.nan? }
+Dir.mktmpdir("franken_hy") do |dir|
+  FileUtils.mkdir_p(File.join(dir, "weights"))
+  run_franken_llama({ "STEPS" => "1", "SEED" => "0", "FRANKEN_SHAPE" => "deep",
+                      "FRANKEN_LAYER_PATTERN" => "hybrid" }, dir)
+  hj = JSON.parse(File.readlines(File.join(dir, "events.jsonl")).first)
+  failures << "hybrid: provenance layer_pattern #{hj.dig('config', 'layer_pattern').inspect}" unless hj.dig("config", "layer_pattern") == "hybrid"
+  Dir.mktmpdir("franken_hy_ref") do |d2|
+    FileUtils.mkdir_p(File.join(d2, "weights"))
+    # the same 6-layer shape with an EXPLICIT 0,1,2,4 kda list must give
+    # the identical cost split — that is the pattern's contract.
+    run_franken_llama({ "STEPS" => "1", "SEED" => "0", "FRANKEN_SHAPE" => "deep",
+                        "KDA_LAYERS" => "0,1,2,4" }, d2)
+    rj = JSON.parse(File.readlines(File.join(d2, "events.jsonl")).first)
+    failures << "hybrid: cost differs from explicit 0,1,2,4 (wrong layer split)" unless hj["cost"] == rj["cost"]
+  end
+end
+_oh, sth = Open3.capture2e({ "STEPS" => "1", "FRANKEN_LAYER_PATTERN" => "hybrid",
+                             "KDA_LAYERS" => "0" }, RUNNER, chdir: ROOT)
+failures << "hybrid: pattern + explicit kda-layers not rejected" if sth.success?
+puts failures.length == n0 ? "  ok: KDA_LAYERS — a KDA layer trains through the engine (#{kl.first.round(3)} -> #{kl.last.round(3)}), deterministic, differs from all-attention; conv identity-null + batch guard + linear-attention cost; hybrid 3:1 pattern == explicit split; dfa-policy rejected" : "  FAIL: KDA leg"
 
 # ---- toy#129 item 2: --no-shadow ----
 # THE null (the roadmap's own criterion): applied updates byte-identical

@@ -127,6 +127,8 @@ module Toy
           @moe_balance  = nil   # franken-moe: aux | qb | none (toy#136/K1)
           @attn_gate    = false # franken-moe: K3 attention output gate (toy#136/K1.1)
           @kda_layers   = nil   # franken: KDA layer indices (toy#137/K2b)
+          @kda_conv_off = false # franken: disable KDA ShortConv (toy#137/K2c)
+          @layer_pattern = nil  # franken: hybrid layer preset (toy#138/K3a)
           @shape        = nil   # franken/franken-moe: preset (toy#124)
           @routing    = nil   # franken-moe: dense | top1
           @moe_policy = nil   # franken-moe: chain | dfa-experts
@@ -313,6 +315,8 @@ module Toy
                              "FRANKEN_BATCH"   => (@batch || 0).to_s,
                              "FRANKEN_ACT"     => (@act || ""),
                              "KDA_LAYERS"      => (@kda_layers || ""),
+                             "KDA_CONV"        => (@kda_conv_off ? "0" : ""),
+                             "FRANKEN_LAYER_PATTERN" => (@layer_pattern || ""),
                              "FRANKEN_NOPE"    => (@rope == "nope" ? "1" : ""),
                              "FRANKEN_SCHEDULE" => (@schedule || ""),
                              "FRANKEN_CKPT_EVERY" => (@ckpt_every || 0).to_s)
@@ -434,6 +438,18 @@ module Toy
               @no_shadow = true
             when "--attn-gate"
               @attn_gate = true
+            when "--no-kda-conv"
+              @kda_conv_off = true
+            when "--layer-pattern"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--layer-pattern requires a value") if val.nil?
+              return bad_arg("--layer-pattern must be hybrid, got #{val.inspect}") unless val == "hybrid"
+              @layer_pattern = val
+            when /\A--layer-pattern=(.*)\z/
+              val = $1
+              return bad_arg("--layer-pattern must be hybrid, got #{val.inspect}") unless val == "hybrid"
+              @layer_pattern = val
             when "--kda-layers"
               i += 1
               val = @argv[i]
@@ -723,6 +739,8 @@ module Toy
             ["--moe-balance",   %w[franken-moe],                    !@moe_balance.nil?, " (toy#136/K1)"],
             ["--attn-gate",     %w[franken-moe],                    @attn_gate, " (toy#136/K1.1; the llama lane's gate arrives with KDA in K2)"],
             ["--kda-layers",    %w[franken],                        !@kda_layers.nil?, " (toy#137/K2b)"],
+            ["--no-kda-conv",   %w[franken],                        @kda_conv_off, " (toy#137/K2c)"],
+            ["--layer-pattern", %w[franken],                        !@layer_pattern.nil?, " (toy#138/K3a)"],
             ["--ckpt-every",    %w[franken franken-moe],            !@ckpt_every.nil?, " (toy#129/#131)"],
             ["--load-ckpt",     %w[franken-moe],                    !@load_ckpt.nil?, " (toy#131; eval-only — pass --steps 0 + --eval-corpus)"],
             ["--eval-corpus/--eval-tokens/--eval-offset", %w[franken-moe], (!@eval_corpus.nil? || !@eval_tokens.nil? || !@eval_offset.nil?), " (toy#130; the llama lane evals checkpoints offline via `toy eval ce`)"],
@@ -753,6 +771,9 @@ module Toy
           end
           if @load_ckpt && !File.file?(@load_ckpt)
             return bad_arg("no such file: #{@load_ckpt} (--load-ckpt takes a toy-moe/v1 checkpoint from --ckpt-every)")
+          end
+          if @layer_pattern && @kda_layers
+            return bad_arg("--layer-pattern and --kda-layers both set — the pattern computes the KDA layer list (toy#138)")
           end
           if @batch && @batch > 1 && @corpus.nil?
             return bad_arg("--batch > 1 needs --corpus (the fixed-seq feed is the byte-gated single-window contract)")
