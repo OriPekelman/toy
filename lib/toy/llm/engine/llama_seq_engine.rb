@@ -86,6 +86,9 @@ class LlamaSeqEngine
   # former public attr_accessor surface (the realize paths assign via
   # self.t_seq_token_embed=, external PCA-init writes fcache.t_seq_w_proj=,
   # examples read fcache.t_seq_*). Single source of truth: the arch.
+  # toy#138 K3b — AttnRes handles live on the arch (it owns the forward).
+  def t_seq_attnres_ones;       @seq_arch.t_seq_attnres_ones;       end
+  def seq_attnres_q;            @seq_arch.seq_attnres_q;            end
   def t_seq_token_embed;        @seq_arch.t_seq_token_embed;        end
   def t_seq_token_embed=(v);    @seq_arch.t_seq_token_embed = v;    end
   def t_seq_final_norm_gamma;     @seq_arch.t_seq_final_norm_gamma;     end
@@ -170,6 +173,7 @@ class LlamaSeqEngine
     @seq_franken_noshadow_policy = [0]; @seq_franken_noshadow_policy.pop
     @seq_nope_flag = 0
     @seq_kda_conv = 1        # toy#137 K2c: ShortConv on KDA q/k/v (K3 eq 2)
+    @seq_attnres = 0         # toy#138 K3b: Attention Residuals (K3 §2.2)
     @ft_globals_weights = [TinyNN.tnn_null_ptr]; @ft_globals_weights.pop
     @ft_globals_m       = [TinyNN.tnn_null_ptr]; @ft_globals_m.pop
     @ft_globals_v       = [TinyNN.tnn_null_ptr]; @ft_globals_v.pop
@@ -210,6 +214,15 @@ class LlamaSeqEngine
   # conv-on run is a step-1 forward no-op vs conv-off).
   def kda_conv_init(v)
     @seq_kda_conv = v
+    0
+  end
+
+  # toy#138 K3b: 1 enables Attention Residuals (each layer's input is a
+  # learned softmax mixture over the embedding + every preceding
+  # layer's function output, replacing residual accumulation). Call
+  # BEFORE realize. 0 = the byte-gated plain-residual path.
+  def attnres_init(v)
+    @seq_attnres = v
     0
   end
 
@@ -713,6 +726,13 @@ class LlamaSeqEngine
     # frozen-embed namer are back-called through `self`.
     @seq_arch.alloc_globals_trainable_f32!(@sess, self, @seq_vocab_size,
                                            @seq_d_model, @seq_donor_d_in, untied)
+    # toy#138 K3b: the AttnRes pseudo-queries register as GLOBALS, so
+    # the existing param-marking + opt walker pick them up with no new
+    # arm. Must precede seed_blocks!/finalize (persistent inputs are
+    # alloc-before-finalize — the toy#133 lesson).
+    if @seq_attnres == 1
+      @seq_arch.alloc_attnres!(@sess, self, @seq_n_layers, @seq_d_model)
+    end
 
     # Per-block weights — identical structure to realize_for_full_finetune.
     # P2.6 Step 2 — the block-array seeding loop now lives on the arch
@@ -855,6 +875,19 @@ class LlamaSeqEngine
                        1.0 / Math.sqrt(@seq_donor_d_in.to_f), state)
     end
     upload_constant(self.t_seq_final_norm_gamma, @seq_d_model, 1.0)
+    if @seq_attnres == 1
+      # ones-gamma for the score kernel's RMSNorm (constant, no params
+      # of its own); pseudo-queries ZERO — a zero query gives equal
+      # scores, i.e. the mixture starts as the plain MEAN over sources,
+      # a neutral and fully-specified starting point that the softmax
+      # then learns away from.
+      upload_constant(self.t_seq_attnres_ones, @seq_d_model, 1.0)
+      aq = 0
+      while aq < self.seq_attnres_q.length
+        upload_constant(self.seq_attnres_q[aq], @seq_d_model, 0.0)
+        aq = aq + 1
+      end
+    end
     if untied
       upload_gaussian(self.t_seq_output, @seq_vocab_size * @seq_d_model, 0.02, state)
     end

@@ -122,6 +122,10 @@ KDA_S = ENV["KDA_LAYERS"] || ""
 # on = the faithful K3 form; identity-inited so step 1 is a forward
 # no-op either way).
 KDA_CONV_OFF = (ENV["KDA_CONV"] || "") == "0"
+# toy#138 K3b: ATTNRES=1 replaces residual accumulation with K3's
+# depth-attention (each layer input = learned softmax mixture over the
+# embedding + every preceding layer output). Unset = byte-null.
+ATTNRES_ON = (ENV["ATTNRES"] || "") == "1"
 # toy#138 (K3a): FRANKEN_LAYER_PATTERN=hybrid — K3's layerwise hybrid
 # (§2.1): THREE KDA layers then ONE global-attention layer, repeated,
 # with the FINAL layer always global ("An additional Gated MLA layer
@@ -353,6 +357,7 @@ opts.no_shadow = NO_SHADOW ? 1 : 0
 opts.act       = ACT_CODE
 opts.rope_nope = NOPE_ON ? 1 : 0
 opts.kda_conv  = KDA_CONV_OFF ? 0 : 1
+opts.attnres   = ATTNRES_ON ? 1 : 0
 pi = 0
 while pi < policy.length
   opts.credit_assignment.push(policy[pi])
@@ -461,6 +466,7 @@ if EVENTS.length > 0
     config.add_str("kda_layers", KDA_S)
     config.add_bool("kda_conv", !KDA_CONV_OFF)
     config.add_str("layer_pattern", LAYER_PATTERN)
+    config.add_bool("attnres", ATTNRES_ON)
     config.add_num("seed",    SEED)
     rs.add_obj("config", config)
     # toy#129 item 4: derived cost accounting — auditable FLOP-matching
@@ -493,9 +499,13 @@ if EVENTS.length > 0
                   D_MODEL * dh_p + dh_p * inner_p + inner_p + N_HEADS +
                   inner_p + inner_p * D_MODEL + conv_p
     attn_params = 4 * D_MODEL * D_MODEL + 3 * D_MODEL * D_FF + 2 * D_MODEL
+    # toy#138 K3b: AttnRes adds one [d] pseudo-query per layer plus one
+    # for the final aggregation (the ones-gamma is a constant, not a
+    # param).
+    attnres_params = ATTNRES_ON ? (N_LAYERS + 1) * D_MODEL : 0
     cost_params = VOCAB * DONOR_D + DONOR_D * D_MODEL +
                   n_attn_p * attn_params + n_kda_p * kda_params +
-                  D_MODEL + D_MODEL * VOCAB
+                  attnres_params + D_MODEL + D_MODEL * VOCAB
     # toy#137 K2c: KDA layers are LINEAR-attention — O(T·d²) per
     # sequence, i.e. NO T-proportional term per token (the recurrent
     # state is d_head×d_head per head, updated in O(d²) per token),

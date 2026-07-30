@@ -424,6 +424,41 @@ _oh, sth = Open3.capture2e({ "STEPS" => "1", "FRANKEN_LAYER_PATTERN" => "hybrid"
 failures << "hybrid: pattern + explicit kda-layers not rejected" if sth.success?
 puts failures.length == n0 ? "  ok: KDA_LAYERS — a KDA layer trains through the engine (#{kl.first.round(3)} -> #{kl.last.round(3)}), deterministic, differs from all-attention; conv identity-null + batch guard + linear-attention cost; hybrid 3:1 pattern == explicit split; dfa-policy rejected" : "  FAIL: KDA leg"
 
+# ---- toy#138 K3b: AttnRes (attention residuals over depth) ----
+# OFF = byte-null (leg 1's F0 fixture). ON: trains, deterministic,
+# differs, and the pseudo-queries show up in the param count. The
+# STRUCTURAL anchor: queries init to ZERO, so every source scores
+# equally and the mixture starts as the exact MEAN over sources —
+# a fully-specified starting point (not an arbitrary one), which is
+# why the ON curve starts a hair BELOW the residual path rather than
+# anywhere.
+n0 = failures.length
+ar_env = { "STEPS" => "4", "SEED" => "0", "ATTNRES" => "1" }
+ar1 = run_franken_llama(ar_env, nil).lines.select { |l| l.start_with?("step ") }
+ar2 = run_franken_llama(ar_env, nil).lines.select { |l| l.start_with?("step ") }
+base4 = run_franken_llama({ "STEPS" => "4", "SEED" => "0" }, nil).lines.select { |l| l.start_with?("step ") }
+failures << "attnres: not deterministic" unless ar1 == ar2 && ar1.length == 4
+arl = ar1.map { |l| l[/loss=(\S+)/, 1].to_f }
+failures << "attnres: NaN" if arl.any?(&:nan?)
+failures << "attnres: did not train (#{arl.first} -> #{arl.last})" unless arl.last < arl.first - 0.05
+failures << "attnres: curve identical to the residual path (axis dead)" if ar1 == base4
+Dir.mktmpdir("franken_ar") do |dir|
+  FileUtils.mkdir_p(File.join(dir, "weights"))
+  run_franken_llama({ "STEPS" => "1", "SEED" => "0", "ATTNRES" => "1" }, dir)
+  aj = JSON.parse(File.readlines(File.join(dir, "events.jsonl")).first)
+  failures << "attnres: provenance flag #{aj.dig('config', 'attnres').inspect}" unless aj.dig("config", "attnres") == true
+  Dir.mktmpdir("franken_ar_ref") do |d2|
+    FileUtils.mkdir_p(File.join(d2, "weights"))
+    run_franken_llama({ "STEPS" => "1", "SEED" => "0" }, d2)
+    rj = JSON.parse(File.readlines(File.join(d2, "events.jsonl")).first)
+    grew = aj.dig("cost", "total_params") - rj.dig("cost", "total_params")
+    # one [d] pseudo-query per layer + one for the final aggregation
+    want = (2 + 1) * 64
+    failures << "attnres: params grew by #{grew} (want #{want} = (L+1)·d)" unless grew == want
+  end
+end
+puts failures.length == n0 ? "  ok: AttnRes — depth-attention trains (#{arl.first.round(3)} -> #{arl.last.round(3)}), deterministic, differs from the residual path, (L+1)·d pseudo-queries counted" : "  FAIL: attnres leg"
+
 # ---- toy#129 item 2: --no-shadow ----
 # THE null (the roadmap's own criterion): applied updates byte-identical
 # shadow vs no-shadow at the same policy/seed — the mode changes the
@@ -473,7 +508,7 @@ failures << "byte-repro: outputs differ" unless r1 == r2
 puts "  ok: byte-repro — two policy runs identical" if r1 == r2
 
 if failures.empty?
-  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + shape presets (toy#124) + lr/warmup (toy#126) + no-shadow/pack-header/ckpt-every (toy#129) + batch (toy#133) + K1 axes (toy#136) + KDA layer (toy#137) + byte-repro (toy#112/#113)"
+  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + shape presets (toy#124) + lr/warmup (toy#126) + no-shadow/pack-header/ckpt-every (toy#129) + batch (toy#133) + K1 axes (toy#136) + KDA layer (toy#137) + hybrid/AttnRes (toy#138) + byte-repro (toy#112/#113)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-llama]: #{f}" }

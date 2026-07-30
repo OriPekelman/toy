@@ -96,7 +96,12 @@ module Toy; module LLM; module Archs
                   # the engine overwrites these BEFORE build_forward
                   # (exactly the seq_rope_cfg pattern). 0 = the
                   # byte-gated defaults (swiglu, rope).
-                  :seq_act, :seq_nope
+                  :seq_act, :seq_nope,
+                  # toy#138 K3b (AttnRes, K3 §2.2): per-layer learnable
+                  # pseudo-queries + the ones-gamma the score kernel's
+                  # RMSNorm uses. Empty array = OFF (plain residual
+                  # accumulation, byte-null).
+                  :seq_attnres_q, :t_seq_attnres_ones, :seq_attnres_on
 
     def initialize
       @t_seq_token_embed      = TinyNN.tnn_null_ptr
@@ -121,6 +126,9 @@ module Toy; module LLM; module Archs
       @seq_rope_cfg           = TinyNN.tnn_null_ptr
       @seq_act                = 0
       @seq_nope               = 0
+      @seq_attnres_q          = [TinyNN.tnn_null_ptr]; @seq_attnres_q.pop
+      @t_seq_attnres_ones     = TinyNN.tnn_null_ptr
+      @seq_attnres_on         = 0
     end
 
     # Reset @seq_blocks_ffi and fill it with exactly n_layers fresh
@@ -142,8 +150,81 @@ module Toy; module LLM; module Archs
     # function-parameter array trips the Spinel #688 type-lock landmine, which
     # here manifests as a token-id-finalize codegen miscompile). Mutates the
     # plain int dispatch array element (proven-safe).
+    # toy#138 K3b: ONE AttnRes mixture (K3 eq 9).
+    #   s_j   = qᵀ RMSNorm(v_j)            -> [1, T]   per source
+    #   α     = softmax_j(s_j)             -> [n, T]   (over the SOURCE axis)
+    #   out   = Σ_j α_j ⊙ v_j              -> [d, T]
+    # The RMSNorm is the paper's magnitude guard (a layer with large
+    # outputs must not dominate); it uses a constant ones-gamma, so it
+    # adds no parameters.
+    #
+    # PLUMBING NOTE (the K2c lesson): the per-source weight rows are
+    # STRIDED VIEWS of the softmax output, and a strided view used as a
+    # mul operand poisons the backward (grad path through GGML_OP_VIEW
+    # hits a scale on non-contiguous storage — ggml.c:3392). Every row
+    # is therefore cont'd before it multiplies anything.
+    def attnres_mix(sess, srcs, q, ones_gamma, eps)
+      n = srcs.length
+      if n == 1
+        return srcs[0]   # softmax over one source is exactly 1.0
+      end
+      fbytes = 4
+      scores = TinyNN.tnn_null_ptr
+      j = 0
+      while j < n
+        nj = TinyNN.tnn_rms_norm(sess, srcs[j], ones_gamma, eps)
+        sj = TinyNN.tnn_matmul(sess, q, nj)        # [d,1]ᵀ·[d,T] -> [1,T]
+        if j == 0
+          scores = sj
+        else
+          scores = TinyNN.tnn_concat(sess, scores, sj, 0)   # -> [n, T]
+        end
+        j = j + 1
+      end
+      alpha = TinyNN.tnn_softmax(sess, scores)     # over ne0 = the source axis
+      out = TinyNN.tnn_null_ptr
+      j = 0
+      while j < n
+        row = TinyNN.tnn_cont_2d(sess,
+                TinyNN.tnn_view_2d(sess, alpha, 1, seq_t_of(srcs[0]),
+                                   n * fbytes, j * fbytes),
+                1, seq_t_of(srcs[0]))
+        term = TinyNN.tnn_mul(sess, srcs[j], row)  # [d,T] * [1,T] broadcast
+        if j == 0
+          out = term
+        else
+          out = TinyNN.tnn_add(sess, out, term)
+        end
+        j = j + 1
+      end
+      out
+    end
+
+    # Token count of a [d, T] activation (ne1).
+    def seq_t_of(t)
+      TinyNN.tnn_tensor_nelements(t) / TinyNN.tnn_tensor_ne0(t)
+    end
+
     def set_gdn_layer!(idx)
       @seq_layer_kinds[idx] = Toy::LLM::Archs::LayerSpec::KIND_GDN
+    end
+
+    # toy#138 K3b: allocate the AttnRes pseudo-queries — ONE [d,1] per
+    # layer (layer l mixes sources 0..l) plus ONE for the final
+    # aggregation, and the ones-gamma the score RMSNorm reads. The
+    # queries are registered as GLOBALS (via the cache's recorder) so
+    # the existing opt walker trains them with no new arm.
+    def alloc_attnres!(sess, cache, n_layers, d_model)
+      @seq_attnres_on = 1
+      @t_seq_attnres_ones = TinyNN.tnn_input_1d_f32_persistent(sess, d_model)
+      li_a = 0
+      while li_a < n_layers + 1
+        q = TinyNN.tnn_input_2d_f32_persistent(sess, 1, d_model)   # ne=[d,1]
+        @seq_attnres_q.push(q)
+        cache.ft_add_global_2d(q, 1, d_model)
+        li_a = li_a + 1
+      end
+      0
     end
 
     def set_kda_layer!(idx)
@@ -263,6 +344,14 @@ module Toy; module LLM; module Archs
         t_positions, t_rope_freq_factors, self.seq_rope_cfg,
         seq_t, seq_b, t_attn_mask, self.seq_act, self.seq_nope)
 
+      # toy#138 K3b (AttnRes): sources for the depth-attention. src[0]
+      # is the embedding (post-lens); src[i+1] is layer i's FUNCTION
+      # output f_i(h_i) — recovered as (block_out − block_in), because
+      # toy's blocks return the residual sum x+f(x) while K3 eq 8 keys
+      # and values on f_i itself. Plain-residual mode leaves this array
+      # empty and never touches it.
+      ar_srcs = [TinyNN.tnn_null_ptr]; ar_srcs.pop
+
       x_embed = TinyNN.tnn_get_rows(sess, self.t_seq_token_embed, t_token_ids)
       TinyNN.tnn_set_output(x_embed)
 
@@ -275,6 +364,9 @@ module Toy; module LLM; module Archs
       else
         t_cur = x_embed
       end
+      if self.seq_attnres_on == 1
+        ar_srcs.push(t_cur)
+      end
       li_g = 0
       while li_g < seq_n_layers
         # Phase 3 — per-layer descriptor dispatch. The branch compares a FLAT
@@ -283,6 +375,14 @@ module Toy; module LLM; module Archs
         # class). KIND_ATTENTION is the only arm wired today; KIND_GDN gets its
         # own arm + its own typed block array in Phase 5. Unknown kinds fail
         # loud rather than silently building the wrong graph (never-mask rule).
+        # AttnRes: this layer's INPUT is the learned mixture over every
+        # preceding source instead of the accumulated residual.
+        ar_in = t_cur
+        if self.seq_attnres_on == 1
+          ar_in = attnres_mix(sess, ar_srcs, self.seq_attnres_q[li_g],
+                              self.t_seq_attnres_ones, eps)
+          t_cur = ar_in
+        end
         spec_kind = self.seq_layer_kinds[li_g]
         if spec_kind == Toy::LLM::Archs::LayerSpec::KIND_ATTENTION
           t_cur = self.seq_blocks_ffi[li_g].build_forward(sess, t_cur, ctx)
@@ -296,9 +396,19 @@ module Toy; module LLM; module Archs
         else
           raise "LlamaArch#build_forward: unsupported layer kind #{spec_kind} at layer #{li_g}"
         end
+        if self.seq_attnres_on == 1
+          # f_l = (x + f_l(x)) − x, the layer's own contribution.
+          ar_srcs.push(TinyNN.tnn_sub(sess, t_cur, ar_in))
+        end
         li_g = li_g + 1
       end
 
+      if self.seq_attnres_on == 1
+        # "The final output layer then aggregates all block
+        # representations" (K3 §2.2) — one more mixture, own query.
+        t_cur = attnres_mix(sess, ar_srcs, self.seq_attnres_q[seq_n_layers],
+                            self.t_seq_attnres_ones, eps)
+      end
       x_final = Toy::LLM::Primitives::RMSNorm.build(sess, t_cur, self.t_seq_final_norm_gamma, eps)
       TinyNN.tnn_set_output(x_final)
 

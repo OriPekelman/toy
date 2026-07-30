@@ -129,6 +129,7 @@ module Toy
           @kda_layers   = nil   # franken: KDA layer indices (toy#137/K2b)
           @kda_conv_off = false # franken: disable KDA ShortConv (toy#137/K2c)
           @layer_pattern = nil  # franken: hybrid layer preset (toy#138/K3a)
+          @attnres      = false # franken: attention residuals (toy#138/K3b)
           @shape        = nil   # franken/franken-moe: preset (toy#124)
           @routing    = nil   # franken-moe: dense | top1
           @moe_policy = nil   # franken-moe: chain | dfa-experts
@@ -317,6 +318,7 @@ module Toy
                              "KDA_LAYERS"      => (@kda_layers || ""),
                              "KDA_CONV"        => (@kda_conv_off ? "0" : ""),
                              "FRANKEN_LAYER_PATTERN" => (@layer_pattern || ""),
+                             "ATTNRES"         => (@attnres ? "1" : ""),
                              "FRANKEN_NOPE"    => (@rope == "nope" ? "1" : ""),
                              "FRANKEN_SCHEDULE" => (@schedule || ""),
                              "FRANKEN_CKPT_EVERY" => (@ckpt_every || 0).to_s)
@@ -440,6 +442,8 @@ module Toy
               @attn_gate = true
             when "--no-kda-conv"
               @kda_conv_off = true
+            when "--attnres"
+              @attnres = true
             when "--layer-pattern"
               i += 1
               val = @argv[i]
@@ -741,6 +745,7 @@ module Toy
             ["--kda-layers",    %w[franken],                        !@kda_layers.nil?, " (toy#137/K2b)"],
             ["--no-kda-conv",   %w[franken],                        @kda_conv_off, " (toy#137/K2c)"],
             ["--layer-pattern", %w[franken],                        !@layer_pattern.nil?, " (toy#138/K3a)"],
+            ["--attnres",      %w[franken],                        @attnres, " (toy#138/K3b)"],
             ["--ckpt-every",    %w[franken franken-moe],            !@ckpt_every.nil?, " (toy#129/#131)"],
             ["--load-ckpt",     %w[franken-moe],                    !@load_ckpt.nil?, " (toy#131; eval-only — pass --steps 0 + --eval-corpus)"],
             ["--eval-corpus/--eval-tokens/--eval-offset", %w[franken-moe], (!@eval_corpus.nil? || !@eval_tokens.nil? || !@eval_offset.nil?), " (toy#130; the llama lane evals checkpoints offline via `toy eval ce`)"],

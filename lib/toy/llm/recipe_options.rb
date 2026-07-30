@@ -94,7 +94,9 @@ module Toy; module LLM
                   :kda_layers,
                   # toy#137 K2c: 1 (default) = ShortConv on KDA q/k/v
                   # (K3 eq 2, identity-inited); 0 disables it.
-                  :kda_conv
+                  :kda_conv,
+                  # toy#138 K3b: 1 = Attention Residuals (K3 §2.2).
+                  :attnres
 
     def initialize
       @t_seq        = 0
@@ -117,6 +119,7 @@ module Toy; module LLM
       @gdn_layers = [0]; @gdn_layers.pop   # typed-empty IntArray
       @kda_layers = [0]; @kda_layers.pop   # typed-empty IntArray
       @kda_conv   = 1
+      @attnres    = 0
     end
   end
 end; end
