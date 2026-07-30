@@ -153,6 +153,27 @@ module Toy
           # (chain-wired under bp-spine, param under dense) at the tail
           # index 9+2E; off = not allocated (byte-null).
           attn_gate = (ENV["FRANKEN_ATTN_GATE"] || "") == "1"
+          # toy#139: FRANKEN_OPTIMIZER adamw (default, byte-null) | muon
+          # | sgd. Muon rides the STANDARD recipe — orthogonalized steps
+          # on 2D hidden matrices only, AdamW on embeddings/norms (see
+          # franken_moe_parts.muon_eligible). The scientifically novel
+          # bit, per tao#139: under --moe-policy dfa-experts/bp-spine
+          # this orthogonalizes the DFA PSEUDO-gradient (B·e·hᵀ), a
+          # rank-structured near-random direction that Muon's premise
+          # (momentum ≈ a meaningful gradient) does not describe —
+          # whether that helps or is inert IS the experiment.
+          opt_s = ENV["FRANKEN_OPTIMIZER"] || ""
+          if opt_s.length > 0 && opt_s != "adamw" && opt_s != "muon" && opt_s != "sgd"
+            puts "toy-train-franken-moe-cuda: unknown FRANKEN_OPTIMIZER " + opt_s + " (adamw|muon|sgd)"
+            return 1
+          end
+          opt_code = 0
+          if opt_s == "muon"
+            opt_code = 1
+          end
+          if opt_s == "sgd"
+            opt_code = 2
+          end
           bal_s = ENV["FRANKEN_MOE_BALANCE"] || ""
           if bal_s.length > 0 && bal_s != "aux" && bal_s != "qb" && bal_s != "none"
             puts "toy-train-franken-moe-cuda: unknown FRANKEN_MOE_BALANCE " + bal_s + " (aux|qb|none)"
@@ -328,6 +349,7 @@ module Toy
             shape_init(DM_BASE, DFF_BASE, vsel, esel, tbv)
           end
           attn_gate_init(attn_gate ? 1 : 0)
+          opt_init(opt_code)
           # toy#136 K1.1: the spine bound. Without the gate the spine is
           # 0..8 (embed/fnorm/attention/rn2/Wr); with it, W_g at 9+2E
           # joins — so spine membership is "gi < 9 || gi == gate_idx"
@@ -385,6 +407,12 @@ module Toy
           b_ao  = TinyNNCuda.tnn_input_2d_f32_persistent(sess, dmv, vocabv)
           b_r   = TinyNNCuda.tnn_input_2d_f32_persistent(sess, nev, vocabv)
           ones_t = TinyNNCuda.tnn_input_2d_f32_persistent(sess, 1, tv)   # ne=[tv,1]
+          # toy#139: ggml's SGD step takes exactly [alpha, wd]; muon and
+          # sgd both apply through it. PERSISTENT (alloc BEFORE
+          # finalize_weights) — a compute-context input gets no backing
+          # buffer when the graph does not reach it, and the per-step
+          # upload then aborts inside ggml_backend_tensor_set.
+          t_hp_sgd = TinyNNCuda.tnn_input_1d_f32_persistent(sess, 2)
           # toy#133: block-causal attention mask — ALLOCATED here
           # (persistent inputs must precede finalize_weights; an alloc
           # after finalize has no backing buffer and silently reads
@@ -599,24 +627,24 @@ module Toy
               # the whole spine is chain: embed/fnorm/attention/rn2 + Wr
               sp = 0
               while sp < 9
-                wire_chain(sess, tw, t_hp, sp)
+                wire_chain(sess, tw, t_hp, t_hp_sgd, sp)
                 sp = sp + 1
               end
               if gate_i >= 0
-                wire_chain(sess, tw, t_hp, gate_i)
+                wire_chain(sess, tw, t_hp, t_hp_sgd, gate_i)
               end
             else
-              wire_dfa_top1(sess, tw, t_hp, 3, b_aq, e_b, tw.tap_ah,  dmv, dmv, np2)
-              wire_dfa_top1(sess, tw, t_hp, 4, b_ak, e_b, tw.tap_ah,  dmv, dmv, np2)
-              wire_dfa_top1(sess, tw, t_hp, 5, b_av, e_b, tw.tap_ah,  dmv, dmv, np2)
-              wire_dfa_top1(sess, tw, t_hp, 6, b_ao, e_b, tw.tap_ctx, dmv, dmv, np2)
+              wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 3, b_aq, e_b, tw.tap_ah,  dmv, dmv, np2)
+              wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 4, b_ak, e_b, tw.tap_ah,  dmv, dmv, np2)
+              wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 5, b_av, e_b, tw.tap_ah,  dmv, dmv, np2)
+              wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 6, b_ao, e_b, tw.tap_ctx, dmv, dmv, np2)
             end
             if bp_spine
               # router already chain-wired above; experts follow below
             elsif bp_router
               # toy#121: router credit is PURE BP — the acc already holds
               # task-BP + aux-BP (both loss roots backward into it).
-              wire_chain(sess, tw, t_hp, 8)
+              wire_chain(sess, tw, t_hp, t_hp_sgd, 8)
             else
               # F4 lane: router = DFA task signal + BP aux signal
               g_dfa_r = dfa_grad(sess, b_r, e_b, tw.tap_h2, dmv, nev)
@@ -632,8 +660,8 @@ module Toy
             ei = 0
             while ei < nev
               m_i = TinyNNCuda.tnn_matmul(sess, sels[ei], tw.t_onehots)
-              wire_dfa_top1(sess, tw, t_hp, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_h2, dmv,  dfv, m_i)
-              wire_dfa_top1(sess, tw, t_hp, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_a1, dfv, dmv,  m_i)
+              wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_h2, dmv,  dfv, m_i)
+              wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_a1, dfv, dmv,  m_i)
               ei = ei + 1
             end
           else
@@ -642,11 +670,11 @@ module Toy
               e_b  = TinyNNCuda.tnn_scale(sess, TinyNNCuda.tnn_sub(sess, p_sm, t_labels), 1.0 / tv.to_f)
               idx = 0
               while idx < 9
-                wire_chain(sess, tw, t_hp, idx)
+                wire_chain(sess, tw, t_hp, t_hp_sgd, idx)
                 idx = idx + 1
               end
               if gate_i >= 0
-                wire_chain(sess, tw, t_hp, gate_i)
+                wire_chain(sess, tw, t_hp, t_hp_sgd, gate_i)
               end
               # toy#128: per-expert dense DFA wires; each down_i reads
               # its own dense act tap (tap_as[i]). toy#129: no-shadow
@@ -657,18 +685,18 @@ module Toy
               ei = 0
               while ei < nev
                 if no_shadow
-                  wire_dfa_top1(sess, tw, t_hp, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_h2,     dmv,  dfv, np3)
-                  wire_dfa_top1(sess, tw, t_hp, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_as[ei], dfv, dmv,  np3)
+                  wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_h2,     dmv,  dfv, np3)
+                  wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_as[ei], dfv, dmv,  np3)
                 else
-                  wire_dfa(sess, tw, t_hp, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_h2,    dmv,  dfv, "up" + (ei + 1).to_s)
-                  wire_dfa(sess, tw, t_hp, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_as[ei], dfv, dmv,  "down" + (ei + 1).to_s)
+                  wire_dfa(sess, tw, t_hp, t_hp_sgd, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_h2,    dmv,  dfv, "up" + (ei + 1).to_s)
+                  wire_dfa(sess, tw, t_hp, t_hp_sgd, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_as[ei], dfv, dmv,  "down" + (ei + 1).to_s)
                 end
                 ei = ei + 1
               end
             else
               idx = 0
               while idx < n_all
-                wire_chain(sess, tw, t_hp, idx)
+                wire_chain(sess, tw, t_hp, t_hp_sgd, idx)
                 idx = idx + 1
               end
             end
@@ -747,6 +775,12 @@ module Toy
               fm.add_bool("shadow",   dfa_experts && !top1 && !no_shadow)
               fm.add_str("balance",   qb_on ? "qb" : (bal_s == "none" ? "none" : "aux"))
               fm.add_bool("attn_gate", attn_gate)
+              fm.add_str("optimizer", opt_s.length > 0 ? opt_s : "adamw")
+              # the per-param-class routing, recorded so a bundle can be
+              # audited without re-reading the runner (tao#139 asked).
+              fm.add_str("optimizer_routing",
+                         opt_code == 1 ? "muon:2d-hidden,adamw:embed+norms" :
+                         (opt_code == 2 ? "sgd:all" : "adamw:all"))
               rs.add_obj("franken_moe", fm)
               TinyNNCuda.tnn_events_emit(rs.dump)
             else
@@ -835,7 +869,18 @@ module Toy
             end
             TinyNNCuda.upload_int_array(sess, t_tok, ids)
             TinyNNCuda.tnn_upload_from_float_array(sess, t_labels, labels, vocabv * tv)
-            TinyNNCuda.tnn_upload_from_float_array(sess, t_hp, hp, 7)
+            # At --optimizer sgd NOTHING uses opt_step_adamw, so t_hp
+            # (a compute-context input) is unreachable from the graph
+            # and has no buffer — uploading it aborts in
+            # ggml_backend_tensor_set. muon still routes embeds/norms
+            # through adamw, so it keeps the upload.
+            if opt_code != 2
+              TinyNNCuda.tnn_upload_from_float_array(sess, t_hp, hp, 7)
+            end
+            if opt_code != 0
+              hp_sgd = [lr_t, 0.0]
+              TinyNNCuda.tnn_upload_from_float_array(sess, t_hp_sgd, hp_sgd, 2)
+            end
             if top1
               TinyNNCuda.tnn_upload_from_float_array(sess, t_f, fvec, nev)
             end

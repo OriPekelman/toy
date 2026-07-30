@@ -130,6 +130,7 @@ module Toy
           @kda_conv_off = false # franken: disable KDA ShortConv (toy#137/K2c)
           @layer_pattern = nil  # franken: hybrid layer preset (toy#138/K3a)
           @attnres      = false # franken: attention residuals (toy#138/K3b)
+          @optimizer    = nil   # franken-moe: adamw | muon | sgd (toy#139)
           @shape        = nil   # franken/franken-moe: preset (toy#124)
           @routing    = nil   # franken-moe: dense | top1
           @moe_policy = nil   # franken-moe: chain | dfa-experts
@@ -288,6 +289,7 @@ module Toy
                              "FRANKEN_WARMUP"      => (@warmup || 0).to_s,
                              "FRANKEN_SCHEDULE"    => (@schedule || ""),
                              "FRANKEN_MOE_BALANCE" => (@moe_balance || ""),
+                             "FRANKEN_OPTIMIZER"   => (@optimizer || ""),
                              "FRANKEN_ATTN_GATE"   => (@attn_gate ? "1" : ""),
                              "FRANKEN_CKPT_EVERY"  => (@ckpt_every || 0).to_s,
                              "FRANKEN_MOE_LOAD"    => (@load_ckpt || ""),
@@ -444,6 +446,16 @@ module Toy
               @kda_conv_off = true
             when "--attnres"
               @attnres = true
+            when "--optimizer"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--optimizer requires a value") if val.nil?
+              return bad_arg("--optimizer must be adamw, muon, or sgd, got #{val.inspect}") unless %w[adamw muon sgd].include?(val)
+              @optimizer = val
+            when /\A--optimizer=(.*)\z/
+              val = $1
+              return bad_arg("--optimizer must be adamw, muon, or sgd, got #{val.inspect}") unless %w[adamw muon sgd].include?(val)
+              @optimizer = val
             when "--layer-pattern"
               i += 1
               val = @argv[i]
@@ -746,6 +758,7 @@ module Toy
             ["--no-kda-conv",   %w[franken],                        @kda_conv_off, " (toy#137/K2c)"],
             ["--layer-pattern", %w[franken],                        !@layer_pattern.nil?, " (toy#138/K3a)"],
             ["--attnres",      %w[franken],                        @attnres, " (toy#138/K3b)"],
+            ["--optimizer",    %w[franken-moe],                    !@optimizer.nil?, " (toy#139; the llama lane follows)"],
             ["--ckpt-every",    %w[franken franken-moe],            !@ckpt_every.nil?, " (toy#129/#131)"],
             ["--load-ckpt",     %w[franken-moe],                    !@load_ckpt.nil?, " (toy#131; eval-only — pass --steps 0 + --eval-corpus)"],
             ["--eval-corpus/--eval-tokens/--eval-offset", %w[franken-moe], (!@eval_corpus.nil? || !@eval_tokens.nil? || !@eval_offset.nil?), " (toy#130; the llama lane evals checkpoints offline via `toy eval ce`)"],

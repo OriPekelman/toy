@@ -9,6 +9,7 @@ require_relative "../../toy"
 require_relative "../ffi/tinynn"
 require_relative "../llm/primitives/rms_norm"
 require_relative "../train/dfa_b"
+require_relative "../llm/primitives/muon"
 
 module Toy
   module LLM
@@ -66,6 +67,53 @@ module Toy
 
         def self.tv
           @sh_t
+        end
+
+        # toy#139 optimizer axis. 0 = adamw (byte-null default), 1 =
+        # muon, 2 = sgd. Muon uses the STANDARD recipe (Jordan): the
+        # orthogonalized step applies to 2D HIDDEN matrices only —
+        # attention q/k/v/o, the router, the experts, the output gate —
+        # while embeddings, norms and scalars stay on AdamW. Naive
+        # Muon-on-everything underperforms and would make the F9m
+        # comparison a strawman.
+        #
+        # In this instrument that rule is an index rule: pp[0] is the
+        # (tied) embedding and pp[1]/pp[2]/pp[7] are norms, so those
+        # four stay AdamW; everything else is a 2D hidden matrix.
+        def self.opt_init(v)
+          @sh_opt = v
+          0
+        end
+
+        def self.optv
+          @sh_opt
+        end
+
+        def self.muon_eligible(idx)
+          idx != 0 && idx != 1 && idx != 2 && idx != 7
+        end
+
+        # ONE parameter's update, routed by optimizer + param class.
+        # t_hp is the AdamW hp vector; t_hp_sgd the [lr, wd] pair the
+        # ggml SGD step takes. Returns the opt node (already extended
+        # into the backward graph).
+        def self.apply_step(sess, tw, t_hp, t_hp_sgd, idx, grad)
+          to = TinyNN.tnn_null_ptr
+          if optv == 1 && muon_eligible(idx)
+            nel = TinyNN.tnn_tensor_nelements(tw.pp[idx])
+            ne0 = TinyNN.tnn_tensor_ne0(tw.pp[idx])
+            ne1 = nel / ne0
+            # The momentum buffer IS the Adam m slot (already allocated
+            # and zeroed) — Muon needs one buffer, not two.
+            step = Toy::LLM::Primitives::Muon.update(sess, grad, tw.pm[idx], ne0, ne1)
+            to = TinyNN.tnn_opt_step_sgd(sess, tw.pp[idx], step, t_hp_sgd)
+          elsif optv == 2
+            to = TinyNN.tnn_opt_step_sgd(sess, tw.pp[idx], grad, t_hp_sgd)
+          else
+            to = TinyNN.tnn_opt_step_adamw(sess, tw.pp[idx], grad, tw.pm[idx], tw.pv[idx], t_hp)
+          end
+          TinyNN.tnn_extend_backward_graph(sess, to)
+          0
         end
 
         # toy#136 K1.1: attention output gate (K3 eq 7, the MLA form —
@@ -365,17 +413,15 @@ module Toy
           TinyNN.tnn_matmul(sess, a_in_t, delt_t)                       # [d_in, d_out]
         end
 
-        def self.wire_chain(sess, tw, t_hp, idx)
+        def self.wire_chain(sess, tw, t_hp, t_hp_sgd, idx)
           tg = TinyNN.tnn_tensor_grad(sess, tw.pp[idx])
-          to = TinyNN.tnn_opt_step_adamw(sess, tw.pp[idx], tg, tw.pm[idx], tw.pv[idx], t_hp)
-          TinyNN.tnn_extend_backward_graph(sess, to)
-          0
+          apply_step(sess, tw, t_hp, t_hp_sgd, idx, tg)
         end
 
         # top1 lane-B wire: LATE-param (P0 idiom — tower B has zero params
         # at build_backward time) + optional routing mask on delta. No align
         # recording (no autodiff accs exist in this tower).
-        def self.wire_dfa_top1(sess, tw, t_hp, idx, b, e, a_in, d_in, d_out, mask)
+        def self.wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, idx, b, e, a_in, d_in, d_out, mask)
           delta = TinyNN.tnn_matmul(sess, b, e)
           if mask != TinyNN.tnn_null_ptr
             delta = TinyNN.tnn_mul(sess, delta, mask)
@@ -385,16 +431,13 @@ module Toy
           g = TinyNN.tnn_matmul(sess, a_in_t, delt_t)
           TinyNN.tnn_set_output(g)
           TinyNN.tnn_set_param(tw.pp[idx])
-          to = TinyNN.tnn_opt_step_adamw(sess, tw.pp[idx], g, tw.pm[idx], tw.pv[idx], t_hp)
-          TinyNN.tnn_extend_backward_graph(sess, to)
-          0
+          apply_step(sess, tw, t_hp, t_hp_sgd, idx, g)
         end
 
-        def self.wire_dfa(sess, tw, t_hp, idx, b, e, a_in, d_in, d_out, name)
+        def self.wire_dfa(sess, tw, t_hp, t_hp_sgd, idx, b, e, a_in, d_in, d_out, name)
           g = dfa_grad(sess, b, e, a_in, d_in, d_out)
           TinyNN.tnn_set_output(g)
-          to = TinyNN.tnn_opt_step_adamw(sess, tw.pp[idx], g, tw.pm[idx], tw.pv[idx], t_hp)
-          TinyNN.tnn_extend_backward_graph(sess, to)
+          apply_step(sess, tw, t_hp, t_hp_sgd, idx, g)
           tw.dfa_grads.push(g)
           acc = TinyNN.tnn_tensor_grad(sess, tw.pp[idx])
           TinyNN.tnn_set_output(acc)   # shadow acc: unconsumed, pin it

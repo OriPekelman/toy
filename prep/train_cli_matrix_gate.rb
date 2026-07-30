@@ -46,6 +46,7 @@ REJECT = [
   [%w[franken-moe --layer-pattern hybrid], "--layer-pattern"],
   [%w[from-scratch --no-kda-conv],        "--no-kda-conv"],
   [%w[franken-moe --attnres],             "--attnres"],
+  [%w[franken --optimizer muon],          "--optimizer"],
   [%w[from-scratch --ckpt-every 2],       "--ckpt-every"],
   [%w[franken --load-ckpt x.gguf],        "--load-ckpt"],
   [%w[franken --eval-corpus x.bin],       "--eval-corpus"],

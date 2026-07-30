@@ -98,6 +98,7 @@ module Toy
 
           shape_init(DM_BASE, DFF_BASE, VOCAB, NE, T)   # the rig IS the base instrument
           attn_gate_init(0)                      # toy#136 K1.1: rig = ungated
+          opt_init(0)                            # toy#139: the rig is AdamW-only
           sess = TinyNN.tnn_session_new(0)
           TinyNN.tnn_session_set_graph_capacity(sess, 262144)
 
@@ -125,6 +126,12 @@ module Toy
           # (persistent = real storage; the per-step f vector is a plain
           # graph input, declared below with tok/labels).
           ones_t = TinyNN.tnn_input_2d_f32_persistent(sess, 1, T)   # ne=[T,1]
+          # toy#139: ggml's SGD step takes exactly [alpha, wd]; muon and
+          # sgd both apply through it. PERSISTENT (alloc BEFORE
+          # finalize_weights) — a compute-context input gets no backing
+          # buffer when the graph does not reach it, and the per-step
+          # upload then aborts inside ggml_backend_tensor_set.
+          t_hp_sgd = TinyNN.tnn_input_1d_f32_persistent(sess, 2)
 
           gi = 0
           while gi < tow_a.pp.length
@@ -220,7 +227,7 @@ module Toy
           # lane A: all chain
           idx = 0
           while idx < tow_a.pp.length
-            wire_chain(sess, tow_a, t_hp, idx)
+            wire_chain(sess, tow_a, t_hp, t_hp_sgd, idx)
             idx = idx + 1
           end
           # lane B: chain everywhere except (policy) the four expert weights
@@ -230,10 +237,10 @@ module Toy
             # FULLY-DFA tower B: attention + router + routed-masked experts;
             # embed/norms frozen. Routing masks from the recorded one-hots.
             np2 = TinyNN.tnn_null_ptr
-            wire_dfa_top1(sess, tow_b, t_hp, 3, b_aq, e_b, tow_b.tap_ah,  dmv, dmv, np2)
-            wire_dfa_top1(sess, tow_b, t_hp, 4, b_ak, e_b, tow_b.tap_ah,  dmv, dmv, np2)
-            wire_dfa_top1(sess, tow_b, t_hp, 5, b_av, e_b, tow_b.tap_ah,  dmv, dmv, np2)
-            wire_dfa_top1(sess, tow_b, t_hp, 6, b_ao, e_b, tow_b.tap_ctx, dmv, dmv, np2)
+            wire_dfa_top1(sess, tow_b, t_hp, t_hp_sgd, 3, b_aq, e_b, tow_b.tap_ah,  dmv, dmv, np2)
+            wire_dfa_top1(sess, tow_b, t_hp, t_hp_sgd, 4, b_ak, e_b, tow_b.tap_ah,  dmv, dmv, np2)
+            wire_dfa_top1(sess, tow_b, t_hp, t_hp_sgd, 5, b_av, e_b, tow_b.tap_ah,  dmv, dmv, np2)
+            wire_dfa_top1(sess, tow_b, t_hp, t_hp_sgd, 6, b_ao, e_b, tow_b.tap_ctx, dmv, dmv, np2)
             if aux_on
               # router = DFA task signal + BP aux signal, one opt step.
               # Wr is an EARLY param (set before build_backward) — no
@@ -246,29 +253,29 @@ module Toy
               to_r = TinyNN.tnn_opt_step_adamw(sess, tow_b.pp[8], g_tot, tow_b.pm[8], tow_b.pv[8], t_hp)
               TinyNN.tnn_extend_backward_graph(sess, to_r)
             else
-              wire_dfa_top1(sess, tow_b, t_hp, 8, b_r, e_b, tow_b.tap_h2, dmv, NE, np2)
+              wire_dfa_top1(sess, tow_b, t_hp, t_hp_sgd, 8, b_r, e_b, tow_b.tap_h2, dmv, NE, np2)
             end
             m1 = TinyNN.tnn_matmul(sess, sel1, tow_b.t_onehots)   # [1,T]
             m2 = TinyNN.tnn_matmul(sess, sel2, tow_b.t_onehots)
-            wire_dfa_top1(sess, tow_b, t_hp, 9,  b_up1,   e_b, tow_b.tap_h2, dmv,  dfv, m1)
-            wire_dfa_top1(sess, tow_b, t_hp, 10, b_down1, e_b, tow_b.tap_a1, dfv, dmv,  m1)
-            wire_dfa_top1(sess, tow_b, t_hp, 11, b_up2,   e_b, tow_b.tap_h2, dmv,  dfv, m2)
-            wire_dfa_top1(sess, tow_b, t_hp, 12, b_down2, e_b, tow_b.tap_a1, dfv, dmv,  m2)
+            wire_dfa_top1(sess, tow_b, t_hp, t_hp_sgd, 9,  b_up1,   e_b, tow_b.tap_h2, dmv,  dfv, m1)
+            wire_dfa_top1(sess, tow_b, t_hp, t_hp_sgd, 10, b_down1, e_b, tow_b.tap_a1, dfv, dmv,  m1)
+            wire_dfa_top1(sess, tow_b, t_hp, t_hp_sgd, 11, b_up2,   e_b, tow_b.tap_h2, dmv,  dfv, m2)
+            wire_dfa_top1(sess, tow_b, t_hp, t_hp_sgd, 12, b_down2, e_b, tow_b.tap_a1, dfv, dmv,  m2)
           else
           idx = 0
           while idx < 9
-            wire_chain(sess, tow_b, t_hp, idx)
+            wire_chain(sess, tow_b, t_hp, t_hp_sgd, idx)
             idx = idx + 1
           end
           if dfa_experts
-            wire_dfa(sess, tow_b, t_hp, 9,  b_up1,   e_b, tow_b.tap_h2, dmv,  dfv, "w=up1")
-            wire_dfa(sess, tow_b, t_hp, 10, b_down1, e_b, tow_b.tap_a1, dfv, dmv,  "w=down1")
-            wire_dfa(sess, tow_b, t_hp, 11, b_up2,   e_b, tow_b.tap_h2, dmv,  dfv, "w=up2")
-            wire_dfa(sess, tow_b, t_hp, 12, b_down2, e_b, tow_b.tap_a2, dfv, dmv,  "w=down2")
+            wire_dfa(sess, tow_b, t_hp, t_hp_sgd, 9,  b_up1,   e_b, tow_b.tap_h2, dmv,  dfv, "w=up1")
+            wire_dfa(sess, tow_b, t_hp, t_hp_sgd, 10, b_down1, e_b, tow_b.tap_a1, dfv, dmv,  "w=down1")
+            wire_dfa(sess, tow_b, t_hp, t_hp_sgd, 11, b_up2,   e_b, tow_b.tap_h2, dmv,  dfv, "w=up2")
+            wire_dfa(sess, tow_b, t_hp, t_hp_sgd, 12, b_down2, e_b, tow_b.tap_a2, dfv, dmv,  "w=down2")
           else
             idx = 9
             while idx < 13
-              wire_chain(sess, tow_b, t_hp, idx)
+              wire_chain(sess, tow_b, t_hp, t_hp_sgd, idx)
               idx = idx + 1
             end
           end

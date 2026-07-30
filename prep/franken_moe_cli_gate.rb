@@ -538,6 +538,45 @@ _og, sg = Open3.capture2e(CLEAN, *argv_gd, chdir: ROOT)
 failures << "attn-gate: fully-DFA lane + gate not rejected" if sg.success?
 puts failures.length == n0 ? "  ok: --attn-gate — tail-index W_g joins the spine (bp-spine still escapes), deterministic, provenance + cost grow, fully-DFA rejected" : "  FAIL: attn-gate leg"
 
+# ---- toy#139: --optimizer adamw|muon|sgd ----
+# adamw is the byte-null default (leg 1's cross-binary rig anchor pins
+# it; here the EXPLICIT flag must reproduce it). muon and sgd each
+# train, deterministically, and differ from adamw and each other.
+# Provenance records the optimizer AND the per-param-class routing —
+# tao#139 asked for the routing to be auditable from a bundle, because
+# "Muon" without "2D-hidden only" is a different (strawman) recipe.
+n0 = failures.length
+opt_null = losses(run_cli(%w[--steps 8 --seed 0 --optimizer adamw], {}, nil))
+failures << "optimizer: explicit adamw differs from the default (flag-null broken)" unless opt_null == cli_chain0
+%w[muon sgd].each do |o|
+  a = losses(run_cli(["--steps", "8", "--seed", "0", "--optimizer", o], {}, nil))
+  b = losses(run_cli(["--steps", "8", "--seed", "0", "--optimizer", o], {}, nil))
+  failures << "optimizer #{o}: not deterministic" unless a == b && a.length == 8
+  failures << "optimizer #{o}: NaN" if a.map(&:to_f).any?(&:nan?)
+  failures << "optimizer #{o}: curve identical to adamw (axis dead)" if a == cli_chain0
+  al = a.map(&:to_f)
+  failures << "optimizer #{o}: did not train (#{al.first} -> #{al.last})" unless al.last < al.first - 0.01
+end
+Dir.mktmpdir("moe_cli_opt") do |dir|
+  run_cli(%w[--steps 2 --seed 0 --optimizer muon], {}, dir)
+  evs = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+  fm = evs.first["franken_moe"] || {}
+  failures << "optimizer: provenance #{fm['optimizer'].inspect}" unless fm["optimizer"] == "muon"
+  failures << "optimizer: routing not recorded (#{fm['optimizer_routing'].inspect})" unless fm["optimizer_routing"].to_s.include?("muon:2d-hidden")
+end
+# muon must compose with the DFA lanes — orthogonalizing the DFA
+# pseudo-gradient is the whole point of the F9m probe.
+%w[dfa-experts].each do |pol|
+  dl = losses(run_cli(["--steps", "8", "--seed", "0", "--optimizer", "muon", "--moe-policy", pol], {}, nil))
+  failures << "optimizer muon + #{pol}: short/NaN" unless dl.length == 8 && dl.map(&:to_f).none?(&:nan?)
+end
+sl = losses(run_cli(%w[--steps 8 --seed 0 --optimizer muon --routing top1 --moe-policy bp-spine], {}, nil))
+failures << "optimizer muon + bp-spine: short/NaN" unless sl.length == 8 && sl.map(&:to_f).none?(&:nan?)
+argv_bo = [TOY, "train", "franken-moe", "--steps", "1", "--optimizer", "rmsprop"]
+_ob4, sb4 = Open3.capture2e(CLEAN, *argv_bo, chdir: ROOT)
+failures << "optimizer: unknown value not rejected" if sb4.success?
+puts failures.length == n0 ? "  ok: --optimizer — adamw flag-null, muon + sgd train deterministically and differ, routing in provenance, DFA lanes compose" : "  FAIL: optimizer leg"
+
 # ---- 6. bundle structure + run-id passthrough ----
 n0 = failures.length
 Dir.mktmpdir("moe_cli_bundle") do |dir|
@@ -574,7 +613,7 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
 end
 
 if failures.empty?
-  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule/attn-gate (toy#136) + bundle (toy#120/#121)"
+  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule/attn-gate (toy#136) + optimizer (toy#139) + bundle (toy#120/#121)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe-cli]: #{f}" }

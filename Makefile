@@ -2381,6 +2381,7 @@ libexec/toy-train-franken-moe-cli: lib/toy/run/train_franken_moe_cli.rb lib/toy/
 		lib/toy.rb lib/toy/ffi/tinynn.rb lib/toy/io/json_builder.rb lib/toy/io/json.rb \
 		lib/toy/io/toy_events.rb lib/toy/dev/toy_describe_flow.rb \
 		lib/toy/llm/primitives/rms_norm.rb lib/toy/train/dfa_b.rb \
+		lib/toy/llm/primitives/muon.rb \
 		lib/toy/llm/labels.rb lib/toy/io/toy_corpus_loader.rb \
 		tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
 	$(SPINEL) $< -o $@
