@@ -316,6 +316,7 @@ module Toy
                              "FRANKEN_ALIGN_EVERY" => (@align_every || 1).to_s,
                              "FRANKEN_SHAPE"   => (@shape || "base"),
                              "CORPUS"          => (@corpus || ""),
+                             "FRANKEN_OPTIMIZER" => (@optimizer || ""),
                              "FRANKEN_LR"      => (@lr || ""),
                              "FRANKEN_WARMUP"  => (@warmup || 0).to_s,
                              "FRANKEN_NO_SHADOW" => (@no_shadow ? "1" : ""),
@@ -783,7 +784,7 @@ module Toy
             ["--no-kda-conv",   %w[franken],                        @kda_conv_off, " (toy#137/K2c)"],
             ["--layer-pattern", %w[franken],                        !@layer_pattern.nil?, " (toy#138/K3a)"],
             ["--attnres",      %w[franken],                        @attnres, " (toy#138/K3b)"],
-            ["--optimizer",    %w[franken-moe],                    !@optimizer.nil?, " (toy#139; the llama lane follows)"],
+            ["--optimizer",    %w[franken franken-moe],            !@optimizer.nil?, " (toy#139/K5)"],
             ["--donor/--donor-mode/--freeze-embed", %w[franken-moe], (!@donor.nil? || !@donor_mode.nil? || @freeze_embed), " (toy#140)"],
             ["--ckpt-every",    %w[franken franken-moe],            !@ckpt_every.nil?, " (toy#129/#131)"],
             ["--load-ckpt",     %w[franken-moe],                    !@load_ckpt.nil?, " (toy#131; eval-only — pass --steps 0 + --eval-corpus)"],
@@ -815,6 +816,9 @@ module Toy
           end
           if @load_ckpt && !File.file?(@load_ckpt)
             return bad_arg("no such file: #{@load_ckpt} (--load-ckpt takes a toy-moe/v1 checkpoint from --ckpt-every)")
+          end
+          if @recipe == "franken" && @optimizer == "sgd"
+            return bad_arg("--optimizer sgd is franken-moe-only (the llama lane's shared recipe uploads the AdamW hp unconditionally; muon keeps norms on adamw so it is fine there)")
           end
           if @donor && !File.file?(@donor)
             return bad_arg("no such file: #{@donor} (--donor takes a SAME-VOCAB GGUF; data/distilgpt2-f32.gguf is the GPT-2-vocab donor)")

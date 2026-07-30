@@ -30,6 +30,7 @@ require_relative "../blocks/transformer_block"
 require_relative "../primitives/gdn"
 require_relative "../blocks/gdn_block"
 require_relative "../primitives/kda"
+require_relative "../primitives/muon"
 require_relative "../blocks/kda_block"
 require_relative "../archs/layer_spec"
 require_relative "../archs/llama_arch"
@@ -174,6 +175,8 @@ class LlamaSeqEngine
     @seq_nope_flag = 0
     @seq_kda_conv = 1        # toy#137 K2c: ShortConv on KDA q/k/v (K3 eq 2)
     @seq_attnres = 0         # toy#138 K3b: Attention Residuals (K3 §2.2)
+    @seq_optimizer = 0       # toy#139/K5: 0 adamw | 1 muon
+    @t_seq_hp_sgd = TinyNN.tnn_null_ptr
     @ft_globals_weights = [TinyNN.tnn_null_ptr]; @ft_globals_weights.pop
     @ft_globals_m       = [TinyNN.tnn_null_ptr]; @ft_globals_m.pop
     @ft_globals_v       = [TinyNN.tnn_null_ptr]; @ft_globals_v.pop
@@ -223,6 +226,41 @@ class LlamaSeqEngine
   # BEFORE realize. 0 = the byte-gated plain-residual path.
   def attnres_init(v)
     @seq_attnres = v
+    0
+  end
+
+  # toy#139 / K-series K5 (PER-HEAD Muon). 1 = Muon on the 2D HIDDEN
+  # matrices, AdamW on norms/embeddings/head (the Jordan recipe). Call
+  # BEFORE realize.
+  #
+  # WHY THIS IS *PER-HEAD* MUON FOR FREE: K3 refines Muon by
+  # partitioning the attention projections along the head dimension and
+  # orthogonalizing each head's block separately ("full-matrix
+  # orthogonalization treats all heads as a single coupled block").
+  # toy's random-init llama layout ALREADY stores q/k/v as one tensor
+  # PER HEAD (t_seq_w_q[h] et al, the GH#17 per-head decomposition), so
+  # orthogonalizing each ft_weights entry IS per-head orthogonalization
+  # — the refinement is structural here, not extra code.
+  def optimizer_init(v)
+    @seq_optimizer = v
+    0
+  end
+
+  # ONE parameter's update, routed by optimizer and param class. 2D =
+  # a hidden matrix (per-head q/k/v, o, gate/up/down) -> Muon; 1D
+  # (norms, scalars) -> AdamW. Globals never come here.
+  def emit_opt_step(t, grad, t_m, t_v, t_hp)
+    to = TinyNN.tnn_null_ptr
+    nel = TinyNN.tnn_tensor_nelements(t)
+    ne0 = TinyNN.tnn_tensor_ne0(t)
+    ne1 = nel / ne0
+    if @seq_optimizer == 1 && ne1 > 1
+      step = Toy::LLM::Primitives::Muon.update(@sess, grad, t_m, ne0, ne1)
+      to = TinyNN.tnn_opt_step_sgd(@sess, t, step, @t_seq_hp_sgd)
+    else
+      to = TinyNN.tnn_opt_step_adamw(@sess, t, grad, t_m, t_v, t_hp)
+    end
+    TinyNN.tnn_extend_backward_graph(@sess, to)
     0
   end
 
@@ -732,6 +770,12 @@ class LlamaSeqEngine
     # alloc-before-finalize — the toy#133 lesson).
     if @seq_attnres == 1
       @seq_arch.alloc_attnres!(@sess, self, @seq_n_layers, @seq_d_model)
+    end
+    # toy#139: Muon applies through ggml's SGD step ([alpha, wd]).
+    # PERSISTENT — a compute-context input has no buffer unless the
+    # graph reaches it, and the per-step upload would then abort.
+    if @seq_optimizer == 1
+      @t_seq_hp_sgd = TinyNN.tnn_input_1d_f32_persistent(@sess, 2)
     end
 
     # Per-block weights — identical structure to realize_for_full_finetune.
@@ -1759,9 +1803,7 @@ class LlamaSeqEngine
             # opt_step_adamw's PARAM assert is satisfied.
             TinyNN.tnn_set_param(tw)
           end
-          to = TinyNN.tnn_opt_step_adamw(@sess, tw, t_g,
-                                          blk.ft_m[wi], blk.ft_v[wi], t_hp)
-          TinyNN.tnn_extend_backward_graph(@sess, to)
+          emit_opt_step(tw, t_g, blk.ft_m[wi], blk.ft_v[wi], t_hp)
           b_handles.push(t_b)
           b_seeds.push(b_seed + li * 1000 + wi)
           if no_shadow == 0
@@ -1777,9 +1819,7 @@ class LlamaSeqEngine
           end
         else
           tg = TinyNN.tnn_tensor_grad(@sess, tw)
-          to = TinyNN.tnn_opt_step_adamw(@sess, tw, tg,
-                                          blk.ft_m[wi], blk.ft_v[wi], t_hp)
-          TinyNN.tnn_extend_backward_graph(@sess, to)
+          emit_opt_step(tw, tg, blk.ft_m[wi], blk.ft_v[wi], t_hp)
         end
         wi = wi + 1
       end

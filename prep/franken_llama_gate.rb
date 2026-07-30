@@ -459,6 +459,27 @@ Dir.mktmpdir("franken_ar") do |dir|
 end
 puts failures.length == n0 ? "  ok: AttnRes — depth-attention trains (#{arl.first.round(3)} -> #{arl.last.round(3)}), deterministic, differs from the residual path, (L+1)·d pseudo-queries counted" : "  FAIL: attnres leg"
 
+# ---- toy#139 / K5: PER-HEAD Muon on the llama lane ----
+# adamw stays byte-null (leg 1's F0 fixture). muon trains,
+# deterministically, and differs. The "per-head" part is STRUCTURAL:
+# toy's random-init layout stores q/k/v as one tensor PER HEAD, so
+# orthogonalizing each 2D ft_weights entry IS K3's per-head Muon —
+# there is no full-QKV matrix here to accidentally couple.
+n0 = failures.length
+mu_env = { "STEPS" => "5", "SEED" => "0", "FRANKEN_OPTIMIZER" => "muon" }
+m1 = run_franken_llama(mu_env, nil).lines.select { |l| l.start_with?("step ") }
+m2 = run_franken_llama(mu_env, nil).lines.select { |l| l.start_with?("step ") }
+b5 = run_franken_llama({ "STEPS" => "5", "SEED" => "0" }, nil).lines.select { |l| l.start_with?("step ") }
+failures << "muon: not deterministic" unless m1 == m2 && m1.length == 5
+ml = m1.map { |l| l[/loss=(\S+)/, 1].to_f }
+failures << "muon: NaN" if ml.any?(&:nan?)
+failures << "muon: did not train (#{ml.first} -> #{ml.last})" unless ml.last < ml.first - 0.1
+failures << "muon: curve identical to adamw (optimizer dead)" if m1 == b5
+failures << "muon: step-1 differs from adamw (step 1 is pre-update)" unless m1.first == b5.first
+_om, stm = Open3.capture2e({ "STEPS" => "1", "FRANKEN_OPTIMIZER" => "sgd" }, RUNNER, chdir: ROOT)
+failures << "muon: sgd not rejected on the llama lane" if stm.success?
+puts failures.length == n0 ? "  ok: per-head Muon — trains (#{ml.first.round(3)} -> #{ml.last.round(3)}), deterministic, differs from adamw, step-1 pre-update identical; sgd rejected" : "  FAIL: muon leg"
+
 # ---- toy#129 item 2: --no-shadow ----
 # THE null (the roadmap's own criterion): applied updates byte-identical
 # shadow vs no-shadow at the same policy/seed — the mode changes the
@@ -508,7 +529,7 @@ failures << "byte-repro: outputs differ" unless r1 == r2
 puts "  ok: byte-repro — two policy runs identical" if r1 == r2
 
 if failures.empty?
-  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + shape presets (toy#124) + lr/warmup (toy#126) + no-shadow/pack-header/ckpt-every (toy#129) + batch (toy#133) + K1 axes (toy#136) + KDA layer (toy#137) + hybrid/AttnRes (toy#138) + byte-repro (toy#112/#113)"
+  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + shape presets (toy#124) + lr/warmup (toy#126) + no-shadow/pack-header/ckpt-every (toy#129) + batch (toy#133) + K1 axes (toy#136) + KDA layer (toy#137) + hybrid/AttnRes (toy#138) + per-head muon (toy#139/K5) + byte-repro (toy#112/#113)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-llama]: #{f}" }

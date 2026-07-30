@@ -127,6 +127,19 @@ KDA_CONV_OFF = (ENV["KDA_CONV"] || "") == "0"
 # depth-attention (each layer input = learned softmax mixture over the
 # embedding + every preceding layer output). Unset = byte-null.
 ATTNRES_ON = (ENV["ATTNRES"] || "") == "1"
+# toy#139 / K-series K5: FRANKEN_OPTIMIZER adamw (default, byte-null)
+# | muon. Muon rides the standard recipe — orthogonalized steps on the
+# 2D hidden matrices, AdamW on norms/embeddings/head — and because
+# toy's random-init layout stores q/k/v PER HEAD, that is K3's
+# per-head Muon by construction (see engine.optimizer_init).
+# sgd is NOT offered here: with no adamw node anywhere the shared
+# recipe's unconditional hp upload would abort; the sgd control arm
+# lives on franken-moe, which owns its upload.
+OPT_S = ENV["FRANKEN_OPTIMIZER"] || ""
+if OPT_S.length > 0 && OPT_S != "adamw" && OPT_S != "muon"
+  puts "toy-train-franken: FRANKEN_OPTIMIZER " + OPT_S + " unsupported here (adamw|muon; sgd is franken-moe-only)"
+  exit 1
+end
 # toy#138 (K3a): FRANKEN_LAYER_PATTERN=hybrid — K3's layerwise hybrid
 # (§2.1): THREE KDA layers then ONE global-attention layer, repeated,
 # with the FINAL layer always global ("An additional Gated MLA layer
@@ -359,6 +372,7 @@ opts.act       = ACT_CODE
 opts.rope_nope = NOPE_ON ? 1 : 0
 opts.kda_conv  = KDA_CONV_OFF ? 0 : 1
 opts.attnres   = ATTNRES_ON ? 1 : 0
+opts.optimizer = OPT_S == "muon" ? 1 : 0
 pi = 0
 while pi < policy.length
   opts.credit_assignment.push(policy[pi])
@@ -468,6 +482,7 @@ if EVENTS.length > 0
     config.add_bool("kda_conv", !KDA_CONV_OFF)
     config.add_str("layer_pattern", LAYER_PATTERN)
     config.add_bool("attnres", ATTNRES_ON)
+    config.add_str("optimizer", OPT_S.length > 0 ? OPT_S : "adamw")
     config.add_num("seed",    SEED)
     rs.add_obj("config", config)
     # toy#129 item 4: derived cost accounting — auditable FLOP-matching

@@ -96,7 +96,10 @@ module Toy; module LLM
                   # (K3 eq 2, identity-inited); 0 disables it.
                   :kda_conv,
                   # toy#138 K3b: 1 = Attention Residuals (K3 §2.2).
-                  :attnres
+                  :attnres,
+                  # toy#139/K5: 0 adamw (default) | 1 muon (2D hidden
+                  # matrices only; per-head by toy's layout).
+                  :optimizer
 
     def initialize
       @t_seq        = 0
@@ -120,6 +123,7 @@ module Toy; module LLM
       @kda_layers = [0]; @kda_layers.pop   # typed-empty IntArray
       @kda_conv   = 1
       @attnres    = 0
+      @optimizer  = 0
     end
   end
 end; end
