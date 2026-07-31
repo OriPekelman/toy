@@ -614,6 +614,39 @@ _of, sf = Open3.capture2e(CLEAN, *argv_fe, chdir: ROOT)
 failures << "donor: --freeze-embed without --donor not rejected" if sf.success?
 puts failures.length == n0 ? "  ok: --donor — transfer signal in the DESCENT (donor #{dn.last.round(2)} vs scratch #{sc.last.round(2)} @20), frozen arm holds it, provenance, untied + bare-freeze rejected" : "  FAIL: donor leg"
 
+# ---- toy#141: --freeze-experts (the R2 inert-experts control) ----
+# THE proof obligation is not a curve, it is that the expert tensors
+# NEVER MOVE. run_start and run_end both carry experts_sig (the sum of
+# squares over every expert up/down tensor), so:
+#   frozen   -> the two are BIT-IDENTICAL
+#   dfa      -> they differ (the DFA wires do move them)
+#   chain    -> they differ (BP moves them too)
+# The two-sided form matters: an assertion that only checked "frozen
+# doesn't move" would also pass if the signature were broken/constant.
+n0 = failures.length
+fz_base = %w[--steps 30 --seed 0 --experts 4 --shape wide
+             --corpus data/fineweb_gpt2_smoke.bin --context 32]
+sigs = {}
+[["frozen", %w[--moe-policy dfa-experts --freeze-experts]],
+ ["dfa",    %w[--moe-policy dfa-experts]],
+ ["chain",  %w[--moe-policy chain]]].each do |name, extra|
+  Dir.mktmpdir("moe_cli_fz_" + name) do |dir|
+    out = run_cli(fz_base + extra, {}, dir)
+    evs = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+    s0 = evs.first.dig("franken_moe", "experts_sig")
+    s1 = evs.last["experts_sig"]
+    sigs[name] = [s0, s1]
+    failures << "freeze-experts: #{name} missing experts_sig" if s0.nil? || s1.nil?
+    failures << "freeze-experts: #{name} provenance experts_frozen wrong" unless evs.first.dig("franken_moe", "experts_frozen") == (name == "frozen")
+    failures << "freeze-experts: #{name} NaN" if losses(out).map(&:to_f).any?(&:nan?)
+  end
+end
+failures << "freeze-experts: FROZEN experts MOVED (#{sigs['frozen'].inspect})" unless sigs["frozen"] && sigs["frozen"][0] == sigs["frozen"][1]
+failures << "freeze-experts: dfa experts did NOT move — the signature is not measuring anything" unless sigs["dfa"] && sigs["dfa"][0] != sigs["dfa"][1]
+failures << "freeze-experts: chain experts did NOT move — the signature is not measuring anything" unless sigs["chain"] && sigs["chain"][0] != sigs["chain"][1]
+failures << "freeze-experts: all three arms start from a different init (the control is not matched)" unless sigs["frozen"] && sigs["dfa"] && sigs["chain"] && sigs["frozen"][0] == sigs["dfa"][0] && sigs["dfa"][0] == sigs["chain"][0]
+puts failures.length == n0 ? "  ok: --freeze-experts — expert tensors BIT-IDENTICAL start to end (dfa + chain arms provably do move; matched init across all three)" : "  FAIL: freeze-experts leg"
+
 # ---- 6. bundle structure + run-id passthrough ----
 n0 = failures.length
 Dir.mktmpdir("moe_cli_bundle") do |dir|
@@ -650,7 +683,7 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
 end
 
 if failures.empty?
-  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule/attn-gate (toy#136) + optimizer (toy#139) + donor (toy#140) + bundle (toy#120/#121)"
+  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule/attn-gate (toy#136) + optimizer (toy#139) + donor (toy#140) + freeze-experts (toy#141) + bundle (toy#120/#121)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe-cli]: #{f}" }

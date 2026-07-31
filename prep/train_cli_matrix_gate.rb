@@ -48,6 +48,7 @@ REJECT = [
   [%w[franken-moe --attnres],             "--attnres"],
   [%w[from-scratch --optimizer muon],     "--optimizer"],
   [%w[franken --donor x.gguf],            "--donor"],
+  [%w[franken --freeze-experts],          "--freeze-experts"],
   [%w[from-scratch --ckpt-every 2],       "--ckpt-every"],
   [%w[franken --load-ckpt x.gguf],        "--load-ckpt"],
   [%w[franken --eval-corpus x.bin],       "--eval-corpus"],

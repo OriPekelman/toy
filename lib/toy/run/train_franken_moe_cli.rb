@@ -122,6 +122,32 @@ module Toy
           rc
         end
 
+        # toy#141: a stable signature of the expert weights — the sum of
+        # squares over every expert up/down tensor. Emitted in run_start
+        # (post-init) and run_end; --freeze-experts must leave the two
+        # BIT-IDENTICAL, which is the gate's proof that nothing moved.
+        def self.experts_sig(sess, tw, ne, dm, dff)
+          acc = 0.0
+          ei = 0
+          while ei < ne
+            wi = 0
+            while wi < 2
+              t = tw.pp[9 + 2 * ei + wi]
+              n = TinyNN.tnn_tensor_nelements(t)
+              buf = zeros(n)
+              TinyNN.tnn_download_to_f64_array(sess, t, buf, n)
+              k = 0
+              while k < n
+                acc = acc + buf[k] * buf[k]
+                k = k + 1
+              end
+              wi = wi + 1
+            end
+            ei = ei + 1
+          end
+          acc
+        end
+
         def self.run_cli
           steps_s = ENV["STEPS"] || ""
           steps = steps_s.length > 0 ? steps_s.to_i : 40
@@ -189,6 +215,18 @@ module Toy
           # instrument's width (see parts.donor_embed_values for the
           # projection + scale-matching choices). --freeze-embed keeps
           # it fixed (granite's strongest arm in several results).
+          # toy#141 (R2, the inert-experts control): FRANKEN_FREEZE_EXPERTS=1
+          # initialises the E expert up/down weights as usual (same
+          # seeded stream) and then NEVER updates them — no DFA wire,
+          # no chain wire, no optimizer step, and they are not even
+          # params. The router and the spine train normally.
+          #
+          # There is no lr=0 shortcut to the same effect: the runner
+          # carries ONE global hp vector shared by every opt step, so a
+          # per-param-group lr would need a second hp tensor plus the
+          # same routing this flag does — and it would be less explicit
+          # about intent.
+          freeze_experts = (ENV["FRANKEN_FREEZE_EXPERTS"] || "") == "1"
           donor_s = ENV["FRANKEN_DONOR"] || ""
           if donor_s.length > 0 && !File.exist?(donor_s)
             puts "toy-train-franken-moe: donor not found: " + donor_s
@@ -492,6 +530,10 @@ module Toy
             if freeze_embed && gi == 0
               mark = false
             end
+            # toy#141: same for frozen experts (indices 9 .. 9+2E-1).
+            if freeze_experts && gi >= 9 && gi < 9 + 2 * esel
+              mark = false
+            end
             if mark
               TinyNN.tnn_set_param(tw.pp[gi])
             end
@@ -723,9 +765,11 @@ module Toy
             # routed acts from mul_mat_id).
             ei = 0
             while ei < nev
-              m_i = TinyNN.tnn_matmul(sess, sels[ei], tw.t_onehots)
-              wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_h2, dmv,  dfv, m_i)
-              wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_a1, dfv, dmv,  m_i)
+              if !freeze_experts
+                m_i = TinyNN.tnn_matmul(sess, sels[ei], tw.t_onehots)
+                wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_h2, dmv,  dfv, m_i)
+                wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_a1, dfv, dmv,  m_i)
+              end
               ei = ei + 1
             end
           else
@@ -750,7 +794,9 @@ module Toy
               np3 = TinyNN.tnn_null_ptr
               ei = 0
               while ei < nev
-                if no_shadow
+                if freeze_experts
+                  # nothing: the experts are inert by construction
+                elsif no_shadow
                   wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_h2,     dmv,  dfv, np3)
                   wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_as[ei], dfv, dmv,  np3)
                 else
@@ -762,7 +808,9 @@ module Toy
             else
               idx = 0
               while idx < n_all
-                if !(freeze_embed && idx == 0)
+                skip_i = (freeze_embed && idx == 0) ||
+                         (freeze_experts && idx >= 9 && idx < 9 + 2 * nev)
+                if !skip_i
                   wire_chain(sess, tw, t_hp, t_hp_sgd, idx)
                 end
                 idx = idx + 1
@@ -848,6 +896,8 @@ module Toy
               fm.add_str("donor_mode", donor_s.length > 0 ? "tied" : "")
               fm.add_str("donor_projection", donor_s.length > 0 ? "random-jl,scale-matched" : "")
               fm.add_bool("freeze_embed", freeze_embed)
+              fm.add_bool("experts_frozen", freeze_experts)
+              fm.add_raw("experts_sig", num_or_null_cli(experts_sig(sess, tw, nev, dmv, dfv)))
               # the per-param-class routing, recorded so a bundle can be
               # audited without re-reading the runner (tao#139 asked).
               fm.add_str("optimizer_routing",
@@ -1248,6 +1298,7 @@ module Toy
             re.add_str("reason",     "completed")
             re.add_num("final_step", steps)
             re.add_raw("final_loss", num_or_null_cli(final_loss))
+            re.add_raw("experts_sig", num_or_null_cli(experts_sig(sess, tw, nev, dmv, dfv)))
             re.add_raw("exit_code",  "0")
             TinyNN.tnn_events_emit(re.dump)
             TinyNN.tnn_events_close
