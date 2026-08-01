@@ -99,6 +99,7 @@ module Toy
           shape_init(DM_BASE, DFF_BASE, VOCAB, NE, T)   # the rig IS the base instrument
           attn_gate_init(0)                      # toy#136 K1.1: rig = ungated
           opt_init(0)                            # toy#139: the rig is AdamW-only
+          latent_init(0, 0)                      # toy#142 K4: rig = no latent, no shared
           sess = TinyNN.tnn_session_new(0)
           TinyNN.tnn_session_set_graph_capacity(sess, 262144)
 

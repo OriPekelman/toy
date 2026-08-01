@@ -135,6 +135,8 @@ module Toy
           @donor_mode   = nil
           @freeze_embed = false
           @freeze_experts = false  # franken-moe: the R2 inert-experts control (toy#141)
+          @moe_latent   = false # franken-moe: latent expert sandwich (toy#142/K4)
+          @moe_shared   = nil   # franken-moe: N shared full-width experts (toy#142/K4)
           @shape        = nil   # franken/franken-moe: preset (toy#124)
           @routing    = nil   # franken-moe: dense | top1
           @moe_policy = nil   # franken-moe: chain | dfa-experts
@@ -298,6 +300,8 @@ module Toy
                              "FRANKEN_DONOR_MODE"  => (@donor_mode || ""),
                              "FRANKEN_FREEZE_EMBED" => (@freeze_embed ? "1" : ""),
                              "FRANKEN_FREEZE_EXPERTS" => (@freeze_experts ? "1" : ""),
+                             "FRANKEN_MOE_LATENT"  => (@moe_latent ? "1" : ""),
+                             "FRANKEN_MOE_SHARED"  => (@moe_shared || 0).to_s,
                              "FRANKEN_ATTN_GATE"   => (@attn_gate ? "1" : ""),
                              "FRANKEN_CKPT_EVERY"  => (@ckpt_every || 0).to_s,
                              "FRANKEN_MOE_LOAD"    => (@load_ckpt || ""),
@@ -476,6 +480,18 @@ module Toy
               @freeze_embed = true
             when "--freeze-experts"
               @freeze_experts = true
+            when "--moe-latent"
+              @moe_latent = true
+            when "--moe-shared"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--moe-shared requires a value") if val.nil?
+              return bad_arg("--moe-shared must be a non-negative integer, got #{val.inspect}") unless val =~ /\A\d+\z/
+              @moe_shared = val.to_i
+            when /\A--moe-shared=(.*)\z/
+              val = $1
+              return bad_arg("--moe-shared must be a non-negative integer, got #{val.inspect}") unless val =~ /\A\d+\z/
+              @moe_shared = val.to_i
             when "--optimizer"
               i += 1
               val = @argv[i]
@@ -791,6 +807,7 @@ module Toy
             ["--optimizer",    %w[franken franken-moe],            !@optimizer.nil?, " (toy#139/K5)"],
             ["--donor/--donor-mode/--freeze-embed", %w[franken-moe], (!@donor.nil? || !@donor_mode.nil? || @freeze_embed), " (toy#140)"],
             ["--freeze-experts", %w[franken-moe],                    @freeze_experts, " (toy#141)"],
+            ["--moe-latent/--moe-shared", %w[franken-moe],           (@moe_latent || !@moe_shared.nil?), " (toy#142/K4)"],
             ["--ckpt-every",    %w[franken franken-moe],            !@ckpt_every.nil?, " (toy#129/#131)"],
             ["--load-ckpt",     %w[franken-moe],                    !@load_ckpt.nil?, " (toy#131; eval-only — pass --steps 0 + --eval-corpus)"],
             ["--eval-corpus/--eval-tokens/--eval-offset", %w[franken-moe], (!@eval_corpus.nil? || !@eval_tokens.nil? || !@eval_offset.nil?), " (toy#130; the llama lane evals checkpoints offline via `toy eval ce`)"],

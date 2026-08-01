@@ -647,6 +647,47 @@ failures << "freeze-experts: chain experts did NOT move — the signature is not
 failures << "freeze-experts: all three arms start from a different init (the control is not matched)" unless sigs["frozen"] && sigs["dfa"] && sigs["chain"] && sigs["frozen"][0] == sigs["dfa"][0] && sigs["dfa"][0] == sigs["chain"][0]
 puts failures.length == n0 ? "  ok: --freeze-experts — expert tensors BIT-IDENTICAL start to end (dfa + chain arms provably do move; matched init across all three)" : "  FAIL: freeze-experts leg"
 
+# ---- toy#142 (K4): Stable LatentMoE ----
+# Two axes, gated separately because they answer different questions.
+# LATENT: the routed experts move into ℓ = d/2 behind W↓/W↑ with the
+# stabilising RMSNorm — so the routed parameter count must FALL while
+# the model still trains. SHARED: N always-on full-width experts add
+# capacity back. Both compose with the DFA lanes (the expert DFA taps
+# now read W↓h, not h).
+n0 = failures.length
+k4 = %w[--steps 12 --seed 0 --shape wide --experts 8]
+Dir.mktmpdir("moe_cli_k4p") do |dp|
+  run_cli(k4, {}, dp)
+  base = JSON.parse(File.readlines(File.join(dp, "events.jsonl")).first)
+  Dir.mktmpdir("moe_cli_k4l") do |dl|
+    lat_out = run_cli(k4 + %w[--moe-latent], {}, dl)
+    lat = JSON.parse(File.readlines(File.join(dl, "events.jsonl")).first)
+    ll = losses(lat_out).map(&:to_f)
+    failures << "latent: NaN" if ll.any?(&:nan?)
+    failures << "latent: did not train (#{ll.first} -> #{ll.last})" unless ll.last < ll.first - 0.1
+    failures << "latent: provenance latent_dim #{lat.dig('franken_moe', 'latent_dim').inspect} (want 128 = d/2)" unless lat.dig("franken_moe", "latent_dim") == 128
+    failures << "latent: params did not fall (#{base.dig('cost', 'total_params')} -> #{lat.dig('cost', 'total_params')}) — the bottleneck is not real" unless lat.dig("cost", "total_params") < base.dig("cost", "total_params")
+    l2 = losses(run_cli(k4 + %w[--moe-latent], {}, nil))
+    failures << "latent: not deterministic" unless losses(lat_out) == l2
+    Dir.mktmpdir("moe_cli_k4s") do |ds|
+      sh_out = run_cli(k4 + %w[--moe-latent --moe-shared 2], {}, ds)
+      sh = JSON.parse(File.readlines(File.join(ds, "events.jsonl")).first)
+      failures << "shared: provenance shared_experts #{sh.dig('franken_moe', 'shared_experts').inspect}" unless sh.dig("franken_moe", "shared_experts") == 2
+      failures << "shared: params did not grow vs latent alone" unless sh.dig("cost", "total_params") > lat.dig("cost", "total_params")
+      failures << "shared: curve identical to latent alone (shared experts inert)" if losses(sh_out) == losses(lat_out)
+      failures << "shared: NaN" if losses(sh_out).map(&:to_f).any?(&:nan?)
+    end
+  end
+end
+# composition with the DFA lanes — the expert taps changed shape here
+dl2 = losses(run_cli(k4 + %w[--moe-latent --moe-shared 2 --moe-policy dfa-experts], {}, nil))
+failures << "latent + dfa-experts: short/NaN" unless dl2.length == 12 && dl2.map(&:to_f).none?(&:nan?)
+sp2 = losses(run_cli(k4 + %w[--moe-latent --moe-shared 2 --routing top1 --moe-policy bp-spine], {}, nil))
+failures << "latent + bp-spine: short/NaN" unless sp2.length == 12 && sp2.map(&:to_f).none?(&:nan?)
+qb2 = losses(run_cli(k4 + %w[--moe-latent --moe-shared 2 --routing top1 --moe-balance qb], {}, nil))
+failures << "latent + qb: short/NaN" unless qb2.length == 12 && qb2.map(&:to_f).none?(&:nan?)
+puts failures.length == n0 ? "  ok: Stable LatentMoE — latent ℓ=d/2 trains and SHRINKS the routed params, shared experts add capacity back, provenance, composes with dfa-experts + bp-spine + qb" : "  FAIL: K4 leg"
+
 # ---- 6. bundle structure + run-id passthrough ----
 n0 = failures.length
 Dir.mktmpdir("moe_cli_bundle") do |dir|
@@ -683,7 +724,7 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
 end
 
 if failures.empty?
-  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule/attn-gate (toy#136) + optimizer (toy#139) + donor (toy#140) + freeze-experts (toy#141) + bundle (toy#120/#121)"
+  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule/attn-gate (toy#136) + optimizer (toy#139) + donor (toy#140) + freeze-experts (toy#141) + latent-moe (toy#142) + bundle (toy#120/#121)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe-cli]: #{f}" }

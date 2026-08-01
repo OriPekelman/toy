@@ -136,6 +136,60 @@ module Toy
           9 + 2 * nev
         end
 
+        # toy#142 (K4) Stable LatentMoE, K3 §2.3:
+        #   u = Σ_i p_i · E_i^routed(W↓ x)        (routed experts in LATENT space ℓ)
+        #   y = Σ_j E_j^shared(x) + W↑ RMSNorm(u)  (shared experts at FULL width)
+        # The RMSNorm between aggregation and up-projection IS the
+        # "Stable" of the name (§2.3.1): without it W↑ sees a scale that
+        # varies with which experts fired and how confidently.
+        #
+        # lat = 0 disables the sandwich (the byte-null legacy shape); ns
+        # = 0 disables shared experts. They are SEPARATE axes on
+        # purpose — K3 ships both together, but "does the latent
+        # bottleneck cost anything" and "do shared experts carry the
+        # common transformation" are different questions.
+        #
+        # Layout: everything NEW is APPENDED past the experts (and past
+        # the attn gate), so the spine stays 0..8, the expert pairs stay
+        # 9+2i/10+2i, and every DfaB seed keeps its index — the toy#128
+        # discipline. The ROUTED expert SHAPES do change under latent
+        # (they now map ℓ→dff→ℓ), which is a mode difference, not an
+        # index one.
+        def self.latent_init(lat, ns)
+          @sh_lat = lat
+          @sh_ns = ns
+          0
+        end
+
+        def self.latv
+          @sh_lat
+        end
+
+        def self.nsv
+          @sh_ns
+        end
+
+        # expert width: the routed experts read/write ℓ under latent,
+        # d_model otherwise.
+        def self.ewidth
+          latv > 0 ? latv : dmv
+        end
+
+        def self.lat_base
+          9 + 2 * nev + (gatev == 1 ? 1 : 0)
+        end
+
+        def self.shared_base
+          lat_base + (latv > 0 ? 3 : 0)
+        end
+
+        # every tail index that belongs to the SPINE (chain-wired under
+        # bp-spine, param under dense): the attn gate, the latent
+        # sandwich, and the shared experts.
+        def self.tail_spine_count
+          (gatev == 1 ? 1 : 0) + (latv > 0 ? 3 : 0) + 2 * nsv
+        end
+
         def self.fillv(n, seed)
           a = [0.0]; a.pop
           i = 0
@@ -266,6 +320,7 @@ module Toy
           attr_accessor :tap_h2, :tap_a1, :tap_a2, :tap_ah, :tap_ctx, :t_onehots
           attr_accessor :t_rlogits
           attr_accessor :tap_as
+          attr_accessor :tap_z      # toy#142: the routed experts' input
           attr_accessor :dfa_grads, :dfa_accs, :dfa_names
 
           def initialize
@@ -284,6 +339,7 @@ module Toy
             @t_onehots = np
             @t_rlogits = np   # toy#136: raw router logits (QB reads margins)
             @tap_as    = [np]; @tap_as.pop   # toy#128: per-expert dense acts
+            @tap_z     = np
             @dfa_grads = [np]; @dfa_grads.pop
             @dfa_accs  = [np]; @dfa_accs.pop
             @dfa_names = [""]; @dfa_names.pop
@@ -321,14 +377,26 @@ module Toy
           reg2(sess, tw, dmv, dmv)      # 6 wo
           reg1(sess, tw, dmv)          # 7 moe rn2
           reg2(sess, tw, nev, dmv)     # 8 wr (router)
+          ew = ewidth
           ei = 0
           while ei < nev
-            reg2(sess, tw, dfv, dmv)   # 9+2i  up_i
-            reg2(sess, tw, dmv, dfv)   # 10+2i down_i
+            reg2(sess, tw, dfv, ew)    # 9+2i  up_i   (ℓ->dff under latent)
+            reg2(sess, tw, ew, dfv)    # 10+2i down_i (dff->ℓ under latent)
             ei = ei + 1
           end
           if gatev == 1
             reg2(sess, tw, dmv, dmv)   # 9+2E  wg (attention output gate)
+          end
+          if latv > 0
+            reg2(sess, tw, latv, dmv)  # lat_base+0  W↓  d->ℓ
+            reg2(sess, tw, dmv, latv)  # lat_base+1  W↑  ℓ->d
+            reg1(sess, tw, latv)       # lat_base+2  latent RMSNorm gamma
+          end
+          sj = 0
+          while sj < nsv
+            reg2(sess, tw, dfv, dmv)   # shared_base+2j    up   (full width)
+            reg2(sess, tw, dmv, dfv)   # shared_base+2j+1  down
+            sj = sj + 1
           end
           tw
         end
@@ -374,6 +442,37 @@ module Toy
         # (t_x + (g1 + g2)) reproduced by the accumulator loop).
         # tap_a1/tap_a2 keep the rig's two-expert names; tap_as carries
         # all E for the CLI's generalized dfa wires.
+        # toy#142: the N_s always-on FULL-WIDTH shared experts (K3 eq
+        # 11's Σ_j E_j^shared(x)). gelu-MLP like the routed ones; the
+        # SiTU-GLU swap is K4b (a GLU needs a second input projection
+        # per expert, i.e. another layout change).
+        def self.shared_experts(sess, tw, h2)
+          acc = TinyNNCuda.tnn_null_ptr
+          sj = 0
+          while sj < nsv
+            a = TinyNNCuda.tnn_gelu(sess, TinyNNCuda.tnn_matmul(sess, tw.pp[shared_base + 2 * sj], h2))
+            o = TinyNNCuda.tnn_matmul(sess, tw.pp[shared_base + 2 * sj + 1], a)
+            if sj == 0
+              acc = o
+            else
+              acc = TinyNNCuda.tnn_add(sess, acc, o)
+            end
+            sj = sj + 1
+          end
+          acc
+        end
+
+        # toy#142: aggregate -> RMSNorm -> up-project. `u` is the routed
+        # aggregate in latent space; returns the FULL-WIDTH contribution.
+        # Without latent this is the identity (u is already full width).
+        def self.latent_up(sess, tw, u)
+          if latv == 0
+            return u
+          end
+          un = Toy::LLM::Primitives::RMSNorm.build(sess, u, tw.pp[lat_base + 2], EPS)
+          TinyNNCuda.tnn_matmul(sess, tw.pp[lat_base + 1], un)
+        end
+
         def self.moe_block(sess, tw, t_x, sels)
           rn2 = tw.pp[7]
           wr  = tw.pp[8]
@@ -383,11 +482,18 @@ module Toy
           gates    = TinyNNCuda.tnn_softmax(sess, r_logits)       # [NE, T]
           TinyNNCuda.tnn_set_output(gates)
           tw.t_gates = gates
+          # toy#142: the routed experts read the LATENT projection of h2
+          # (K3 eq 11's W↓x); the router still scores the FULL-width h2.
+          z = h2
+          if latv > 0
+            z = TinyNNCuda.tnn_matmul(sess, tw.pp[lat_base + 0], h2)   # [ℓ, T]
+          end
+          tw.tap_z = z
           acc = TinyNNCuda.tnn_null_ptr
           ei = 0
           while ei < nev
             g_i = TinyNNCuda.tnn_matmul(sess, sels[ei], gates)    # [1, T]
-            a_i = TinyNNCuda.tnn_gelu(sess, TinyNNCuda.tnn_matmul(sess, tw.pp[9 + 2 * ei], h2))  # [DFF,T]
+            a_i = TinyNNCuda.tnn_gelu(sess, TinyNNCuda.tnn_matmul(sess, tw.pp[9 + 2 * ei], z))   # [DFF,T]
             tw.tap_as.push(a_i)
             if ei == 0
               tw.tap_a1 = a_i
@@ -395,8 +501,8 @@ module Toy
             if ei == 1
               tw.tap_a2 = a_i
             end
-            o_i = TinyNNCuda.tnn_matmul(sess, tw.pp[10 + 2 * ei], a_i)               # [DM,T]
-            gated_i = TinyNNCuda.tnn_mul(sess, o_i, g_i)  # broadcast [DM,T]*[1,T]
+            o_i = TinyNNCuda.tnn_matmul(sess, tw.pp[10 + 2 * ei], a_i)   # [ℓ or DM, T]
+            gated_i = TinyNNCuda.tnn_mul(sess, o_i, g_i)  # broadcast * [1,T]
             if ei == 0
               acc = gated_i
             else
@@ -404,7 +510,11 @@ module Toy
             end
             ei = ei + 1
           end
-          TinyNNCuda.tnn_add(sess, t_x, acc)
+          out = latent_up(sess, tw, acc)
+          if nsv > 0
+            out = TinyNNCuda.tnn_add(sess, out, shared_experts(sess, tw, h2))
+          end
+          TinyNNCuda.tnn_add(sess, t_x, out)
         end
 
         # HARD top-1 MoE block: argmax routing + mul_mat_id dispatch.
@@ -442,28 +552,41 @@ module Toy
 
           # toy#128: stack the E experts by chained concat along dim 2
           # (E=2 == the original single concat pair).
-          up_stack = TinyNNCuda.tnn_reshape_3d(sess, tw.pp[9],  dmv, dfv, 1)
-          dn_stack = TinyNNCuda.tnn_reshape_3d(sess, tw.pp[10], dfv, dmv, 1)
+          ew = ewidth
+          up_stack = TinyNNCuda.tnn_reshape_3d(sess, tw.pp[9],  ew, dfv, 1)
+          dn_stack = TinyNNCuda.tnn_reshape_3d(sess, tw.pp[10], dfv, ew, 1)
           ei = 1
           while ei < nev
             up_stack = TinyNNCuda.tnn_concat(sess, up_stack,
-              TinyNNCuda.tnn_reshape_3d(sess, tw.pp[9 + 2 * ei],  dmv, dfv, 1), 2)   # [DM,DFF,E]
+              TinyNNCuda.tnn_reshape_3d(sess, tw.pp[9 + 2 * ei],  ew, dfv, 1), 2)   # [ℓ,DFF,E]
             dn_stack = TinyNNCuda.tnn_concat(sess, dn_stack,
-              TinyNNCuda.tnn_reshape_3d(sess, tw.pp[10 + 2 * ei], dfv, dmv, 1), 2)   # [DFF,DM,E]
+              TinyNNCuda.tnn_reshape_3d(sess, tw.pp[10 + 2 * ei], dfv, ew, 1), 2)   # [DFF,ℓ,E]
             ei = ei + 1
           end
 
-          h_exp = h2
-          if cut == 1
-            h_exp = TinyNNCuda.tnn_detach(sess, h2)
+          # toy#142: latent projection before the routed experts. The
+          # detach cut stays on the EXPERT INPUT, so under latent it
+          # cuts after W↓ — W↓ itself is spine and keeps its chain grad.
+          z_t = h2
+          if latv > 0
+            z_t = TinyNNCuda.tnn_matmul(sess, tw.pp[lat_base + 0], h2)
           end
-          h3    = TinyNNCuda.tnn_reshape_3d(sess, h_exp, dmv, 1, tv)
+          tw.tap_z = z_t
+          h_exp = z_t
+          if cut == 1
+            h_exp = TinyNNCuda.tnn_detach(sess, z_t)
+          end
+          h3    = TinyNNCuda.tnn_reshape_3d(sess, h_exp, ew, 1, tv)
           upo   = TinyNNCuda.tnn_mul_mat_id(sess, up_stack, h3, ids2)    # [DFF,1,T]
           a     = TinyNNCuda.tnn_gelu(sess, upo)
           tw.tap_a1 = TinyNNCuda.tnn_reshape_3d(sess, a, dfv, tv, 1)      # routed acts [DFF,T]
-          dno   = TinyNNCuda.tnn_mul_mat_id(sess, dn_stack, a, ids2)     # [DM,1,T]
-          eo    = TinyNNCuda.tnn_reshape_3d(sess, dno, dmv, tv, 1)         # [DM,T]
-          TinyNNCuda.tnn_add(sess, t_x, TinyNNCuda.tnn_mul(sess, eo, gate))
+          dno   = TinyNNCuda.tnn_mul_mat_id(sess, dn_stack, a, ids2)     # [ℓ,1,T]
+          eo    = TinyNNCuda.tnn_reshape_3d(sess, dno, ew, tv, 1)         # [ℓ,T]
+          routed = latent_up(sess, tw, TinyNNCuda.tnn_mul(sess, eo, gate))
+          if nsv > 0
+            routed = TinyNNCuda.tnn_add(sess, routed, shared_experts(sess, tw, h2))
+          end
+          TinyNNCuda.tnn_add(sess, t_x, routed)
         end
 
         def self.forward_tower(sess, tw, t_tok, t_labels, sels, eye, top1, cut, mask, qb_bias)

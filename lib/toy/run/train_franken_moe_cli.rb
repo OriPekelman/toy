@@ -226,6 +226,18 @@ module Toy
           # per-param-group lr would need a second hp tensor plus the
           # same routing this flag does — and it would be less explicit
           # about intent.
+          # toy#142 (K4) Stable LatentMoE. FRANKEN_MOE_LATENT=1 puts the
+          # ROUTED experts in a latent space of width dm/2 (K3's 0.5x)
+          # behind W↓/W↑ with an RMSNorm between aggregation and the
+          # up-projection; FRANKEN_MOE_SHARED=N adds N always-on
+          # full-width shared experts (K3 uses 2). Separate axes.
+          latent_on = (ENV["FRANKEN_MOE_LATENT"] || "") == "1"
+          ns_s = ENV["FRANKEN_MOE_SHARED"] || ""
+          n_shared = ns_s.length > 0 ? ns_s.to_i : 0
+          if n_shared < 0
+            puts "toy-train-franken-moe: FRANKEN_MOE_SHARED must be >= 0"
+            return 1
+          end
           freeze_experts = (ENV["FRANKEN_FREEZE_EXPERTS"] || "") == "1"
           donor_s = ENV["FRANKEN_DONOR"] || ""
           if donor_s.length > 0 && !File.exist?(donor_s)
@@ -430,13 +442,28 @@ module Toy
             shape_init(DM_BASE, DFF_BASE, vsel, esel, tbv)
           end
           attn_gate_init(attn_gate ? 1 : 0)
+          # latent width = dm/2 (K3's ratio). Must land AFTER shape_init
+          # (it reads dmv) and BEFORE alloc_tower.
+          lat_w = 0
+          if latent_on
+            lat_w = dmv / 2
+            if lat_w < 1
+              puts "toy-train-franken-moe: --moe-latent needs d_model >= 2 (got " + dmv.to_s + ")"
+              return 1
+            end
+          end
+          latent_init(lat_w, n_shared)
           opt_init(opt_code)
           # toy#136 K1.1: the spine bound. Without the gate the spine is
           # 0..8 (embed/fnorm/attention/rn2/Wr); with it, W_g at 9+2E
           # joins — so spine membership is "gi < 9 || gi == gate_idx"
           # and the all-chain wire bound grows by one.
           gate_i = attn_gate ? gate_idx : -1
-          n_all = 9 + 2 * esel + (attn_gate ? 1 : 0)
+          # toy#142: every TAIL weight (gate, latent sandwich, shared
+          # experts) is SPINE — chain-wired under bp-spine, param under
+          # dense. tail_first is where the tail begins.
+          tail_first = 9 + 2 * esel
+          n_all = tail_first + tail_spine_count
 
           sess = TinyNN.tnn_session_new(0)
           TinyNN.tnn_session_set_graph_capacity(sess, 262144)
@@ -469,10 +496,11 @@ module Toy
           np0 = TinyNN.tnn_null_ptr
           b_ups   = [np0]; b_ups.pop
           b_downs = [np0]; b_downs.pop
+          ew_b = ewidth   # toy#142: down's d_out is ℓ under latent
           ei = 0
           while ei < nev
             b_ups.push(TinyNN.tnn_input_2d_f32_persistent(sess, dfv, vocabv))
-            b_downs.push(TinyNN.tnn_input_2d_f32_persistent(sess, dmv, vocabv))
+            b_downs.push(TinyNN.tnn_input_2d_f32_persistent(sess, ew_b, vocabv))
             ei = ei + 1
           end
           sels = [np0]; sels.pop
@@ -521,7 +549,7 @@ module Toy
             # stay late-param DFA behind the detach cut.
             mark = false
             if top1
-              mark = bp_spine && (gi < 9 || gi == gate_i)
+              mark = bp_spine && (gi < 9 || gi >= tail_first)
             else
               mark = !(no_shadow && gi >= 9)
             end
@@ -616,7 +644,7 @@ module Toy
           end
           dist_c = b_dist_code
           sig_up   = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, vocabv, dfv, 0.0)
-          sig_down = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, vocabv, dmv, 0.0)
+          sig_down = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, vocabv, ew_b, 0.0)
           # toy#128 per-expert B seeds — STABLE in the expert index (the
           # standing DfaB discipline: re-policying one expert never
           # reshuffles another). Experts 0/1 keep the legacy offsets
@@ -634,7 +662,7 @@ module Toy
             TinyNN.tnn_upload_from_float_array(sess, b_ups[ei],
               Toy::Train::DfaB.fill(dfv * vocabv, us, dist_c, sig_up), dfv * vocabv)
             TinyNN.tnn_upload_from_float_array(sess, b_downs[ei],
-              Toy::Train::DfaB.fill(dmv * vocabv, ds, dist_c, sig_down), dmv * vocabv)
+              Toy::Train::DfaB.fill(ew_b * vocabv, ds, dist_c, sig_down), ew_b * vocabv)
             ei = ei + 1
           end
           ei = 0
@@ -736,8 +764,12 @@ module Toy
                 end
                 sp = sp + 1
               end
-              if gate_i >= 0
-                wire_chain(sess, tw, t_hp, t_hp_sgd, gate_i)
+              # toy#142: chain-wire the whole TAIL (attn gate + latent
+              # sandwich + shared experts) — all spine, all BP.
+              ti = tail_first
+              while ti < n_all
+                wire_chain(sess, tw, t_hp, t_hp_sgd, ti)
+                ti = ti + 1
               end
             else
               wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 3, b_aq, e_b, tw.tap_ah,  dmv, dmv, np2)
@@ -767,8 +799,8 @@ module Toy
             while ei < nev
               if !freeze_experts
                 m_i = TinyNN.tnn_matmul(sess, sels[ei], tw.t_onehots)
-                wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_h2, dmv,  dfv, m_i)
-                wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_a1, dfv, dmv,  m_i)
+                wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_z, ewidth, dfv, m_i)
+                wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_a1, dfv, ewidth, m_i)
               end
               ei = ei + 1
             end
@@ -783,8 +815,12 @@ module Toy
                 end
                 idx = idx + 1
               end
-              if gate_i >= 0
-                wire_chain(sess, tw, t_hp, t_hp_sgd, gate_i)
+              # toy#142: chain-wire the whole TAIL (attn gate + latent
+              # sandwich + shared experts) — all spine, all BP.
+              ti = tail_first
+              while ti < n_all
+                wire_chain(sess, tw, t_hp, t_hp_sgd, ti)
+                ti = ti + 1
               end
               # toy#128: per-expert dense DFA wires; each down_i reads
               # its own dense act tap (tap_as[i]). toy#129: no-shadow
@@ -797,11 +833,11 @@ module Toy
                 if freeze_experts
                   # nothing: the experts are inert by construction
                 elsif no_shadow
-                  wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_h2,     dmv,  dfv, np3)
-                  wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_as[ei], dfv, dmv,  np3)
+                  wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_z,      ewidth, dfv, np3)
+                  wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_as[ei], dfv, ewidth, np3)
                 else
-                  wire_dfa(sess, tw, t_hp, t_hp_sgd, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_h2,    dmv,  dfv, "up" + (ei + 1).to_s)
-                  wire_dfa(sess, tw, t_hp, t_hp_sgd, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_as[ei], dfv, dmv,  "down" + (ei + 1).to_s)
+                  wire_dfa(sess, tw, t_hp, t_hp_sgd, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_z,      ewidth, dfv, "up" + (ei + 1).to_s)
+                  wire_dfa(sess, tw, t_hp, t_hp_sgd, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_as[ei], dfv, ewidth, "down" + (ei + 1).to_s)
                 end
                 ei = ei + 1
               end
@@ -865,10 +901,18 @@ module Toy
               # + tied logits.
               act_e = top1 ? 1 : nev
               gate_p = attn_gate ? dmv * dmv : 0
+              # toy#142: routed experts are ℓ-wide under latent; the
+              # sandwich (W↓ + W↑ + norm) and the full-width shared
+              # experts are always-active params.
+              ew_c   = latent_on ? lat_w : dmv
+              lat_p  = latent_on ? (lat_w * dmv * 2 + lat_w) : 0
+              shr_p  = n_shared * 2 * dmv * dfv
               cost_total  = vocabv * dmv + 3 * dmv + 4 * dmv * dmv + gate_p +
-                            nev * dmv + nev * 2 * dmv * dfv
+                            lat_p + shr_p +
+                            nev * dmv + nev * 2 * ew_c * dfv
               cost_active = vocabv * dmv + 3 * dmv + 4 * dmv * dmv + gate_p +
-                            nev * dmv + act_e * 2 * dmv * dfv
+                            lat_p + shr_p +
+                            nev * dmv + act_e * 2 * ew_c * dfv
               cost_flops  = 2 * (4 * dmv * dmv) + 2 * gate_p + 4 * dmv * tv +
                             2 * nev * dmv + act_e * 2 * (2 * dmv * dfv) +
                             2 * vocabv * dmv
@@ -897,6 +941,8 @@ module Toy
               fm.add_str("donor_projection", donor_s.length > 0 ? "random-jl,scale-matched" : "")
               fm.add_bool("freeze_embed", freeze_embed)
               fm.add_bool("experts_frozen", freeze_experts)
+              fm.add_num("latent_dim", lat_w)
+              fm.add_num("shared_experts", n_shared)
               fm.add_raw("experts_sig", num_or_null_cli(experts_sig(sess, tw, nev, dmv, dfv)))
               # the per-param-class routing, recorded so a bundle can be
               # audited without re-reading the runner (tao#139 asked).
