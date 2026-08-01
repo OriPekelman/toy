@@ -32,6 +32,8 @@ require_relative "../blocks/gdn_block"
 require_relative "../primitives/kda"
 require_relative "../primitives/muon"
 require_relative "../blocks/kda_block"
+require_relative "../primitives/mla"
+require_relative "../blocks/mla_block"
 require_relative "../archs/layer_spec"
 require_relative "../archs/llama_arch"
 
@@ -131,6 +133,8 @@ class LlamaSeqEngine
     @seq_is_gdn            = [false]; @seq_is_gdn.pop
     @seq_is_kda            = [false]; @seq_is_kda.pop
     @seq_kda_layer_indices = [0]; @seq_kda_layer_indices.pop
+    @seq_is_mla            = [false]; @seq_is_mla.pop
+    @seq_mla_layer_indices = [0]; @seq_mla_layer_indices.pop
     @seq_vocab_size = 0
     @seq_rope_base            = 10000.0
     @seq_rope_scaling         = Toy::RopeScaling.none
@@ -174,6 +178,11 @@ class LlamaSeqEngine
     @seq_franken_noshadow_policy = [0]; @seq_franken_noshadow_policy.pop
     @seq_nope_flag = 0
     @seq_kda_conv = 1        # toy#137 K2c: ShortConv on KDA q/k/v (K3 eq 2)
+    # K-series M2: the KV latent width r. 0 = 'derive from the head
+    # width' (r = inner/2, K3's ratio), set explicitly by --mla-rank.
+    @seq_mla_rank    = 0
+    @seq_mla_kv_norm = 1     # DeepSeek's kv_a_norm; 0 only for the null
+    @seq_mla_gate    = 1     # K3's full-rank output gate
     @seq_attnres = 0         # toy#138 K3b: Attention Residuals (K3 §2.2)
     @seq_optimizer = 0       # toy#139/K5: 0 adamw | 1 muon
     @t_seq_hp_sgd = TinyNN.tnn_null_ptr
@@ -210,6 +219,33 @@ class LlamaSeqEngine
   # all-attention, byte-identical to before.
   def add_kda_layer!(idx)
     @seq_kda_layer_indices.push(idx)
+  end
+
+  # K-series M2: one Gated-MLA layer index per call. INT ARG ONLY, same
+  # #688 array-param landmine as the KDA/GDN setters. No indices = no
+  # MLA layers, byte-identical to before.
+  def add_mla_layer!(idx)
+    @seq_mla_layer_indices.push(idx)
+  end
+
+  # K-series M2: the KV latent rank r. Call BEFORE realize. 0 keeps the
+  # derived default (inner/2).
+  def mla_rank_init(v)
+    @seq_mla_rank = v
+    0
+  end
+
+  # K-series M2: 0 drops DeepSeek's kv_a_norm / K3's output gate. These
+  # exist so the reduction nulls are expressible (see Primitives::MLA);
+  # both default to 1, the faithful form.
+  def mla_kv_norm_init(v)
+    @seq_mla_kv_norm = v
+    0
+  end
+
+  def mla_gate_init(v)
+    @seq_mla_gate = v
+    0
   end
 
   # toy#137 K2c: 0 disables the ShortConv on KDA q/k/v. Call BEFORE
@@ -299,6 +335,51 @@ class LlamaSeqEngine
       end
       k2 = k2 + 1
     end
+    # K-series M2: same pass for MLA. A layer claimed by more than one
+    # kind fails loud rather than letting the last writer win.
+    @seq_is_mla = [false]; @seq_is_mla.pop
+    li3 = 0
+    while li3 < @seq_n_layers
+      @seq_is_mla.push(false)
+      li3 = li3 + 1
+    end
+    k3 = 0
+    while k3 < @seq_mla_layer_indices.length
+      idx3 = @seq_mla_layer_indices[k3]
+      if idx3 >= 0 && idx3 < @seq_n_layers
+        if @seq_is_gdn[idx3]
+          raise "layer " + idx3.to_s + " claimed by BOTH gdn_layers and mla_layers"
+        end
+        if @seq_is_kda[idx3]
+          raise "layer " + idx3.to_s + " claimed by BOTH kda_layers and mla_layers"
+        end
+        @seq_is_mla[idx3] = true
+        @seq_arch.set_mla_layer!(idx3)
+      end
+      k3 = k3 + 1
+    end
+    # If NO layer is KIND_ATTENTION, nothing in the graph consumes the
+    # positions tensor — it gets no backing buffer, and the recipe's
+    # step! upload would write to unallocated storage. That is exactly
+    # the trap --nope hit in toy#136; a k3 stack (all KDA + MLA) walks
+    # into it without anyone passing --nope, and so would an all-GDN
+    # stack. Raise the same guard flag from the layer kinds.
+    #
+    # ONLY EVER RAISES IT: an explicit seq_nope_init(1) must not be
+    # undone here. build_gdn_flags! runs during realize, after the
+    # setters — resetting engine ivars in this method is the wipe
+    # landmine that already cost one debugging session.
+    any_attn = false
+    la = 0
+    while la < @seq_n_layers
+      if !@seq_is_gdn[la] && !@seq_is_kda[la] && !@seq_is_mla[la]
+        any_attn = true
+      end
+      la = la + 1
+    end
+    if !any_attn
+      @seq_nope_flag = 1
+    end
   end
 
   def seq_gdn_blocks_ffi_ref
@@ -307,6 +388,20 @@ class LlamaSeqEngine
 
   def seq_kda_blocks_ffi_ref
     @seq_arch.seq_kda_blocks_ffi
+  end
+
+  def seq_mla_blocks_ffi_ref
+    @seq_arch.seq_mla_blocks_ffi
+  end
+
+  # The effective KV latent rank: explicit --mla-rank, else K3's ratio
+  # (half the attention inner width).
+  def seq_mla_rank_eff
+    inner = @seq_n_heads * @seq_d_head
+    if @seq_mla_rank > 0
+      return @seq_mla_rank
+    end
+    inner / 2
   end
 
   def enable_full_finetune_embeddings!
@@ -823,6 +918,12 @@ class LlamaSeqEngine
         kblk.alloc_trainable_f32_weights!(@sess, @seq_d_model, @seq_d_head,
                                           @seq_n_heads, @seq_kda_conv)
         kblk.set_params!
+      elsif @seq_is_mla[li]
+        mblk = self.seq_mla_blocks_ffi_ref[li]
+        mblk.alloc_trainable_f32_weights!(@sess, @seq_d_model, @seq_d_head,
+                                          @seq_n_heads, self.seq_mla_rank_eff,
+                                          @seq_mla_kv_norm, @seq_mla_gate)
+        mblk.set_params!
       else
         blk = self.seq_blocks_ffi[li]
         prefix = "blk." + li.to_s + "."
@@ -1003,6 +1104,36 @@ class LlamaSeqEngine
           upload_constant(kblk.t_cv2, inner_k, 0.0)
           upload_constant(kblk.t_cv3, inner_k, 0.0)
         end
+        li = li + 1
+        next
+      end
+      if @seq_is_mla[li]
+        # K-series M2. The latent up-projections are scaled by 1/sqrt(r)
+        # rather than 1/sqrt(d_model): their FAN-IN is the latent width,
+        # so reusing inv_sqrt_d would shrink K/V by sqrt(r/d_model) and
+        # start the attention logits near-degenerate. Same reasoning as
+        # KDA's t_w_au above.
+        mblk = self.seq_mla_blocks_ffi_ref[li]
+        inner_m = @seq_n_heads * @seq_d_head
+        rank_m  = self.seq_mla_rank_eff
+        inv_sqrt_r = init_scale / Math.sqrt(rank_m.to_f)
+        upload_constant(mblk.t_rn_gamma, @seq_d_model, 1.0)
+        upload_gaussian(mblk.t_w_kv_a, rank_m * @seq_d_model, inv_sqrt_d, state)
+        hm = 0
+        while hm < @seq_n_heads
+          upload_gaussian(mblk.t_w_q[hm],   @seq_d_head * @seq_d_model, inv_sqrt_d, state)
+          upload_gaussian(mblk.t_w_k_b[hm], @seq_d_head * rank_m, inv_sqrt_r, state)
+          upload_gaussian(mblk.t_w_v_b[hm], @seq_d_head * rank_m, inv_sqrt_r, state)
+          hm = hm + 1
+        end
+        if @seq_mla_kv_norm == 1
+          upload_constant(mblk.t_kv_gamma, rank_m, 1.0)
+        end
+        if @seq_mla_gate == 1
+          upload_gaussian(mblk.t_w_g, inner_m * @seq_d_model, inv_sqrt_d, state)
+          upload_constant(mblk.t_go_gamma, inner_m, 1.0)
+        end
+        upload_gaussian(mblk.t_w_o, @seq_d_model * inner_m, inv_sqrt_d, state)
         li = li + 1
         next
       end
@@ -1304,6 +1435,19 @@ class LlamaSeqEngine
         li = li + 1
         next
       end
+      if @seq_is_mla[li]
+        # No zero_state!: MLA is stateless (softmax attention over the
+        # window), unlike the KDA/GDN recurrences which carry an S_0.
+        mblk = self.seq_mla_blocks_ffi_ref[li]
+        mi2 = 0
+        while mi2 < mblk.ft_weights.length
+          TinyNN.tnn_zero_tensor(@sess, mblk.ft_m[mi2])
+          TinyNN.tnn_zero_tensor(@sess, mblk.ft_v[mi2])
+          mi2 = mi2 + 1
+        end
+        li = li + 1
+        next
+      end
       if @seq_is_gdn[li]
         gblk = self.seq_gdn_blocks_ffi_ref[li]
         gblk.zero_state!(@sess)
@@ -1476,6 +1620,24 @@ class LlamaSeqEngine
                                              kblk.ft_m[wk], kblk.ft_v[wk], t_hp)
             TinyNN.tnn_extend_backward_graph(@sess, tok)
             wk = wk + 1
+          end
+          li = li + 1
+          next
+        end
+        if @seq_is_mla[li]
+          # AdamW directly, like the KDA/GDN arms above: --optimizer
+          # muon reaches KIND_ATTENTION layers only (emit_opt_step is
+          # wired on the franken attention path). Pre-existing scope,
+          # stated rather than silently widened.
+          mblk = self.seq_mla_blocks_ffi_ref[li]
+          wm = 0
+          while wm < mblk.ft_weights.length
+            twm = mblk.ft_weights[wm]
+            tgm = TinyNN.tnn_tensor_grad(@sess, twm)
+            tom = TinyNN.tnn_opt_step_adamw(@sess, twm, tgm,
+                                             mblk.ft_m[wm], mblk.ft_v[wm], t_hp)
+            TinyNN.tnn_extend_backward_graph(@sess, tom)
+            wm = wm + 1
           end
           li = li + 1
           next
@@ -1724,6 +1886,20 @@ class LlamaSeqEngine
                                            kblk.ft_m[wk], kblk.ft_v[wk], t_hp)
           TinyNN.tnn_extend_backward_graph(@sess, tok)
           wk = wk + 1
+        end
+        li = li + 1
+        next
+      end
+      if @seq_is_mla[li]
+        mblk = self.seq_mla_blocks_ffi_ref[li]
+        wm = 0
+        while wm < mblk.ft_weights.length
+          twm = mblk.ft_weights[wm]
+          tgm = TinyNN.tnn_tensor_grad(@sess, twm)
+          tom = TinyNN.tnn_opt_step_adamw(@sess, twm, tgm,
+                                           mblk.ft_m[wm], mblk.ft_v[wm], t_hp)
+          TinyNN.tnn_extend_backward_graph(@sess, tom)
+          wm = wm + 1
         end
         li = li + 1
         next

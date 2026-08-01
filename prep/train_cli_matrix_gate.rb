@@ -51,6 +51,7 @@ REJECT = [
   [%w[franken --freeze-experts],          "--freeze-experts"],
   [%w[franken --moe-latent],              "--moe-latent"],
   [%w[franken --dfa-granularity block],   "--dfa-granularity"],
+  [%w[franken-moe --mla-layers 1],        "--mla-layers/--mla-rank"],
   [%w[from-scratch --ckpt-every 2],       "--ckpt-every"],
   [%w[franken --load-ckpt x.gguf],        "--load-ckpt"],
   [%w[franken --eval-corpus x.bin],       "--eval-corpus"],

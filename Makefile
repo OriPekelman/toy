@@ -390,6 +390,21 @@ gate-muon: prep/smokes/smoke_muon_ns
 	echo "$$out" | grep -q "^muon-ns: ok$$" || { echo "GATE FAIL [muon]"; exit 1; }; \
 	echo "GATE PASS [muon]: NS fixed-point + orthogonality band + scale invariance + non-trivial (toy#139)"
 
+# K-series M2 — the Gated-MLA pieces, proven by factorization exactness,
+# parameter economy, causality under future-token perturbation, and that
+# the output gate actually gates.
+prep/smokes/smoke_mla_latent: prep/smokes/smoke_mla_latent.rb lib/toy.rb lib/toy/ffi/tinynn.rb \
+		lib/toy/llm/primitives/rms_norm.rb lib/toy/llm/primitives/gqa.rb \
+		lib/toy/llm/primitives/gdn.rb lib/toy/llm/primitives/kda.rb \
+		lib/toy/llm/primitives/mla.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+.PHONY: gate-mla
+gate-mla: prep/smokes/smoke_mla_latent
+	@out="$$(./prep/smokes/smoke_mla_latent 2>&1)"; \
+	echo "$$out"; \
+	echo "$$out" | grep -q "^mla-latent: ok$$" || { echo "GATE FAIL [mla]"; exit 1; }; \
+	echo "GATE PASS [mla]: latent factorization byte-exact + param economy + causality + gate (K-series M2)"
+
 .PHONY: gate-kda
 gate-kda: prep/smokes/smoke_kda_recurrence
 	@out="$$(./prep/smokes/smoke_kda_recurrence 2>&1)"; \
@@ -1301,6 +1316,7 @@ verify-mirrors:
 MIRROR_CUDA := \
   lib/toy/llm/primitives/rms_norm_cuda.rb lib/toy/llm/primitives/rope_cuda.rb \
   lib/toy/llm/primitives/swiglu_cuda.rb lib/toy/llm/primitives/gqa_cuda.rb \
+  lib/toy/llm/primitives/mla_cuda.rb \
   lib/toy/llm/blocks/transformer_block_cuda.rb lib/toy/llm/archs/llama_arch_cuda.rb \
   lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/llm/engine/gpt2_seq_engine_cuda.rb \
   lib/toy/llm/recipes/from_scratch_cuda.rb lib/toy/llm/recipes/lora_cuda.rb \
@@ -2398,6 +2414,7 @@ libexec/toy-train-franken-llama: lib/toy/run/train_franken_llama.rb lib/toy.rb l
 		lib/toy/llm/archs/llama_arch.rb lib/toy/llm/archs/layer_spec.rb \
 		lib/toy/llm/blocks/transformer_block.rb lib/toy/llm/blocks/gdn_block.rb \
 		lib/toy/llm/blocks/kda_block.rb lib/toy/llm/primitives/kda.rb \
+		lib/toy/llm/blocks/mla_block.rb lib/toy/llm/primitives/mla.rb \
 		lib/toy/llm/primitives/gdn.rb lib/toy/llm/primitives/situ_glu.rb \
 		lib/toy/llm/primitives/swiglu.rb lib/toy/llm/primitives/rms_norm.rb \
 		lib/toy/llm/primitives/rope.rb lib/toy/llm/primitives/gqa.rb \
@@ -2444,6 +2461,7 @@ gates: $(GATES)
 # registration alive (same as every CUDA trainer).
 libexec/toy-train-franken-llama-cuda: lib/toy/run/train_franken_llama_cuda.rb lib/toy.rb \
 		lib/toy/llm/primitives/kda.rb lib/toy/llm/blocks/kda_block.rb \
+		lib/toy/llm/primitives/mla.rb lib/toy/llm/blocks/mla_block.rb \
 		lib/toy/llm/primitives/situ_glu.rb lib/toy/llm/archs/llama_arch.rb \
 		lib/toy/llm/blocks/transformer_block.rb \
 		lib/toy/ffi/tinynn_cuda.rb lib/toy/io/json_builder.rb lib/toy/io/json.rb \

@@ -144,17 +144,43 @@ end
 # (§2.1): THREE KDA layers then ONE global-attention layer, repeated,
 # with the FINAL layer always global ("An additional Gated MLA layer
 # is placed at the end of the backbone, ensuring that the final layer
-# always performs global attention"). Here the global layer is toy's
-# standard attention block; the MLA swap is its own K-series phase.
-# At N_LAYERS=6 that is KDA at 0,1,2,4 and attention at 3,5.
+# always performs global attention").
+#
+# TWO pattern values, and the difference is the "1" in 3:1:
+#   hybrid  the global slots are toy's STANDARD attention block. This is
+#           what toy#138 shipped, when no trainable MLA existed. Kept
+#           bit-for-bit so its gates stay byte-null.
+#   k3      the global slots are GATED MLA (K-series M2) — the faithful
+#           K3 contract, 3 KDA : 1 Gated MLA with an MLA final layer.
+# At N_LAYERS=6 both put KDA at 0,1,2,4; hybrid leaves 3,5 attention,
+# k3 makes 3,5 MLA.
 LAYER_PATTERN = ENV["FRANKEN_LAYER_PATTERN"] || ""
-if LAYER_PATTERN.length > 0 && LAYER_PATTERN != "hybrid"
-  puts "toy-train-franken: unknown FRANKEN_LAYER_PATTERN " + LAYER_PATTERN + " (hybrid)"
+if LAYER_PATTERN.length > 0 && LAYER_PATTERN != "hybrid" && LAYER_PATTERN != "k3"
+  puts "toy-train-franken: unknown FRANKEN_LAYER_PATTERN " + LAYER_PATTERN + " (hybrid|k3)"
+  exit 1
+end
+MLA_S = ENV["MLA_LAYERS"] || ""
+MLA_RANK = (ENV["FRANKEN_MLA_RANK"] || "0").to_i
+if MLA_RANK < 0
+  puts "toy-train-franken: FRANKEN_MLA_RANK must be >= 0 (0 = derived, inner/2)"
+  exit 1
+end
+if LAYER_PATTERN.length > 0 && MLA_S.length > 0
+  puts "toy-train-franken: --layer-pattern and --mla-layers both set — pick one (the pattern COMPUTES the mla layer list)"
   exit 1
 end
 if LAYER_PATTERN.length > 0 && KDA_S.length > 0
   puts "toy-train-franken: --layer-pattern and --kda-layers both set — pick one (the pattern COMPUTES the kda layer list)"
   exit 1
+end
+MLA_LIST = [0]; MLA_LIST.pop
+if MLA_S.length > 0
+  ml_parts = MLA_S.split(",")
+  mlp = 0
+  while mlp < ml_parts.length
+    MLA_LIST.push(ml_parts[mlp].to_i)
+    mlp = mlp + 1
+  end
 end
 KDA_LIST = [0]; KDA_LIST.pop
 if KDA_S.length > 0
@@ -213,23 +239,60 @@ if ctx_raw != 0 && ctx_raw < 2
 end
 CONTEXT = ctx_raw > 0 ? ctx_raw : 32
 # toy#138 K3a: expand the hybrid pattern now that N_LAYERS is known.
-if LAYER_PATTERN == "hybrid"
+if LAYER_PATTERN.length > 0
   lpi = 0
   while lpi < N_LAYERS
     is_global = ((lpi + 1) % 4) == 0 || lpi == N_LAYERS - 1
-    if !is_global
+    if is_global
+      # k3 fills the global slots with Gated MLA; hybrid leaves them as
+      # the standard attention block (which needs no list).
+      if LAYER_PATTERN == "k3"
+        MLA_LIST.push(lpi)
+      end
+    else
       KDA_LIST.push(lpi)
     end
     lpi = lpi + 1
   end
   if KDA_LIST.length == 0
-    puts "toy-train-franken: --layer-pattern hybrid at N_LAYERS=" + N_LAYERS.to_s + " yields no KDA layers (needs >= 2 layers)"
+    puts "toy-train-franken: --layer-pattern " + LAYER_PATTERN + " at N_LAYERS=" + N_LAYERS.to_s + " yields no KDA layers (needs >= 2 layers)"
     exit 1
   end
   if BATCH > 1
-    puts "toy-train-franken: --layer-pattern hybrid builds KDA layers, which are B=1 (see KDA_LAYERS)"
+    puts "toy-train-franken: --layer-pattern " + LAYER_PATTERN + " builds KDA layers, which are B=1 (see KDA_LAYERS)"
     exit 1
   end
+end
+# FAIL LOUD on out-of-range layer indices. build_gdn_flags! silently
+# skips any index outside [0, N_LAYERS), so `--kda-layers 3,5` at the
+# default N_LAYERS=2 marks NOTHING and produces a curve byte-identical
+# to the all-attention default — indistinguishable from "the flag did
+# nothing because the mechanism is a no-op". That cost real debugging
+# time on this very change. Both lists are checked here, where
+# N_LAYERS is finally known.
+oob_i = 0
+while oob_i < KDA_LIST.length
+  if KDA_LIST[oob_i] < 0 || KDA_LIST[oob_i] >= N_LAYERS
+    puts "toy-train-franken: KDA_LAYERS index " + KDA_LIST[oob_i].to_s +
+         " is out of range for N_LAYERS=" + N_LAYERS.to_s + " (0.." + (N_LAYERS - 1).to_s + ")"
+    exit 1
+  end
+  oob_i = oob_i + 1
+end
+oob_m = 0
+while oob_m < MLA_LIST.length
+  if MLA_LIST[oob_m] < 0 || MLA_LIST[oob_m] >= N_LAYERS
+    puts "toy-train-franken: MLA_LAYERS index " + MLA_LIST[oob_m].to_s +
+         " is out of range for N_LAYERS=" + N_LAYERS.to_s + " (0.." + (N_LAYERS - 1).to_s + ")"
+    exit 1
+  end
+  oob_m = oob_m + 1
+end
+# MLA is B=1 for the same reason KDA is: the head slicing reshapes on
+# seq_t, so one window per step.
+if MLA_LIST.length > 0 && BATCH > 1
+  puts "toy-train-franken: MLA layers are B=1 (the head slicing reshapes on seq_t) — drop --batch or the mla layers"
+  exit 1
 end
 hdr_v = CORPUS.length > 0 ? ToyCorpusLoader.probe_vocab(CORPUS) : 0
 env_v = (ENV["FRANKEN_VOCAB"] || "0").to_i
@@ -390,6 +453,12 @@ while kp < KDA_LIST.length
   opts.kda_layers.push(KDA_LIST[kp])
   kp = kp + 1
 end
+mp_i = 0
+while mp_i < MLA_LIST.length
+  opts.mla_layers.push(MLA_LIST[mp_i])
+  mp_i = mp_i + 1
+end
+opts.mla_rank = MLA_RANK
 
 recipe = Toy::LLM::Recipes::FrankenFromScratch.new
 kd = 0
@@ -397,6 +466,16 @@ while kd < opts.kda_layers.length
   recipe.ff_cache.add_kda_layer!(opts.kda_layers[kd])
   kd = kd + 1
 end
+# Driven from MLA_LIST directly rather than through opts.mla_layers —
+# INT-arg calls off the local list, the standing workaround for the
+# #688 array-param family. (opts.mla_layers is still populated above so
+# the RecipeOptions surface stays at parity with kda_layers.)
+md = 0
+while md < MLA_LIST.length
+  recipe.ff_cache.add_mla_layer!(MLA_LIST[md])
+  md = md + 1
+end
+recipe.ff_cache.mla_rank_init(opts.mla_rank)
 recipe.realize!(cfg, opts)
 
 # tao#flow-json-emit (#25): self-describing run bundle, parallel to
@@ -481,6 +560,8 @@ if EVENTS.length > 0
     config.add_str("kda_layers", KDA_S)
     config.add_bool("kda_conv", !KDA_CONV_OFF)
     config.add_str("layer_pattern", LAYER_PATTERN)
+    config.add_num("mla_layers", MLA_LIST.length.to_f)
+    config.add_num("mla_rank", MLA_RANK.to_f)
     config.add_bool("attnres", ATTNRES_ON)
     config.add_str("optimizer", OPT_S.length > 0 ? OPT_S : "adamw")
     config.add_num("seed",    SEED)

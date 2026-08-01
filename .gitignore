@@ -255,6 +255,8 @@ lib/toy/llm/primitives/kda_cuda.rb
 lib/toy/llm/primitives/kda_metal.rb
 lib/toy/llm/primitives/muon_cuda.rb
 lib/toy/llm/primitives/muon_metal.rb
+lib/toy/llm/primitives/mla_cuda.rb
+lib/toy/llm/primitives/mla_metal.rb
 lib/toy/llm/blocks/transformer_block_cuda.rb
 lib/toy/llm/blocks/transformer_block_metal.rb
 lib/toy/llm/archs/llama_arch_cuda.rb

@@ -92,6 +92,8 @@ module Toy; module LLM
                   # GDN precedent (the opts->recipe array hop reads
                   # EMPTY in these units; spinel-dev#19 / #688 family).
                   :kda_layers,
+                  :mla_layers,
+                  :mla_rank,
                   # toy#137 K2c: 1 (default) = ShortConv on KDA q/k/v
                   # (K3 eq 2, identity-inited); 0 disables it.
                   :kda_conv,
@@ -121,6 +123,8 @@ module Toy; module LLM
       @rope_nope     = 0
       @gdn_layers = [0]; @gdn_layers.pop   # typed-empty IntArray
       @kda_layers = [0]; @kda_layers.pop   # typed-empty IntArray
+      @mla_layers = [0]; @mla_layers.pop   # K-series M2, same shape
+      @mla_rank   = 0                      # 0 = derived (inner/2)
       @kda_conv   = 1
       @attnres    = 0
       @optimizer  = 0

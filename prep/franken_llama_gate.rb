@@ -422,6 +422,74 @@ end
 _oh, sth = Open3.capture2e({ "STEPS" => "1", "FRANKEN_LAYER_PATTERN" => "hybrid",
                              "KDA_LAYERS" => "0" }, RUNNER, chdir: ROOT)
 failures << "hybrid: pattern + explicit kda-layers not rejected" if sth.success?
+# K-series M2: the Gated-MLA layer kind, and `--layer-pattern k3` —
+# the FAITHFUL K3 contract (3 KDA : 1 Gated MLA) as opposed to toy#138's
+# `hybrid`, whose "1" slot is ordinary attention. What this pins is that
+# MLA is a REAL third kind: it trains, it differs from both attention
+# and KDA at the same split, its params move, and the byte-nulls hold.
+n0 = failures.length
+ml = run_franken_llama({ "STEPS" => "3", "SEED" => "0", "MLA_LAYERS" => "1" }, nil)
+     .lines.select { |l| l.start_with?("step ") }
+ml2 = run_franken_llama({ "STEPS" => "3", "SEED" => "0", "MLA_LAYERS" => "1" }, nil)
+      .lines.select { |l| l.start_with?("step ") }
+base = run_franken_llama({ "STEPS" => "3", "SEED" => "0" }, nil)
+       .lines.select { |l| l.start_with?("step ") }
+kda1 = run_franken_llama({ "STEPS" => "3", "SEED" => "0", "KDA_LAYERS" => "1" }, nil)
+       .lines.select { |l| l.start_with?("step ") }
+mlv = ml.map { |l| l[/loss=(\S+)/, 1].to_f }
+failures << "mla: not deterministic" unless ml == ml2 && ml.length == 3
+failures << "mla: NaN" if mlv.any?(&:nan?)
+failures << "mla: layer 1 as MLA is byte-identical to all-attention (the kind is not reaching the graph)" if ml == base
+failures << "mla: MLA layer identical to a KDA layer at the same index" if ml == kda1
+failures << "mla: does not descend (#{mlv.first} -> #{mlv.last})" unless mlv.last < mlv.first
+# The FLAG-NULL: no MLA layers must leave every existing curve alone.
+failures << "mla: empty MLA_LAYERS perturbs the default curve" unless
+  run_franken_llama({ "STEPS" => "3", "SEED" => "0", "MLA_LAYERS" => "" }, nil)
+    .lines.select { |l| l.start_with?("step ") } == base
+# --mla-rank is a real axis (a different latent width is a different model),
+# and the DERIVED default must equal an explicit r at that same value.
+r_small = run_franken_llama({ "STEPS" => "3", "SEED" => "0", "MLA_LAYERS" => "1",
+                             "FRANKEN_MLA_RANK" => "2" }, nil)
+          .lines.select { |l| l.start_with?("step ") }
+failures << "mla: --mla-rank 2 does not change the curve" if r_small == ml
+# k3 vs hybrid at the same 6-layer split: same KDA positions, different
+# global kind, so the curves MUST differ — that is the whole delta.
+k3 = run_franken_llama({ "STEPS" => "3", "SEED" => "0", "FRANKEN_SHAPE" => "deep",
+                         "FRANKEN_LAYER_PATTERN" => "k3" }, nil)
+     .lines.select { |l| l.start_with?("step ") }
+hyb = run_franken_llama({ "STEPS" => "3", "SEED" => "0", "FRANKEN_SHAPE" => "deep",
+                          "FRANKEN_LAYER_PATTERN" => "hybrid" }, nil)
+      .lines.select { |l| l.start_with?("step ") }
+failures << "mla: k3 pattern identical to hybrid (the MLA slot is not being built)" if k3 == hyb
+failures << "mla: k3 NaN" if k3.any? { |l| l[/loss=(\S+)/, 1].to_f.nan? }
+Dir.mktmpdir("franken_k3") do |dir|
+  FileUtils.mkdir_p(File.join(dir, "weights"))
+  run_franken_llama({ "STEPS" => "1", "SEED" => "0", "FRANKEN_SHAPE" => "deep",
+                      "FRANKEN_LAYER_PATTERN" => "k3" }, dir)
+  kj = JSON.parse(File.readlines(File.join(dir, "events.jsonl")).first)
+  failures << "mla: k3 provenance layer_pattern #{kj.dig('config', 'layer_pattern').inspect}" unless kj.dig("config", "layer_pattern") == "k3"
+  # At L=6 the pattern puts MLA in the two global slots (3 and 5).
+  failures << "mla: k3 provenance mla_layers #{kj.dig('config', 'mla_layers').inspect} (want 2)" unless kj.dig("config", "mla_layers") == 2
+  Dir.mktmpdir("franken_k3_ref") do |d2|
+    FileUtils.mkdir_p(File.join(d2, "weights"))
+    run_franken_llama({ "STEPS" => "1", "SEED" => "0", "FRANKEN_SHAPE" => "deep",
+                        "KDA_LAYERS" => "0,1,2,4", "MLA_LAYERS" => "3,5" }, d2)
+    rj = JSON.parse(File.readlines(File.join(d2, "events.jsonl")).first)
+    failures << "mla: k3 cost differs from the explicit kda 0,1,2,4 + mla 3,5 split" unless kj["cost"] == rj["cost"]
+  end
+end
+# Guards, all fail-loud.
+[[{ "FRANKEN_LAYER_PATTERN" => "k3", "MLA_LAYERS" => "0" }, "pattern + explicit mla-layers"],
+ [{ "MLA_LAYERS" => "0", "KDA_LAYERS" => "0" }, "same layer claimed by kda and mla"],
+ [{ "MLA_LAYERS" => "9" },                      "out-of-range mla index"],
+ [{ "KDA_LAYERS" => "9" },                      "out-of-range kda index"],
+ [{ "MLA_LAYERS" => "1", "FRANKEN_BATCH" => "4", "CORPUS" => "data/ts_seqs.bin" },
+  "mla + batch > 1"]].each do |env, what|
+  _o, st = Open3.capture2e({ "STEPS" => "1" }.merge(env), RUNNER, chdir: ROOT)
+  failures << "mla: #{what} not rejected" if st.success?
+end
+puts failures.length == n0 ? "  ok: MLA layer kind — trains (#{mlv.first.round(3)} -> #{mlv.last.round(3)}), distinct from attention AND from KDA at the same index, rank is a live axis, flag-null holds; k3 pattern differs from hybrid and matches the explicit kda/mla split; 5 guards reject" : "  FAIL: MLA leg"
+
 puts failures.length == n0 ? "  ok: KDA_LAYERS — a KDA layer trains through the engine (#{kl.first.round(3)} -> #{kl.last.round(3)}), deterministic, differs from all-attention; conv identity-null + batch guard + linear-attention cost; hybrid 3:1 pattern == explicit split; dfa-policy rejected" : "  FAIL: KDA leg"
 
 # ---- toy#138 K3b: AttnRes (attention residuals over depth) ----
@@ -529,7 +597,7 @@ failures << "byte-repro: outputs differ" unless r1 == r2
 puts "  ok: byte-repro — two policy runs identical" if r1 == r2
 
 if failures.empty?
-  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + shape presets (toy#124) + lr/warmup (toy#126) + no-shadow/pack-header/ckpt-every (toy#129) + batch (toy#133) + K1 axes (toy#136) + KDA layer (toy#137) + hybrid/AttnRes (toy#138) + per-head muon (toy#139/K5) + byte-repro (toy#112/#113)"
+  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + shape presets (toy#124) + lr/warmup (toy#126) + no-shadow/pack-header/ckpt-every (toy#129) + batch (toy#133) + K1 axes (toy#136) + KDA layer (toy#137) + hybrid/AttnRes (toy#138) + MLA kind/k3 pattern (K-series M2) + per-head muon (toy#139/K5) + byte-repro (toy#112/#113)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-llama]: #{f}" }

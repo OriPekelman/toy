@@ -86,6 +86,9 @@ module Toy; module LLM; module Archs
                   # flat-int-kind dispatch discipline as GDN (one
                   # concrete typed block class per arm).
                   :seq_kda_blocks_ffi,
+                  # K-series M2: the parallel Gated-MLA array, same
+                  # one-concrete-class-per-arm discipline.
+                  :seq_mla_blocks_ffi,
                   # Orchestration-gating carriers — bare cache ivars with
                   # no accessor before P2.5. The lens-branch guard reads
                   # seq_donor_d_in; the shared ctx reads seq_rope_cfg.
@@ -120,6 +123,7 @@ module Toy; module LLM; module Archs
       # KIND_ATTENTION layers the placeholder is simply never invoked.
       @seq_gdn_blocks_ffi     = [Toy::LLM::Blocks::GDNBlock.new]
       @seq_kda_blocks_ffi     = [Toy::LLM::Blocks::KDABlock.new]
+      @seq_mla_blocks_ffi     = [Toy::LLM::Blocks::MLABlock.new]
       @seq_donor_d_in         = 0
       # The cache overwrites seq_rope_cfg with the real RoPE::Cfg before
       # build_forward runs (each realize prologue rebuilds it).
@@ -231,6 +235,10 @@ module Toy; module LLM; module Archs
       @seq_layer_kinds[idx] = Toy::LLM::Archs::LayerSpec::KIND_KDA
     end
 
+    def set_mla_layer!(idx)
+      @seq_layer_kinds[idx] = Toy::LLM::Archs::LayerSpec::KIND_MLA
+    end
+
     def seed_blocks!(n_layers)
       @seq_blocks_ffi = [Toy::LLM::Blocks::TransformerBlock.new]
       # Phase 3 — seed the parallel spec array in lockstep. Every layer is
@@ -239,6 +247,7 @@ module Toy; module LLM; module Archs
       @seq_layer_specs = [Toy::LLM::Archs::LayerSpec.new(Toy::LLM::Archs::LayerSpec::KIND_ATTENTION)]
       @seq_gdn_blocks_ffi = [Toy::LLM::Blocks::GDNBlock.new]
       @seq_kda_blocks_ffi = [Toy::LLM::Blocks::KDABlock.new]
+      @seq_mla_blocks_ffi = [Toy::LLM::Blocks::MLABlock.new]
       @seq_layer_kinds = [Toy::LLM::Archs::LayerSpec::KIND_ATTENTION]
       li_init = 1
       while li_init < n_layers
@@ -246,6 +255,7 @@ module Toy; module LLM; module Archs
         @seq_layer_specs.push(Toy::LLM::Archs::LayerSpec.new(Toy::LLM::Archs::LayerSpec::KIND_ATTENTION))
         @seq_gdn_blocks_ffi.push(Toy::LLM::Blocks::GDNBlock.new)
         @seq_kda_blocks_ffi.push(Toy::LLM::Blocks::KDABlock.new)
+        @seq_mla_blocks_ffi.push(Toy::LLM::Blocks::MLABlock.new)
         @seq_layer_kinds.push(Toy::LLM::Archs::LayerSpec::KIND_ATTENTION)
         li_init = li_init + 1
       end
@@ -393,6 +403,9 @@ module Toy; module LLM; module Archs
         elsif spec_kind == Toy::LLM::Archs::LayerSpec::KIND_KDA
           # toy#137 K2b: concrete typed call into the parallel KDA array.
           t_cur = self.seq_kda_blocks_ffi[li_g].build_forward(sess, t_cur, seq_t, eps)
+        elsif spec_kind == Toy::LLM::Archs::LayerSpec::KIND_MLA
+          # K-series M2: concrete typed call into the parallel MLA array.
+          t_cur = self.seq_mla_blocks_ffi[li_g].build_forward(sess, t_cur, seq_t, eps)
         else
           raise "LlamaArch#build_forward: unsupported layer kind #{spec_kind} at layer #{li_g}"
         end

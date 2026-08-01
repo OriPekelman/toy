@@ -30,6 +30,7 @@ module Toy; module LLM; module Archs
     KIND_ATTENTION = 0   # standard Llama-style attention + SwiGLU FFN
     KIND_GDN       = 1   # Dragon Gated-DeltaNet block (Phase 5)
     KIND_KDA       = 2   # Kimi Delta Attention block (toy#137, K-series K2b)
+    KIND_MLA       = 3   # Gated Multi-head Latent Attention (K-series M2)
 
     attr_accessor :kind
 

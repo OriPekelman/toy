@@ -127,6 +127,8 @@ module Toy
           @moe_balance  = nil   # franken-moe: aux | qb | none (toy#136/K1)
           @attn_gate    = false # franken-moe: K3 attention output gate (toy#136/K1.1)
           @kda_layers   = nil   # franken: KDA layer indices (toy#137/K2b)
+          @mla_layers   = nil   # franken: Gated-MLA layer indices (K-series M2)
+          @mla_rank     = nil   # franken: KV latent rank r (0/nil = derived)
           @kda_conv_off = false # franken: disable KDA ShortConv (toy#137/K2c)
           @layer_pattern = nil  # franken: hybrid layer preset (toy#138/K3a)
           @attnres      = false # franken: attention residuals (toy#138/K3b)
@@ -333,6 +335,8 @@ module Toy
                              "FRANKEN_BATCH"   => (@batch || 0).to_s,
                              "FRANKEN_ACT"     => (@act || ""),
                              "KDA_LAYERS"      => (@kda_layers || ""),
+                             "MLA_LAYERS"      => (@mla_layers || ""),
+                             "FRANKEN_MLA_RANK" => (@mla_rank ? @mla_rank.to_s : ""),
                              "KDA_CONV"        => (@kda_conv_off ? "0" : ""),
                              "FRANKEN_LAYER_PATTERN" => (@layer_pattern || ""),
                              "ATTNRES"         => (@attnres ? "1" : ""),
@@ -518,11 +522,11 @@ module Toy
               i += 1
               val = @argv[i]
               return bad_arg("--layer-pattern requires a value") if val.nil?
-              return bad_arg("--layer-pattern must be hybrid, got #{val.inspect}") unless val == "hybrid"
+              return bad_arg("--layer-pattern must be hybrid or k3, got #{val.inspect}") unless %w[hybrid k3].include?(val)
               @layer_pattern = val
             when /\A--layer-pattern=(.*)\z/
               val = $1
-              return bad_arg("--layer-pattern must be hybrid, got #{val.inspect}") unless val == "hybrid"
+              return bad_arg("--layer-pattern must be hybrid or k3, got #{val.inspect}") unless %w[hybrid k3].include?(val)
               @layer_pattern = val
             when "--kda-layers"
               i += 1
@@ -534,6 +538,26 @@ module Toy
               val = $1
               return bad_arg("--kda-layers must be comma-separated 0-based integers, got #{val.inspect}") unless val =~ /\A\d+(,\d+)*\z/
               @kda_layers = val
+            when "--mla-layers"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--mla-layers requires a value") if val.nil?
+              return bad_arg("--mla-layers must be comma-separated 0-based integers, got #{val.inspect}") unless val =~ /\A\d+(,\d+)*\z/
+              @mla_layers = val
+            when /\A--mla-layers=(.*)\z/
+              val = $1
+              return bad_arg("--mla-layers must be comma-separated 0-based integers, got #{val.inspect}") unless val =~ /\A\d+(,\d+)*\z/
+              @mla_layers = val
+            when "--mla-rank"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--mla-rank requires a value") if val.nil?
+              return bad_arg("--mla-rank must be a positive integer, got #{val.inspect}") unless val =~ /\A[1-9]\d*\z/
+              @mla_rank = val.to_i
+            when /\A--mla-rank=(.*)\z/
+              val = $1
+              return bad_arg("--mla-rank must be a positive integer, got #{val.inspect}") unless val =~ /\A[1-9]\d*\z/
+              @mla_rank = val.to_i
             when "--act"
               i += 1
               val = @argv[i]
@@ -813,6 +837,7 @@ module Toy
             ["--moe-balance",   %w[franken-moe],                    !@moe_balance.nil?, " (toy#136/K1)"],
             ["--attn-gate",     %w[franken-moe],                    @attn_gate, " (toy#136/K1.1; the llama lane's gate arrives with KDA in K2)"],
             ["--kda-layers",    %w[franken],                        !@kda_layers.nil?, " (toy#137/K2b)"],
+            ["--mla-layers/--mla-rank", %w[franken],                (!@mla_layers.nil? || !@mla_rank.nil?), " (K-series M2)"],
             ["--no-kda-conv",   %w[franken],                        @kda_conv_off, " (toy#137/K2c)"],
             ["--layer-pattern", %w[franken],                        !@layer_pattern.nil?, " (toy#138/K3a)"],
             ["--attnres",      %w[franken],                        @attnres, " (toy#138/K3b)"],
@@ -863,6 +888,12 @@ module Toy
           end
           if @layer_pattern && @kda_layers
             return bad_arg("--layer-pattern and --kda-layers both set — the pattern computes the KDA layer list (toy#138)")
+          end
+          if @layer_pattern && @mla_layers
+            return bad_arg("--layer-pattern and --mla-layers both set — the pattern computes the MLA layer list (K-series M2)")
+          end
+          if @mla_rank && !@mla_layers && @layer_pattern != "k3"
+            return bad_arg("--mla-rank needs MLA layers — pass --mla-layers or --layer-pattern k3")
           end
           if @batch && @batch > 1 && @corpus.nil?
             return bad_arg("--batch > 1 needs --corpus (the fixed-seq feed is the byte-gated single-window contract)")
