@@ -50,6 +50,7 @@ REJECT = [
   [%w[franken --donor x.gguf],            "--donor"],
   [%w[franken --freeze-experts],          "--freeze-experts"],
   [%w[franken --moe-latent],              "--moe-latent"],
+  [%w[franken --dfa-granularity block],   "--dfa-granularity"],
   [%w[from-scratch --ckpt-every 2],       "--ckpt-every"],
   [%w[franken --load-ckpt x.gguf],        "--load-ckpt"],
   [%w[franken --eval-corpus x.bin],       "--eval-corpus"],

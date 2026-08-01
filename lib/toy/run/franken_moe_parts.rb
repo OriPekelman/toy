@@ -321,6 +321,7 @@ module Toy
           attr_accessor :t_rlogits
           attr_accessor :tap_as
           attr_accessor :tap_z      # toy#142: the routed experts' input
+          attr_accessor :tap_blk    # toy#143: the routed contribution (block-DFA target)
           attr_accessor :dfa_grads, :dfa_accs, :dfa_names
 
           def initialize
@@ -340,6 +341,7 @@ module Toy
             @t_rlogits = np   # toy#136: raw router logits (QB reads margins)
             @tap_as    = [np]; @tap_as.pop   # toy#128: per-expert dense acts
             @tap_z     = np
+            @tap_blk   = np
             @dfa_grads = [np]; @dfa_grads.pop
             @dfa_accs  = [np]; @dfa_accs.pop
             @dfa_names = [""]; @dfa_names.pop
@@ -473,7 +475,21 @@ module Toy
           TinyNN.tnn_matmul(sess, tw.pp[lat_base + 1], un)
         end
 
-        def self.moe_block(sess, tw, t_x, sels)
+        # toy#143 (block-DFA): blk_cut = 1 isolates the routed-expert
+        # sub-block from the CE graph in BOTH directions —
+        #   input  detached: no gradient crosses the block boundary
+        #                    downward (Launay's "no backward chain
+        #                    across blocks");
+        #   output detached IN THE MAIN PATH: the CE loss cannot reach
+        #                    the experts from above.
+        # Both detaches are FORWARD-IDENTITY (vendor-patch 0011), so the
+        # prediction is unchanged — only the backward path is replaced.
+        # The runner then attaches the block's own loss root
+        # (sum(routed ⊙ B·e)), whose gradient at `routed` is exactly the
+        # random-projected output error; autodiff computes the expert
+        # up/down gradients from it by ordinary BP INSIDE the block.
+        # tap_blk carries the UNDETACHED routed contribution for that.
+        def self.moe_block(sess, tw, t_x, sels, blk_cut)
           rn2 = tw.pp[7]
           wr  = tw.pp[8]
           h2 = Toy::LLM::Primitives::RMSNorm.build(sess, t_x, rn2, EPS)
@@ -487,6 +503,9 @@ module Toy
           z = h2
           if latv > 0
             z = TinyNN.tnn_matmul(sess, tw.pp[lat_base + 0], h2)   # [ℓ, T]
+          end
+          if blk_cut == 1
+            z = TinyNN.tnn_detach(sess, z)
           end
           tw.tap_z = z
           acc = TinyNN.tnn_null_ptr
@@ -510,7 +529,14 @@ module Toy
             end
             ei = ei + 1
           end
-          out = latent_up(sess, tw, acc)
+          routed = latent_up(sess, tw, acc)
+          tw.tap_blk = routed
+          out = routed
+          if blk_cut == 1
+            # the MAIN path sees a gradient-opaque copy; the surrogate
+            # root (runner-side) owns the real one.
+            out = TinyNN.tnn_detach(sess, routed)
+          end
           if nsv > 0
             out = TinyNN.tnn_add(sess, out, shared_experts(sess, tw, h2))
           end
@@ -589,7 +615,7 @@ module Toy
           TinyNN.tnn_add(sess, t_x, routed)
         end
 
-        def self.forward_tower(sess, tw, t_tok, t_labels, sels, eye, top1, cut, mask, qb_bias)
+        def self.forward_tower(sess, tw, t_tok, t_labels, sels, eye, top1, cut, mask, qb_bias, blk_cut)
           x = TinyNN.tnn_get_rows(sess, tw.pp[0], t_tok)
           wg_t = TinyNN.tnn_null_ptr
           if gatev == 1
@@ -602,7 +628,7 @@ module Toy
           if top1
             x = moe_block_top1(sess, tw, x, eye, cut, qb_bias)
           else
-            x = moe_block(sess, tw, x, sels)
+            x = moe_block(sess, tw, x, sels, blk_cut)
           end
           xf  = Toy::LLM::Primitives::RMSNorm.build(sess, x, tw.pp[1], EPS)
           lgt = TinyNN.tnn_matmul(sess, tw.pp[0], xf)
@@ -659,6 +685,15 @@ module Toy
           tw.dfa_accs.push(acc)
           tw.dfa_names.push(name)
           0
+        end
+
+        # toy#143: scalar sum over every element of a 2d tensor —
+        # reshape to a column then sum_rows (the Muon Frobenius idiom).
+        # Used to turn the block's error inner-product into a LOSS ROOT
+        # whose gradient at `routed` is exactly the projected error.
+        def self.full_sum(sess, x, n_elem)
+          col = TinyNN.tnn_reshape_2d(sess, x, n_elem, 1)
+          TinyNN.tnn_sum_rows(sess, col)
         end
 
         def self.cosv(a, b)

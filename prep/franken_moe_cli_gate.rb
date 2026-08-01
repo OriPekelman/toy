@@ -688,6 +688,44 @@ qb2 = losses(run_cli(k4 + %w[--moe-latent --moe-shared 2 --routing top1 --moe-ba
 failures << "latent + qb: short/NaN" unless qb2.length == 12 && qb2.map(&:to_f).none?(&:nan?)
 puts failures.length == n0 ? "  ok: Stable LatentMoE — latent ℓ=d/2 trains and SHRINKS the routed params, shared experts add capacity back, provenance, composes with dfa-experts + bp-spine + qb" : "  FAIL: K4 leg"
 
+# ---- toy#143: --dfa-granularity block (the literature recipe) ----
+# The ticket's two proof obligations, plus the guards. NOTE what is
+# NOT asserted: which arm WINS. At gate scale the arms sit within
+# noise of each other and the ordering is not stable across horizons,
+# so pinning a winner here would pin noise — that comparison belongs
+# to the F9c/F9d fixture, not to a gate.
+n0 = failures.length
+gb = %w[--steps 40 --seed 0 --shape wide --experts 8 --moe-policy dfa-experts
+        --corpus data/fineweb_gpt2_smoke.bin --context 32]
+Dir.mktmpdir("moe_cli_blk") do |dir|
+  blk_out = run_cli(gb + %w[--dfa-granularity block], {}, dir)
+  ev = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+  s0 = ev.first.dig("franken_moe", "experts_sig")
+  s1 = ev.last["experts_sig"]
+  # (1) block-DFA experts must PROVABLY move — the whole point is that
+  # they train, unlike the frozen control.
+  failures << "block-dfa: experts did NOT move (#{s0} -> #{s1}) — the block loss root is not reaching them" unless s0 && s1 && s0 != s1
+  failures << "block-dfa: provenance #{ev.first.dig('franken_moe', 'dfa_granularity').inspect}" unless ev.first.dig("franken_moe", "dfa_granularity") == "block"
+  failures << "block-dfa: NaN" if losses(blk_out).map(&:to_f).any?(&:nan?)
+  b2 = losses(run_cli(gb + %w[--dfa-granularity block], {}, nil))
+  failures << "block-dfa: not deterministic" unless losses(blk_out) == b2
+  # (2) it must be a DISTINCT graph from matmul-DFA, not a rename.
+  mm = losses(run_cli(gb, {}, nil))
+  failures << "block-dfa: curve identical to matmul granularity (same graph)" if losses(blk_out) == mm
+  failures << "block-dfa: explicit --dfa-granularity matmul differs from the default (flag-null broken)" unless losses(run_cli(gb + %w[--dfa-granularity matmul], {}, nil)) == mm
+end
+[["--routing", "top1"], ["--moe-policy", "chain"]].each do |k, v|
+  argv = [TOY, "train", "franken-moe", "--steps", "1", "--dfa-granularity", "block", k, v]
+  argv += %w[--moe-policy dfa-experts] if k == "--routing"
+  _o, st = Open3.capture2e(CLEAN, *argv, chdir: ROOT)
+  failures << "block-dfa: #{k} #{v} not rejected" if st.success?
+end
+argv_bf = [TOY, "train", "franken-moe", "--steps", "1", "--moe-policy", "dfa-experts",
+           "--dfa-granularity", "block", "--freeze-experts"]
+_obf, sbf = Open3.capture2e(CLEAN, *argv_bf, chdir: ROOT)
+failures << "block-dfa: + --freeze-experts not rejected" if sbf.success?
+puts failures.length == n0 ? "  ok: --dfa-granularity block — experts provably move via the block loss root, distinct graph from matmul, deterministic, provenance; top1/chain/freeze rejected" : "  FAIL: block-dfa leg"
+
 # ---- 6. bundle structure + run-id passthrough ----
 n0 = failures.length
 Dir.mktmpdir("moe_cli_bundle") do |dir|
@@ -724,7 +762,7 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
 end
 
 if failures.empty?
-  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule/attn-gate (toy#136) + optimizer (toy#139) + donor (toy#140) + freeze-experts (toy#141) + latent-moe (toy#142) + bundle (toy#120/#121)"
+  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule/attn-gate (toy#136) + optimizer (toy#139) + donor (toy#140) + freeze-experts (toy#141) + latent-moe (toy#142) + block-dfa (toy#143) + bundle (toy#120/#121)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe-cli]: #{f}" }

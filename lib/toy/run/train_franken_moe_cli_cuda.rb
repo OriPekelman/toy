@@ -209,6 +209,26 @@ module Toy
           # behind W↓/W↑ with an RMSNorm between aggregation and the
           # up-projection; FRANKEN_MOE_SHARED=N adds N always-on
           # full-width shared experts (K3 uses 2). Separate axes.
+          # toy#143 (F9d fallout): FRANKEN_DFA_GRANULARITY matmul
+          # (default, byte-null — one fixed B per WEIGHT, the current
+          # recipe) | block (the LITERATURE recipe — Launay 2020's
+          # "macro" scale, Oudjedi 2024's decoder-block DFA: ONE fixed
+          # B per BLOCK projects the output error to the block's
+          # contribution, and ordinary BP INSIDE the block derives the
+          # individual expert gradients).
+          #
+          # Mechanically: detach the expert sub-block from the CE graph
+          # both ways (forward-identity, vendor-patch 0011), then hang a
+          # second LOSS ROOT  L_blk = Σ (routed ⊙ (B·e))  on it. Since
+          # ∂L_blk/∂routed = B·e exactly, autodiff hands the experts the
+          # projected error and computes their up/down grads by real BP
+          # — no weight transport across the block boundary.
+          gran_s = ENV["FRANKEN_DFA_GRANULARITY"] || ""
+          if gran_s.length > 0 && gran_s != "matmul" && gran_s != "block"
+            puts "toy-train-franken-moe: unknown FRANKEN_DFA_GRANULARITY " + gran_s + " (matmul|block)"
+            return 1
+          end
+          block_dfa = gran_s == "block"
           latent_on = (ENV["FRANKEN_MOE_LATENT"] || "") == "1"
           ns_s = ENV["FRANKEN_MOE_SHARED"] || ""
           n_shared = ns_s.length > 0 ? ns_s.to_i : 0
@@ -291,6 +311,18 @@ module Toy
           end
           if no_shadow && align_on
             puts "toy-train-franken-moe-cuda: --no-shadow + align events — align compares DFA grads against the chain shadow acc, which a no-shadow build does not create. Drop one."
+            return 1
+          end
+          if block_dfa && top1
+            puts "toy-train-franken-moe-cuda: --dfa-granularity block needs the DENSE lane — the top1 experts dispatch through mul_mat_id, which has NO ggml backward (toy#110), so BP inside the block is not expressible there"
+            return 1
+          end
+          if block_dfa && !dfa_experts
+            puts "toy-train-franken-moe-cuda: --dfa-granularity block requires --moe-policy dfa-experts (it is a DFA recipe; chain is already full BP)"
+            return 1
+          end
+          if block_dfa && freeze_experts
+            puts "toy-train-franken-moe-cuda: --dfa-granularity block + --freeze-experts is contradictory (block-DFA exists to TRAIN the experts)"
             return 1
           end
           if qb_on && !top1
@@ -493,6 +525,8 @@ module Toy
           b_av  = TinyNNCuda.tnn_input_2d_f32_persistent(sess, dmv, vocabv)
           b_ao  = TinyNNCuda.tnn_input_2d_f32_persistent(sess, dmv, vocabv)
           b_r   = TinyNNCuda.tnn_input_2d_f32_persistent(sess, nev, vocabv)
+          # toy#143: ONE feedback matrix for the whole block, ne=[vocab, d_model]
+          b_blk = TinyNNCuda.tnn_input_2d_f32_persistent(sess, dmv, vocabv)
           ones_t = TinyNNCuda.tnn_input_2d_f32_persistent(sess, 1, tv)   # ne=[tv,1]
           # toy#139: ggml's SGD step takes exactly [alpha, wd]; muon and
           # sgd both apply through it. PERSISTENT (alloc BEFORE
@@ -692,6 +726,12 @@ module Toy
             TinyNNCuda.tnn_upload_from_float_array(sess, b_av, Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 23, dist_c, sig_dm), dmv * vocabv)
             TinyNNCuda.tnn_upload_from_float_array(sess, b_ao, Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 24, dist_c, sig_dm), dmv * vocabv)
             TinyNNCuda.tnn_upload_from_float_array(sess, b_r,  Toy::Train::DfaB.fill(nev * vocabv, b_seed + 25, dist_c, sig_e),  nev * vocabv)
+            # ones_t is the aux-loss reducer and belongs to the top1 lane.
+            # It MUST be uploaded here: it is a persistent input, so if the
+            # upload is skipped it reads zeros in silence, t_aux collapses to
+            # 0, and load balancing dies with no error — the exact failure
+            # the gate's starvation/floor legs caught when a later edit
+            # nested this block under a different condition.
             onesv = zeros(tv)
             oi = 0
             while oi < tv
@@ -700,12 +740,18 @@ module Toy
             end
             TinyNNCuda.tnn_upload_from_float_array(sess, ones_t, onesv, tv)
           end
+          if block_dfa
+            sig_b = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, vocabv, dmv, 0.0)
+            TinyNNCuda.tnn_upload_from_float_array(sess, b_blk,
+              Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 31, dist_c, sig_b), dmv * vocabv)
+          end
 
           t_tok    = TinyNNCuda.tnn_input_1d_i32(sess, tv)
           t_labels = TinyNNCuda.tnn_input_2d_f32(sess, tv, vocabv)
           t_hp     = TinyNNCuda.tnn_input_1d_f32(sess, 7)
           t_f      = TinyNNCuda.tnn_input_2d_f32(sess, 1, nev)   # ne=[NE,1]
-          forward_tower(sess, tw, t_tok, t_labels, sels, eye, top1, bp_spine ? 1 : 0, attn_mask, qb_bias_t)
+          forward_tower(sess, tw, t_tok, t_labels, sels, eye, top1, bp_spine ? 1 : 0, attn_mask, qb_bias_t,
+                        block_dfa ? 1 : 0)
           if bp_router || bp_spine
             # toy#121: the task CE joins the loss roots — backward reaches
             # Wr through gate = sum_rows(oneh*probs) -> softmax -> matmul,
@@ -724,6 +770,19 @@ module Toy
             TinyNNCuda.tnn_set_loss(t_aux)
             TinyNNCuda.tnn_add_to_graph(sess, tw.t_loss)
             TinyNNCuda.tnn_build_forward_only(sess, t_aux)
+          elsif block_dfa
+            # toy#143: the block's own loss root. e is DETACHED — it is
+            # the fixed error signal, not something to differentiate
+            # through — so ∂L_blk/∂routed is exactly B·e.
+            p_sm0 = TinyNNCuda.tnn_softmax(sess, tw.t_logits)
+            e_b0  = TinyNNCuda.tnn_scale(sess, TinyNNCuda.tnn_sub(sess, p_sm0, t_labels), 1.0 / tv.to_f)
+            e_det = TinyNNCuda.tnn_detach(sess, e_b0)
+            delta = TinyNNCuda.tnn_matmul(sess, b_blk, e_det)          # [dm, T]
+            t_blk = full_sum(sess, TinyNNCuda.tnn_mul(sess, tw.tap_blk, delta), dmv * tv)
+            TinyNNCuda.tnn_set_output(t_blk)
+            TinyNNCuda.tnn_set_loss(t_blk)
+            TinyNNCuda.tnn_add_to_graph(sess, t_blk)
+            TinyNNCuda.tnn_build_forward_only(sess, tw.t_loss)
           else
             TinyNNCuda.tnn_build_forward_only(sess, tw.t_loss)
           end
@@ -808,7 +867,13 @@ module Toy
               np3 = TinyNNCuda.tnn_null_ptr
               ei = 0
               while ei < nev
-                if freeze_experts
+                if block_dfa
+                  # toy#143: the surrogate root already produced these
+                  # grads by BP inside the block — wire them like any
+                  # chain param.
+                  wire_chain(sess, tw, t_hp, t_hp_sgd, 9 + 2 * ei)
+                  wire_chain(sess, tw, t_hp, t_hp_sgd, 10 + 2 * ei)
+                elsif freeze_experts
                   # nothing: the experts are inert by construction
                 elsif no_shadow
                   wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_z,      ewidth, dfv, np3)
@@ -921,6 +986,7 @@ module Toy
               fm.add_bool("experts_frozen", freeze_experts)
               fm.add_num("latent_dim", lat_w)
               fm.add_num("shared_experts", n_shared)
+              fm.add_str("dfa_granularity", block_dfa ? "block" : "matmul")
               fm.add_raw("experts_sig", num_or_null_cli(experts_sig(sess, tw, nev, dmv, dfv)))
               # the per-param-class routing, recorded so a bundle can be
               # audited without re-reading the runner (tao#139 asked).
