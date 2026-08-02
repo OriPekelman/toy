@@ -694,6 +694,81 @@ qb2 = losses(run_cli(k4 + %w[--moe-latent --moe-shared 2 --routing top1 --moe-ba
 failures << "latent + qb: short/NaN" unless qb2.length == 12 && qb2.map(&:to_f).none?(&:nan?)
 puts failures.length == n0 ? "  ok: Stable LatentMoE — latent ℓ=d/2 trains and SHRINKS both routed params AND expert flops, shared experts add capacity back, provenance, composes with dfa-experts + bp-spine + qb" : "  FAIL: K4 leg"
 
+# ---- toy#145: --shape deep — the DEPTH lever for block-DFA ----
+# The tower is now L repeats of (attention + MoE) rather than one of
+# each. Two things need pinning: that L=1 is unchanged (covered by every
+# other leg in this file plus the rig null), and that L=6 is REAL depth
+# — six routed-expert blocks, six feedback matrices, cost and signature
+# scaling with them. A "deep" that quietly built one block would look
+# healthy on a loss curve and answer nothing.
+n0 = failures.length
+dp = %w[--steps 4 --seed 0 --shape deep --experts 4 --context 16
+        --corpus data/fineweb_gpt2_smoke.bin]
+wd = %w[--steps 4 --seed 0 --shape wide --experts 4 --context 16
+        --corpus data/fineweb_gpt2_smoke.bin]
+deep_l = losses(run_cli(dp, {}, nil))
+wide_l = losses(run_cli(wd, {}, nil))
+failures << "deep: not deterministic" unless losses(run_cli(dp, {}, nil)) == deep_l
+failures << "deep: NaN" if deep_l.map(&:to_f).any?(&:nan?)
+failures << "deep: identical to wide (depth is not reaching the graph)" if deep_l == wide_l
+Dir.mktmpdir("moe_deep") do |dir|
+  run_cli(dp, {}, dir)
+  dj = JSON.parse(File.readlines(File.join(dir, "events.jsonl")).first)
+  failures << "deep: provenance n_layers #{dj.dig('model', 'n_layers').inspect} (want 6)" unless dj.dig("model", "n_layers") == 6
+  failures << "deep: provenance shape #{dj.dig('model', 'shape').inspect}" unless dj.dig("model", "shape") == "deep"
+  # deep holds wide's WIDTH, so a deep-vs-wide comparison isolates depth.
+  failures << "deep: d_model #{dj.dig('model', 'd_model').inspect} (want 256, wide's width)" unless dj.dig("model", "d_model") == 256
+  Dir.mktmpdir("moe_deep_w") do |d2|
+    run_cli(wd, {}, d2)
+    wj = JSON.parse(File.readlines(File.join(d2, "events.jsonl")).first)
+    failures << "deep: provenance n_layers at wide #{wj.dig('model', 'n_layers').inspect} (want 1)" unless wj.dig("model", "n_layers") == 1
+    # Cost must scale with depth EXACTLY. Not "dt > k*wt": the tied
+    # embedding is shared across layers and at vocab 50257 it dominates
+    # the total, so a loose ratio would either pass trivially or fail a
+    # correct implementation. Subtract the depth-INDEPENDENT part
+    # (embedding + final norm; 2*vocab*d for flops, the tied logits) and
+    # assert the remainder is exactly 6x.
+    voc = dj.dig("model", "vocab"); dmd = dj.dig("model", "d_model")
+    emb = voc * dmd + dmd
+    lg  = 2 * voc * dmd
+    dt = dj.dig("cost", "total_params"); wt = wj.dig("cost", "total_params")
+    failures << "deep: per-layer params not 6x wide's (#{wt - emb} -> #{dt - emb})" unless (dt - emb) == 6 * (wt - emb)
+    df = dj.dig("cost", "flops_per_token"); wf = wj.dig("cost", "flops_per_token")
+    failures << "deep: per-layer flops not 6x wide's (#{wf - lg} -> #{df - lg})" unless (df - lg) == 6 * (wf - lg)
+    # experts_sig must cover EVERY layer's experts — otherwise the
+    # freeze proof and the whole depth comparison read one block.
+    failures << "deep: experts_sig not larger than wide's (deeper layers are not in the signature)" unless
+      dj.dig("franken_moe", "experts_sig") > wj.dig("franken_moe", "experts_sig")
+  end
+end
+# The ticket's target lane: block-DFA at depth. It must train, be
+# distinct from matmul-DFA at the same shape, and move the experts.
+bd = dp + %w[--moe-policy dfa-experts --dfa-granularity block]
+mm = dp + %w[--moe-policy dfa-experts]
+bl = losses(run_cli(bd, {}, nil))
+failures << "deep: block-DFA NaN" if bl.map(&:to_f).any?(&:nan?)
+failures << "deep: block-DFA identical to matmul-DFA at depth" if bl == losses(run_cli(mm, {}, nil))
+Dir.mktmpdir("moe_deep_bd") do |dir|
+  run_cli(bd + %w[--steps 10], {}, dir)
+  ev = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+  s0 = ev.first.dig("franken_moe", "experts_sig"); s1 = ev.last["experts_sig"]
+  failures << "deep: block-DFA experts did not move at L=6" unless s0 && s1 && s0 != s1
+end
+# --freeze-experts must still be bit-exact when there are SIX blocks of
+# experts to leave alone.
+Dir.mktmpdir("moe_deep_fz") do |dir|
+  run_cli(dp + %w[--steps 10 --moe-policy dfa-experts --freeze-experts], {}, dir)
+  ev = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+  failures << "deep: --freeze-experts moved experts_sig at L=6" unless
+    ev.first.dig("franken_moe", "experts_sig") == ev.last["experts_sig"]
+end
+# Composition the ticket asks for.
+[%w[--batch 2], %w[--moe-latent], %w[--expert-act situ-glu], %w[--lr 0.005]].each do |extra|
+  o = losses(run_cli(dp + %w[--moe-policy dfa-experts] + extra, {}, nil))
+  failures << "deep: does not compose with #{extra.join(' ')}" if o.empty? || o.map(&:to_f).any?(&:nan?)
+end
+puts failures.length == n0 ? "  ok: --shape deep — L=6 x (attention + MoE) at wide's width, distinct from wide, provenance dims, cost AND experts_sig scale with depth; block-DFA spans six blocks (trains, distinct from matmul, experts move), freeze still bit-exact, composes with batch/latent/situ-glu/lr" : "  FAIL: deep leg"
+
 # ---- K4b / M6: --expert-act situ-glu (SiTU-GLU experts) ----
 # A GLU needs a SECOND projection per expert, which the 9+2i/10+2i pair
 # has no room for, so the E gate matrices are APPENDED at the very tail
@@ -842,7 +917,7 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
 end
 
 if failures.empty?
-  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule/attn-gate (toy#136) + optimizer (toy#139) + donor (toy#140) + freeze-experts (toy#141) + latent-moe (toy#142) + block-dfa (toy#143) + situ-glu experts (K4b/M6) + bundle (toy#120/#121)"
+  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule/attn-gate (toy#136) + optimizer (toy#139) + donor (toy#140) + freeze-experts (toy#141) + latent-moe (toy#142) + block-dfa (toy#143) + situ-glu experts (K4b/M6) + shape-deep (toy#145) + bundle (toy#120/#121)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe-cli]: #{f}" }

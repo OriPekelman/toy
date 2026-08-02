@@ -914,9 +914,6 @@ module Toy
           if @no_shadow && @align_events
             return bad_arg("--no-shadow + --align-events: align telemetry compares DFA grads against the chain shadow acc, which a no-shadow build does not create — drop one")
           end
-          if @recipe == "franken-moe" && @shape == "deep"
-            return bad_arg("--shape deep is llama-only; franken-moe takes base|wide (toy#124)")
-          end
           if @recipe == "franken-moe" && @moe_aux && @routing != "top1"
             return bad_arg("--moe-aux requires --routing top1 (the aux-loss rides the hard router)")
           end

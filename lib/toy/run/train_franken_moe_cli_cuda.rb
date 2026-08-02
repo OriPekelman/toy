@@ -106,6 +106,8 @@ module Toy
         # BIT-IDENTICAL, which is the gate's proof that nothing moved.
         def self.experts_sig(sess, tw, ne, dm, dff)
           acc = 0.0
+          lz = 0
+          while lz < nlv
           ei = 0
           while ei < ne
             # K4b: the SiTU-GLU gate branch is an EXPERT weight, so it
@@ -113,7 +115,7 @@ module Toy
             # could "prove" nothing moved while the gate trained.
             wi = 0
             while wi < 2
-              t = tw.pp[9 + 2 * ei + wi]
+              t = tw.pp[up_idx(lz, ei) + wi]
               n = TinyNNCuda.tnn_tensor_nelements(t)
               buf = zeros(n)
               TinyNNCuda.tnn_download_to_f64_array(sess, t, buf, n)
@@ -125,7 +127,7 @@ module Toy
               wi = wi + 1
             end
             if eglu_count > 0
-              tg = tw.pp[eglu_base + ei]
+              tg = tw.pp[eglu_base(lz) + ei]
               ng = TinyNNCuda.tnn_tensor_nelements(tg)
               bg = zeros(ng)
               TinyNNCuda.tnn_download_to_f64_array(sess, tg, bg, ng)
@@ -136,6 +138,8 @@ module Toy
               end
             end
             ei = ei + 1
+          end
+          lz = lz + 1
           end
           acc
         end
@@ -393,8 +397,8 @@ module Toy
                " experts=" + (ENV["FRANKEN_MOE_EXPERTS"] || "2")
 
           shape_s = ENV["FRANKEN_SHAPE"] || "base"
-          if shape_s != "base" && shape_s != "wide"
-            puts "unknown FRANKEN_SHAPE: " + shape_s + " (franken-moe takes base|wide)"
+          if shape_s != "base" && shape_s != "wide" && shape_s != "deep"
+            puts "unknown FRANKEN_SHAPE: " + shape_s + " (franken-moe takes base|wide|deep)"
             return 1
           end
           corpus_s = ENV["CORPUS"] || ""
@@ -467,7 +471,17 @@ module Toy
               return 1
             end
           end
-          if shape_s == "wide"
+          # toy#145: deep = the DEPTH lever. Same width as wide (d256/
+          # ff512) but SIX repeats of the whole (attention + MoE) layer,
+          # so block-DFA has six routed-expert blocks for the feedback to
+          # span instead of one — which is the entire point of the F9f/
+          # F9g fallout. Width is held at wide's so a deep-vs-wide
+          # comparison isolates depth.
+          n_layers = 1
+          if shape_s == "deep"
+            n_layers = 6
+          end
+          if shape_s == "wide" || shape_s == "deep"
             shape_init(256, 512, vsel, esel, tbv)
           else
             shape_init(DM_BASE, DFF_BASE, vsel, esel, tbv)
@@ -483,6 +497,7 @@ module Toy
               return 1
             end
           end
+          layers_init(n_layers)
           latent_init(lat_w, n_shared)
           expert_act_init(eact_on ? 1 : 0)
           opt_init(opt_code)
@@ -490,16 +505,16 @@ module Toy
           # 0..8 (embed/fnorm/attention/rn2/Wr); with it, W_g at 9+2E
           # joins — so spine membership is "gi < 9 || gi == gate_idx"
           # and the all-chain wire bound grows by one.
-          gate_i = attn_gate ? gate_idx : -1
+          gate_i = attn_gate ? gate_idx(0) : -1
           # toy#142: every TAIL weight (gate, latent sandwich, shared
           # experts) is SPINE — chain-wired under bp-spine, param under
           # dense. tail_first is where the tail begins.
-          tail_first = 9 + 2 * esel
+          tail_first = layer_base(0) + LOFF_EXP + 2 * esel
           # K4b: the layout is [spine 0..8][expert pairs][SPINE tail]
           # [expert-gate tail]. n_all covers everything; the SPINE tail
           # ends at eglu_base, which is what the bp-spine predicate and
           # the expert predicates below key off.
-          n_all = eglu_base + eglu_count
+          n_all = n_weights
 
           sess = TinyNNCuda.tnn_session_new(1)
           TinyNNCuda.tnn_session_set_graph_capacity(sess, 262144)
@@ -509,24 +524,32 @@ module Toy
           # load by name — no positional coupling).
           TinyNNCuda.tnn_tensor_set_name(tw.pp[0], "moe.embed")
           TinyNNCuda.tnn_tensor_set_name(tw.pp[1], "moe.fnorm")
-          TinyNNCuda.tnn_tensor_set_name(tw.pp[2], "moe.attn_rn1")
-          TinyNNCuda.tnn_tensor_set_name(tw.pp[3], "moe.wq")
-          TinyNNCuda.tnn_tensor_set_name(tw.pp[4], "moe.wk")
-          TinyNNCuda.tnn_tensor_set_name(tw.pp[5], "moe.wv")
-          TinyNNCuda.tnn_tensor_set_name(tw.pp[6], "moe.wo")
-          TinyNNCuda.tnn_tensor_set_name(tw.pp[7], "moe.rn2")
-          TinyNNCuda.tnn_tensor_set_name(tw.pp[8], "moe.wr")
-          nmi = 0
-          while nmi < nev
-            TinyNNCuda.tnn_tensor_set_name(tw.pp[9 + 2 * nmi],  "moe.expert_" + nmi.to_s + ".up")
-            TinyNNCuda.tnn_tensor_set_name(tw.pp[10 + 2 * nmi], "moe.expert_" + nmi.to_s + ".down")
-            if eglu_count > 0
-              TinyNNCuda.tnn_tensor_set_name(tw.pp[eglu_base + nmi], "moe.expert_" + nmi.to_s + ".glu")
+          # toy#145: names carry a LAYER PREFIX from layer 1 on, while
+          # layer 0 keeps the original unprefixed names.
+          lnm = 0
+          while lnm < n_layers
+            pfx = lnm == 0 ? "moe." : "moe.l" + lnm.to_s + "."
+            lbn = layer_base(lnm)
+            TinyNNCuda.tnn_tensor_set_name(tw.pp[lbn + LOFF_RN1], pfx + "attn_rn1")
+            TinyNNCuda.tnn_tensor_set_name(tw.pp[lbn + LOFF_WQ],  pfx + "wq")
+            TinyNNCuda.tnn_tensor_set_name(tw.pp[lbn + LOFF_WK],  pfx + "wk")
+            TinyNNCuda.tnn_tensor_set_name(tw.pp[lbn + LOFF_WV],  pfx + "wv")
+            TinyNNCuda.tnn_tensor_set_name(tw.pp[lbn + LOFF_WO],  pfx + "wo")
+            TinyNNCuda.tnn_tensor_set_name(tw.pp[lbn + LOFF_RN2], pfx + "rn2")
+            TinyNNCuda.tnn_tensor_set_name(tw.pp[lbn + LOFF_WR],  pfx + "wr")
+            nmi = 0
+            while nmi < nev
+              TinyNNCuda.tnn_tensor_set_name(tw.pp[up_idx(lnm, nmi)],   pfx + "expert_" + nmi.to_s + ".up")
+              TinyNNCuda.tnn_tensor_set_name(tw.pp[down_idx(lnm, nmi)], pfx + "expert_" + nmi.to_s + ".down")
+              if eglu_count > 0
+                TinyNNCuda.tnn_tensor_set_name(tw.pp[eglu_base(lnm) + nmi], pfx + "expert_" + nmi.to_s + ".glu")
+              end
+              nmi = nmi + 1
             end
-            nmi = nmi + 1
-          end
-          if attn_gate
-            TinyNNCuda.tnn_tensor_set_name(tw.pp[gate_idx], "moe.attn_gate")
+            if attn_gate
+              TinyNNCuda.tnn_tensor_set_name(tw.pp[gate_idx(lnm)], pfx + "attn_gate")
+            end
+            lnm = lnm + 1
           end
 
           # toy#128: per-expert B mats + one-hot selectors as arrays
@@ -537,6 +560,8 @@ module Toy
           b_downs = [np0]; b_downs.pop
           b_glus  = [np0]; b_glus.pop
           ew_b = ewidth   # toy#142: down's d_out is ℓ under latent
+          lb_i = 0
+          while lb_i < n_layers
           ei = 0
           while ei < nev
             b_ups.push(TinyNNCuda.tnn_input_2d_f32_persistent(sess, dfv, vocabv))
@@ -549,6 +574,8 @@ module Toy
             b_glus.push(TinyNNCuda.tnn_input_2d_f32_persistent(sess, dfv, vocabv))
             ei = ei + 1
           end
+          lb_i = lb_i + 1
+          end
           sels = [np0]; sels.pop
           ei = 0
           while ei < nev
@@ -556,13 +583,24 @@ module Toy
             ei = ei + 1
           end
           eye   = TinyNNCuda.tnn_input_2d_f32_persistent(sess, nev, nev)
-          b_aq  = TinyNNCuda.tnn_input_2d_f32_persistent(sess, dmv, vocabv)
-          b_ak  = TinyNNCuda.tnn_input_2d_f32_persistent(sess, dmv, vocabv)
-          b_av  = TinyNNCuda.tnn_input_2d_f32_persistent(sess, dmv, vocabv)
-          b_ao  = TinyNNCuda.tnn_input_2d_f32_persistent(sess, dmv, vocabv)
-          b_r   = TinyNNCuda.tnn_input_2d_f32_persistent(sess, nev, vocabv)
-          # toy#143: ONE feedback matrix for the whole block, ne=[vocab, d_model]
-          b_blk = TinyNNCuda.tnn_input_2d_f32_persistent(sess, dmv, vocabv)
+          # toy#145: one feedback matrix per LAYER for each spine slot,
+          # and one per MoE BLOCK for block-DFA.
+          b_aqs = [np0]; b_aqs.pop
+          b_aks = [np0]; b_aks.pop
+          b_avs = [np0]; b_avs.pop
+          b_aos = [np0]; b_aos.pop
+          b_rs  = [np0]; b_rs.pop
+          b_blks = [np0]; b_blks.pop
+          la_i = 0
+          while la_i < n_layers
+            b_aqs.push(TinyNNCuda.tnn_input_2d_f32_persistent(sess, dmv, vocabv))
+            b_aks.push(TinyNNCuda.tnn_input_2d_f32_persistent(sess, dmv, vocabv))
+            b_avs.push(TinyNNCuda.tnn_input_2d_f32_persistent(sess, dmv, vocabv))
+            b_aos.push(TinyNNCuda.tnn_input_2d_f32_persistent(sess, dmv, vocabv))
+            b_rs.push(TinyNNCuda.tnn_input_2d_f32_persistent(sess, nev, vocabv))
+            b_blks.push(TinyNNCuda.tnn_input_2d_f32_persistent(sess, dmv, vocabv))
+            la_i = la_i + 1
+          end
           ones_t = TinyNNCuda.tnn_input_2d_f32_persistent(sess, 1, tv)   # ne=[tv,1]
           # toy#139: ggml's SGD step takes exactly [alpha, wd]; muon and
           # sgd both apply through it. PERSISTENT (alloc BEFORE
@@ -597,9 +635,9 @@ module Toy
             # stay late-param DFA behind the detach cut.
             mark = false
             if top1
-              mark = bp_spine && (gi < 9 || (gi >= tail_first && gi < eglu_base))
+              mark = bp_spine && is_spine_idx(gi)
             else
-              mark = !(no_shadow && gi >= 9)
+              mark = !(no_shadow && is_expert_idx(gi))
             end
             # toy#140: a frozen donor embedding is not a param at all —
             # no grad, no opt node, and (never-mask) no silent update.
@@ -608,10 +646,7 @@ module Toy
             end
             # toy#141: same for frozen experts (indices 9 .. 9+2E-1),
             # and K4b's gate branch at the eglu tail.
-            if freeze_experts && gi >= 9 && gi < 9 + 2 * esel
-              mark = false
-            end
-            if freeze_experts && gi >= eglu_base
+            if freeze_experts && is_expert_idx(gi)
               mark = false
             end
             if mark
@@ -763,11 +798,19 @@ module Toy
           if top1
             sig_dm = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, vocabv, dmv, 0.0)
             sig_e  = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, vocabv, nev, 0.0)
-            TinyNNCuda.tnn_upload_from_float_array(sess, b_aq, Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 21, dist_c, sig_dm), dmv * vocabv)
-            TinyNNCuda.tnn_upload_from_float_array(sess, b_ak, Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 22, dist_c, sig_dm), dmv * vocabv)
-            TinyNNCuda.tnn_upload_from_float_array(sess, b_av, Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 23, dist_c, sig_dm), dmv * vocabv)
-            TinyNNCuda.tnn_upload_from_float_array(sess, b_ao, Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 24, dist_c, sig_dm), dmv * vocabv)
-            TinyNNCuda.tnn_upload_from_float_array(sess, b_r,  Toy::Train::DfaB.fill(nev * vocabv, b_seed + 25, dist_c, sig_e),  nev * vocabv)
+            lu = 0
+            while lu < n_layers
+              # per-layer seed stride of 1000 keeps layer 0 on the
+              # ORIGINAL +21..+25 seeds (byte-null at L=1) while every
+              # deeper layer gets its own independent projection.
+              lo = lu * 1000
+              TinyNNCuda.tnn_upload_from_float_array(sess, b_aqs[lu], Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 21 + lo, dist_c, sig_dm), dmv * vocabv)
+              TinyNNCuda.tnn_upload_from_float_array(sess, b_aks[lu], Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 22 + lo, dist_c, sig_dm), dmv * vocabv)
+              TinyNNCuda.tnn_upload_from_float_array(sess, b_avs[lu], Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 23 + lo, dist_c, sig_dm), dmv * vocabv)
+              TinyNNCuda.tnn_upload_from_float_array(sess, b_aos[lu], Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 24 + lo, dist_c, sig_dm), dmv * vocabv)
+              TinyNNCuda.tnn_upload_from_float_array(sess, b_rs[lu],  Toy::Train::DfaB.fill(nev * vocabv, b_seed + 25 + lo, dist_c, sig_e),  nev * vocabv)
+              lu = lu + 1
+            end
             # ones_t is the aux-loss reducer and belongs to the top1 lane.
             # It MUST be uploaded here: it is a persistent input, so if the
             # upload is skipped it reads zeros in silence, t_aux collapses to
@@ -784,8 +827,12 @@ module Toy
           end
           if block_dfa
             sig_b = Toy::Train::DfaB.sigma_for(Toy::Train::DfaB::SCALE_INV_SQRT_FAN, vocabv, dmv, 0.0)
-            TinyNNCuda.tnn_upload_from_float_array(sess, b_blk,
-              Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 31, dist_c, sig_b), dmv * vocabv)
+            lk = 0
+            while lk < n_layers
+              TinyNNCuda.tnn_upload_from_float_array(sess, b_blks[lk],
+                Toy::Train::DfaB.fill(dmv * vocabv, b_seed + 31 + lk * 1000, dist_c, sig_b), dmv * vocabv)
+              lk = lk + 1
+            end
           end
 
           t_tok    = TinyNNCuda.tnn_input_1d_i32(sess, tv)
@@ -819,8 +866,24 @@ module Toy
             p_sm0 = TinyNNCuda.tnn_softmax(sess, tw.t_logits)
             e_b0  = TinyNNCuda.tnn_scale(sess, TinyNNCuda.tnn_sub(sess, p_sm0, t_labels), 1.0 / tv.to_f)
             e_det = TinyNNCuda.tnn_detach(sess, e_b0)
-            delta = TinyNNCuda.tnn_matmul(sess, b_blk, e_det)          # [dm, T]
-            t_blk = full_sum(sess, TinyNNCuda.tnn_mul(sess, tw.tap_blk, delta), dmv * tv)
+            # toy#145: ONE term per MoE block, each with its OWN random
+            # projection of the same detached error, summed into a single
+            # root. That is the Launay/Oudjedi arrangement — every block
+            # receives the output error directly rather than through the
+            # block above it — and it is what the depth lever exists to
+            # test. At L=1 this is the single term toy#143 shipped.
+            t_blk = TinyNNCuda.tnn_null_ptr
+            lbk = 0
+            while lbk < n_layers
+              delta = TinyNNCuda.tnn_matmul(sess, b_blks[lbk], e_det)   # [dm, T]
+              term  = full_sum(sess, TinyNNCuda.tnn_mul(sess, tw.tap_blks[lbk], delta), dmv * tv)
+              if lbk == 0
+                t_blk = term
+              else
+                t_blk = TinyNNCuda.tnn_add(sess, t_blk, term)
+              end
+              lbk = lbk + 1
+            end
             TinyNNCuda.tnn_set_output(t_blk)
             TinyNNCuda.tnn_set_loss(t_blk)
             TinyNNCuda.tnn_add_to_graph(sess, t_blk)
@@ -836,55 +899,70 @@ module Toy
             np2 = TinyNNCuda.tnn_null_ptr
             if bp_spine
               # the whole spine is chain: embed/fnorm/attention/rn2 + Wr
+              # toy#145: chain-wire EVERY spine index across all layers
+              # (embed/fnorm + each layer's attention/rn2/Wr + each
+              # layer's tail). is_spine_idx owns the split.
               sp = 0
-              while sp < 9
-                if !(freeze_embed && sp == 0)
+              while sp < n_all
+                if is_spine_idx(sp) && !(freeze_embed && sp == 0)
                   wire_chain(sess, tw, t_hp, t_hp_sgd, sp)
                 end
                 sp = sp + 1
               end
-              # toy#142: chain-wire the whole TAIL (attn gate + latent
-              # sandwich + shared experts) — all spine, all BP.
-              ti = tail_first
-              while ti < n_all
-                wire_chain(sess, tw, t_hp, t_hp_sgd, ti)
-                ti = ti + 1
-              end
             else
-              wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 3, b_aq, e_b, tw.tap_ah,  dmv, dmv, np2)
-              wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 4, b_ak, e_b, tw.tap_ah,  dmv, dmv, np2)
-              wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 5, b_av, e_b, tw.tap_ah,  dmv, dmv, np2)
-              wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 6, b_ao, e_b, tw.tap_ctx, dmv, dmv, np2)
+              lt = 0
+              while lt < n_layers
+                lbt = layer_base(lt)
+                wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, lbt + LOFF_WQ, b_aqs[lt], e_b, tw.tap_ahs[lt],  dmv, dmv, np2)
+                wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, lbt + LOFF_WK, b_aks[lt], e_b, tw.tap_ahs[lt],  dmv, dmv, np2)
+                wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, lbt + LOFF_WV, b_avs[lt], e_b, tw.tap_ahs[lt],  dmv, dmv, np2)
+                wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, lbt + LOFF_WO, b_aos[lt], e_b, tw.tap_ctxs[lt], dmv, dmv, np2)
+                lt = lt + 1
+              end
             end
             if bp_spine
               # router already chain-wired above; experts follow below
             elsif bp_router
               # toy#121: router credit is PURE BP — the acc already holds
               # task-BP + aux-BP (both loss roots backward into it).
-              wire_chain(sess, tw, t_hp, t_hp_sgd, 8)
+              lr2 = 0
+              while lr2 < n_layers
+                wire_chain(sess, tw, t_hp, t_hp_sgd, layer_base(lr2) + LOFF_WR)
+                lr2 = lr2 + 1
+              end
             else
               # F4 lane: router = DFA task signal + BP aux signal
-              g_dfa_r = dfa_grad(sess, b_r, e_b, tw.tap_h2, dmv, nev)
-              acc_r   = TinyNNCuda.tnn_tensor_grad(sess, tw.pp[8])
-              g_tot   = TinyNNCuda.tnn_add(sess, g_dfa_r, acc_r)
-              TinyNNCuda.tnn_set_output(g_tot)
-              to_r = TinyNNCuda.tnn_opt_step_adamw(sess, tw.pp[8], g_tot, tw.pm[8], tw.pv[8], t_hp)
-              TinyNNCuda.tnn_extend_backward_graph(sess, to_r)
+              lr3 = 0
+              while lr3 < n_layers
+                ridx = layer_base(lr3) + LOFF_WR
+                g_dfa_r = dfa_grad(sess, b_rs[lr3], e_b, tw.tap_h2s[lr3], dmv, nev)
+                acc_r   = TinyNNCuda.tnn_tensor_grad(sess, tw.pp[ridx])
+                g_tot   = TinyNNCuda.tnn_add(sess, g_dfa_r, acc_r)
+                TinyNNCuda.tnn_set_output(g_tot)
+                to_r = TinyNNCuda.tnn_opt_step_adamw(sess, tw.pp[ridx], g_tot, tw.pm[ridx], tw.pv[ridx], t_hp)
+                TinyNNCuda.tnn_extend_backward_graph(sess, to_r)
+                lr3 = lr3 + 1
+              end
             end
             # toy#128: per-expert routed-mask DFA wires (E=2 == the old
             # m1/m2 + 9..12 sequence; both downs read tap_a1 = the
             # routed acts from mul_mat_id).
+            lx = 0
+            while lx < n_layers
             ei = 0
             while ei < nev
               if !freeze_experts
                 m_i = TinyNNCuda.tnn_matmul(sess, sels[ei], tw.t_onehots)
-                wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_z, ewidth, dfv, m_i)
-                wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_a1, dfv, ewidth, m_i)
+                bi = lx * nev + ei
+                wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, up_idx(lx, ei),   b_ups[bi],   e_b, tw.tap_zs[lx], ewidth, dfv, m_i)
+                wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, down_idx(lx, ei), b_downs[bi], e_b, tw.tap_a1, dfv, ewidth, m_i)
                 if eglu_count > 0
-                  wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, eglu_base + ei, b_glus[ei], e_b, tw.tap_z, ewidth, dfv, m_i)
+                  wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, eglu_base(lx) + ei, b_glus[bi], e_b, tw.tap_zs[lx], ewidth, dfv, m_i)
                 end
               end
               ei = ei + 1
+            end
+            lx = lx + 1
             end
           else
             if dfa_experts
@@ -910,40 +988,48 @@ module Toy
               # null mask) — the DFA grad math is identical, so applied
               # updates byte-match the shadow build (gated).
               np3 = TinyNNCuda.tnn_null_ptr
+              ly = 0
+              while ly < n_layers
               ei = 0
               while ei < nev
+                bi = ly * nev + ei
                 if block_dfa
                   # toy#143: the surrogate root already produced these
                   # grads by BP inside the block — wire them like any
                   # chain param.
-                  wire_chain(sess, tw, t_hp, t_hp_sgd, 9 + 2 * ei)
-                  wire_chain(sess, tw, t_hp, t_hp_sgd, 10 + 2 * ei)
+                  wire_chain(sess, tw, t_hp, t_hp_sgd, up_idx(ly, ei))
+                  wire_chain(sess, tw, t_hp, t_hp_sgd, down_idx(ly, ei))
                   if eglu_count > 0
-                    wire_chain(sess, tw, t_hp, t_hp_sgd, eglu_base + ei)
+                    wire_chain(sess, tw, t_hp, t_hp_sgd, eglu_base(ly) + ei)
                   end
                 elsif freeze_experts
                   # nothing: the experts are inert by construction
                 elsif no_shadow
-                  wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_z,      ewidth, dfv, np3)
-                  wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_as[ei], dfv, ewidth, np3)
+                  wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, up_idx(ly, ei),   b_ups[bi],   e_b, tw.tap_zs[ly],  ewidth, dfv, np3)
+                  wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, down_idx(ly, ei), b_downs[bi], e_b, tw.tap_as[bi], dfv, ewidth, np3)
                   if eglu_count > 0
-                    wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, eglu_base + ei, b_glus[ei], e_b, tw.tap_z, ewidth, dfv, np3)
+                    wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, eglu_base(ly) + ei, b_glus[bi], e_b, tw.tap_zs[ly], ewidth, dfv, np3)
                   end
                 else
-                  wire_dfa(sess, tw, t_hp, t_hp_sgd, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_z,      ewidth, dfv, "up" + (ei + 1).to_s)
-                  wire_dfa(sess, tw, t_hp, t_hp_sgd, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_as[ei], dfv, ewidth, "down" + (ei + 1).to_s)
+                  # align names keep their L=1 spelling on layer 0 so the
+                  # recorded align fixtures still match; deeper layers get
+                  # an l<N>. prefix.
+                  npx = ly == 0 ? "" : "l" + ly.to_s + "."
+                  wire_dfa(sess, tw, t_hp, t_hp_sgd, up_idx(ly, ei),   b_ups[bi],   e_b, tw.tap_zs[ly],  ewidth, dfv, npx + "up" + (ei + 1).to_s)
+                  wire_dfa(sess, tw, t_hp, t_hp_sgd, down_idx(ly, ei), b_downs[bi], e_b, tw.tap_as[bi], dfv, ewidth, npx + "down" + (ei + 1).to_s)
                   if eglu_count > 0
-                    wire_dfa(sess, tw, t_hp, t_hp_sgd, eglu_base + ei, b_glus[ei], e_b, tw.tap_z, ewidth, dfv, "glu" + (ei + 1).to_s)
+                    wire_dfa(sess, tw, t_hp, t_hp_sgd, eglu_base(ly) + ei, b_glus[bi], e_b, tw.tap_zs[ly], ewidth, dfv, npx + "glu" + (ei + 1).to_s)
                   end
                 end
                 ei = ei + 1
+              end
+              ly = ly + 1
               end
             else
               idx = 0
               while idx < n_all
                 skip_i = (freeze_embed && idx == 0) ||
-                         (freeze_experts && idx >= 9 && idx < 9 + 2 * nev) ||
-                         (freeze_experts && idx >= eglu_base)
+                         (freeze_experts && is_expert_idx(idx))
                 if !skip_i
                   wire_chain(sess, tw, t_hp, t_hp_sgd, idx)
                 end
@@ -975,6 +1061,10 @@ module Toy
               model = Toy::Json::Builder.new
               model.add_str("arch", "franken-moe")
               model.add_str("shape", shape_s)
+              model.add_num("n_layers", n_layers)
+              model.add_num("d_model", dmv)
+              model.add_num("d_ff", dfv)
+              model.add_num("vocab", vocabv)
               model.add_str("name", "franken-moe-instrument")
               model.add_num("vocab",    vocabv)
               model.add_num("d_model",  dmv)
@@ -1016,15 +1106,20 @@ module Toy
               # dmv here OVER-COUNTED every latent run's expert flops by
               # dmv/ℓ. The params terms already used ew_c; this brings
               # flops into line with them.
-              cost_total  = vocabv * dmv + 3 * dmv + 4 * dmv * dmv + gate_p +
-                            lat_p + shr_p +
-                            nev * dmv + nev * emats * ew_c * dfv
-              cost_active = vocabv * dmv + 3 * dmv + 4 * dmv * dmv + gate_p +
-                            lat_p + shr_p +
-                            nev * dmv + act_e * emats * ew_c * dfv
-              cost_flops  = 2 * (4 * dmv * dmv) + 2 * gate_p + 4 * dmv * tv +
-                            2 * nev * dmv + act_e * 2 * (emats * ew_c * dfv) +
-                            2 * vocabv * dmv
+              # toy#145: the tower is L repeats now, so everything except
+              # the tied embedding and the final norm is PER LAYER and
+              # scales with n_layers. Leaving these single-layer would
+              # report a 6-layer deep run at the 1-layer cost — the same
+              # silent under-count K4b fixed for the GLU branch.
+              per_l_total  = 2 * dmv + 4 * dmv * dmv + gate_p + lat_p + shr_p +
+                             nev * dmv + nev * emats * ew_c * dfv
+              per_l_active = 2 * dmv + 4 * dmv * dmv + gate_p + lat_p + shr_p +
+                             nev * dmv + act_e * emats * ew_c * dfv
+              per_l_flops  = 2 * (4 * dmv * dmv) + 2 * gate_p + 4 * dmv * tv +
+                             2 * nev * dmv + act_e * 2 * (emats * ew_c * dfv)
+              cost_total  = vocabv * dmv + dmv + n_layers * per_l_total
+              cost_active = vocabv * dmv + dmv + n_layers * per_l_active
+              cost_flops  = n_layers * per_l_flops + 2 * vocabv * dmv
               cost = Toy::Json::Builder.new
               cost.add_num("total_params",    cost_total)
               cost.add_num("active_params",   cost_active)

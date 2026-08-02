@@ -97,6 +97,7 @@ module Toy
                " steps=" + steps.to_s + " seed=" + seed.to_s
 
           shape_init(DM_BASE, DFF_BASE, VOCAB, NE, T)   # the rig IS the base instrument
+          layers_init(1)                         # toy#145: the rig is single-layer (byte-null)
           attn_gate_init(0)                      # toy#136 K1.1: rig = ungated
           opt_init(0)                            # toy#139: the rig is AdamW-only
           latent_init(0, 0)                      # toy#142 K4: rig = no latent, no shared
