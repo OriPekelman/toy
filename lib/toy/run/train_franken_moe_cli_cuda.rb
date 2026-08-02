@@ -108,6 +108,9 @@ module Toy
           acc = 0.0
           ei = 0
           while ei < ne
+            # K4b: the SiTU-GLU gate branch is an EXPERT weight, so it
+            # must be inside the signature — otherwise --freeze-experts
+            # could "prove" nothing moved while the gate trained.
             wi = 0
             while wi < 2
               t = tw.pp[9 + 2 * ei + wi]
@@ -120,6 +123,17 @@ module Toy
                 k = k + 1
               end
               wi = wi + 1
+            end
+            if eglu_count > 0
+              tg = tw.pp[eglu_base + ei]
+              ng = TinyNNCuda.tnn_tensor_nelements(tg)
+              bg = zeros(ng)
+              TinyNNCuda.tnn_download_to_f64_array(sess, tg, bg, ng)
+              kg = 0
+              while kg < ng
+                acc = acc + bg[kg] * bg[kg]
+                kg = kg + 1
+              end
             end
             ei = ei + 1
           end
@@ -230,6 +244,13 @@ module Toy
           end
           block_dfa = gran_s == "block"
           latent_on = (ENV["FRANKEN_MOE_LATENT"] || "") == "1"
+          # K4b / M6: SiTU-GLU experts. Default gelu = byte-null.
+          eact_s = ENV["FRANKEN_EXPERT_ACT"] || ""
+          if eact_s.length > 0 && eact_s != "gelu" && eact_s != "situ-glu"
+            puts "toy-train-franken-moe: FRANKEN_EXPERT_ACT " + eact_s + " unsupported (gelu|situ-glu)"
+            return 1
+          end
+          eact_on = eact_s == "situ-glu"
           ns_s = ENV["FRANKEN_MOE_SHARED"] || ""
           n_shared = ns_s.length > 0 ? ns_s.to_i : 0
           if n_shared < 0
@@ -463,6 +484,7 @@ module Toy
             end
           end
           latent_init(lat_w, n_shared)
+          expert_act_init(eact_on ? 1 : 0)
           opt_init(opt_code)
           # toy#136 K1.1: the spine bound. Without the gate the spine is
           # 0..8 (embed/fnorm/attention/rn2/Wr); with it, W_g at 9+2E
@@ -473,7 +495,11 @@ module Toy
           # experts) is SPINE — chain-wired under bp-spine, param under
           # dense. tail_first is where the tail begins.
           tail_first = 9 + 2 * esel
-          n_all = tail_first + tail_spine_count
+          # K4b: the layout is [spine 0..8][expert pairs][SPINE tail]
+          # [expert-gate tail]. n_all covers everything; the SPINE tail
+          # ends at eglu_base, which is what the bp-spine predicate and
+          # the expert predicates below key off.
+          n_all = eglu_base + eglu_count
 
           sess = TinyNNCuda.tnn_session_new(1)
           TinyNNCuda.tnn_session_set_graph_capacity(sess, 262144)
@@ -494,6 +520,9 @@ module Toy
           while nmi < nev
             TinyNNCuda.tnn_tensor_set_name(tw.pp[9 + 2 * nmi],  "moe.expert_" + nmi.to_s + ".up")
             TinyNNCuda.tnn_tensor_set_name(tw.pp[10 + 2 * nmi], "moe.expert_" + nmi.to_s + ".down")
+            if eglu_count > 0
+              TinyNNCuda.tnn_tensor_set_name(tw.pp[eglu_base + nmi], "moe.expert_" + nmi.to_s + ".glu")
+            end
             nmi = nmi + 1
           end
           if attn_gate
@@ -506,11 +535,18 @@ module Toy
           np0 = TinyNNCuda.tnn_null_ptr
           b_ups   = [np0]; b_ups.pop
           b_downs = [np0]; b_downs.pop
+          b_glus  = [np0]; b_glus.pop
           ew_b = ewidth   # toy#142: down's d_out is ℓ under latent
           ei = 0
           while ei < nev
             b_ups.push(TinyNNCuda.tnn_input_2d_f32_persistent(sess, dfv, vocabv))
             b_downs.push(TinyNNCuda.tnn_input_2d_f32_persistent(sess, ew_b, vocabv))
+            # K4b: the gate branch reads the same input (tap_z) and has
+            # the same output width as up, so its feedback matrix has
+            # b_ups' shape — but its OWN seed, or the two branches would
+            # receive identical DFA updates and the GLU would collapse
+            # to a scaled single branch.
+            b_glus.push(TinyNNCuda.tnn_input_2d_f32_persistent(sess, dfv, vocabv))
             ei = ei + 1
           end
           sels = [np0]; sels.pop
@@ -561,7 +597,7 @@ module Toy
             # stay late-param DFA behind the detach cut.
             mark = false
             if top1
-              mark = bp_spine && (gi < 9 || gi >= tail_first)
+              mark = bp_spine && (gi < 9 || (gi >= tail_first && gi < eglu_base))
             else
               mark = !(no_shadow && gi >= 9)
             end
@@ -570,8 +606,12 @@ module Toy
             if freeze_embed && gi == 0
               mark = false
             end
-            # toy#141: same for frozen experts (indices 9 .. 9+2E-1).
+            # toy#141: same for frozen experts (indices 9 .. 9+2E-1),
+            # and K4b's gate branch at the eglu tail.
             if freeze_experts && gi >= 9 && gi < 9 + 2 * esel
+              mark = false
+            end
+            if freeze_experts && gi >= eglu_base
               mark = false
             end
             if mark
@@ -673,6 +713,8 @@ module Toy
             end
             TinyNNCuda.tnn_upload_from_float_array(sess, b_ups[ei],
               Toy::Train::DfaB.fill(dfv * vocabv, us, dist_c, sig_up), dfv * vocabv)
+            TinyNNCuda.tnn_upload_from_float_array(sess, b_glus[ei],
+              Toy::Train::DfaB.fill(dfv * vocabv, b_seed + 300 + ei, dist_c, sig_up), dfv * vocabv)
             TinyNNCuda.tnn_upload_from_float_array(sess, b_downs[ei],
               Toy::Train::DfaB.fill(ew_b * vocabv, ds, dist_c, sig_down), ew_b * vocabv)
             ei = ei + 1
@@ -838,6 +880,9 @@ module Toy
                 m_i = TinyNNCuda.tnn_matmul(sess, sels[ei], tw.t_onehots)
                 wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_z, ewidth, dfv, m_i)
                 wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_a1, dfv, ewidth, m_i)
+                if eglu_count > 0
+                  wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, eglu_base + ei, b_glus[ei], e_b, tw.tap_z, ewidth, dfv, m_i)
+                end
               end
               ei = ei + 1
             end
@@ -873,14 +918,23 @@ module Toy
                   # chain param.
                   wire_chain(sess, tw, t_hp, t_hp_sgd, 9 + 2 * ei)
                   wire_chain(sess, tw, t_hp, t_hp_sgd, 10 + 2 * ei)
+                  if eglu_count > 0
+                    wire_chain(sess, tw, t_hp, t_hp_sgd, eglu_base + ei)
+                  end
                 elsif freeze_experts
                   # nothing: the experts are inert by construction
                 elsif no_shadow
                   wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_z,      ewidth, dfv, np3)
                   wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_as[ei], dfv, ewidth, np3)
+                  if eglu_count > 0
+                    wire_dfa_top1(sess, tw, t_hp, t_hp_sgd, eglu_base + ei, b_glus[ei], e_b, tw.tap_z, ewidth, dfv, np3)
+                  end
                 else
                   wire_dfa(sess, tw, t_hp, t_hp_sgd, 9 + 2 * ei,  b_ups[ei],   e_b, tw.tap_z,      ewidth, dfv, "up" + (ei + 1).to_s)
                   wire_dfa(sess, tw, t_hp, t_hp_sgd, 10 + 2 * ei, b_downs[ei], e_b, tw.tap_as[ei], dfv, ewidth, "down" + (ei + 1).to_s)
+                  if eglu_count > 0
+                    wire_dfa(sess, tw, t_hp, t_hp_sgd, eglu_base + ei, b_glus[ei], e_b, tw.tap_z, ewidth, dfv, "glu" + (ei + 1).to_s)
+                  end
                 end
                 ei = ei + 1
               end
@@ -888,7 +942,8 @@ module Toy
               idx = 0
               while idx < n_all
                 skip_i = (freeze_embed && idx == 0) ||
-                         (freeze_experts && idx >= 9 && idx < 9 + 2 * nev)
+                         (freeze_experts && idx >= 9 && idx < 9 + 2 * nev) ||
+                         (freeze_experts && idx >= eglu_base)
                 if !skip_i
                   wire_chain(sess, tw, t_hp, t_hp_sgd, idx)
                 end
@@ -950,14 +1005,25 @@ module Toy
               ew_c   = latent_on ? lat_w : dmv
               lat_p  = latent_on ? (lat_w * dmv * 2 + lat_w) : 0
               shr_p  = n_shared * 2 * dmv * dfv
+              # K4b: a SiTU-GLU expert is THREE matrices (gate, up,
+              # down), not two — both in params and in flops. Leaving
+              # this at 2 would have reported a GLU run at the GELU
+              # cost, which is precisely the number the quality-per-FLOP
+              # comparisons are made of.
+              emats = eact_on ? 3 : 2
+              # The expert flops term also uses ew_c (not dmv): under
+              # --moe-latent the routed experts are ℓ-wide, so the old
+              # dmv here OVER-COUNTED every latent run's expert flops by
+              # dmv/ℓ. The params terms already used ew_c; this brings
+              # flops into line with them.
               cost_total  = vocabv * dmv + 3 * dmv + 4 * dmv * dmv + gate_p +
                             lat_p + shr_p +
-                            nev * dmv + nev * 2 * ew_c * dfv
+                            nev * dmv + nev * emats * ew_c * dfv
               cost_active = vocabv * dmv + 3 * dmv + 4 * dmv * dmv + gate_p +
                             lat_p + shr_p +
-                            nev * dmv + act_e * 2 * ew_c * dfv
+                            nev * dmv + act_e * emats * ew_c * dfv
               cost_flops  = 2 * (4 * dmv * dmv) + 2 * gate_p + 4 * dmv * tv +
-                            2 * nev * dmv + act_e * 2 * (2 * dmv * dfv) +
+                            2 * nev * dmv + act_e * 2 * (emats * ew_c * dfv) +
                             2 * vocabv * dmv
               cost = Toy::Json::Builder.new
               cost.add_num("total_params",    cost_total)
@@ -984,6 +1050,7 @@ module Toy
               fm.add_str("donor_projection", donor_s.length > 0 ? "random-jl,scale-matched" : "")
               fm.add_bool("freeze_embed", freeze_embed)
               fm.add_bool("experts_frozen", freeze_experts)
+              fm.add_str("expert_act", eact_on ? "situ-glu" : "gelu")
               fm.add_num("latent_dim", lat_w)
               fm.add_num("shared_experts", n_shared)
               fm.add_str("dfa_granularity", block_dfa ? "block" : "matmul")

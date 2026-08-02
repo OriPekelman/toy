@@ -100,6 +100,7 @@ module Toy
           attn_gate_init(0)                      # toy#136 K1.1: rig = ungated
           opt_init(0)                            # toy#139: the rig is AdamW-only
           latent_init(0, 0)                      # toy#142 K4: rig = no latent, no shared
+          expert_act_init(0)                     # K4b: rig = gelu experts (module state needs an explicit init)
           sess = TinyNN.tnn_session_new(0)
           TinyNN.tnn_session_set_graph_capacity(sess, 262144)
 

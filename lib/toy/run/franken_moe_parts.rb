@@ -10,6 +10,7 @@ require_relative "../ffi/tinynn"
 require_relative "../llm/primitives/rms_norm"
 require_relative "../train/dfa_b"
 require_relative "../llm/primitives/muon"
+require_relative "../llm/primitives/situ_glu"
 
 module Toy
   module LLM
@@ -161,6 +162,22 @@ module Toy
           0
         end
 
+        # K4b / M6: 0 = GELU experts (the byte-null default), 1 =
+        # SiTU-GLU experts. A GLU needs a SECOND projection per expert
+        # (the gate branch), which the 9+2i/10+2i pair has no room for —
+        # so the E gate matrices are appended at the VERY tail, past the
+        # spine tail, and every existing index keeps its meaning and its
+        # DfaB seed. They are EXPERT weights, not spine: DFA-wired like
+        # up_i, frozen by --freeze-experts, counted in experts_sig.
+        def self.expert_act_init(v)
+          @sh_eact = v
+          0
+        end
+
+        def self.eactv
+          @sh_eact
+        end
+
         def self.latv
           @sh_lat
         end
@@ -188,6 +205,17 @@ module Toy
         # sandwich, and the shared experts.
         def self.tail_spine_count
           (gatev == 1 ? 1 : 0) + (latv > 0 ? 3 : 0) + 2 * nsv
+        end
+
+        # First index of the EXPERT-GATE tail (K4b) — immediately after
+        # the spine tail. Zero of them unless eactv == 1, in which case
+        # eglu_base + i is expert i's gate projection.
+        def self.eglu_base
+          9 + 2 * nev + tail_spine_count
+        end
+
+        def self.eglu_count
+          eactv == 1 ? nev : 0
         end
 
         def self.fillv(n, seed)
@@ -400,6 +428,13 @@ module Toy
             reg2(sess, tw, dmv, dfv)   # shared_base+2j+1  down
             sj = sj + 1
           end
+          # K4b: the SiTU-GLU gate branch, one per routed expert, at the
+          # VERY tail so no existing index moves. Same shape as up_i.
+          gj = 0
+          while gj < eglu_count
+            reg2(sess, tw, dfv, ew)    # eglu_base+i  gate_i (ℓ->dff)
+            gj = gj + 1
+          end
           tw
         end
 
@@ -512,7 +547,16 @@ module Toy
           ei = 0
           while ei < nev
             g_i = TinyNN.tnn_matmul(sess, sels[ei], gates)    # [1, T]
-            a_i = TinyNN.tnn_gelu(sess, TinyNN.tnn_matmul(sess, tw.pp[9 + 2 * ei], z))   # [DFF,T]
+            u_i = TinyNN.tnn_matmul(sess, tw.pp[9 + 2 * ei], z)              # [DFF,T]
+            a_i = TinyNN.tnn_gelu(sess, u_i)
+            if eactv == 1
+              # K4b/M6: the EXISTING up_i stays the UP branch (β₂=25 cap)
+              # and the appended matrix is the GATE branch (β₁=4 cap +
+              # sigmoid) — the SwiGLU correspondence, so up_i keeps its
+              # meaning, its DfaB seed, and its checkpoint name.
+              a_i = Toy::LLM::Primitives::SiTUGLU.gate(sess,
+                      TinyNN.tnn_matmul(sess, tw.pp[eglu_base + ei], z), u_i)
+            end
             tw.tap_as.push(a_i)
             if ei == 0
               tw.tap_a1 = a_i
@@ -605,6 +649,20 @@ module Toy
           h3    = TinyNN.tnn_reshape_3d(sess, h_exp, ew, 1, tv)
           upo   = TinyNN.tnn_mul_mat_id(sess, up_stack, h3, ids2)    # [DFF,1,T]
           a     = TinyNN.tnn_gelu(sess, upo)
+          if eactv == 1
+            # The gate branch stacks and dispatches exactly like up —
+            # one more mul_mat_id through the SAME ids2 selection, so
+            # both branches are guaranteed to read the same expert.
+            gt_stack = TinyNN.tnn_reshape_3d(sess, tw.pp[eglu_base], ew, dfv, 1)
+            gi2 = 1
+            while gi2 < nev
+              gt_stack = TinyNN.tnn_concat(sess, gt_stack,
+                TinyNN.tnn_reshape_3d(sess, tw.pp[eglu_base + gi2], ew, dfv, 1), 2)
+              gi2 = gi2 + 1
+            end
+            gto = TinyNN.tnn_mul_mat_id(sess, gt_stack, h3, ids2)     # [DFF,1,T]
+            a   = Toy::LLM::Primitives::SiTUGLU.gate(sess, gto, upo)
+          end
           tw.tap_a1 = TinyNN.tnn_reshape_3d(sess, a, dfv, tv, 1)      # routed acts [DFF,T]
           dno   = TinyNN.tnn_mul_mat_id(sess, dn_stack, a, ids2)     # [ℓ,1,T]
           eo    = TinyNN.tnn_reshape_3d(sess, dno, ew, tv, 1)         # [ℓ,T]

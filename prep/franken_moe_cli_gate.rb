@@ -667,6 +667,12 @@ Dir.mktmpdir("moe_cli_k4p") do |dp|
     failures << "latent: did not train (#{ll.first} -> #{ll.last})" unless ll.last < ll.first - 0.1
     failures << "latent: provenance latent_dim #{lat.dig('franken_moe', 'latent_dim').inspect} (want 128 = d/2)" unless lat.dig("franken_moe", "latent_dim") == 128
     failures << "latent: params did not fall (#{base.dig('cost', 'total_params')} -> #{lat.dig('cost', 'total_params')}) — the bottleneck is not real" unless lat.dig("cost", "total_params") < base.dig("cost", "total_params")
+    # ...and so must the FLOPS. The expert flops term used d_model where
+    # the params terms used ℓ, so every latent run reported plain-width
+    # expert flops — the bottleneck showed up in params and vanished in
+    # the number the quality-per-FLOP comparisons are made of. Corrected
+    # with K4b; pinned here so it cannot drift back.
+    failures << "latent: flops_per_token did not fall (#{base.dig('cost', 'flops_per_token')} -> #{lat.dig('cost', 'flops_per_token')}) — the expert flops term is not ℓ-wide" unless lat.dig("cost", "flops_per_token") < base.dig("cost", "flops_per_token")
     l2 = losses(run_cli(k4 + %w[--moe-latent], {}, nil))
     failures << "latent: not deterministic" unless losses(lat_out) == l2
     Dir.mktmpdir("moe_cli_k4s") do |ds|
@@ -686,7 +692,81 @@ sp2 = losses(run_cli(k4 + %w[--moe-latent --moe-shared 2 --routing top1 --moe-po
 failures << "latent + bp-spine: short/NaN" unless sp2.length == 12 && sp2.map(&:to_f).none?(&:nan?)
 qb2 = losses(run_cli(k4 + %w[--moe-latent --moe-shared 2 --routing top1 --moe-balance qb], {}, nil))
 failures << "latent + qb: short/NaN" unless qb2.length == 12 && qb2.map(&:to_f).none?(&:nan?)
-puts failures.length == n0 ? "  ok: Stable LatentMoE — latent ℓ=d/2 trains and SHRINKS the routed params, shared experts add capacity back, provenance, composes with dfa-experts + bp-spine + qb" : "  FAIL: K4 leg"
+puts failures.length == n0 ? "  ok: Stable LatentMoE — latent ℓ=d/2 trains and SHRINKS both routed params AND expert flops, shared experts add capacity back, provenance, composes with dfa-experts + bp-spine + qb" : "  FAIL: K4 leg"
+
+# ---- K4b / M6: --expert-act situ-glu (SiTU-GLU experts) ----
+# A GLU needs a SECOND projection per expert, which the 9+2i/10+2i pair
+# has no room for, so the E gate matrices are APPENDED at the very tail
+# (past the spine tail) and every existing index keeps its meaning. The
+# legs below are about exactly that: the new weights must be EXPERT
+# weights everywhere it matters, not a fourth thing the bookkeeping
+# forgets.
+n0 = failures.length
+gg = %w[--steps 6 --seed 0 --moe-policy dfa-experts]
+base_g = losses(run_cli(gg, {}, nil))
+failures << "situ-glu: explicit --expert-act gelu differs from the default (byte-null broken)" unless
+  losses(run_cli(gg + %w[--expert-act gelu], {}, nil)) == base_g
+glu = losses(run_cli(gg + %w[--expert-act situ-glu], {}, nil))
+failures << "situ-glu: curve identical to gelu (the gate branch is not in the graph)" if glu == base_g
+failures << "situ-glu: not deterministic" unless losses(run_cli(gg + %w[--expert-act situ-glu], {}, nil)) == glu
+failures << "situ-glu: NaN" if glu.map(&:to_f).any?(&:nan?)
+# Both other lanes must see it too — top1 dispatches the gate branch
+# through the SAME ids2 selection as up.
+[%w[--moe-policy chain], %w[--routing top1 --moe-aux 0.05]].each do |lane|
+  b = losses(run_cli(%w[--steps 6 --seed 0] + lane, {}, nil))
+  g = losses(run_cli(%w[--steps 6 --seed 0] + lane + %w[--expert-act situ-glu], {}, nil))
+  failures << "situ-glu: no effect on lane #{lane.join(' ')}" if b == g
+end
+Dir.mktmpdir("moe_glu") do |dir|
+  run_cli(gg + %w[--expert-act situ-glu], {}, dir)
+  ev = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+  fm = ev.first["franken_moe"]
+  failures << "situ-glu: provenance expert_act #{fm['expert_act'].inspect}" unless fm["expert_act"] == "situ-glu"
+  # experts_sig MUST include the gate branch — otherwise --freeze-experts
+  # could "prove" nothing moved while the gate trained behind it.
+  Dir.mktmpdir("moe_glu_ref") do |d2|
+    run_cli(gg, {}, d2)
+    rf = JSON.parse(File.readlines(File.join(d2, "events.jsonl")).first)["franken_moe"]
+    failures << "situ-glu: experts_sig unchanged by the extra expert matrix (gate branch NOT counted)" if
+      rf["experts_sig"] == fm["experts_sig"]
+    # cost must grow: three matrices per expert, not two.
+    c1 = ev.first["cost"]; c0 = JSON.parse(File.readlines(File.join(d2, "events.jsonl")).first)["cost"]
+    failures << "situ-glu: total_params did not grow (#{c0['total_params']} -> #{c1['total_params']})" unless
+      c1["total_params"] > c0["total_params"]
+    failures << "situ-glu: flops_per_token did not grow" unless c1["flops_per_token"] > c0["flops_per_token"]
+  end
+end
+# TWO-SIDED freeze, the toy#141 shape: frozen must be BIT-IDENTICAL
+# (which only holds if the gate branch is both counted AND frozen),
+# while dfa and chain provably move from the SAME init.
+sigs = {}
+%w[frozen dfa chain].each do |arm|
+  args = %w[--steps 15 --seed 0 --expert-act situ-glu]
+  args += arm == "chain" ? %w[--moe-policy chain] : %w[--moe-policy dfa-experts]
+  args += %w[--freeze-experts] if arm == "frozen"
+  Dir.mktmpdir("moe_glu_#{arm}") do |dir|
+    run_cli(args, {}, dir)
+    ev = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+    sigs[arm] = [ev.first["franken_moe"]["experts_sig"], ev.last["experts_sig"]]
+  end
+end
+failures << "situ-glu: --freeze-experts moved experts_sig #{sigs['frozen'].inspect} (the gate branch is training behind the freeze)" unless
+  sigs["frozen"][0] == sigs["frozen"][1]
+failures << "situ-glu: dfa arm did not move" if sigs["dfa"][0] == sigs["dfa"][1]
+failures << "situ-glu: chain arm did not move" if sigs["chain"][0] == sigs["chain"][1]
+failures << "situ-glu: arms do not share an init" unless
+  sigs["frozen"][0] == sigs["dfa"][0] && sigs["dfa"][0] == sigs["chain"][0]
+# Composition with the other K4 axis and with bp-spine.
+[%w[--moe-latent], %w[--moe-latent --moe-shared 1]].each do |extra|
+  o = losses(run_cli(gg + %w[--expert-act situ-glu] + extra, {}, nil))
+  failures << "situ-glu: does not compose with #{extra.join(' ')}" if o.empty? || o.map(&:to_f).any?(&:nan?)
+end
+sp = losses(run_cli(%w[--steps 6 --seed 0 --routing top1 --moe-policy bp-spine --expert-act situ-glu], {}, nil))
+failures << "situ-glu: does not compose with bp-spine" if sp.empty? || sp.map(&:to_f).any?(&:nan?)
+_og, stg = Open3.capture2e(CLEAN, TOY, "train", "franken-moe", "--steps", "1",
+                           "--expert-act", "swiglu", chdir: ROOT)
+failures << "situ-glu: unknown --expert-act value not rejected" if stg.success?
+puts failures.length == n0 ? "  ok: --expert-act situ-glu — gelu byte-null, gate branch live on all three lanes, appended at the tail with every existing index intact; counted in experts_sig AND cost (3 matrices/expert), freeze two-sided, composes with latent/shared/bp-spine" : "  FAIL: situ-glu leg"
 
 # ---- toy#143: --dfa-granularity block (the literature recipe) ----
 # The ticket's two proof obligations, plus the guards. NOTE what is
@@ -762,7 +842,7 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
 end
 
 if failures.empty?
-  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule/attn-gate (toy#136) + optimizer (toy#139) + donor (toy#140) + freeze-experts (toy#141) + latent-moe (toy#142) + block-dfa (toy#143) + bundle (toy#120/#121)"
+  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule/attn-gate (toy#136) + optimizer (toy#139) + donor (toy#140) + freeze-experts (toy#141) + latent-moe (toy#142) + block-dfa (toy#143) + situ-glu experts (K4b/M6) + bundle (toy#120/#121)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe-cli]: #{f}" }

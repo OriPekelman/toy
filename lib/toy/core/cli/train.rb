@@ -140,6 +140,7 @@ module Toy
           @moe_latent   = false # franken-moe: latent expert sandwich (toy#142/K4)
           @moe_shared   = nil   # franken-moe: N shared full-width experts (toy#142/K4)
           @dfa_granularity = nil # franken-moe: matmul | block (toy#143)
+          @expert_act   = nil   # franken-moe: gelu | situ-glu (K4b/M6)
           @shape        = nil   # franken/franken-moe: preset (toy#124)
           @routing    = nil   # franken-moe: dense | top1
           @moe_policy = nil   # franken-moe: chain | dfa-experts
@@ -305,6 +306,7 @@ module Toy
                              "FRANKEN_FREEZE_EXPERTS" => (@freeze_experts ? "1" : ""),
                              "FRANKEN_MOE_LATENT"  => (@moe_latent ? "1" : ""),
                              "FRANKEN_DFA_GRANULARITY" => (@dfa_granularity || ""),
+                             "FRANKEN_EXPERT_ACT" => (@expert_act || ""),
                              "FRANKEN_MOE_SHARED"  => (@moe_shared || 0).to_s,
                              "FRANKEN_ATTN_GATE"   => (@attn_gate ? "1" : ""),
                              "FRANKEN_CKPT_EVERY"  => (@ckpt_every || 0).to_s,
@@ -488,6 +490,16 @@ module Toy
               @freeze_experts = true
             when "--moe-latent"
               @moe_latent = true
+            when "--expert-act"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--expert-act requires a value") if val.nil?
+              return bad_arg("--expert-act must be gelu or situ-glu, got #{val.inspect}") unless %w[gelu situ-glu].include?(val)
+              @expert_act = val
+            when /\A--expert-act=(.*)\z/
+              val = $1
+              return bad_arg("--expert-act must be gelu or situ-glu, got #{val.inspect}") unless %w[gelu situ-glu].include?(val)
+              @expert_act = val
             when "--dfa-granularity"
               i += 1
               val = @argv[i]
@@ -846,6 +858,7 @@ module Toy
             ["--freeze-experts", %w[franken-moe],                    @freeze_experts, " (toy#141)"],
             ["--moe-latent/--moe-shared", %w[franken-moe],           (@moe_latent || !@moe_shared.nil?), " (toy#142/K4)"],
             ["--dfa-granularity", %w[franken-moe],                   !@dfa_granularity.nil?, " (toy#143)"],
+            ["--expert-act", %w[franken-moe],                        !@expert_act.nil?, " (K4b/M6)"],
             ["--ckpt-every",    %w[franken franken-moe],            !@ckpt_every.nil?, " (toy#129/#131)"],
             ["--load-ckpt",     %w[franken-moe],                    !@load_ckpt.nil?, " (toy#131; eval-only — pass --steps 0 + --eval-corpus)"],
             ["--eval-corpus/--eval-tokens/--eval-offset", %w[franken-moe], (!@eval_corpus.nil? || !@eval_tokens.nil? || !@eval_offset.nil?), " (toy#130; the llama lane evals checkpoints offline via `toy eval ce`)"],
