@@ -53,6 +53,7 @@ REJECT = [
   [%w[franken --dfa-granularity block],   "--dfa-granularity"],
   [%w[franken-moe --mla-layers 1],        "--mla-layers/--mla-rank"],
   [%w[franken --expert-act situ-glu],     "--expert-act"],
+  [%w[franken --lr-schedule ramp-up],     "--lr-schedule/--lr-lo/--lr-hi"],
   [%w[from-scratch --ckpt-every 2],       "--ckpt-every"],
   [%w[franken --load-ckpt x.gguf],        "--load-ckpt"],
   [%w[franken --eval-corpus x.bin],       "--eval-corpus"],

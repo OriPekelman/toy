@@ -255,6 +255,28 @@ module Toy
             return 1
           end
           eact_on = eact_s == "situ-glu"
+          # toy#146: per-layer LR ramp. GENERIC by construction — it
+          # scales whatever LR the step schedule produced, for every
+          # credit lane and every optimizer, because it is applied at
+          # apply_step. Nothing about it is DFA-specific; DFA is merely
+          # the motivating case (each block's B_i.e has its own natural
+          # scale, so one global LR is wrong for most layers at once).
+          lrs_s = ENV["FRANKEN_LR_SCHEDULE"] || ""
+          if lrs_s.length > 0 && lrs_s != "uniform" && lrs_s != "ramp-up" && lrs_s != "ramp-down"
+            puts "toy-train-franken-moe-cuda: FRANKEN_LR_SCHEDULE " + lrs_s + " unsupported (uniform|ramp-up|ramp-down)"
+            return 1
+          end
+          lr_ramp = lrs_s == "ramp-up" || lrs_s == "ramp-down"
+          lr_lo = (ENV["FRANKEN_LR_LO"] || "0").to_f
+          lr_hi = (ENV["FRANKEN_LR_HI"] || "0").to_f
+          if lr_ramp && (lr_lo <= 0.0 || lr_hi <= 0.0)
+            puts "toy-train-franken-moe-cuda: --lr-schedule " + lrs_s + " needs both --lr-lo and --lr-hi (> 0); there is no sensible default range to invent"
+            return 1
+          end
+          if !lr_ramp && (lr_lo > 0.0 || lr_hi > 0.0)
+            puts "toy-train-franken-moe-cuda: --lr-lo/--lr-hi need --lr-schedule ramp-up or ramp-down"
+            return 1
+          end
           ns_s = ENV["FRANKEN_MOE_SHARED"] || ""
           n_shared = ns_s.length > 0 ? ns_s.to_i : 0
           if n_shared < 0
@@ -497,6 +519,21 @@ module Toy
               return 1
             end
           end
+          # toy#145 fallout, found while gating toy#146: at L>1 the top1
+          # router credit path backpropagates from the aux/task root at
+          # the LAST layer through earlier layers' expert blocks, and
+          # mul_mat_id has no ggml backward (toy#110) — so it aborts deep
+          # in ggml rather than saying anything useful. bp-spine is fine:
+          # its detach cut keeps the experts off the chain. Fail loud with
+          # the reason instead of shipping a combination that crashes.
+          if top1 && n_layers > 1 && !bp_spine
+            puts "toy-train-franken-moe-cuda: --routing top1 at --shape deep needs --moe-policy bp-spine. At L>1 the router's credit path reaches back through an earlier layer's mul_mat_id, which has NO ggml backward (toy#110); bp-spine's detach cut is what keeps the experts off that path."
+            return 1
+          end
+          if lr_ramp && n_layers < 2
+            puts "toy-train-franken-moe-cuda: --lr-schedule " + lrs_s + " needs >= 2 layers to interpolate across (use --shape deep); at L=1 a ramp is not a ramp"
+            return 1
+          end
           layers_init(n_layers)
           latent_init(lat_w, n_shared)
           expert_act_init(eact_on ? 1 : 0)
@@ -608,6 +645,48 @@ module Toy
           # buffer when the graph does not reach it, and the per-step
           # upload then aborts inside ggml_backend_tensor_set.
           t_hp_sgd = TinyNNCuda.tnn_input_1d_f32_persistent(sess, 2)
+          # toy#146: the per-layer LR MULTIPLIER, relative to the base
+          # --lr. Keeping it a multiplier (rather than an absolute LR)
+          # is what lets the ramp COMPOSE with --warmup and the cosine
+          # schedule: each step computes lr_t once, then every layer
+          # scales it. At a flat schedule with no warmup, layer l gets
+          # exactly its interpolated value.
+          lr_mul = [1.0]; lr_mul.pop
+          lmi = 0
+          while lmi < n_layers
+            frac = n_layers > 1 ? (lmi.to_f / (n_layers - 1).to_f) : 0.0
+            v = lr
+            if lr_ramp
+              if lrs_s == "ramp-up"
+                v = lr_lo + (lr_hi - lr_lo) * frac
+              else
+                v = lr_hi + (lr_lo - lr_hi) * frac
+              end
+            end
+            lr_mul.push(lr > 0.0 ? v / lr : 1.0)
+            lmi = lmi + 1
+          end
+          # PERSISTENT, before finalize_weights (the toy#133 lesson: a
+          # compute-context input allocated later reads zeros in silence
+          # — here that would mean lr=0 for every ramped layer, i.e. a
+          # run that trains nothing and says nothing).
+          t_hps_sgd_a = [TinyNNCuda.tnn_null_ptr]; t_hps_sgd_a.pop
+          t_hps_a     = [TinyNNCuda.tnn_null_ptr]; t_hps_a.pop
+          if lr_ramp
+            lsi = 0
+            while lsi < n_layers
+              t_hps_sgd_a.push(TinyNNCuda.tnn_input_1d_f32_persistent(sess, 2))
+              # PERSISTENT for the adamw vectors too, not just sgd: under
+              # --optimizer muon most 2-D weights take the SGD path, so a
+              # layer whose weights are all muon-eligible never REACHES
+              # its adamw vector — a compute-context input would then have
+              # no buffer and the upload aborts in ggml_backend_tensor_set.
+              # That is the same reason t_hp_sgd above is persistent, and
+              # it cost a debugging round here before the penny dropped.
+              t_hps_a.push(TinyNNCuda.tnn_input_1d_f32_persistent(sess, 7))
+              lsi = lsi + 1
+            end
+          end
           # toy#133: block-causal attention mask — ALLOCATED here
           # (persistent inputs must precede finalize_weights; an alloc
           # after finalize has no backing buffer and silently reads
@@ -838,6 +917,18 @@ module Toy
           t_tok    = TinyNNCuda.tnn_input_1d_i32(sess, tv)
           t_labels = TinyNNCuda.tnn_input_2d_f32(sess, tv, vocabv)
           t_hp     = TinyNNCuda.tnn_input_1d_f32(sess, 7)
+          if lr_ramp
+            lhi = 0
+            while lhi < n_layers
+              tw.t_hps.push(t_hps_a[lhi])
+              lhi = lhi + 1
+            end
+            lsj = 0
+            while lsj < n_layers
+              tw.t_hps_sgd.push(t_hps_sgd_a[lsj])
+              lsj = lsj + 1
+            end
+          end
           t_f      = TinyNNCuda.tnn_input_2d_f32(sess, 1, nev)   # ne=[NE,1]
           forward_tower(sess, tw, t_tok, t_labels, sels, eye, top1, bp_spine ? 1 : 0, attn_mask, qb_bias_t,
                         block_dfa ? 1 : 0)
@@ -939,7 +1030,11 @@ module Toy
                 acc_r   = TinyNNCuda.tnn_tensor_grad(sess, tw.pp[ridx])
                 g_tot   = TinyNNCuda.tnn_add(sess, g_dfa_r, acc_r)
                 TinyNNCuda.tnn_set_output(g_tot)
-                to_r = TinyNNCuda.tnn_opt_step_adamw(sess, tw.pp[ridx], g_tot, tw.pm[ridx], tw.pv[ridx], t_hp)
+                # toy#146: this is the one optimizer call that does not go
+                # through apply_step, so it asks the seam directly rather
+                # than silently keeping the base LR under a ramp.
+                to_r = TinyNNCuda.tnn_opt_step_adamw(sess, tw.pp[ridx], g_tot, tw.pm[ridx], tw.pv[ridx],
+                                                 hp_for(tw, ridx, t_hp))
                 TinyNNCuda.tnn_extend_backward_graph(sess, to_r)
                 lr3 = lr3 + 1
               end
@@ -1146,6 +1241,18 @@ module Toy
               fm.add_bool("freeze_embed", freeze_embed)
               fm.add_bool("experts_frozen", freeze_experts)
               fm.add_str("expert_act", eact_on ? "situ-glu" : "gelu")
+              fm.add_str("lr_schedule", lr_ramp ? lrs_s : "uniform")
+              fm.add_num("lr_lo", lr_lo)
+              fm.add_num("lr_hi", lr_hi)
+              # the resolved per-layer LRs, so a run says what each layer
+              # actually got rather than leaving it to be re-derived.
+              lrv = Toy::Json::Builder.new
+              lvi = 0
+              while lvi < n_layers
+                lrv.add_num("l" + lvi.to_s, lr * lr_mul[lvi])
+                lvi = lvi + 1
+              end
+              fm.add_obj("lr_per_layer", lrv)
               fm.add_num("latent_dim", lat_w)
               fm.add_num("shared_experts", n_shared)
               fm.add_str("dfa_granularity", block_dfa ? "block" : "matmul")
@@ -1254,6 +1361,26 @@ module Toy
             if opt_code != 0
               hp_sgd = [lr_t, 0.0]
               TinyNNCuda.tnn_upload_from_float_array(sess, t_hp_sgd, hp_sgd, 2)
+            end
+            # toy#146: the same step-schedule LR, scaled per layer. The
+            # bias-correction slots are UNCHANGED — they are functions of
+            # the step count, not of the LR, and rescaling them would
+            # silently corrupt Adam's moment debiasing rather than change
+            # the step size.
+            if lr_ramp
+              lpi = 0
+              while lpi < n_layers
+                if opt_code != 2
+                  hp_l = [lr_t * lr_mul[lpi], b1, b2, 1.0e-8, 0.0,
+                          1.0 / (1.0 - (b1 ** t)), 1.0 / (1.0 - (b2 ** t))]
+                  TinyNNCuda.tnn_upload_from_float_array(sess, tw.t_hps[lpi], hp_l, 7)
+                end
+                if opt_code != 0
+                  hp_ls = [lr_t * lr_mul[lpi], 0.0]
+                  TinyNNCuda.tnn_upload_from_float_array(sess, tw.t_hps_sgd[lpi], hp_ls, 2)
+                end
+                lpi = lpi + 1
+              end
             end
             if top1
               TinyNNCuda.tnn_upload_from_float_array(sess, t_f, fvec, nev)

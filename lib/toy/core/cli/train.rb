@@ -141,6 +141,9 @@ module Toy
           @moe_shared   = nil   # franken-moe: N shared full-width experts (toy#142/K4)
           @dfa_granularity = nil # franken-moe: matmul | block (toy#143)
           @expert_act   = nil   # franken-moe: gelu | situ-glu (K4b/M6)
+          @lr_schedule  = nil   # franken-moe: uniform | ramp-up | ramp-down (toy#146)
+          @lr_lo        = nil   # franken-moe: ramp endpoint, layer 0 side
+          @lr_hi        = nil   # franken-moe: ramp endpoint, last layer side
           @shape        = nil   # franken/franken-moe: preset (toy#124)
           @routing    = nil   # franken-moe: dense | top1
           @moe_policy = nil   # franken-moe: chain | dfa-experts
@@ -307,6 +310,9 @@ module Toy
                              "FRANKEN_MOE_LATENT"  => (@moe_latent ? "1" : ""),
                              "FRANKEN_DFA_GRANULARITY" => (@dfa_granularity || ""),
                              "FRANKEN_EXPERT_ACT" => (@expert_act || ""),
+                             "FRANKEN_LR_SCHEDULE" => (@lr_schedule || ""),
+                             "FRANKEN_LR_LO" => (@lr_lo ? @lr_lo.to_s : ""),
+                             "FRANKEN_LR_HI" => (@lr_hi ? @lr_hi.to_s : ""),
                              "FRANKEN_MOE_SHARED"  => (@moe_shared || 0).to_s,
                              "FRANKEN_ATTN_GATE"   => (@attn_gate ? "1" : ""),
                              "FRANKEN_CKPT_EVERY"  => (@ckpt_every || 0).to_s,
@@ -490,6 +496,28 @@ module Toy
               @freeze_experts = true
             when "--moe-latent"
               @moe_latent = true
+            when "--lr-schedule"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--lr-schedule requires a value") if val.nil?
+              return bad_arg("--lr-schedule must be uniform, ramp-up or ramp-down, got #{val.inspect}") unless %w[uniform ramp-up ramp-down].include?(val)
+              @lr_schedule = val
+            when /\A--lr-schedule=(.*)\z/
+              val = $1
+              return bad_arg("--lr-schedule must be uniform, ramp-up or ramp-down, got #{val.inspect}") unless %w[uniform ramp-up ramp-down].include?(val)
+              @lr_schedule = val
+            when "--lr-lo", "--lr-hi"
+              key = @argv[i]
+              i += 1
+              val = @argv[i]
+              return bad_arg("#{key} requires a value") if val.nil?
+              return bad_arg("#{key} must be a positive float, got #{val.inspect}") unless val =~ /\A\d*\.?\d+\z/ && val.to_f > 0.0
+              key == "--lr-lo" ? @lr_lo = val.to_f : @lr_hi = val.to_f
+            when /\A--lr-(lo|hi)=(.*)\z/
+              key = $1
+              val = $2
+              return bad_arg("--lr-#{key} must be a positive float, got #{val.inspect}") unless val =~ /\A\d*\.?\d+\z/ && val.to_f > 0.0
+              key == "lo" ? @lr_lo = val.to_f : @lr_hi = val.to_f
             when "--expert-act"
               i += 1
               val = @argv[i]
@@ -859,6 +887,7 @@ module Toy
             ["--moe-latent/--moe-shared", %w[franken-moe],           (@moe_latent || !@moe_shared.nil?), " (toy#142/K4)"],
             ["--dfa-granularity", %w[franken-moe],                   !@dfa_granularity.nil?, " (toy#143)"],
             ["--expert-act", %w[franken-moe],                        !@expert_act.nil?, " (K4b/M6)"],
+            ["--lr-schedule/--lr-lo/--lr-hi", %w[franken-moe],       (!@lr_schedule.nil? || !@lr_lo.nil? || !@lr_hi.nil?), " (toy#146)"],
             ["--ckpt-every",    %w[franken franken-moe],            !@ckpt_every.nil?, " (toy#129/#131)"],
             ["--load-ckpt",     %w[franken-moe],                    !@load_ckpt.nil?, " (toy#131; eval-only — pass --steps 0 + --eval-corpus)"],
             ["--eval-corpus/--eval-tokens/--eval-offset", %w[franken-moe], (!@eval_corpus.nil? || !@eval_tokens.nil? || !@eval_offset.nil?), " (toy#130; the llama lane evals checkpoints offline via `toy eval ce`)"],

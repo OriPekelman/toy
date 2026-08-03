@@ -98,7 +98,51 @@ module Toy
         # t_hp is the AdamW hp vector; t_hp_sgd the [lr, wd] pair the
         # ggml SGD step takes. Returns the opt node (already extended
         # into the backward graph).
+        # toy#146: which transformer layer owns weight `idx`.
+        # -1 = a GLOBAL (embed, fnorm) — outside the depth stack, so it
+        # is not on the ramp and keeps the base LR.
+        def self.layer_of(idx)
+          if idx < 2
+            return -1
+          end
+          (idx - 2) / per_layer_count
+        end
+
+        # toy#146: THE seam for per-layer learning rates, and the reason
+        # this is a general mechanism rather than a DFA one. Every
+        # optimizer step for every weight — chain, DFA, block-DFA, top1,
+        # adamw/muon/sgd — funnels through apply_step, so swapping the hp
+        # vector here reaches all of them at once and nothing else has to
+        # know the schedule exists.
+        #
+        # An EMPTY t_hps means "uniform": the caller's single shared
+        # vector is returned unchanged, so the default path builds the
+        # identical graph it always did.
+        def self.hp_for(tw, idx, t_hp_default)
+          if tw.t_hps.length == 0
+            return t_hp_default
+          end
+          l = layer_of(idx)
+          if l < 0 || l >= tw.t_hps.length
+            return t_hp_default
+          end
+          tw.t_hps[l]
+        end
+
+        def self.hp_sgd_for(tw, idx, t_hp_default)
+          if tw.t_hps_sgd.length == 0
+            return t_hp_default
+          end
+          l = layer_of(idx)
+          if l < 0 || l >= tw.t_hps_sgd.length
+            return t_hp_default
+          end
+          tw.t_hps_sgd[l]
+        end
+
         def self.apply_step(sess, tw, t_hp, t_hp_sgd, idx, grad)
+          t_hp     = hp_for(tw, idx, t_hp)
+          t_hp_sgd = hp_sgd_for(tw, idx, t_hp_sgd)
           to = TinyNN.tnn_null_ptr
           if optv == 1 && muon_eligible(idx)
             nel = TinyNN.tnn_tensor_nelements(tw.pp[idx])
@@ -438,6 +482,10 @@ module Toy
           attr_accessor :tap_ahs, :tap_ctxs, :tap_h2s
           attr_accessor :tap_z      # last layer's, for the single-layer readers
           attr_accessor :tap_blk
+          # toy#146: per-layer optimizer hyper-parameters. EMPTY under the
+          # uniform default, which is what makes that path byte-null —
+          # hp_for falls straight through to the single shared vector.
+          attr_accessor :t_hps, :t_hps_sgd
           attr_accessor :dfa_grads, :dfa_accs, :dfa_names
 
           def initialize
@@ -463,6 +511,8 @@ module Toy
             @tap_h2s   = [np]; @tap_h2s.pop
             @tap_z     = np
             @tap_blk   = np
+            @t_hps     = [np]; @t_hps.pop
+            @t_hps_sgd = [np]; @t_hps_sgd.pop
             @dfa_grads = [np]; @dfa_grads.pop
             @dfa_accs  = [np]; @dfa_accs.pop
             @dfa_names = [""]; @dfa_names.pop

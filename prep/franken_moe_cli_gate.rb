@@ -694,6 +694,83 @@ qb2 = losses(run_cli(k4 + %w[--moe-latent --moe-shared 2 --routing top1 --moe-ba
 failures << "latent + qb: short/NaN" unless qb2.length == 12 && qb2.map(&:to_f).none?(&:nan?)
 puts failures.length == n0 ? "  ok: Stable LatentMoE — latent ℓ=d/2 trains and SHRINKS both routed params AND expert flops, shared experts add capacity back, provenance, composes with dfa-experts + bp-spine + qb" : "  FAIL: K4 leg"
 
+# ---- toy#146: --lr-schedule ramp-up|ramp-down (per-layer LR) ----
+# Deliberately built as a GENERAL mechanism, not a DFA one: the ramp is
+# applied at apply_step, the single funnel every optimizer step passes
+# through, so it reaches every credit lane and every optimizer at once.
+# The legs below are mostly about THAT — a per-layer LR that only moved
+# the DFA lane would be a much weaker thing than the ticket asks for.
+n0 = failures.length
+lg = %w[--steps 6 --seed 0 --shape deep --experts 4 --context 16
+        --corpus data/fineweb_gpt2_smoke.bin]
+ramp = %w[--lr-schedule ramp-up --lr-lo 0.005 --lr-hi 0.05]
+down = %w[--lr-schedule ramp-down --lr-lo 0.005 --lr-hi 0.05]
+base = losses(run_cli(lg + %w[--moe-policy dfa-experts], {}, nil))
+failures << "lr-schedule: explicit uniform differs from the default (byte-null broken)" unless
+  losses(run_cli(lg + %w[--moe-policy dfa-experts --lr-schedule uniform], {}, nil)) == base
+up_l = losses(run_cli(lg + %w[--moe-policy dfa-experts] + ramp, {}, nil))
+dn_l = losses(run_cli(lg + %w[--moe-policy dfa-experts] + down, {}, nil))
+failures << "lr-schedule: ramp-up does not change the curve" if up_l == base
+failures << "lr-schedule: ramp-down does not change the curve" if dn_l == base
+# The two DIRECTIONS must differ from each other — same endpoints, opposite
+# assignment. If they matched, the interpolation would be ignoring depth.
+failures << "lr-schedule: ramp-up == ramp-down (direction is not reaching the layers)" if up_l == dn_l
+failures << "lr-schedule: not deterministic" unless losses(run_cli(lg + %w[--moe-policy dfa-experts] + ramp, {}, nil)) == up_l
+failures << "lr-schedule: NaN" if (up_l + dn_l).map(&:to_f).any?(&:nan?)
+Dir.mktmpdir("moe_lrs") do |dir|
+  run_cli(lg + %w[--moe-policy dfa-experts] + ramp, {}, dir)
+  fm = JSON.parse(File.readlines(File.join(dir, "events.jsonl")).first)["franken_moe"]
+  failures << "lr-schedule: provenance #{fm['lr_schedule'].inspect}" unless fm["lr_schedule"] == "ramp-up"
+  # The RESOLVED per-layer LRs are the contract: endpoints exact and
+  # monotonic in depth. Asserting the curve moved would not catch an
+  # interpolation that is off by a layer or lands on the wrong endpoints.
+  pl = fm["lr_per_layer"] || {}
+  vals = (0...6).map { |i| pl["l#{i}"] }
+  failures << "lr-schedule: per-layer LRs missing (#{pl.inspect})" if vals.any?(&:nil?)
+  unless vals.any?(&:nil?)
+    failures << "lr-schedule: layer 0 is #{vals.first} (want lo=0.005)" unless (vals.first - 0.005).abs < 1e-9
+    failures << "lr-schedule: last layer is #{vals.last} (want hi=0.05)" unless (vals.last - 0.05).abs < 1e-9
+    failures << "lr-schedule: not monotonic ascending (#{vals.inspect})" unless vals.each_cons(2).all? { |a, b| b > a }
+  end
+  Dir.mktmpdir("moe_lrs_d") do |d2|
+    run_cli(lg + %w[--moe-policy dfa-experts] + down, {}, d2)
+    pd = JSON.parse(File.readlines(File.join(d2, "events.jsonl")).first).dig("franken_moe", "lr_per_layer") || {}
+    dv = (0...6).map { |i| pd["l#{i}"] }
+    failures << "lr-schedule: ramp-down not monotonic descending (#{dv.inspect})" unless
+      dv.none?(&:nil?) && dv.each_cons(2).all? { |a, b| b < a }
+  end
+end
+# GENERICITY — the point of building it at apply_step. Every lane and
+# every optimizer must see the ramp, not just the DFA lane.
+[["chain",     %w[--moe-policy chain]],
+ ["block-dfa", %w[--moe-policy dfa-experts --dfa-granularity block]],
+ ["muon",      %w[--moe-policy dfa-experts --optimizer muon]],
+ ["sgd",       %w[--moe-policy dfa-experts --optimizer sgd]],
+ ["top1",      %w[--routing top1 --moe-policy bp-spine]],
+ ["latent",    %w[--moe-policy dfa-experts --moe-latent --expert-act situ-glu]]].each do |name, lane|
+  b = losses(run_cli(lg + lane, {}, nil))
+  r = losses(run_cli(lg + lane + ramp, {}, nil))
+  failures << "lr-schedule: no effect on the #{name} lane (the ramp is not generic)" if r.empty? || b == r
+end
+# Guards, all fail-loud.
+[[%w[--lr-schedule ramp-up], "ramp without --lr-lo/--lr-hi"],
+ [%w[--lr-lo 0.005 --lr-hi 0.05], "--lr-lo/--lr-hi without a ramp"],
+ [%w[--lr-schedule sawtooth --lr-lo 0.005 --lr-hi 0.05], "unknown schedule value"]].each do |extra, what|
+  _o, st = Open3.capture2e(CLEAN, TOY, "train", "franken-moe", "--steps", "1",
+                           "--shape", "deep", *extra, chdir: ROOT)
+  failures << "lr-schedule: #{what} not rejected" if st.success?
+end
+# A ramp needs depth to interpolate across; at L=1 it is not a ramp.
+_o1, st1 = Open3.capture2e(CLEAN, TOY, "train", "franken-moe", "--steps", "1",
+                           "--lr-schedule", "ramp-up", "--lr-lo", "0.005", "--lr-hi", "0.05", chdir: ROOT)
+failures << "lr-schedule: ramp at L=1 not rejected" if st1.success?
+# toy#145 fallout, caught by this ticket's genericity sweep: top1 at depth
+# walks the router credit back through an earlier mul_mat_id.
+_o2, st2 = Open3.capture2e(CLEAN, TOY, "train", "franken-moe", "--steps", "1",
+                           "--shape", "deep", "--routing", "top1", chdir: ROOT)
+failures << "deep: top1 without bp-spine not rejected (it aborts in ggml)" if st2.success?
+puts failures.length == n0 ? "  ok: --lr-schedule ramp-up/ramp-down — uniform byte-null, both directions move the curve and differ, endpoints exact + monotonic in provenance; GENERIC across chain/block-dfa/muon/sgd/top1/latent; 5 guards reject" : "  FAIL: lr-schedule leg"
+
 # ---- toy#145: --shape deep — the DEPTH lever for block-DFA ----
 # The tower is now L repeats of (attention + MoE) rather than one of
 # each. Two things need pinning: that L=1 is unchanged (covered by every
@@ -917,7 +994,7 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
 end
 
 if failures.empty?
-  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule/attn-gate (toy#136) + optimizer (toy#139) + donor (toy#140) + freeze-experts (toy#141) + latent-moe (toy#142) + block-dfa (toy#143) + situ-glu experts (K4b/M6) + shape-deep (toy#145) + bundle (toy#120/#121)"
+  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule/attn-gate (toy#136) + optimizer (toy#139) + donor (toy#140) + freeze-experts (toy#141) + latent-moe (toy#142) + block-dfa (toy#143) + situ-glu experts (K4b/M6) + shape-deep (toy#145) + lr-schedule (toy#146) + bundle (toy#120/#121)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe-cli]: #{f}" }
