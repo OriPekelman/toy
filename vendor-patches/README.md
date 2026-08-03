@@ -91,3 +91,36 @@ Purpose: sever exactly one edge from a differentiable subgraph — the
 expert-input path into `mul_mat_id` — while the residual and router
 branches keep their chain grads (the design doc's deferred opaque-cut;
 its 'an experiment demands it' trigger fired with F5).
+
+## 0014 — HIP symbol map for toy's own patches
+
+`src/ggml-cuda/vendors/hip.h` is ggml's CUDA→HIP spelling map. Four
+symbols used by toy's *own* vendor patches are missing from it, so a
+`-DGGML_HIP=ON` build fails compiling **our** patches rather than
+anything in ggml:
+
+| symbol | used by |
+|---|---|
+| `cublasSger` | 0012 (k=1 `out_prod`, the dense MoE gating backward) |
+| `cudaMemset2DAsync` | 0012 (zeroing the strided dst) |
+| `cudaHostRegisterMapped` | pinned-host path |
+| `cudaHostGetDevicePointer` | pinned-host path |
+
+Adding the four `#define`s is the whole patch. Verified on **evo**
+(AMD Strix Halo, gfx1151, ROCm 7.0.2): with them,
+`cmake -B build-hip -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1151
+-DBUILD_SHARED_LIBS=ON` builds `libggml.so` clean; without them it
+fails on exactly those four symbols.
+
+Two configure notes for anyone repeating it: ggml-hip **refuses static
+linking** (`BUILD_SHARED_LIBS=ON` is required, which toy's static-archive
+link model does not yet accommodate), and a stale CMake cache carries
+`GGML_STATIC` forward — use a fresh build dir or it keeps failing for the
+wrong reason.
+
+INERT for CUDA and MUSA builds: `common.cuh` only includes this header
+under `GGML_USE_HIP`, so the CUDA path never sees these lines. That is
+why it is safe to carry permanently even though toy has no ROCm runner
+yet — the remaining gap is `tinynn/tinynn_backend_cuda.c` (121 lines,
+~12 CUDA calls, all with direct `hip*` equivalents), the shared-vs-static
+build mode, and a ROCm sibling for the Ruby FFI mirror.

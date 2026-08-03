@@ -1,0 +1,27 @@
+--- a/src/ggml-cuda/vendors/hip.h
++++ b/src/ggml-cuda/vendors/hip.h
+@@ -47,6 +47,24 @@
+ #define cublasHandle_t hipblasHandle_t
+ #define cublasSetMathMode(handle, mode) CUBLAS_STATUS_SUCCESS
+ #define cublasSetStream hipblasSetStream
++// ── toy vendor-patch 0014 ────────────────────────────────────────────
++// The CUDA spellings used by toy's own vendor patches are absent from
++// this CUDA→HIP map, so a GGML_HIP build fails compiling OUR patches
++// rather than anything in ggml:
++//   cublasSger               vendor-patch 0012 (k=1 out_prod, the dense
++//                            MoE gating backward)
++//   cudaMemset2DAsync        same patch, zeroing the strided dst
++//   cudaHostRegisterMapped   pinned-host path
++//   cudaHostGetDevicePointer   "
++// Verified on evo (Strix Halo, gfx1151, ROCm 7.0.2): with these four
++// lines `cmake -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1151` builds
++// libggml.so clean; without them it fails on the four symbols above.
++// Inert for CUDA/MUSA builds — this header is only included under
++// GGML_USE_HIP (see ggml-cuda/common.cuh).
++#define cublasSger hipblasSger
++#define cudaMemset2DAsync hipMemset2DAsync
++#define cudaHostRegisterMapped hipHostRegisterMapped
++#define cudaHostGetDevicePointer hipHostGetDevicePointer
+ #define cublasSgemm hipblasSgemm
+ #define cublasSgemmStridedBatched hipblasSgemmStridedBatched
+ #define cublasStatus_t hipblasStatus_t
