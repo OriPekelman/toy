@@ -1552,6 +1552,22 @@ class LlamaSeqEngine
       end
       li = li + 1
     end
+
+    # K-series M10: the MTP block is NOT in seq_blocks_ffi, so the loop
+    # above never reaches it. Its Adam moments would be allocated and
+    # left UNZEROED — m/v starting from whatever the buffer held, which
+    # corrupts the very first updates and does so silently. (The [d,2d]
+    # projection is fine: ft_add_global_2d put it in the globals list,
+    # which the globals loop zeroes.)
+    if @seq_mtp == 1
+      mtz = @seq_arch.seq_mtp_block
+      zi = 0
+      while zi < mtz.ft_weights.length
+        TinyNN.tnn_zero_tensor(@sess, mtz.ft_m[zi])
+        TinyNN.tnn_zero_tensor(@sess, mtz.ft_v[zi])
+        zi = zi + 1
+      end
+    end
   end
 
   # P2.6 — finalize the backend weight buffers and upload the
