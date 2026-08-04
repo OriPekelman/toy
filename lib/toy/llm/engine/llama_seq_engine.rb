@@ -249,6 +249,27 @@ class LlamaSeqEngine
     0
   end
 
+  # K-series M10: upload the MTP inputs for this step. Called BEFORE
+  # recipe.step! — deliberately a separate setter rather than extra
+  # step! parameters, so no recipe call site changes. Same graph, so the
+  # uploads are still in place when step! computes.
+  def mtp_upload!(next_ids, m_labels2)
+    if @seq_mtp == 0
+      return 0
+    end
+    TinyNN.upload_int_array(@sess, @seq_arch.t_seq_mtp_tok, next_ids)
+    TinyNN.upload_row_major(@sess, @t_seq_mtp_labels, m_labels2)
+    0
+  end
+
+  def mtp_loss_value
+    if @seq_mtp == 0
+      return 0.0
+    end
+    m = TinyNN.download_row_major(@sess, @t_seq_mtp_loss, 1, 1)
+    m.flat[0]
+  end
+
   def seq_mtp_flag
     @seq_mtp
   end
@@ -1658,6 +1679,11 @@ class LlamaSeqEngine
     # mirror the realize-set values onto the arch right before the call.
     @seq_arch.seq_rope_cfg   = @seq_rope_cfg
     @seq_arch.seq_donor_d_in = @seq_donor_d_in
+    # K-series M10: same reason — mtp_init runs BEFORE realize, and the
+    # arch's own initialize resets seq_mtp_on to 0, so the flag has to be
+    # re-mirrored here or the module is silently never built (which is
+    # exactly how it presented: a null projection into mul_mat).
+    @seq_arch.seq_mtp_on     = @seq_mtp
 
     out = @seq_arch.build_forward(
       @sess, @t_seq_token_ids, @t_seq_positions, @t_seq_rope_freq_factors,

@@ -127,6 +127,27 @@ KDA_CONV_OFF = (ENV["KDA_CONV"] || "") == "0"
 # depth-attention (each layer input = learned softmax mixture over the
 # embedding + every preceding layer output). Unset = byte-null.
 ATTNRES_ON = (ENV["ATTNRES"] || "") == "1"
+# K-series M10 (MTP): one extra block predicting t+2 through the tied
+# head, with a second CE root weighted by lambda. Default off = byte-null.
+MTP_ON = (ENV["FRANKEN_MTP"] || "") == "1"
+# K-series M10 is NOT FINISHED. Everything below is wired, but the
+# module's input projection currently aborts in ggml_mul_mat
+# (GGML_ASSERT(ggml_can_mul_mat) at ggml.c:3283) — see
+# docs/roadmap/m10-mtp-status-2026-08-04.md. Refuse to enable it rather
+# than hand anyone a crash; --mtp off is byte-null and unaffected.
+if MTP_ON
+  puts "toy-train-franken: --mtp is not finished — the MTP input projection aborts in ggml_mul_mat (ggml.c:3283). See docs/roadmap/m10-mtp-status-2026-08-04.md. Refusing to run rather than crash mid-training."
+  exit 1
+end
+MTP_LAMBDA = (ENV["FRANKEN_MTP_LAMBDA"] || "0.3").to_f
+if MTP_LAMBDA < 0.0
+  puts "toy-train-franken: FRANKEN_MTP_LAMBDA must be >= 0"
+  exit 1
+end
+if !MTP_ON && (ENV["FRANKEN_MTP_LAMBDA"] || "").length > 0
+  puts "toy-train-franken: FRANKEN_MTP_LAMBDA needs FRANKEN_MTP=1"
+  exit 1
+end
 # toy#139 / K-series K5: FRANKEN_OPTIMIZER adamw (default, byte-null)
 # | muon. Muon rides the standard recipe — orthogonalized steps on the
 # 2D hidden matrices, AdamW on norms/embeddings/head — and because
@@ -476,6 +497,8 @@ while md < MLA_LIST.length
   md = md + 1
 end
 recipe.ff_cache.mla_rank_init(opts.mla_rank)
+recipe.ff_cache.mtp_init(MTP_ON ? 1 : 0)
+recipe.ff_cache.mtp_lambda_init(MTP_LAMBDA)
 recipe.realize!(cfg, opts)
 
 # tao#flow-json-emit (#25): self-describing run bundle, parallel to
@@ -560,6 +583,12 @@ if EVENTS.length > 0
     config.add_str("kda_layers", KDA_S)
     config.add_bool("kda_conv", !KDA_CONV_OFF)
     config.add_str("layer_pattern", LAYER_PATTERN)
+    config.add_bool("mtp", MTP_ON)
+    config.add_num("mtp_lambda", MTP_ON ? MTP_LAMBDA : 0.0)
+    # the clamp's cost, named rather than left to be rediscovered from a
+    # suspiciously low second loss: the last 2 columns have no genuine
+    # t+2 target and repeat the final in-window token.
+    config.add_num("mtp_clamped_cols", MTP_ON ? 2.0 : 0.0)
     config.add_num("mla_layers", MLA_LIST.length.to_f)
     config.add_num("mla_rank", MLA_RANK.to_f)
     config.add_bool("attnres", ATTNRES_ON)
@@ -737,7 +766,15 @@ while step < STEPS
     m_hp = adamw.hp(0)
   end
   recipe.ff_cache.franken_refresh_b!   # toy#117: B leaves are per-step uploads
+  # K-series M10: the MTP inputs for this step — ids shifted by one (the
+  # token the module embeds) and the t+2 one-hot. Both CLAMP at the
+  # window edge, matching next_token's t+1 behaviour.
+  if MTP_ON
+    recipe.ff_cache.mtp_upload!(Toy::Labels.shift_ids(seq_ids, CONTEXT, 1),
+                                Toy::Labels.next_token_k(seq_ids, VOCAB, CONTEXT, 1, 2))
+  end
   loss = recipe.step!(seq_ids, positions, m_labels, m_hp, step == 0)
+  mtp_loss = MTP_ON ? recipe.ff_cache.mtp_loss_value : 0.0
   final_loss = loss
   # The byte-gated line — to STDOUT (train.rb contract).
   puts "step " + (step + 1).to_s + ": loss=" + loss.to_s

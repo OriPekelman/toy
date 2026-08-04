@@ -60,6 +60,58 @@ module Toy
       m
     end
 
+    # K-series M10: shift-by-K one-hot, for the MTP module's t+2 target.
+    #
+    # CLAMPS at the window edge exactly as next_token does for t+1: the
+    # last K positions have no genuine t+K target, so they repeat the
+    # final in-window token. Chosen deliberately over masking (Ori,
+    # 2026-08-04) because it matches the t+1 behaviour already gated and
+    # is the smaller change. The bias it introduces is real and worth
+    # naming: those K columns teach "predict the last token again", so
+    # at small context the MTP loss is slightly optimistic. It is
+    # reported in provenance (mtp_clamped_cols) rather than left for
+    # someone to rediscover from a suspiciously low second loss.
+    def self.next_token_k(seq_ids, vocab, context, batch, k)
+      if batch != 1
+        raise "Toy::Labels.next_token_k: batch " + batch.to_s + " unsupported"
+      end
+      m = Mat.new(context, vocab)
+      j = 0
+      while j < context * vocab
+        m.flat[j] = 0.0
+        j = j + 1
+      end
+      i = 0
+      while i < context
+        idx = i + k
+        if idx >= context
+          idx = context - 1
+        end
+        target = seq_ids[idx]
+        if target >= 0 && target < vocab
+          m.flat[i * vocab + target] = 1.0
+        end
+        i = i + 1
+      end
+      m
+    end
+
+    # K-series M10: the ids the MTP module embeds — token t_{i+1} per
+    # position, same clamp.
+    def self.shift_ids(seq_ids, context, k)
+      a = [0]; a.pop
+      i = 0
+      while i < context
+        idx = i + k
+        if idx >= context
+          idx = context - 1
+        end
+        a.push(seq_ids[idx])
+        i = i + 1
+      end
+      a
+    end
+
     # IN-VOCAB-GUARDED shift-by-one one-hot. Reproduces the warm-start
     # hand loop (train.rb:202-214, smoke_recipe_warm_start.rb:111-124)
     # VERBATIM. Identical to next_token EXCEPT the scatter is guarded by
