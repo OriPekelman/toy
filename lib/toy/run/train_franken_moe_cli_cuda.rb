@@ -104,6 +104,33 @@ module Toy
         # squares over every expert up/down tensor. Emitted in run_start
         # (post-init) and run_end; --freeze-experts must leave the two
         # BIT-IDENTICAL, which is the gate's proof that nothing moved.
+        # toy#146 follow-up: sum of squares over every weight belonging
+        # to layer l. Emitted per layer in run_start and run_end so a
+        # per-layer LR can be verified STRUCTURALLY — which layers
+        # actually moved, and by how much — instead of being inferred
+        # from a loss curve. Under a ramp the movement profile should
+        # follow the LR profile, and ramp-up/ramp-down should be
+        # mirror images; when both arms are driven past the stability
+        # boundary their LOSSES saturate at ~ln(vocab) and stop being
+        # distinguishable, but these signatures still are.
+        def self.layer_sig(sess, tw, l)
+          acc = 0.0
+          gi = layer_base(l)
+          gend = layer_base(l) + per_layer_count
+          while gi < gend
+            n = TinyNNCuda.tnn_tensor_nelements(tw.pp[gi])
+            buf = zeros(n)
+            TinyNNCuda.tnn_download_to_f64_array(sess, tw.pp[gi], buf, n)
+            k = 0
+            while k < n
+              acc = acc + buf[k] * buf[k]
+              k = k + 1
+            end
+            gi = gi + 1
+          end
+          acc
+        end
+
         def self.experts_sig(sess, tw, ne, dm, dff)
           acc = 0.0
           lz = 0
@@ -519,17 +546,6 @@ module Toy
               return 1
             end
           end
-          # toy#145 fallout, found while gating toy#146: at L>1 the top1
-          # router credit path backpropagates from the aux/task root at
-          # the LAST layer through earlier layers' expert blocks, and
-          # mul_mat_id has no ggml backward (toy#110) — so it aborts deep
-          # in ggml rather than saying anything useful. bp-spine is fine:
-          # its detach cut keeps the experts off the chain. Fail loud with
-          # the reason instead of shipping a combination that crashes.
-          if top1 && n_layers > 1 && !bp_spine
-            puts "toy-train-franken-moe-cuda: --routing top1 at --shape deep needs --moe-policy bp-spine. At L>1 the router's credit path reaches back through an earlier layer's mul_mat_id, which has NO ggml backward (toy#110); bp-spine's detach cut is what keeps the experts off that path."
-            return 1
-          end
           if lr_ramp && n_layers < 2
             puts "toy-train-franken-moe-cuda: --lr-schedule " + lrs_s + " needs >= 2 layers to interpolate across (use --shape deep); at L=1 a ramp is not a ramp"
             return 1
@@ -701,6 +717,14 @@ module Toy
           qb_bias_t = TinyNNCuda.tnn_null_ptr
           if qb_on
             qb_bias_t = TinyNNCuda.tnn_input_2d_f32_persistent(sess, 1, nev)   # ne=[NE,1] — broadcasts over T
+            # toy#147: one per block. Layer 0 reuses the tensor above, so
+            # at L=1 the allocation order and the graph are unchanged.
+            tw.qb_biases.push(qb_bias_t)
+            qbi = 1
+            while qbi < n_layers
+              tw.qb_biases.push(TinyNNCuda.tnn_input_2d_f32_persistent(sess, 1, nev))
+              qbi = qbi + 1
+            end
           end
 
           # params: dense = every weight (shadow-shaped when dfa-experts);
@@ -848,6 +872,8 @@ module Toy
           end
           TinyNNCuda.tnn_upload_from_float_array(sess, eye, ey, nev * nev)
           qb_bias = zeros(nev)
+          # toy#147: layers 1..L-1 carry their own QB bias, flat [(L-1)*NE].
+          qb_bias_l = zeros(n_layers > 1 ? (n_layers - 1) * nev : 1)
           if qb_on
             TinyNNCuda.tnn_upload_from_float_array(sess, qb_bias_t, qb_bias, nev)
           end
@@ -930,6 +956,18 @@ module Toy
             end
           end
           t_f      = TinyNNCuda.tnn_input_2d_f32(sess, 1, nev)   # ne=[NE,1]
+          # toy#147: one aux f' vector per block — each router balances
+          # against ITS OWN load, not the last block's. Layer 0 reuses
+          # t_f so L=1 is unchanged.
+          t_fs = [TinyNNCuda.tnn_null_ptr]; t_fs.pop
+          if top1
+            t_fs.push(t_f)
+            tfi = 1
+            while tfi < n_layers
+              t_fs.push(TinyNNCuda.tnn_input_2d_f32(sess, 1, nev))
+              tfi = tfi + 1
+            end
+          end
           forward_tower(sess, tw, t_tok, t_labels, sels, eye, top1, bp_spine ? 1 : 0, attn_mask, qb_bias_t,
                         block_dfa ? 1 : 0)
           if bp_router || bp_spine
@@ -942,10 +980,33 @@ module Toy
           # top1: aux loss root (always built; alpha=0 -> zero f' vector).
           t_aux = TinyNNCuda.tnn_null_ptr
           if top1
-            m_fp  = TinyNNCuda.tnn_mul(sess, tw.t_gates, t_f)
-            s_tok = TinyNNCuda.tnn_sum_rows(sess, m_fp)
-            s_col = TinyNNCuda.tnn_reshape_3d(sess, s_tok, tv, 1, 1)
-            t_aux = TinyNNCuda.tnn_matmul(sess, s_col, ones_t)
+            # toy#147: ONE aux term per block, summed into a single root.
+            # Each term uses that block's own gate stream and its own f'
+            # vector; for layers >= 1 the gate stream was recomputed from
+            # a detached block input, so the term's backward stops at its
+            # own router instead of walking into the previous block's
+            # mul_mat_id. At L=1 this is exactly the single term that
+            # shipped.
+            t_aux = TinyNNCuda.tnn_null_ptr
+            lax = 0
+            while lax < n_layers
+              gsrc = lax == 0 ? tw.t_gates_l[0] : tw.t_auxgates_l[lax]
+              if lax == 0
+                m_fp  = TinyNNCuda.tnn_mul(sess, gsrc, t_fs[0])
+                s_tok = TinyNNCuda.tnn_sum_rows(sess, m_fp)
+              else
+                # t_auxgates_l is already summed over experts ([1,T]).
+                s_tok = TinyNNCuda.tnn_mul(sess, gsrc, TinyNNCuda.tnn_sum_rows(sess, t_fs[lax]))
+              end
+              s_col = TinyNNCuda.tnn_reshape_3d(sess, s_tok, tv, 1, 1)
+              term  = TinyNNCuda.tnn_matmul(sess, s_col, ones_t)
+              if lax == 0
+                t_aux = term
+              else
+                t_aux = TinyNNCuda.tnn_add(sess, t_aux, term)
+              end
+              lax = lax + 1
+            end
             TinyNNCuda.tnn_set_output(t_aux)
             TinyNNCuda.tnn_set_loss(t_aux)
             TinyNNCuda.tnn_add_to_graph(sess, tw.t_loss)
@@ -1257,6 +1318,13 @@ module Toy
               fm.add_num("shared_experts", n_shared)
               fm.add_str("dfa_granularity", block_dfa ? "block" : "matmul")
               fm.add_raw("experts_sig", num_or_null_cli(experts_sig(sess, tw, nev, dmv, dfv)))
+              lsg = Toy::Json::Builder.new
+              lsi2 = 0
+              while lsi2 < n_layers
+                lsg.add_raw("l" + lsi2.to_s, num_or_null_cli(layer_sig(sess, tw, lsi2)))
+                lsi2 = lsi2 + 1
+              end
+              fm.add_obj("layer_sig", lsg)
               # the per-param-class routing, recorded so a bundle can be
               # audited without re-reading the runner (tao#139 asked).
               fm.add_str("optimizer_routing",
@@ -1447,17 +1515,35 @@ module Toy
               TinyNNCuda.tnn_download_to_f64_array(sess, t_aux, aux_buf, 1)
               aux_v = num_or_null_cli(aux_buf[0])
               # lag-1 f' from this step's routing
-              TinyNNCuda.tnn_download_to_f64_array(sess, tw.t_onehots, gates_buf, nev * tv)
-              ei = 0
-              while ei < nev
-                cnt = 0.0
-                ti3 = 0
-                while ti3 < tv
-                  cnt = cnt + gates_buf[ti3 * nev + ei]
-                  ti3 = ti3 + 1
+              # toy#147: each block's f' comes from ITS OWN routing
+              # counts. fvec keeps layer 0's values (that is what the
+              # telemetry and the L=1 path report); deeper blocks upload
+              # theirs directly.
+              lf = 0
+              while lf < n_layers
+                TinyNNCuda.tnn_download_to_f64_array(sess, tw.t_onehots_l[lf], gates_buf, nev * tv)
+                fv_l = zeros(nev)
+                ei = 0
+                while ei < nev
+                  cnt = 0.0
+                  ti3 = 0
+                  while ti3 < tv
+                    cnt = cnt + gates_buf[ti3 * nev + ei]
+                    ti3 = ti3 + 1
+                  end
+                  fv_l[ei] = aux_alpha * nev.to_f * cnt / (tv.to_f * tv.to_f)
+                  ei = ei + 1
                 end
-                fvec[ei] = aux_alpha * nev.to_f * cnt / (tv.to_f * tv.to_f)
-                ei = ei + 1
+                if lf == 0
+                  ei2 = 0
+                  while ei2 < nev
+                    fvec[ei2] = fv_l[ei2]
+                    ei2 = ei2 + 1
+                  end
+                else
+                  TinyNNCuda.tnn_upload_from_float_array(sess, t_fs[lf], fv_l, nev)
+                end
+                lf = lf + 1
               end
             end
             # toy#136 QB update (lag-1, exact at toy scale): for k=1 the
@@ -1466,59 +1552,87 @@ module Toy
             # at rank ceil(m·k/n) of expert j's margins (so its expected
             # load matches q = m·k/n tokens), then mean-centered.
             if qb_on
-              rl_buf = zeros(nev * tv)
-              TinyNNCuda.tnn_download_to_f64_array(sess, tw.t_rlogits, rl_buf, nev * tv)
-              cutoffs = zeros(tv)
-              ti4 = 0
-              while ti4 < tv
-                best = -1.0e30
-                second = -1.0e30
-                ei4 = 0
-                while ei4 < nev
-                  v = rl_buf[ti4 * nev + ei4] + qb_bias[ei4]
-                  if v > best
-                    second = best
-                    best = v
-                  elsif v > second
-                    second = v
-                  end
-                  ei4 = ei4 + 1
+              # toy#147: run the estimator ONCE PER BLOCK, off that
+              # block's own logits and its own current bias. qb_bias
+              # keeps layer 0's values (the telemetry contract and the
+              # L=1 path); deeper blocks carry theirs in qb_bias_l.
+              lq = 0
+              while lq < n_layers
+                rl_buf = zeros(nev * tv)
+                TinyNNCuda.tnn_download_to_f64_array(sess, tw.t_rlogits_l[lq], rl_buf, nev * tv)
+                cur_b = zeros(nev)
+                cb = 0
+                while cb < nev
+                  cur_b[cb] = lq == 0 ? qb_bias[cb] : qb_bias_l[(lq - 1) * nev + cb]
+                  cb = cb + 1
                 end
-                cutoffs[ti4] = second
-                ti4 = ti4 + 1
-              end
-              qtarget = tv / nev
-              if qtarget < 1
-                qtarget = 1
-              end
-              nb_sum = 0.0
-              nb = zeros(nev)
-              ei4 = 0
-              while ei4 < nev
-                margins = zeros(tv)
+                cutoffs = zeros(tv)
                 ti4 = 0
                 while ti4 < tv
-                  margins[ti4] = rl_buf[ti4 * nev + ei4] - cutoffs[ti4]
+                  best = -1.0e30
+                  second = -1.0e30
+                  ei4 = 0
+                  while ei4 < nev
+                    v = rl_buf[ti4 * nev + ei4] + cur_b[ei4]
+                    if v > best
+                      second = best
+                      best = v
+                    elsif v > second
+                      second = v
+                    end
+                    ei4 = ei4 + 1
+                  end
+                  cutoffs[ti4] = second
                   ti4 = ti4 + 1
                 end
-                margins.sort!
-                # rank: exactly qtarget margins should exceed -b_j ->
-                # -b_j = the (qtarget+1)-th largest = margins[tv-qtarget-1]
-                idx4 = tv - qtarget - 1
-                if idx4 < 0
-                  idx4 = 0
+                qtarget = tv / nev
+                if qtarget < 1
+                  qtarget = 1
                 end
-                nb[ei4] = 0.0 - margins[idx4]
-                nb_sum = nb_sum + nb[ei4]
-                ei4 = ei4 + 1
+                nb_sum = 0.0
+                nb = zeros(nev)
+                ei4 = 0
+                while ei4 < nev
+                  margins = zeros(tv)
+                  ti4 = 0
+                  while ti4 < tv
+                    margins[ti4] = rl_buf[ti4 * nev + ei4] - cutoffs[ti4]
+                    ti4 = ti4 + 1
+                  end
+                  margins.sort!
+                  # rank: exactly qtarget margins should exceed -b_j ->
+                  # -b_j = the (qtarget+1)-th largest = margins[tv-qtarget-1]
+                  idx4 = tv - qtarget - 1
+                  if idx4 < 0
+                    idx4 = 0
+                  end
+                  nb[ei4] = 0.0 - margins[idx4]
+                  nb_sum = nb_sum + nb[ei4]
+                  ei4 = ei4 + 1
+                end
+                nb_mean = nb_sum / nev.to_f
+                out_b = zeros(nev)
+                ei4 = 0
+                while ei4 < nev
+                  out_b[ei4] = nb[ei4] - nb_mean
+                  ei4 = ei4 + 1
+                end
+                if lq == 0
+                  eo = 0
+                  while eo < nev
+                    qb_bias[eo] = out_b[eo]
+                    eo = eo + 1
+                  end
+                else
+                  eo = 0
+                  while eo < nev
+                    qb_bias_l[(lq - 1) * nev + eo] = out_b[eo]
+                    eo = eo + 1
+                  end
+                end
+                TinyNNCuda.tnn_upload_from_float_array(sess, tw.qb_biases[lq], out_b, nev)
+                lq = lq + 1
               end
-              nb_mean = nb_sum / nev.to_f
-              ei4 = 0
-              while ei4 < nev
-                qb_bias[ei4] = nb[ei4] - nb_mean
-                ei4 = ei4 + 1
-              end
-              TinyNNCuda.tnn_upload_from_float_array(sess, qb_bias_t, qb_bias, nev)
             end
             if events.length > 0
               re2 = Toy::Json::Builder.new
@@ -1678,6 +1792,13 @@ module Toy
             re.add_num("final_step", steps)
             re.add_raw("final_loss", num_or_null_cli(final_loss))
             re.add_raw("experts_sig", num_or_null_cli(experts_sig(sess, tw, nev, dmv, dfv)))
+            lsg2 = Toy::Json::Builder.new
+            lse = 0
+            while lse < n_layers
+              lsg2.add_raw("l" + lse.to_s, num_or_null_cli(layer_sig(sess, tw, lse)))
+              lse = lse + 1
+            end
+            re.add_obj("layer_sig", lsg2)
             re.add_raw("exit_code",  "0")
             TinyNNCuda.tnn_events_emit(re.dump)
             TinyNNCuda.tnn_events_close

@@ -485,6 +485,12 @@ module Toy
           # toy#146: per-layer optimizer hyper-parameters. EMPTY under the
           # uniform default, which is what makes that path byte-null —
           # hp_for falls straight through to the single shared vector.
+          # toy#147: per-layer router state. At depth each MoE block has
+          # its OWN router, so it needs its own gates/onehots/logits and
+          # its own aux term — one shared set only ever described the
+          # last block.
+          attr_accessor :t_gates_l, :t_onehots_l, :t_rlogits_l, :t_auxgates_l
+          attr_accessor :qb_biases   # toy#147: one QB bias per block's router
           attr_accessor :t_hps, :t_hps_sgd
           attr_accessor :dfa_grads, :dfa_accs, :dfa_names
 
@@ -511,6 +517,11 @@ module Toy
             @tap_h2s   = [np]; @tap_h2s.pop
             @tap_z     = np
             @tap_blk   = np
+            @qb_biases    = [np]; @qb_biases.pop
+            @t_gates_l    = [np]; @t_gates_l.pop
+            @t_onehots_l  = [np]; @t_onehots_l.pop
+            @t_rlogits_l  = [np]; @t_rlogits_l.pop
+            @t_auxgates_l = [np]; @t_auxgates_l.pop
             @t_hps     = [np]; @t_hps.pop
             @t_hps_sgd = [np]; @t_hps_sgd.pop
             @dfa_grads = [np]; @dfa_grads.pop
@@ -760,19 +771,54 @@ module Toy
           r_logits = TinyNN.tnn_matmul(sess, wr, h2)              # [NE, T]
           TinyNN.tnn_set_output(r_logits)
           tw.t_rlogits = r_logits
+          tw.t_rlogits_l.push(r_logits)
           probs    = TinyNN.tnn_softmax(sess, r_logits)
           TinyNN.tnn_set_output(probs)
           tw.t_gates = probs
+          tw.t_gates_l.push(probs)
+          # toy#147: QB biases the SELECTION, so each block's router
+          # needs its own — a shared bias would balance every block by
+          # the last one's load statistics.
+          qbb = qb_bias
+          if tw.qb_biases.length > l
+            qbb = tw.qb_biases[l]
+          end
           sel_scores = r_logits
-          if qb_bias != TinyNN.tnn_null_ptr
-            sel_scores = TinyNN.tnn_add(sess, r_logits, qb_bias)  # broadcast [NE,T]+[NE,1]
+          if qbb != TinyNN.tnn_null_ptr
+            sel_scores = TinyNN.tnn_add(sess, r_logits, qbb)  # broadcast [NE,T]+[NE,1]
           end
           ids   = TinyNN.tnn_argmax(sess, sel_scores)             # I32 [T]
           ids2  = TinyNN.tnn_reshape_3d(sess, ids, 1, tv, 1)       # [1, T]
           oneh  = TinyNN.tnn_get_rows(sess, eye, ids)             # [NE, T]
           TinyNN.tnn_set_output(oneh)
           tw.t_onehots = oneh
+          tw.t_onehots_l.push(oneh)
           gate  = TinyNN.tnn_sum_rows(sess, TinyNN.tnn_mul(sess, oneh, probs)) # [1,T]
+
+          # toy#147: the AUX gate stream for THIS block's router.
+          #
+          # Layer 0 reuses the forward `probs` outright, so at L=1 the
+          # graph is bit-identical to what shipped — nothing below layer
+          # 0 is a mul_mat_id, so nothing needs cutting and the aux
+          # gradient keeps reaching the attention block and embedding
+          # exactly as before.
+          #
+          # Layers >= 1 recompute the router logits from a DETACHED block
+          # input. The cut sits exactly at the mul_mat_id barrier and
+          # nowhere else: without it the aux root at layer l must reach
+          # params below it, and that path crosses the previous block's
+          # mul_mat_id, which has no ggml backward (toy#110) — that is
+          # the toy#145 abort. rn2 and Wr still receive their aux credit
+          # (they are above the cut); what is severed is only the aux
+          # loss pushing the REPRESENTATION of earlier blocks around,
+          # which at depth is not expressible at all rather than being a
+          # preference.
+          ag = probs
+          if l > 0
+            h2a = Toy::LLM::Primitives::RMSNorm.build(sess, TinyNN.tnn_detach(sess, t_x), rn2, EPS)
+            ag  = TinyNN.tnn_softmax(sess, TinyNN.tnn_matmul(sess, wr, h2a))
+          end
+          tw.t_auxgates_l.push(TinyNN.tnn_sum_rows(sess, TinyNN.tnn_mul(sess, oneh, ag)))
 
           # toy#128: stack the E experts by chained concat along dim 2
           # (E=2 == the original single concat pair).

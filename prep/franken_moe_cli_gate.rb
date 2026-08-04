@@ -715,6 +715,29 @@ failures << "lr-schedule: ramp-down does not change the curve" if dn_l == base
 # The two DIRECTIONS must differ from each other — same endpoints, opposite
 # assignment. If they matched, the interpolation would be ignoring depth.
 failures << "lr-schedule: ramp-up == ramp-down (direction is not reaching the layers)" if up_l == dn_l
+# STRUCTURAL direction proof, not a curve comparison. Tao's F9L probe
+# could not tell the directions apart because both arms had been driven
+# past the stability boundary, where the LOSS saturates near ln(vocab)
+# and stops discriminating. Per-layer weight movement still does: under
+# ramp-up the LAST block must move more than the FIRST, and under
+# ramp-down the reverse. This is the assertion that would actually catch
+# a symmetric or ignored layer ordering.
+%w[ramp-up ramp-down].each do |dir|
+  Dir.mktmpdir("moe_lrdir_#{dir}") do |dd|
+    run_cli(lg + %w[--moe-policy dfa-experts --lr-schedule] + [dir] + %w[--lr-lo 0.01 --lr-hi 0.1 --steps 20], {}, dd)
+    ev = File.readlines(File.join(dd, "events.jsonl")).map { |l| JSON.parse(l) }
+    s0 = ev.first.dig("franken_moe", "layer_sig") || {}
+    s1 = ev.last["layer_sig"] || {}
+    mv = (0...6).map { |i| ((s1["l#{i}"] || 0) - (s0["l#{i}"] || 0)).abs }
+    if mv.any? { |v| v.nil? }
+      failures << "lr-schedule: layer_sig missing for #{dir}"
+    elsif dir == "ramp-up"
+      failures << "lr-schedule: ramp-up did not move the LAST block more than the first (#{mv.first.round(1)} vs #{mv.last.round(1)})" unless mv.last > mv.first
+    else
+      failures << "lr-schedule: ramp-down did not move the FIRST block more than the last (#{mv.first.round(1)} vs #{mv.last.round(1)})" unless mv.first > mv.last
+    end
+  end
+end
 failures << "lr-schedule: not deterministic" unless losses(run_cli(lg + %w[--moe-policy dfa-experts] + ramp, {}, nil)) == up_l
 failures << "lr-schedule: NaN" if (up_l + dn_l).map(&:to_f).any?(&:nan?)
 Dir.mktmpdir("moe_lrs") do |dir|
@@ -764,12 +787,29 @@ end
 _o1, st1 = Open3.capture2e(CLEAN, TOY, "train", "franken-moe", "--steps", "1",
                            "--lr-schedule", "ramp-up", "--lr-lo", "0.005", "--lr-hi", "0.05", chdir: ROOT)
 failures << "lr-schedule: ramp at L=1 not rejected" if st1.success?
-# toy#145 fallout, caught by this ticket's genericity sweep: top1 at depth
-# walks the router credit back through an earlier mul_mat_id.
-_o2, st2 = Open3.capture2e(CLEAN, TOY, "train", "franken-moe", "--steps", "1",
-                           "--shape", "deep", "--routing", "top1", chdir: ROOT)
-failures << "deep: top1 without bp-spine not rejected (it aborts in ggml)" if st2.success?
-puts failures.length == n0 ? "  ok: --lr-schedule ramp-up/ramp-down — uniform byte-null, both directions move the curve and differ, endpoints exact + monotonic in provenance; GENERIC across chain/block-dfa/muon/sgd/top1/latent; 5 guards reject" : "  FAIL: lr-schedule leg"
+# toy#147: top1 at depth used to abort (the toy#145 regression); the
+# per-layer aux root fixed it. Pinned here as the POSITIVE contract, in
+# every balance mode, so it cannot silently regress into a crash again.
+%w[plain aux qb].each do |mode|
+  args = %w[--steps 4 --seed 0 --shape deep --experts 4 --context 16
+            --corpus data/fineweb_gpt2_smoke.bin --routing top1]
+  args += %w[--moe-aux 0.05] if mode == "aux"
+  args += %w[--moe-balance qb] if mode == "qb"
+  out = losses(run_cli(args, {}, nil))
+  failures << "deep-top1(#{mode}): did not run at L=6" if out.empty?
+  failures << "deep-top1(#{mode}): NaN" if out.map(&:to_f).any?(&:nan?)
+  failures << "deep-top1(#{mode}): not deterministic" unless losses(run_cli(args, {}, nil)) == out
+end
+# ...and the per-layer balancing machinery must be LIVE at depth, not
+# inert: switching each balance mode on has to change the curve. An
+# aux/QB path that quietly balanced only the last block would still
+# "run", which is exactly what this leg exists to rule out.
+dt = %w[--steps 4 --seed 0 --shape deep --experts 4 --context 16
+        --corpus data/fineweb_gpt2_smoke.bin --routing top1]
+plain_l = losses(run_cli(dt, {}, nil))
+failures << "deep-top1: --moe-aux has no effect at depth" if losses(run_cli(dt + %w[--moe-aux 0.05], {}, nil)) == plain_l
+failures << "deep-top1: --moe-balance qb has no effect at depth" if losses(run_cli(dt + %w[--moe-balance qb], {}, nil)) == plain_l
+puts failures.length == n0 ? "  ok: --lr-schedule ramp-up/ramp-down — uniform byte-null, both directions move the curve and differ, endpoints exact + monotonic in provenance, and the PER-LAYER WEIGHT MOVEMENT mirrors the LR profile (ramp-up moves the last block most, ramp-down the first) — direction proven structurally, not by curve; GENERIC across chain/block-dfa/muon/sgd/top1/latent; 5 guards reject" : "  FAIL: lr-schedule leg"
 
 # ---- toy#145: --shape deep — the DEPTH lever for block-DFA ----
 # The tower is now L repeats of (attention + MoE) rather than one of
@@ -994,7 +1034,7 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
 end
 
 if failures.empty?
-  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule/attn-gate (toy#136) + optimizer (toy#139) + donor (toy#140) + freeze-experts (toy#141) + latent-moe (toy#142) + block-dfa (toy#143) + situ-glu experts (K4b/M6) + shape-deep (toy#145) + lr-schedule (toy#146) + bundle (toy#120/#121)"
+  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule/attn-gate (toy#136) + optimizer (toy#139) + donor (toy#140) + freeze-experts (toy#141) + latent-moe (toy#142) + block-dfa (toy#143) + situ-glu experts (K4b/M6) + shape-deep (toy#145) + lr-schedule (toy#146) + deep-top1 per-layer routers (toy#147) + bundle (toy#120/#121)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe-cli]: #{f}" }
