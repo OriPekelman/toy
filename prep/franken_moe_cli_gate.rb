@@ -787,6 +787,7 @@ end
 _o1, st1 = Open3.capture2e(CLEAN, TOY, "train", "franken-moe", "--steps", "1",
                            "--lr-schedule", "ramp-up", "--lr-lo", "0.005", "--lr-hi", "0.05", chdir: ROOT)
 failures << "lr-schedule: ramp at L=1 not rejected" if st1.success?
+
 # toy#147: top1 at depth used to abort (the toy#145 regression); the
 # per-layer aux root fixed it. Pinned here as the POSITIVE contract, in
 # every balance mode, so it cannot silently regress into a crash again.
@@ -810,6 +811,152 @@ plain_l = losses(run_cli(dt, {}, nil))
 failures << "deep-top1: --moe-aux has no effect at depth" if losses(run_cli(dt + %w[--moe-aux 0.05], {}, nil)) == plain_l
 failures << "deep-top1: --moe-balance qb has no effect at depth" if losses(run_cli(dt + %w[--moe-balance qb], {}, nil)) == plain_l
 puts failures.length == n0 ? "  ok: --lr-schedule ramp-up/ramp-down — uniform byte-null, both directions move the curve and differ, endpoints exact + monotonic in provenance, and the PER-LAYER WEIGHT MOVEMENT mirrors the LR profile (ramp-up moves the last block most, ramp-down the first) — direction proven structurally, not by curve; GENERIC across chain/block-dfa/muon/sgd/top1/latent; 5 guards reject" : "  FAIL: lr-schedule leg"
+
+# ---- toy#148: --lr-control reactive (the loss-reactive LR damper) ----
+# toy#146 is the static per-layer SHAPE; this is the dynamic global
+# SCALE. Composition is lr_t x lr_mul[l] x ctrl_t, and the legs below
+# pin that identity rather than inferring it from a curve.
+#
+# WHY THE DAMPING CLAIM IS GATED ON WEIGHT MOVEMENT, NOT ON THE LOSS.
+# The ticket asks for "the controlled back-half is provably damped".
+# Measured at gate shape, back-half loss VARIANCE only falls to ~0.87x
+# even with the damper pinned at its floor — because the corpus feed
+# rotates a fresh window every step, so most of the loss variance is
+# data sampling noise the LR cannot touch. Gating on that would be a
+# 13%-margin single-seed assertion, i.e. a flaky gate dressed up as a
+# result. Per-block WEIGHT MOVEMENT is the same quantity the damper
+# actually controls, it is deterministic, and it falls to ~0.11x. That
+# is the F9L/toy#146 lesson applied again: when the loss saturates or
+# is noise-dominated, assert on the structure it failed to discriminate.
+n0 = failures.length
+cg = %w[--steps 40 --seed 0 --shape deep --experts 4 --context 16
+        --corpus data/fineweb_gpt2_smoke.bin --moe-policy dfa-experts
+        --dfa-granularity block --lr 0.08]
+ctl = %w[--lr-control reactive --lr-control-window 3 --lr-control-patience 1
+         --lr-control-factor 0.3 --lr-control-recover 1.0 --lr-control-floor 0.02]
+# short config for the cheap curve legs
+sg = %w[--steps 12 --seed 0 --shape deep --experts 4 --context 16
+        --corpus data/fineweb_gpt2_smoke.bin --moe-policy dfa-experts --lr 0.05]
+sctl = %w[--lr-control reactive --lr-control-window 2 --lr-control-patience 1
+          --lr-control-factor 0.5]
+
+# FLAG-NULL: an explicit `none` must be byte-identical to absent. ctrl
+# is a literal 1.0 and lr_t * 1.0 is bit-exact, so this is a property of
+# the construction — pinned so a later refactor cannot quietly break it.
+cbase = losses(run_cli(sg, {}, nil))
+failures << "lr-control: explicit none differs from the default (byte-null broken)" unless
+  losses(run_cli(sg + %w[--lr-control none], {}, nil)) == cbase
+creact = losses(run_cli(sg + sctl, {}, nil))
+failures << "lr-control: reactive does not change the curve" if creact == cbase
+failures << "lr-control: not deterministic" unless losses(run_cli(sg + sctl, {}, nil)) == creact
+failures << "lr-control: NaN" if creact.map(&:to_f).any?(&:nan?)
+
+# The two 40-step arms carry every structural assertion below.
+Dir.mktmpdir("moe_ctl_u") do |du|
+  Dir.mktmpdir("moe_ctl_c") do |dc|
+    run_cli(cg, {}, du)
+    run_cli(cg + ctl, {}, dc)
+    eu = File.readlines(File.join(du, "events.jsonl")).map { |l| JSON.parse(l) }
+    ec = File.readlines(File.join(dc, "events.jsonl")).map { |l| JSON.parse(l) }
+    su = eu.select { |e| e["kind"] == "step" }
+    sc = ec.select { |e| e["kind"] == "step" }
+
+    # TELEMETRY: ctrl and lr_eff on every step, in BOTH arms (an
+    # uncontrolled run reporting ctrl=1.0 is what makes the two
+    # directly comparable).
+    failures << "lr-control: ctrl missing from step events" unless
+      sc.length == 40 && sc.all? { |e| e.key?("ctrl") && e.key?("lr_eff") }
+    failures << "lr-control: uncontrolled arm does not report ctrl=1.0" unless
+      su.all? { |e| e["ctrl"] == 1.0 }
+    # THE COMPOSITION IDENTITY — this is what proves the damper reaches
+    # the optimizer rather than merely being reported.
+    failures << "lr-control: lr_eff != lr * ctrl (the damper is not composing)" unless
+      sc.all? { |e| (e["lr_eff"] - e["lr"] * e["ctrl"]).abs < 1e-12 }
+    # THE DAMPER FIRES, and the floor is respected.
+    ctrls = sc.map { |e| e["ctrl"] }
+    failures << "lr-control: ctrl never dropped below 1.0 (the damper did not fire)" unless
+      ctrls.min < 1.0
+    failures << "lr-control: ctrl punched through the floor (#{ctrls.min} < 0.02)" if ctrls.min < 0.02 - 1e-12
+    failures << "lr-control: ctrl exceeded 1.0 (#{ctrls.max})" if ctrls.max > 1.0 + 1e-12
+    re = ec.last
+    failures << "lr-control: run_end lr_ctrl_cuts not positive (#{re['lr_ctrl_cuts'].inspect})" unless
+      re["lr_ctrl_cuts"].to_i > 0
+    failures << "lr-control: run_end lr_ctrl_final disagrees with the step stream" unless
+      re["lr_ctrl_final"] && (re["lr_ctrl_final"] - ctrls.last).abs < 1e-9
+
+    # DAMPED, structurally: the controlled arm moves its weights strictly
+    # less. Threshold 0.5 against a measured 0.11 — a real margin, not a
+    # coin flip. Deliberately NOT an assertion about the final loss: the
+    # gate must not assume F9M's science outcome.
+    mv = lambda do |ev|
+      s0 = ev.first.dig("franken_moe", "layer_sig") || {}
+      s1 = ev.last["layer_sig"] || {}
+      (0...6).map { |i| ((s1["l#{i}"] || 0) - (s0["l#{i}"] || 0)).abs }
+    end
+    mu = mv.call(eu)
+    mc = mv.call(ec)
+    if mu.sum <= 0
+      failures << "lr-control: uncontrolled arm did not move (layer_sig flat) — the comparison is void"
+    else
+      ratio = mc.sum / mu.sum
+      failures << "lr-control: damper did not shrink weight movement (ratio #{ratio.round(3)}, want < 0.5)" unless ratio < 0.5
+    end
+
+    # PROVENANCE: mode + every constant, so a bundle says which
+    # controller ran without re-reading the runner.
+    fm = ec.first["franken_moe"]
+    failures << "lr-control: provenance mode #{fm['lr_control'].inspect}" unless fm["lr_control"] == "reactive"
+    { "lr_control_window" => 3, "lr_control_patience" => 1, "lr_control_factor" => 0.3,
+      "lr_control_recover" => 1.0, "lr_control_floor" => 0.02 }.each do |k, want|
+      failures << "lr-control: provenance #{k} = #{fm[k].inspect} (want #{want})" unless
+        fm[k] && (fm[k] - want).abs < 1e-12
+    end
+    # window=3 -> alpha=2/4; recorded so "window" is not left ambiguous.
+    failures << "lr-control: provenance lr_control_alpha #{fm['lr_control_alpha'].inspect}" unless
+      fm["lr_control_alpha"] && (fm["lr_control_alpha"] - 0.5).abs < 1e-12
+    failures << "lr-control: uncontrolled arm provenance is not 'none'" unless
+      eu.first.dig("franken_moe", "lr_control") == "none"
+  end
+end
+
+# GENERICITY, same argument as toy#146: the damper multiplies lr_t at
+# the same funnel, so every lane and every optimizer must see it —
+# including the toy#146 ramp it is designed to compose with.
+[["chain",     %w[--moe-policy chain]],
+ ["block-dfa", %w[--moe-policy dfa-experts --dfa-granularity block]],
+ ["muon",      %w[--moe-policy dfa-experts --optimizer muon]],
+ ["sgd",       %w[--moe-policy dfa-experts --optimizer sgd]],
+ ["top1",      %w[--routing top1 --moe-policy bp-spine]],
+ ["latent",    %w[--moe-policy dfa-experts --moe-latent --expert-act situ-glu]],
+ ["ramp-down", %w[--moe-policy dfa-experts --lr-schedule ramp-down --lr-lo 0.005 --lr-hi 0.05]]].each do |name, lane|
+  bl = %w[--steps 12 --seed 0 --shape deep --experts 4 --context 16
+          --corpus data/fineweb_gpt2_smoke.bin --lr 0.05] + lane
+  b = losses(run_cli(bl, {}, nil))
+  r = losses(run_cli(bl + sctl, {}, nil))
+  failures << "lr-control: no effect on the #{name} lane (the damper is not generic)" if r.empty? || b == r
+end
+
+# Guards, all fail-loud. A factor of 2.0 ("double the LR") silently
+# doing the opposite of a damper is the exact class this prevents.
+[[%w[--lr-control-window 50], "controller params without --lr-control reactive"],
+ [%w[--lr-control none --lr-control-factor 0.5], "controller params with an explicit none"],
+ [%w[--lr-control aggressive], "unknown --lr-control value"],
+ [%w[--lr-control reactive --lr-control-factor 2.0], "factor >= 1 (not a cut)"],
+ [%w[--lr-control reactive --lr-control-factor 0], "factor 0"],
+ [%w[--lr-control reactive --lr-control-recover 0.9], "recover < 1 (not a restore)"],
+ [%w[--lr-control reactive --lr-control-floor 1.5], "floor > 1"],
+ [%w[--lr-control reactive --lr-control-floor 0], "floor 0"],
+ [%w[--lr-control reactive --lr-control-window 0], "window 0"],
+ [%w[--lr-control reactive --lr-control-patience 0], "patience 0"]].each do |extra, what|
+  _o, st = Open3.capture2e(CLEAN, TOY, "train", "franken-moe", "--steps", "1",
+                           "--shape", "deep", *extra, chdir: ROOT)
+  failures << "lr-control: #{what} not rejected" if st.success?
+end
+# recipe scoping: franken-moe only.
+_o2, st2 = Open3.capture2e(CLEAN, TOY, "train", "franken", "--steps", "1",
+                           "--lr-control", "reactive", chdir: ROOT)
+failures << "lr-control: accepted on the 'franken' recipe" if st2.success?
+puts failures.length == n0 ? "  ok: --lr-control reactive — damper fires, floor held, lr_eff == lr x ctrl, weight movement damped ~9x, generic across lanes, provenance + run_end, guards fail loud" : "  FAIL: lr-control leg"
 
 # ---- toy#145: --shape deep — the DEPTH lever for block-DFA ----
 # The tower is now L repeats of (attention + MoE) rather than one of
@@ -1034,7 +1181,7 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
 end
 
 if failures.empty?
-  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule/attn-gate (toy#136) + optimizer (toy#139) + donor (toy#140) + freeze-experts (toy#141) + latent-moe (toy#142) + block-dfa (toy#143) + situ-glu experts (K4b/M6) + shape-deep (toy#145) + lr-schedule (toy#146) + deep-top1 per-layer routers (toy#147) + bundle (toy#120/#121)"
+  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule/attn-gate (toy#136) + optimizer (toy#139) + donor (toy#140) + freeze-experts (toy#141) + latent-moe (toy#142) + block-dfa (toy#143) + situ-glu experts (K4b/M6) + shape-deep (toy#145) + lr-schedule (toy#146) + deep-top1 per-layer routers (toy#147) + lr-control reactive (toy#148) + bundle (toy#120/#121)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe-cli]: #{f}" }

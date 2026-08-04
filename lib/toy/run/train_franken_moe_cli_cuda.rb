@@ -304,6 +304,66 @@ module Toy
             puts "toy-train-franken-moe-cuda: --lr-lo/--lr-hi need --lr-schedule ramp-up or ramp-down"
             return 1
           end
+          # toy#148: the loss-REACTIVE LR damper. Where toy#146 is a
+          # static per-layer SHAPE, this is the dynamic global SCALE:
+          # one scalar ctrl_t that composes multiplicatively with both
+          # (final per-layer LR = lr_t x lr_mul[l] x ctrl_t). The two
+          # levers are deliberately orthogonal — F9L localized the
+          # block-DFA overshoot to the LATE blocks (ramp-down wins), so
+          # the profile is the ramp's job and the damper only decides
+          # how hard to drive it. Deterministic: no RNG, and the signal
+          # is the loss the run already computes.
+          lrc_s = ENV["FRANKEN_LR_CONTROL"] || ""
+          if lrc_s.length > 0 && lrc_s != "none" && lrc_s != "reactive"
+            puts "toy-train-franken-moe-cuda: FRANKEN_LR_CONTROL " + lrc_s + " unsupported (none|reactive)"
+            return 1
+          end
+          ctrl_on = lrc_s == "reactive"
+          lrcw_s = ENV["FRANKEN_LR_CONTROL_WINDOW"]   || ""
+          lrcp_s = ENV["FRANKEN_LR_CONTROL_PATIENCE"] || ""
+          lrcf_s = ENV["FRANKEN_LR_CONTROL_FACTOR"]   || ""
+          lrcr_s = ENV["FRANKEN_LR_CONTROL_RECOVER"]  || ""
+          lrcx_s = ENV["FRANKEN_LR_CONTROL_FLOOR"]    || ""
+          if !ctrl_on && (lrcw_s.length > 0 || lrcp_s.length > 0 || lrcf_s.length > 0 ||
+                          lrcr_s.length > 0 || lrcx_s.length > 0)
+            puts "toy-train-franken-moe-cuda: --lr-control-window/-patience/-factor/-recover/-floor need --lr-control reactive"
+            return 1
+          end
+          # Unlike --lr-lo/--lr-hi (a data-dependent RANGE, which is why
+          # the ramp refuses to invent one), these are controller
+          # constants with conventional values. They default, and every
+          # one of them is recorded in provenance so a bundle still says
+          # exactly which controller ran.
+          ctrl_window   = lrcw_s.length > 0 ? lrcw_s.to_i : 50
+          ctrl_patience = lrcp_s.length > 0 ? lrcp_s.to_i : 100
+          ctrl_factor   = lrcf_s.length > 0 ? lrcf_s.to_f : 0.5
+          ctrl_recover  = lrcr_s.length > 0 ? lrcr_s.to_f : 1.002
+          ctrl_floor    = lrcx_s.length > 0 ? lrcx_s.to_f : 0.05
+          if ctrl_on
+            if ctrl_window < 1
+              puts "toy-train-franken-moe-cuda: --lr-control-window must be >= 1"
+              return 1
+            end
+            if ctrl_patience < 1
+              puts "toy-train-franken-moe-cuda: --lr-control-patience must be >= 1"
+              return 1
+            end
+            if ctrl_factor <= 0.0 || ctrl_factor >= 1.0
+              puts "toy-train-franken-moe-cuda: --lr-control-factor must be in (0, 1) — it is a CUT"
+              return 1
+            end
+            if ctrl_recover < 1.0
+              puts "toy-train-franken-moe-cuda: --lr-control-recover must be >= 1.0 — it restores toward 1.0"
+              return 1
+            end
+            if ctrl_floor <= 0.0 || ctrl_floor > 1.0
+              puts "toy-train-franken-moe-cuda: --lr-control-floor must be in (0, 1]"
+              return 1
+            end
+          end
+          # standard N-period EMA weight. Stated here rather than left to
+          # be re-derived from "window": window=50 means alpha=2/51.
+          ctrl_alpha = 2.0 / (ctrl_window.to_f + 1.0)
           ns_s = ENV["FRANKEN_MOE_SHARED"] || ""
           n_shared = ns_s.length > 0 ? ns_s.to_i : 0
           if n_shared < 0
@@ -1314,6 +1374,16 @@ module Toy
                 lvi = lvi + 1
               end
               fm.add_obj("lr_per_layer", lrv)
+              # toy#148. The params are recorded even when the damper is
+              # off — inert, but it makes a bundle self-describing, and
+              # `lr_control` is the field that says whether they acted.
+              fm.add_str("lr_control", ctrl_on ? "reactive" : "none")
+              fm.add_num("lr_control_window",   ctrl_window)
+              fm.add_num("lr_control_patience", ctrl_patience)
+              fm.add_num("lr_control_factor",   ctrl_factor)
+              fm.add_num("lr_control_recover",  ctrl_recover)
+              fm.add_num("lr_control_floor",    ctrl_floor)
+              fm.add_num("lr_control_alpha",    ctrl_alpha)
               fm.add_num("latent_dim", lat_w)
               fm.add_num("shared_experts", n_shared)
               fm.add_str("dfa_granularity", block_dfa ? "block" : "matmul")
@@ -1369,6 +1439,16 @@ module Toy
           aux_buf = zeros(1)
           b1 = 0.9; b2 = 0.95
           final_loss = 0.0
+          # toy#148 controller state. ctrl stays EXACTLY 1.0 when the
+          # damper is off, and lr_t * 1.0 is bit-identical to lr_t for
+          # every finite lr_t — that is the byte-null, by construction
+          # rather than by a branch that could drift.
+          ctrl      = 1.0
+          ctrl_bar  = 0.0   # EMA of the step loss
+          ctrl_best = 0.0
+          ctrl_wait = 0
+          ctrl_n    = 0     # observations so far (0 = EMA not yet seeded)
+          ctrl_cuts = 0
           s = 0
           while s < steps
             if s == 0
@@ -1387,7 +1467,12 @@ module Toy
               min_lr = lr * 0.1
               lr_t = min_lr + 0.5 * (lr - min_lr) * (1.0 + Math.cos(3.141592653589793 * prog))
             end
-            hp = [lr_t, b1, b2, 1.0e-8, 0.0,
+            # toy#148: the damper's scalar, applied to whatever the step
+            # schedule produced. It multiplies BEFORE the per-layer ramp
+            # so the composition is lr_t x lr_mul[l] x ctrl_t, i.e. the
+            # damper changes the SCALE and the ramp keeps the SHAPE.
+            lr_eff = lr_t * ctrl
+            hp = [lr_eff, b1, b2, 1.0e-8, 0.0,
                   1.0 / (1.0 - (b1 ** t)), 1.0 / (1.0 - (b2 ** t))]
             if corpus_s.length > 0
               # rotating-window stream: restart at 0 BEFORE the window
@@ -1427,7 +1512,7 @@ module Toy
               TinyNNCuda.tnn_upload_from_float_array(sess, t_hp, hp, 7)
             end
             if opt_code != 0
-              hp_sgd = [lr_t, 0.0]
+              hp_sgd = [lr_eff, 0.0]
               TinyNNCuda.tnn_upload_from_float_array(sess, t_hp_sgd, hp_sgd, 2)
             end
             # toy#146: the same step-schedule LR, scaled per layer. The
@@ -1439,12 +1524,12 @@ module Toy
               lpi = 0
               while lpi < n_layers
                 if opt_code != 2
-                  hp_l = [lr_t * lr_mul[lpi], b1, b2, 1.0e-8, 0.0,
+                  hp_l = [lr_eff * lr_mul[lpi], b1, b2, 1.0e-8, 0.0,
                           1.0 / (1.0 - (b1 ** t)), 1.0 / (1.0 - (b2 ** t))]
                   TinyNNCuda.tnn_upload_from_float_array(sess, tw.t_hps[lpi], hp_l, 7)
                 end
                 if opt_code != 0
-                  hp_ls = [lr_t * lr_mul[lpi], 0.0]
+                  hp_ls = [lr_eff * lr_mul[lpi], 0.0]
                   TinyNNCuda.tnn_upload_from_float_array(sess, tw.t_hps_sgd[lpi], hp_ls, 2)
                 end
                 lpi = lpi + 1
@@ -1459,6 +1544,43 @@ module Toy
             final_loss = loss
             puts "step " + (s + 1).to_s + ": loss=" + loss.to_s
 
+            # toy#148: the damper reacts to the loss it just observed, so
+            # ctrl_used is the multiplier that ACTED on this step and the
+            # update below is what the NEXT step will get. Keeping the
+            # applied value in its own local means a later event inserted
+            # above cannot silently start reporting the wrong one.
+            ctrl_used = ctrl
+            if ctrl_on
+              if ctrl_n == 0
+                ctrl_bar  = loss
+                ctrl_best = loss
+              else
+                ctrl_bar = ctrl_bar + ctrl_alpha * (loss - ctrl_bar)
+              end
+              ctrl_n = ctrl_n + 1
+              if ctrl_bar < ctrl_best
+                # improving: give the LR back, slowly, never past 1.0.
+                ctrl_best = ctrl_bar
+                ctrl_wait = 0
+                ctrl = ctrl * ctrl_recover
+                if ctrl > 1.0
+                  ctrl = 1.0
+                end
+              else
+                ctrl_wait = ctrl_wait + 1
+                if ctrl_wait >= ctrl_patience
+                  # the orbit is leaving the basin: cut the step.
+                  ctrl = ctrl * ctrl_factor
+                  if ctrl < ctrl_floor
+                    ctrl = ctrl_floor
+                  end
+                  ctrl_wait = 0
+                  ctrl_best = ctrl_bar
+                  ctrl_cuts = ctrl_cuts + 1
+                end
+              end
+            end
+
             if events.length > 0
               es = Toy::Json::Builder.new
               es.add_str("kind",  "step")
@@ -1466,7 +1588,13 @@ module Toy
               es.add_num("t",     TinyNNCuda.tnn_events_now_seconds)
               es.add_num("step",  s + 1)
               es.add_raw("loss",  num_or_null_cli(loss))
+              # `lr` stays the SCHEDULE LR so a damped curve is still
+              # directly comparable to its uncontrolled twin; `ctrl` is
+              # the damper's factor and `lr_eff` the product actually
+              # handed to the optimizer (x lr_mul[l] if the ramp is on).
               es.add_raw("lr",    lr_t.to_s)
+              es.add_raw("ctrl",  ctrl_used.to_s)
+              es.add_raw("lr_eff", lr_eff.to_s)
               TinyNNCuda.tnn_events_emit(es.dump)
             end
 
@@ -1799,6 +1927,11 @@ module Toy
               lse = lse + 1
             end
             re.add_obj("layer_sig", lsg2)
+            # toy#148: where the damper ended up, and how many times it
+            # fired. A run whose ctrl never left 1.0 said so here rather
+            # than leaving it to be reconstructed from the step stream.
+            re.add_raw("lr_ctrl_final", ctrl.to_s)
+            re.add_num("lr_ctrl_cuts",  ctrl_cuts)
             re.add_raw("exit_code",  "0")
             TinyNNCuda.tnn_events_emit(re.dump)
             TinyNNCuda.tnn_events_close

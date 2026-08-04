@@ -144,6 +144,12 @@ module Toy
           @lr_schedule  = nil   # franken-moe: uniform | ramp-up | ramp-down (toy#146)
           @lr_lo        = nil   # franken-moe: ramp endpoint, layer 0 side
           @lr_hi        = nil   # franken-moe: ramp endpoint, last layer side
+          @lr_control   = nil   # franken-moe: none | reactive (toy#148)
+          @lr_control_window   = nil # EMA window for the smoothed loss
+          @lr_control_patience = nil # non-improving steps before a cut
+          @lr_control_factor   = nil # cut multiplier, 0 < F < 1
+          @lr_control_recover  = nil # per-step restore toward 1.0, R >= 1
+          @lr_control_floor    = nil # min ctrl, 0 < X <= 1
           @shape        = nil   # franken/franken-moe: preset (toy#124)
           @routing    = nil   # franken-moe: dense | top1
           @moe_policy = nil   # franken-moe: chain | dfa-experts
@@ -313,6 +319,12 @@ module Toy
                              "FRANKEN_LR_SCHEDULE" => (@lr_schedule || ""),
                              "FRANKEN_LR_LO" => (@lr_lo ? @lr_lo.to_s : ""),
                              "FRANKEN_LR_HI" => (@lr_hi ? @lr_hi.to_s : ""),
+                             "FRANKEN_LR_CONTROL" => (@lr_control || ""),
+                             "FRANKEN_LR_CONTROL_WINDOW"   => (@lr_control_window   ? @lr_control_window.to_s   : ""),
+                             "FRANKEN_LR_CONTROL_PATIENCE" => (@lr_control_patience ? @lr_control_patience.to_s : ""),
+                             "FRANKEN_LR_CONTROL_FACTOR"   => (@lr_control_factor   ? @lr_control_factor.to_s   : ""),
+                             "FRANKEN_LR_CONTROL_RECOVER"  => (@lr_control_recover  ? @lr_control_recover.to_s  : ""),
+                             "FRANKEN_LR_CONTROL_FLOOR"    => (@lr_control_floor    ? @lr_control_floor.to_s    : ""),
                              "FRANKEN_MOE_SHARED"  => (@moe_shared || 0).to_s,
                              "FRANKEN_ATTN_GATE"   => (@attn_gate ? "1" : ""),
                              "FRANKEN_CKPT_EVERY"  => (@ckpt_every || 0).to_s,
@@ -518,6 +530,63 @@ module Toy
               val = $2
               return bad_arg("--lr-#{key} must be a positive float, got #{val.inspect}") unless val =~ /\A\d*\.?\d+\z/ && val.to_f > 0.0
               key == "lo" ? @lr_lo = val.to_f : @lr_hi = val.to_f
+            when "--lr-control"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--lr-control requires a value") if val.nil?
+              return bad_arg("--lr-control must be none or reactive, got #{val.inspect}") unless %w[none reactive].include?(val)
+              @lr_control = val
+            when /\A--lr-control=(.*)\z/
+              val = $1
+              return bad_arg("--lr-control must be none or reactive, got #{val.inspect}") unless %w[none reactive].include?(val)
+              @lr_control = val
+            # toy#148 controller constants. Ranges are checked HERE as
+            # well as in the runner: the CLI is the surface most people
+            # touch, and a factor of 2.0 ("double the LR") silently doing
+            # the opposite of a damper is exactly the class of quiet
+            # wrongness the gates exist to prevent.
+            when "--lr-control-window", "--lr-control-patience"
+              key = @argv[i]
+              i += 1
+              val = @argv[i]
+              return bad_arg("#{key} requires a value") if val.nil?
+              return bad_arg("#{key} must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= 1
+              key == "--lr-control-window" ? @lr_control_window = val.to_i : @lr_control_patience = val.to_i
+            when /\A--lr-control-(window|patience)=(.*)\z/
+              key = $1
+              val = $2
+              return bad_arg("--lr-control-#{key} must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= 1
+              key == "window" ? @lr_control_window = val.to_i : @lr_control_patience = val.to_i
+            when "--lr-control-factor"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--lr-control-factor requires a value") if val.nil?
+              return bad_arg("--lr-control-factor must be a float in (0, 1) — it is a CUT, got #{val.inspect}") unless val =~ /\A\d*\.?\d+\z/ && val.to_f > 0.0 && val.to_f < 1.0
+              @lr_control_factor = val.to_f
+            when /\A--lr-control-factor=(.*)\z/
+              val = $1
+              return bad_arg("--lr-control-factor must be a float in (0, 1) — it is a CUT, got #{val.inspect}") unless val =~ /\A\d*\.?\d+\z/ && val.to_f > 0.0 && val.to_f < 1.0
+              @lr_control_factor = val.to_f
+            when "--lr-control-recover"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--lr-control-recover requires a value") if val.nil?
+              return bad_arg("--lr-control-recover must be a float >= 1.0 — it restores toward 1.0, got #{val.inspect}") unless val =~ /\A\d*\.?\d+\z/ && val.to_f >= 1.0
+              @lr_control_recover = val.to_f
+            when /\A--lr-control-recover=(.*)\z/
+              val = $1
+              return bad_arg("--lr-control-recover must be a float >= 1.0 — it restores toward 1.0, got #{val.inspect}") unless val =~ /\A\d*\.?\d+\z/ && val.to_f >= 1.0
+              @lr_control_recover = val.to_f
+            when "--lr-control-floor"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--lr-control-floor requires a value") if val.nil?
+              return bad_arg("--lr-control-floor must be a float in (0, 1], got #{val.inspect}") unless val =~ /\A\d*\.?\d+\z/ && val.to_f > 0.0 && val.to_f <= 1.0
+              @lr_control_floor = val.to_f
+            when /\A--lr-control-floor=(.*)\z/
+              val = $1
+              return bad_arg("--lr-control-floor must be a float in (0, 1], got #{val.inspect}") unless val =~ /\A\d*\.?\d+\z/ && val.to_f > 0.0 && val.to_f <= 1.0
+              @lr_control_floor = val.to_f
             when "--expert-act"
               i += 1
               val = @argv[i]
@@ -888,6 +957,7 @@ module Toy
             ["--dfa-granularity", %w[franken-moe],                   !@dfa_granularity.nil?, " (toy#143)"],
             ["--expert-act", %w[franken-moe],                        !@expert_act.nil?, " (K4b/M6)"],
             ["--lr-schedule/--lr-lo/--lr-hi", %w[franken-moe],       (!@lr_schedule.nil? || !@lr_lo.nil? || !@lr_hi.nil?), " (toy#146)"],
+            ["--lr-control/--lr-control-*", %w[franken-moe],         (!@lr_control.nil? || !@lr_control_window.nil? || !@lr_control_patience.nil? || !@lr_control_factor.nil? || !@lr_control_recover.nil? || !@lr_control_floor.nil?), " (toy#148)"],
             ["--ckpt-every",    %w[franken franken-moe],            !@ckpt_every.nil?, " (toy#129/#131)"],
             ["--load-ckpt",     %w[franken-moe],                    !@load_ckpt.nil?, " (toy#131; eval-only — pass --steps 0 + --eval-corpus)"],
             ["--eval-corpus/--eval-tokens/--eval-offset", %w[franken-moe], (!@eval_corpus.nil? || !@eval_tokens.nil? || !@eval_offset.nil?), " (toy#130; the llama lane evals checkpoints offline via `toy eval ce`)"],
