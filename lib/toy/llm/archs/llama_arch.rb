@@ -89,6 +89,11 @@ module Toy; module LLM; module Archs
                   # K-series M2: the parallel Gated-MLA array, same
                   # one-concrete-class-per-arm discipline.
                   :seq_mla_blocks_ffi,
+                  # K-series M10 (MTP): one extra block mirroring a
+                  # backbone layer, its input projection, the next-token
+                  # id input it embeds, and the t+2 logits it produces.
+                  :seq_mtp_on, :seq_mtp_block, :t_seq_mtp_proj,
+                  :t_seq_mtp_tok, :t_seq_mtp_logits,
                   # Orchestration-gating carriers — bare cache ivars with
                   # no accessor before P2.5. The lens-branch guard reads
                   # seq_donor_d_in; the shared ctx reads seq_rope_cfg.
@@ -124,6 +129,11 @@ module Toy; module LLM; module Archs
       @seq_gdn_blocks_ffi     = [Toy::LLM::Blocks::GDNBlock.new]
       @seq_kda_blocks_ffi     = [Toy::LLM::Blocks::KDABlock.new]
       @seq_mla_blocks_ffi     = [Toy::LLM::Blocks::MLABlock.new]
+      @seq_mtp_on             = 0
+      @seq_mtp_block          = Toy::LLM::Blocks::TransformerBlock.new
+      @t_seq_mtp_proj         = TinyNN.tnn_null_ptr
+      @t_seq_mtp_tok          = TinyNN.tnn_null_ptr
+      @t_seq_mtp_logits       = TinyNN.tnn_null_ptr
       @seq_donor_d_in         = 0
       # The cache overwrites seq_rope_cfg with the real RoPE::Cfg before
       # build_forward runs (each realize prologue rebuilds it).
@@ -431,6 +441,43 @@ module Toy; module LLM; module Archs
         logits = TinyNN.tnn_matmul(sess, self.t_seq_token_embed, x_final)
       end
       TinyNN.tnn_set_output(logits)
+
+      # ── K-series M10: Multi-Token Prediction ────────────────────
+      # K3/DeepSeek-V3 form: the MTP module reads the main model's
+      # hidden state at position i together with the EMBEDDING OF THE
+      # NEXT token, projects the pair back to d, runs one block that
+      # mirrors a backbone layer, and predicts token i+2 through the
+      # SHARED output head.
+      #
+      #   h'_i = M [ RMSNorm(h_i) ; RMSNorm(Emb(t_{i+1})) ]
+      #   logits2 = Head( Block(h') )
+      #
+      # Two toy-scale identifications, stated rather than hidden:
+      #   - h_i is taken as x_final, i.e. the main model's hidden AFTER
+      #     the final norm. That norm IS the RMSNorm the formula puts on
+      #     h, so this is the same quantity, not an approximation.
+      #   - the next-token embedding rides its own id input rather than
+      #     a shifted view, because a strided view of the embedding rows
+      #     would be a mul operand with a poisoned backward (the
+      #     ggml_is_padded_1d family). The runner uploads ids shifted by
+      #     one; the value is identical and the gradient path is clean.
+      #
+      # The head is TIED to the same embedding matrix the main path
+      # uses, which is what makes this one extra block rather than a
+      # second model.
+      if self.seq_mtp_on == 1
+        e_next = TinyNN.tnn_get_rows(sess, self.t_seq_token_embed, self.t_seq_mtp_tok)
+        e_n    = Toy::LLM::Primitives::RMSNorm.build(sess, e_next, self.t_seq_final_norm_gamma, eps)
+        pair   = TinyNN.tnn_concat(sess, x_final, e_n, 0)          # [2d, T]
+        hp2    = TinyNN.tnn_matmul(sess, self.t_seq_mtp_proj, pair) # [d, T]
+        hb     = self.seq_mtp_block.build_forward(sess, hp2, ctx)
+        if seq_has_untied_output
+          self.t_seq_mtp_logits = TinyNN.tnn_matmul(sess, self.t_seq_output, hb)
+        else
+          self.t_seq_mtp_logits = TinyNN.tnn_matmul(sess, self.t_seq_token_embed, hb)
+        end
+        TinyNN.tnn_set_output(self.t_seq_mtp_logits)
+      end
 
       Toy::LLM::Archs::LlamaArchForwardOut.new(x_embed, x_final, logits)
     end

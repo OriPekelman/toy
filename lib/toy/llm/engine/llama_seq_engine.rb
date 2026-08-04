@@ -181,6 +181,13 @@ class LlamaSeqEngine
     # K-series M2: the KV latent width r. 0 = 'derive from the head
     # width' (r = inner/2, K3's ratio), set explicitly by --mla-rank.
     @seq_mla_rank    = 0
+    # K-series M10 (MTP). 0 = off, byte-null. lambda weights the second
+    # CE root in the backward total; the REPORTED step loss stays the
+    # main CE so curves remain comparable across --mtp.
+    @seq_mtp        = 0
+    @seq_mtp_lambda = 0.3
+    @t_seq_mtp_labels = TinyNN.tnn_null_ptr
+    @t_seq_mtp_loss   = TinyNN.tnn_null_ptr
     @seq_mla_kv_norm = 1     # DeepSeek's kv_a_norm; 0 only for the null
     @seq_mla_gate    = 1     # K3's full-rank output gate
     @seq_attnres = 0         # toy#138 K3b: Attention Residuals (K3 §2.2)
@@ -230,6 +237,36 @@ class LlamaSeqEngine
 
   # K-series M2: the KV latent rank r. Call BEFORE realize. 0 keeps the
   # derived default (inner/2).
+  # K-series M10: enable the MTP module. Call BEFORE realize.
+  def mtp_init(v)
+    @seq_mtp = v
+    @seq_arch.seq_mtp_on = v
+    0
+  end
+
+  def mtp_lambda_init(v)
+    @seq_mtp_lambda = v
+    0
+  end
+
+  def seq_mtp_flag
+    @seq_mtp
+  end
+
+  # Read by the recipe's step!: the MTP inputs (next-token ids and the
+  # t+2 one-hot) only exist when the module is on.
+  def t_seq_mtp_tok_ref
+    @seq_arch.t_seq_mtp_tok
+  end
+
+  def t_seq_mtp_labels_ref
+    @t_seq_mtp_labels
+  end
+
+  def t_seq_mtp_loss_ref
+    @t_seq_mtp_loss
+  end
+
   def mla_rank_init(v)
     @seq_mla_rank = v
     0
@@ -951,6 +988,26 @@ class LlamaSeqEngine
       li = li + 1
     end
 
+    # K-series M10: the MTP module's own weights — the [d, 2d] input
+    # projection and ONE block mirroring a backbone layer. Allocated
+    # AFTER the layer loop so no existing weight's registration order
+    # moves, which is what keeps --mtp off byte-null.
+    if @seq_mtp == 1
+      @seq_arch.t_seq_mtp_proj = TinyNN.tnn_input_2d_f32_persistent(@sess, @seq_d_model, 2 * @seq_d_model)
+      TinyNN.tnn_set_param(@seq_arch.t_seq_mtp_proj)
+      ft_add_global_2d(@seq_arch.t_seq_mtp_proj, @seq_d_model, 2 * @seq_d_model)
+      @seq_arch.t_seq_mtp_tok = TinyNN.tnn_input_1d_i32(@sess, @seq_t * @seq_b)
+      mtb = @seq_arch.seq_mtp_block
+      mtb.alloc_trainable_f32_weights!(@sess, self, "mtp.",
+                                       @seq_d_model, @seq_d_ff, @seq_d_head,
+                                       @seq_n_heads, @seq_n_kv)
+      wm = 0
+      while wm < mtb.ft_weights.length
+        TinyNN.tnn_set_param(mtb.ft_weights[wm])
+        wm = wm + 1
+      end
+    end
+
     # Mark globals as params too (gated on @ft_train_embeddings_enabled).
     gi = 0
     while gi < @ft_globals_weights.length
@@ -1158,6 +1215,32 @@ class LlamaSeqEngine
       upload_gaussian(blk.t_seq_w_up,   @seq_d_ff    * @seq_d_model, inv_sqrt_d, state)
       upload_gaussian(blk.t_seq_w_down, @seq_d_model * @seq_d_ff,    inv_sqrt_dff, state)
       li = li + 1
+    end
+
+    # K-series M10: the MTP module draws LAST from the same stream, so
+    # every pre-existing weight keeps the draws it had — --mtp off and
+    # --mtp on share an identical backbone init, which is what makes the
+    # gate's "same init, MTP only adds a head" comparison meaningful.
+    if @seq_mtp == 1
+      mtb = @seq_arch.seq_mtp_block
+      upload_gaussian(@seq_arch.t_seq_mtp_proj, @seq_d_model * 2 * @seq_d_model, inv_sqrt_d, state)
+      upload_constant(mtb.t_seq_rn1_gamma, @seq_d_model, 1.0)
+      upload_constant(mtb.t_seq_rn2_gamma, @seq_d_model, 1.0)
+      hqm = 0
+      while hqm < @seq_n_heads
+        upload_gaussian(mtb.t_seq_w_q[hqm], @seq_d_head * @seq_d_model, inv_sqrt_d, state)
+        hqm = hqm + 1
+      end
+      hkm = 0
+      while hkm < @seq_n_kv
+        upload_gaussian(mtb.t_seq_w_k[hkm], @seq_d_head * @seq_d_model, inv_sqrt_d, state)
+        upload_gaussian(mtb.t_seq_w_v[hkm], @seq_d_head * @seq_d_model, inv_sqrt_d, state)
+        hkm = hkm + 1
+      end
+      upload_gaussian(mtb.t_seq_w_o,    @seq_d_model * @seq_n_heads * @seq_d_head, inv_sqrt_d, state)
+      upload_gaussian(mtb.t_seq_w_gate, @seq_d_ff    * @seq_d_model, inv_sqrt_d, state)
+      upload_gaussian(mtb.t_seq_w_up,   @seq_d_ff    * @seq_d_model, inv_sqrt_d, state)
+      upload_gaussian(mtb.t_seq_w_down, @seq_d_model * @seq_d_ff,    inv_sqrt_dff, state)
     end
   end
 
@@ -1600,9 +1683,28 @@ class LlamaSeqEngine
     # columns in labels before this op).
     t_loss = TinyNN.tnn_cross_entropy_loss(@sess, @t_seq_logits, t_labels)
     TinyNN.tnn_set_output(t_loss)
-    TinyNN.tnn_set_loss(t_loss)
 
-    TinyNN.tnn_build_forward_only(@sess, t_loss)
+    # K-series M10: the SECOND CE root, against t+2. Backward runs on
+    # total = main + lambda * mtp, but the tensor the caller reads back
+    # as "the loss" stays the MAIN CE — so a --mtp curve is directly
+    # comparable to one without it, instead of being offset by a term
+    # that measures a different prediction. Patched IDENTICALLY into
+    # build_training_step and build_training_step_franken; those two
+    # must emit the same graph under an empty policy (the parity gate).
+    if @seq_mtp == 1
+      @t_seq_mtp_labels = TinyNN.tnn_input_2d_f32(@sess, @seq_t * @seq_b, @seq_vocab_size)
+      @t_seq_mtp_loss = TinyNN.tnn_cross_entropy_loss(@sess, @seq_arch.t_seq_mtp_logits, @t_seq_mtp_labels)
+      TinyNN.tnn_set_output(@t_seq_mtp_loss)
+      t_total = TinyNN.tnn_add(@sess, t_loss,
+                               TinyNN.tnn_scale(@sess, @t_seq_mtp_loss, @seq_mtp_lambda))
+      TinyNN.tnn_set_output(t_total)
+      TinyNN.tnn_set_loss(t_total)
+      TinyNN.tnn_add_to_graph(@sess, t_loss)
+      TinyNN.tnn_build_forward_only(@sess, t_total)
+    else
+      TinyNN.tnn_set_loss(t_loss)
+      TinyNN.tnn_build_forward_only(@sess, t_loss)
+    end
     TinyNN.tnn_build_backward(@sess)
 
     if @seq_full_finetune_enabled
@@ -1667,6 +1769,21 @@ class LlamaSeqEngine
           wi = wi + 1
         end
         li = li + 1
+      end
+      # K-series M10: the MTP block's own weights. The [d,2d] projection
+      # rides the globals list below (ft_add_global_2d registered it);
+      # the block's tensors are its own and need this arm, or the module
+      # would build, produce a loss, and never actually train.
+      if @seq_mtp == 1
+        mtb = @seq_arch.seq_mtp_block
+        wmo = 0
+        while wmo < mtb.ft_weights.length
+          twm = mtb.ft_weights[wmo]
+          tgm = TinyNN.tnn_tensor_grad(@sess, twm)
+          tom = TinyNN.tnn_opt_step_adamw(@sess, twm, tgm, mtb.ft_m[wmo], mtb.ft_v[wmo], t_hp)
+          TinyNN.tnn_extend_backward_graph(@sess, tom)
+          wmo = wmo + 1
+        end
       end
       # Globals (token_embed, final-norm, optional untied output).
       gi = 0
@@ -1826,9 +1943,28 @@ class LlamaSeqEngine
 
     t_loss = TinyNN.tnn_cross_entropy_loss(@sess, @t_seq_logits, t_labels)
     TinyNN.tnn_set_output(t_loss)
-    TinyNN.tnn_set_loss(t_loss)
 
-    TinyNN.tnn_build_forward_only(@sess, t_loss)
+    # K-series M10: the SECOND CE root, against t+2. Backward runs on
+    # total = main + lambda * mtp, but the tensor the caller reads back
+    # as "the loss" stays the MAIN CE — so a --mtp curve is directly
+    # comparable to one without it, instead of being offset by a term
+    # that measures a different prediction. Patched IDENTICALLY into
+    # build_training_step and build_training_step_franken; those two
+    # must emit the same graph under an empty policy (the parity gate).
+    if @seq_mtp == 1
+      @t_seq_mtp_labels = TinyNN.tnn_input_2d_f32(@sess, @seq_t * @seq_b, @seq_vocab_size)
+      @t_seq_mtp_loss = TinyNN.tnn_cross_entropy_loss(@sess, @seq_arch.t_seq_mtp_logits, @t_seq_mtp_labels)
+      TinyNN.tnn_set_output(@t_seq_mtp_loss)
+      t_total = TinyNN.tnn_add(@sess, t_loss,
+                               TinyNN.tnn_scale(@sess, @t_seq_mtp_loss, @seq_mtp_lambda))
+      TinyNN.tnn_set_output(t_total)
+      TinyNN.tnn_set_loss(t_total)
+      TinyNN.tnn_add_to_graph(@sess, t_loss)
+      TinyNN.tnn_build_forward_only(@sess, t_total)
+    else
+      TinyNN.tnn_set_loss(t_loss)
+      TinyNN.tnn_build_forward_only(@sess, t_loss)
+    end
     TinyNN.tnn_build_backward(@sess)
 
     any_dfa = false
