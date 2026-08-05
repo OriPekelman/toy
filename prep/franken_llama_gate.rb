@@ -527,6 +527,92 @@ Dir.mktmpdir("franken_ar") do |dir|
 end
 puts failures.length == n0 ? "  ok: AttnRes — depth-attention trains (#{arl.first.round(3)} -> #{arl.last.round(3)}), deterministic, differs from the residual path, (L+1)·d pseudo-queries counted" : "  FAIL: attnres leg"
 
+# ---- K-series M10: MTP (Multi-Token Prediction) ----
+# The load-bearing assertion here is mtp_sig, NOT the curve. The MTP
+# block is not in seq_blocks_ffi, so it carries its own optimizer arm;
+# if that arm were missing the module would still build, still emit a
+# second loss, and still produce a perfectly healthy training curve
+# while never updating a single MTP weight. That is the K4b/experts_sig
+# lesson, and here it caught a real defect: under the original
+# `loss + lambda*CE_mtp` formulation, --mtp-lambda 0 froze the module
+# outright (delta exactly 0.000000).
+#
+# lambda is therefore a COUPLING dial, not a loss weight — the second
+# root is unscaled and lambda gradient-scales what the MTP branch
+# borrows from the backbone. The two legs that pin that meaning are
+# marked below.
+n0 = failures.length
+mtp_env = { "STEPS" => "4", "SEED" => "0", "FRANKEN_MTP" => "1" }
+mt1 = run_franken_llama(mtp_env, nil).lines.select { |l| l.start_with?("step ") }
+mt2 = run_franken_llama(mtp_env, nil).lines.select { |l| l.start_with?("step ") }
+failures << "mtp: not deterministic" unless mt1 == mt2 && mt1.length == 4
+mtl = mt1.map { |l| l[/loss=(\S+)/, 1].to_f }
+failures << "mtp: NaN" if mtl.any?(&:nan?)
+failures << "mtp: curve identical to --mtp off (the second root is inert)" if mt1 == base4
+# THE LAMBDA=0 SEPARATION: the second root EXISTS and its weights train,
+# but it must not perturb the backbone at all. Byte-identical, not
+# approximately — the grad_scale forward is exact at lambda 0.
+l0 = run_franken_llama(mtp_env.merge("FRANKEN_MTP_LAMBDA" => "0"), nil).lines.select { |l| l.start_with?("step ") }
+failures << "mtp: --mtp-lambda 0 perturbs the backbone (want byte-identical to --mtp off)" unless l0 == base4
+l1 = run_franken_llama(mtp_env.merge("FRANKEN_MTP_LAMBDA" => "1.0"), nil).lines.select { |l| l.start_with?("step ") }
+failures << "mtp: --mtp-lambda 1.0 does not differ from lambda 0 (the coupling dial is dead)" if l1 == l0
+
+# mtp_sig: the module PROVABLY trains — at every lambda, including 0.
+%w[0 0.3 1.0].each do |lam|
+  Dir.mktmpdir("franken_mtp_#{lam}") do |dir|
+    FileUtils.mkdir_p(File.join(dir, "weights"))
+    run_franken_llama({ "STEPS" => "4", "SEED" => "0", "FRANKEN_MTP" => "1",
+                        "FRANKEN_MTP_LAMBDA" => lam }, dir)
+    ev = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+    s0 = ev.first.dig("config", "mtp_sig")
+    s1 = ev.last["mtp_sig"]
+    if s0.nil? || s1.nil?
+      failures << "mtp: mtp_sig missing at lambda #{lam} (start=#{s0.inspect} end=#{s1.inspect})"
+    elsif (s1 - s0).abs <= 1e-9
+      failures << "mtp: MTP weights NEVER MOVED at lambda #{lam} — the module builds and reports a loss but does not train"
+    end
+    # the t+2 read rides the step events and run_end (this lane has no
+    # in-runner eval_ce; checkpoints are evaluated offline).
+    st = ev.select { |e| e["kind"] == "step" }
+    failures << "mtp: mtp_loss missing from step events at lambda #{lam}" unless
+      st.length == 4 && st.all? { |e| e["mtp_loss"].is_a?(Numeric) }
+    failures << "mtp: final_mtp_loss missing from run_end at lambda #{lam}" unless
+      ev.last["final_mtp_loss"].is_a?(Numeric)
+  end
+end
+# OFF must report null rather than a fabricated 0.0, and must not carry
+# MTP cost.
+Dir.mktmpdir("franken_mtp_off") do |dir|
+  FileUtils.mkdir_p(File.join(dir, "weights"))
+  run_franken_llama({ "STEPS" => "1", "SEED" => "0" }, dir)
+  ev = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+  failures << "mtp: off should report mtp_loss null" unless
+    ev.select { |e| e["kind"] == "step" }.all? { |e| e["mtp_loss"].nil? }
+  failures << "mtp: off should report provenance mtp=false" unless ev.first.dig("config", "mtp") == false
+  # COST must grow by the projection + one full block, and by nothing
+  # else. Third instance of the silent-under-count class (K4b, toy#145).
+  Dir.mktmpdir("franken_mtp_on") do |d2|
+    FileUtils.mkdir_p(File.join(d2, "weights"))
+    run_franken_llama({ "STEPS" => "1", "SEED" => "0", "FRANKEN_MTP" => "1" }, d2)
+    on = JSON.parse(File.readlines(File.join(d2, "events.jsonl")).first)
+    grew = on.dig("cost", "total_params") - ev.first.dig("cost", "total_params")
+    d = 64; dff = 128   # the base shape (BIG=false) — train_franken_llama.rb:250/253
+    want = 2 * d * d + (4 * d * d + 3 * d * dff + 2 * d)   # [d,2d] proj + one block
+    failures << "mtp: params grew by #{grew} (want #{want} = [d,2d] projection + one block)" unless grew == want
+    failures << "mtp: flops_per_token did not grow" unless
+      on.dig("cost", "flops_per_token") > ev.first.dig("cost", "flops_per_token")
+    failures << "mtp: provenance mtp/mtp_lambda #{on.dig('config','mtp').inspect}/#{on.dig('config','mtp_lambda').inspect}" unless
+      on.dig("config", "mtp") == true && on.dig("config", "mtp_lambda") == 0.3
+  end
+end
+# Guards, fail-loud.
+[[{ "FRANKEN_MTP_LAMBDA" => "0.5" }, "lambda without --mtp"],
+ [{ "FRANKEN_MTP" => "1", "FRANKEN_MTP_LAMBDA" => "1.5" }, "lambda > 1 (not a coupling fraction)"]].each do |extra, what|
+  _o, st = Open3.capture2e({ "STEPS" => "1", "SEED" => "0" }.merge(extra), RUNNER, chdir: ROOT)
+  failures << "mtp: #{what} not rejected" if st.success?
+end
+puts failures.length == n0 ? "  ok: MTP — trains (#{mtl.first.round(3)} -> #{mtl.last.round(3)}), mtp_sig PROVES the weights move at every lambda, lambda=0 leaves the backbone byte-identical to off while still training the module, mtp_loss/final_mtp_loss carried, cost grows by projection + block, 2 guards reject" : "  FAIL: MTP leg"
+
 # ---- toy#139 / K5: PER-HEAD Muon on the llama lane ----
 # adamw stays byte-null (leg 1's F0 fixture). muon trains,
 # deterministically, and differs. The "per-head" part is STRUCTURAL:
@@ -597,7 +683,7 @@ failures << "byte-repro: outputs differ" unless r1 == r2
 puts "  ok: byte-repro — two policy runs identical" if r1 == r2
 
 if failures.empty?
-  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + shape presets (toy#124) + lr/warmup (toy#126) + no-shadow/pack-header/ckpt-every (toy#129) + batch (toy#133) + K1 axes (toy#136) + KDA layer (toy#137) + hybrid/AttnRes (toy#138) + MLA kind/k3 pattern (K-series M2) + per-head muon (toy#139/K5) + byte-repro (toy#112/#113)"
+  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + shape presets (toy#124) + lr/warmup (toy#126) + no-shadow/pack-header/ckpt-every (toy#129) + batch (toy#133) + K1 axes (toy#136) + KDA layer (toy#137) + hybrid/AttnRes (toy#138) + MLA kind/k3 pattern (K-series M2) + per-head muon (toy#139/K5) + MTP (K-series M10) + byte-repro (toy#112/#113)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-llama]: #{f}" }

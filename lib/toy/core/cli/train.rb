@@ -132,6 +132,8 @@ module Toy
           @kda_conv_off = false # franken: disable KDA ShortConv (toy#137/K2c)
           @layer_pattern = nil  # franken: hybrid layer preset (toy#138/K3a)
           @attnres      = false # franken: attention residuals (toy#138/K3b)
+          @mtp          = false # franken: Multi-Token Prediction (K-series M10)
+          @mtp_lambda   = nil   # franken: MTP backbone-COUPLING weight, not a loss weight
           @optimizer    = nil   # franken-moe: adamw | muon | sgd (toy#139)
           @donor        = nil   # franken-moe: donor GGUF for embed transfer (toy#140)
           @donor_mode   = nil
@@ -360,6 +362,8 @@ module Toy
                              "KDA_CONV"        => (@kda_conv_off ? "0" : ""),
                              "FRANKEN_LAYER_PATTERN" => (@layer_pattern || ""),
                              "ATTNRES"         => (@attnres ? "1" : ""),
+                             "FRANKEN_MTP"     => (@mtp ? "1" : ""),
+                             "FRANKEN_MTP_LAMBDA" => (@mtp_lambda ? @mtp_lambda.to_s : ""),
                              "FRANKEN_NOPE"    => (@rope == "nope" ? "1" : ""),
                              "FRANKEN_SCHEDULE" => (@schedule || ""),
                              "FRANKEN_CKPT_EVERY" => (@ckpt_every || 0).to_s)
@@ -485,6 +489,25 @@ module Toy
               @kda_conv_off = true
             when "--attnres"
               @attnres = true
+            when "--mtp"
+              @mtp = true
+            # K-series M10: lambda is a COUPLING dial, not a loss weight.
+            # 0 = the second root exists and its weights train, but it
+            # does not perturb the backbone at all (byte-identical to
+            # --mtp off); 1 = full coupling. Values > 1 would amplify
+            # MTP's pull on the backbone past the main loss's own, which
+            # is not what the dial means — rejected rather than quietly
+            # allowed.
+            when "--mtp-lambda"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--mtp-lambda requires a value") if val.nil?
+              return bad_arg("--mtp-lambda must be a float in [0, 1], got #{val.inspect}") unless val =~ /\A\d*\.?\d+\z/ && val.to_f >= 0.0 && val.to_f <= 1.0
+              @mtp_lambda = val.to_f
+            when /\A--mtp-lambda=(.*)\z/
+              val = $1
+              return bad_arg("--mtp-lambda must be a float in [0, 1], got #{val.inspect}") unless val =~ /\A\d*\.?\d+\z/ && val.to_f >= 0.0 && val.to_f <= 1.0
+              @mtp_lambda = val.to_f
             when "--donor"
               i += 1
               val = @argv[i]
@@ -950,6 +973,7 @@ module Toy
             ["--no-kda-conv",   %w[franken],                        @kda_conv_off, " (toy#137/K2c)"],
             ["--layer-pattern", %w[franken],                        !@layer_pattern.nil?, " (toy#138/K3a)"],
             ["--attnres",      %w[franken],                        @attnres, " (toy#138/K3b)"],
+            ["--mtp/--mtp-lambda", %w[franken],                    (@mtp || !@mtp_lambda.nil?), " (K-series M10)"],
             ["--optimizer",    %w[franken franken-moe],            !@optimizer.nil?, " (toy#139/K5)"],
             ["--donor/--donor-mode/--freeze-embed", %w[franken-moe], (!@donor.nil? || !@donor_mode.nil? || @freeze_embed), " (toy#140)"],
             ["--freeze-experts", %w[franken-moe],                    @freeze_experts, " (toy#141)"],
@@ -973,6 +997,9 @@ module Toy
           end
           if (@eval_tokens || @eval_offset) && @eval_corpus.nil?
             return bad_arg("--eval-tokens/--eval-offset need --eval-corpus")
+          end
+          if !@mtp_lambda.nil? && !@mtp
+            return bad_arg("--mtp-lambda needs --mtp (there is no coupling to weight without the second root)")
           end
           if @eval_corpus && !File.file?(@eval_corpus)
             return bad_arg("no such file: #{@eval_corpus} (--eval-corpus streams packed-i32 tokens)")

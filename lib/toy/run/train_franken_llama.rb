@@ -130,17 +130,25 @@ ATTNRES_ON = (ENV["ATTNRES"] || "") == "1"
 # K-series M10 (MTP): one extra block predicting t+2 through the tied
 # head, with a second CE root weighted by lambda. Default off = byte-null.
 MTP_ON = (ENV["FRANKEN_MTP"] || "") == "1"
-# The module RUNS as of the projection-lens fix (the abort was e_next
-# read from the raw donor-width embedding table instead of through the
-# lens — see llama_arch.rb). --mtp off stays byte-null and
-# --mtp-lambda 0 leaves the backbone byte-identical to off. STILL
-# MISSING before M10 is complete: --mtp/--mtp-lambda on the CLI proper
-# (these env vars are the whole surface today), cost accounting for the
-# projection + extra block, t+2 accuracy in eval_ce, and the gate leg.
-# See docs/roadmap/m10-mtp-status-2026-08-04.md.
-MTP_LAMBDA = (ENV["FRANKEN_MTP_LAMBDA"] || "0.3").to_f
-if MTP_LAMBDA < 0.0
-  puts "toy-train-franken: FRANKEN_MTP_LAMBDA must be >= 0"
+# LAMBDA IS A COUPLING DIAL, NOT A LOSS WEIGHT. The second CE root is
+# unscaled; lambda is applied in the arch as a gradient scale on every
+# quantity the MTP branch borrows from the backbone. So MTP's own
+# weights train at FULL strength for any lambda, and lambda controls
+# only how hard the second root pulls on the backbone:
+#   0 = the module exists and trains, backbone byte-identical to --mtp
+#       off (the clean "second root exists but does not perturb" control)
+#   1 = full coupling
+# Scaling the loss root instead made lambda=0 freeze the module
+# outright, which mtp_sig caught. See
+# docs/roadmap/m10-mtp-status-2026-08-04.md.
+# NOT `(ENV[...] || "0.3").to_f` — the CLI always SETS this key, to ""
+# when --mtp-lambda is absent, and "".to_f is 0.0, not the default. That
+# made a bare `--mtp` silently run at zero coupling, i.e. byte-identical
+# to --mtp off. Length-check the string, the LR_S pattern.
+mtpl_s = ENV["FRANKEN_MTP_LAMBDA"] || ""
+MTP_LAMBDA = mtpl_s.length > 0 ? mtpl_s.to_f : 0.3
+if MTP_LAMBDA < 0.0 || MTP_LAMBDA > 1.0
+  puts "toy-train-franken: FRANKEN_MTP_LAMBDA must be in [0, 1] — it is a coupling fraction, not a loss weight"
   exit 1
 end
 if !MTP_ON && (ENV["FRANKEN_MTP_LAMBDA"] || "").length > 0
@@ -588,6 +596,10 @@ if EVENTS.length > 0
     # suspiciously low second loss: the last 2 columns have no genuine
     # t+2 target and repeat the final in-window token.
     config.add_num("mtp_clamped_cols", MTP_ON ? 2.0 : 0.0)
+    # post-init signature over every MTP weight; paired with the one in
+    # run_end this is what PROVES the module trains rather than merely
+    # building and reporting a loss (the K4b/experts_sig lesson).
+    config.add_raw("mtp_sig", num_or_null(recipe.ff_cache.mtp_sig))
     config.add_num("mla_layers", MLA_LIST.length.to_f)
     config.add_num("mla_rank", MLA_RANK.to_f)
     config.add_bool("attnres", ATTNRES_ON)
@@ -628,9 +640,17 @@ if EVENTS.length > 0
     # for the final aggregation (the ones-gamma is a constant, not a
     # param).
     attnres_params = ATTNRES_ON ? (N_LAYERS + 1) * D_MODEL : 0
+    # K-series M10: the MTP module's OWN weights — the [d, 2d] input
+    # projection plus one full block (it mirrors a backbone attention
+    # layer). The head is TIED, so it adds no parameters; that tying is
+    # exactly what makes MTP one extra block rather than a second model.
+    # Counted here because a module that grows the model while the cost
+    # block says otherwise is the silent-under-count class that already
+    # bit K4b and toy#145.
+    mtp_params = MTP_ON ? (2 * D_MODEL * D_MODEL + attn_params) : 0
     cost_params = VOCAB * DONOR_D + DONOR_D * D_MODEL +
                   n_attn_p * attn_params + n_kda_p * kda_params +
-                  attnres_params + D_MODEL + D_MODEL * VOCAB
+                  attnres_params + D_MODEL + D_MODEL * VOCAB + mtp_params
     # toy#137 K2c: KDA layers are LINEAR-attention — O(T·d²) per
     # sequence, i.e. NO T-proportional term per token (the recurrent
     # state is d_head×d_head per head, updated in O(d²) per token),
@@ -655,10 +675,20 @@ if EVENTS.length > 0
                 2 * (3 * N_HEADS * d_head_c * d_head_c) +
                 2 * (kda_inner * D_MODEL) +
                 (KDA_CONV_OFF ? 0 : 21 * kda_inner)   # 3 streams x (4 mul + 3 add)
+    # M10 forward cost, per token: the next-token embedding goes through
+    # the SAME projection lens the main path uses (a second
+    # DONOR_D x D_MODEL matmul), then the [2d -> d] input projection,
+    # then one full block, then the tied head a second time. The head
+    # costs flops even though it costs no params.
+    mtp_flops = MTP_ON ? (2 * DONOR_D * D_MODEL +
+                          2 * (2 * D_MODEL) * D_MODEL +
+                          2 * (4 * D_MODEL * D_MODEL + 3 * D_MODEL * D_FF) +
+                          4 * D_MODEL * CONTEXT * BATCH +
+                          2 * D_MODEL * VOCAB) : 0
     cost_flops  = 2 * DONOR_D * D_MODEL +
                   n_attn * (2 * (4 * D_MODEL * D_MODEL + 3 * D_MODEL * D_FF) + 4 * D_MODEL * CONTEXT * BATCH) +
                   n_kda * kda_flops +
-                  2 * D_MODEL * VOCAB
+                  2 * D_MODEL * VOCAB + mtp_flops
     cost = Toy::Json::Builder.new
     cost.add_num("total_params",    cost_params)
     cost.add_num("active_params",   cost_params)
@@ -775,6 +805,7 @@ while step < STEPS
   loss = recipe.step!(seq_ids, positions, m_labels, m_hp, step == 0)
   mtp_loss = MTP_ON ? recipe.ff_cache.mtp_loss_value : 0.0
   final_loss = loss
+  final_mtp_loss = mtp_loss
   # The byte-gated line — to STDOUT (train.rb contract).
   puts "step " + (step + 1).to_s + ": loss=" + loss.to_s
 
@@ -786,6 +817,13 @@ while step < STEPS
     es.add_num("t",       TinyNN.tnn_events_now_seconds)
     es.add_num("step",    step + 1)
     es.add_raw("loss",    num_or_null(loss))
+    # K-series M10: the t+2 CE, reported ALONGSIDE the main loss rather
+    # than folded into it — `loss` stays the main CE so a --mtp curve is
+    # directly comparable to one without it. This is the t+2 read for
+    # this lane: franken-llama has no in-runner eval_ce (it checkpoints
+    # and is evaluated offline by `toy eval ce`), so the second head's
+    # quality is carried per-step here and summarised in run_end.
+    es.add_raw("mtp_loss", MTP_ON ? num_or_null(mtp_loss) : "null")
     es.add_raw("lr",      adamw.lr.to_s)
     es.add_num("tokens",  CONTEXT * BATCH)
     es.add_num("wall_us", step_wall_us)
@@ -887,6 +925,8 @@ if EVENTS.length > 0 && TinyNN.tnn_events_active == 1
   re.add_str("reason",     "completed")
   re.add_num("final_step", STEPS)
   re.add_raw("final_loss", num_or_null(final_loss))
+  re.add_raw("final_mtp_loss", MTP_ON ? num_or_null(final_mtp_loss) : "null")
+  re.add_raw("mtp_sig",    num_or_null(recipe.ff_cache.mtp_sig))
   re.add_raw("exit_code",  "0")
   TinyNN.tnn_events_emit(re.dump)
   TinyNN.tnn_events_close

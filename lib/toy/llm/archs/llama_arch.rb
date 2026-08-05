@@ -92,7 +92,7 @@ module Toy; module LLM; module Archs
                   # K-series M10 (MTP): one extra block mirroring a
                   # backbone layer, its input projection, the next-token
                   # id input it embeds, and the t+2 logits it produces.
-                  :seq_mtp_on, :seq_mtp_block, :t_seq_mtp_proj,
+                  :seq_mtp_on, :seq_mtp_lambda, :seq_mtp_block, :t_seq_mtp_proj,
                   :t_seq_mtp_tok, :t_seq_mtp_logits,
                   # Orchestration-gating carriers — bare cache ivars with
                   # no accessor before P2.5. The lens-branch guard reads
@@ -130,6 +130,10 @@ module Toy; module LLM; module Archs
       @seq_kda_blocks_ffi     = [Toy::LLM::Blocks::KDABlock.new]
       @seq_mla_blocks_ffi     = [Toy::LLM::Blocks::MLABlock.new]
       @seq_mtp_on             = 0
+      # M10 (b): lambda is a COUPLING dial, not a loss weight — see the
+      # grad_scale note in the MTP block below. Re-mirrored in
+      # build_forward_in_current_ctx exactly like seq_mtp_on.
+      @seq_mtp_lambda         = 1.0
       @seq_mtp_block          = Toy::LLM::Blocks::TransformerBlock.new
       @t_seq_mtp_proj         = TinyNN.tnn_null_ptr
       @t_seq_mtp_tok          = TinyNN.tnn_null_ptr
@@ -177,6 +181,25 @@ module Toy; module LLM; module Archs
     # mul operand poisons the backward (grad path through GGML_OP_VIEW
     # hits a scale on non-contiguous storage — ggml.c:3392). Every row
     # is therefore cont'd before it multiplies anything.
+    # M10 (b): straight-through GRADIENT scale. Forward is the identity;
+    # the backward multiplies by lam.
+    #
+    #   lam*x + (1-lam)*detach(x)   ->  fwd x, grad lam*dx
+    #
+    # detach is grad-opaque (the toy#121 cut), so the second term
+    # contributes nothing to the backward and exactly (1-lam)*x to the
+    # forward. At lam == 1.0 the node is skipped entirely, so the
+    # natural full-coupling case builds the identical graph it always
+    # did. At lam == 0.0 the forward is 0*x + 1*x, bit-exact.
+    def grad_scale(sess, t, lam)
+      if lam >= 1.0
+        return t
+      end
+      a = TinyNN.tnn_scale(sess, t, lam)
+      b = TinyNN.tnn_scale(sess, TinyNN.tnn_detach(sess, t), 1.0 - lam)
+      TinyNN.tnn_add(sess, a, b)
+    end
+
     def attnres_mix(sess, srcs, q, ones_gamma, eps)
       n = srcs.length
       if n == 1
@@ -466,6 +489,30 @@ module Toy; module LLM; module Archs
       # uses, which is what makes this one extra block rather than a
       # second model.
       if self.seq_mtp_on == 1
+        # ── M10 (b): lambda scales the COUPLING, not the module ──────
+        # The second CE root is now UNSCALED, and lambda is applied as a
+        # gradient scale on every quantity the MTP branch borrows from
+        # the backbone. Consequence:
+        #
+        #   MTP-private weights (proj + block)  -> gradient at FULL
+        #     strength, independent of lambda
+        #   backbone / shared weights           -> MTP's contribution
+        #     scaled by lambda
+        #
+        # Why this and not `t_total = loss + lambda * CE_mtp`: under
+        # that form d(t_total)/d(W_mtp) = lambda * dCE/dW_mtp, so
+        # lambda=0 froze the MTP module entirely — mtp_sig proved it
+        # (delta exactly 0.000000). That made lambda=0 nearly the same
+        # experiment as --mtp off, instead of the intended control
+        # "the second root EXISTS but does not perturb the main path".
+        #
+        # grad_scale is the straight-through identity
+        # lambda*x + (1-lambda)*detach(x): forward is x, backward is
+        # lambda. At lambda 0 and 1 the forward is BIT-EXACT (0*x + 1*x
+        # and 1*x + 0*x), which is what keeps the lambda=0 backbone
+        # byte-identical to --mtp off. At intermediate lambda it can
+        # differ by an ULP, where no byte-contract applies.
+        lam = self.seq_mtp_lambda
         # The next-token embedding must land in MODEL space (d_model),
         # which under the E2.3 projection lens is NOT the raw table:
         # with seq_donor_d_in > 0 the table is donor-width and the main
@@ -480,14 +527,33 @@ module Toy; module LLM; module Archs
         else
           e_next = e_raw
         end
-        e_n    = Toy::LLM::Primitives::RMSNorm.build(sess, e_next, self.t_seq_final_norm_gamma, eps)
-        pair   = TinyNN.tnn_concat(sess, x_final, e_n, 0)          # [2d, T]
-        hp2    = TinyNN.tnn_matmul(sess, self.t_seq_mtp_proj, pair) # [d, T]
+        e_n    = Toy::LLM::Primitives::RMSNorm.build(sess, e_next,
+                   self.t_seq_final_norm_gamma, eps)
+        # ONE grad_scale ABOVE the concat covers BOTH backbone inlets:
+        # x_final (the backbone activation) and e_n (which carries the
+        # gradient onward to token_embed, w_proj and final_norm_gamma).
+        # Everything below this node in the backward is backbone; the
+        # only MTP-private weights are the projection and the block,
+        # which sit ABOVE it and so keep full-strength gradient.
+        #
+        # It must sit ABOVE the concat, not on its inputs: concat's
+        # backward hands each input a non-contiguous SLICE of the
+        # incoming gradient, and ggml_scale asserts
+        # ggml_is_contiguous(src0) (ops.cpp:4592). Wrapping x_final
+        # directly put a scale under that slice and aborted. Above the
+        # concat the scale sees the contiguous [2d, T] gradient.
+        pair   = TinyNN.tnn_concat(sess, x_final, e_n, 0)               # [2d, T]
+        pair_c = grad_scale(sess, pair, lam)
+        hp2    = TinyNN.tnn_matmul(sess, self.t_seq_mtp_proj, pair_c)   # [d, T]
         hb     = self.seq_mtp_block.build_forward(sess, hp2, ctx)
+        # The head is the OTHER backbone borrow — its gradient arrives
+        # from the logits side, not through `pair`, so it needs its own
+        # scale. In the tied case that is token_embed again, which then
+        # correctly receives lambda-scaled gradient from both routes.
         if seq_has_untied_output
-          self.t_seq_mtp_logits = TinyNN.tnn_matmul(sess, self.t_seq_output, hb)
+          self.t_seq_mtp_logits = TinyNN.tnn_matmul(sess, grad_scale(sess, self.t_seq_output, lam), hb)
         else
-          self.t_seq_mtp_logits = TinyNN.tnn_matmul(sess, self.t_seq_token_embed, hb)
+          self.t_seq_mtp_logits = TinyNN.tnn_matmul(sess, grad_scale(sess, self.t_seq_token_embed, lam), hb)
         end
         TinyNN.tnn_set_output(self.t_seq_mtp_logits)
       end

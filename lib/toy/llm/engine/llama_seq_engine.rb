@@ -274,6 +274,46 @@ class LlamaSeqEngine
     @seq_mtp
   end
 
+  # Sum of squares over EVERY MTP-owned weight — the input projection
+  # plus the block's own tensors. Emitted in run_start and run_end so a
+  # with/without comparison PROVES the module trains.
+  #
+  # This is the K4b/experts_sig lesson and it is not optional here: the
+  # MTP block is not in seq_blocks_ffi, so it needs its own optimizer
+  # arm, and if that arm were missing the module would still build,
+  # still emit a second loss, and still produce a perfectly healthy
+  # training curve — while never updating a single MTP weight. The curve
+  # cannot see that. This signature can.
+  #
+  # It must also move under --mtp-lambda 0: lambda scales the second
+  # root's contribution to the BACKBONE, not the gradient reaching the
+  # MTP weights from their own loss.
+  def mtp_sig
+    if @seq_mtp == 0
+      return 0.0
+    end
+    acc = mtp_sumsq(@seq_arch.t_seq_mtp_proj)
+    mtb = @seq_arch.seq_mtp_block
+    wi = 0
+    while wi < mtb.ft_weights.length
+      acc = acc + mtp_sumsq(mtb.ft_weights[wi])
+      wi = wi + 1
+    end
+    acc
+  end
+
+  def mtp_sumsq(t)
+    n = TinyNN.tnn_tensor_nelements(t)
+    m = TinyNN.download_row_major(@sess, t, 1, n)
+    acc = 0.0
+    k = 0
+    while k < n
+      acc = acc + m.flat[k] * m.flat[k]
+      k = k + 1
+    end
+    acc
+  end
+
   # Read by the recipe's step!: the MTP inputs (next-token ids and the
   # t+2 one-hot) only exist when the module is on.
   def t_seq_mtp_tok_ref
@@ -1684,6 +1724,11 @@ class LlamaSeqEngine
     # re-mirrored here or the module is silently never built (which is
     # exactly how it presented: a null projection into mul_mat).
     @seq_arch.seq_mtp_on     = @seq_mtp
+    # M10 (b): lambda now shapes the GRAPH (grad_scale nodes in the arch),
+    # not just a scalar on the loss root, so it has to be mirrored here
+    # for the same reason seq_mtp_on does — otherwise every run would
+    # build at the arch default of 1.0 and --mtp-lambda would be inert.
+    @seq_arch.seq_mtp_lambda = @seq_mtp_lambda
 
     out = @seq_arch.build_forward(
       @sess, @t_seq_token_ids, @t_seq_positions, @t_seq_rope_freq_factors,
@@ -1737,8 +1782,13 @@ class LlamaSeqEngine
       @t_seq_mtp_labels = TinyNN.tnn_input_2d_f32(@sess, @seq_t * @seq_b, @seq_vocab_size)
       @t_seq_mtp_loss = TinyNN.tnn_cross_entropy_loss(@sess, @seq_arch.t_seq_mtp_logits, @t_seq_mtp_labels)
       TinyNN.tnn_set_output(@t_seq_mtp_loss)
-      t_total = TinyNN.tnn_add(@sess, t_loss,
-                               TinyNN.tnn_scale(@sess, @t_seq_mtp_loss, @seq_mtp_lambda))
+      # M10 (b): the second root is UNSCALED. lambda is applied inside
+      # the arch as a gradient scale on every quantity the MTP branch
+      # borrows from the backbone, so MTP-private weights train at full
+      # strength while lambda controls only the coupling. Scaling HERE
+      # would multiply the MTP-private gradient too, which is exactly
+      # what made lambda=0 freeze the module outright.
+      t_total = TinyNN.tnn_add(@sess, t_loss, @t_seq_mtp_loss)
       TinyNN.tnn_set_output(t_total)
       TinyNN.tnn_set_loss(t_total)
       TinyNN.tnn_add_to_graph(@sess, t_loss)
@@ -1997,8 +2047,13 @@ class LlamaSeqEngine
       @t_seq_mtp_labels = TinyNN.tnn_input_2d_f32(@sess, @seq_t * @seq_b, @seq_vocab_size)
       @t_seq_mtp_loss = TinyNN.tnn_cross_entropy_loss(@sess, @seq_arch.t_seq_mtp_logits, @t_seq_mtp_labels)
       TinyNN.tnn_set_output(@t_seq_mtp_loss)
-      t_total = TinyNN.tnn_add(@sess, t_loss,
-                               TinyNN.tnn_scale(@sess, @t_seq_mtp_loss, @seq_mtp_lambda))
+      # M10 (b): the second root is UNSCALED. lambda is applied inside
+      # the arch as a gradient scale on every quantity the MTP branch
+      # borrows from the backbone, so MTP-private weights train at full
+      # strength while lambda controls only the coupling. Scaling HERE
+      # would multiply the MTP-private gradient too, which is exactly
+      # what made lambda=0 freeze the module outright.
+      t_total = TinyNN.tnn_add(@sess, t_loss, @t_seq_mtp_loss)
       TinyNN.tnn_set_output(t_total)
       TinyNN.tnn_set_loss(t_total)
       TinyNN.tnn_add_to_graph(@sess, t_loss)
