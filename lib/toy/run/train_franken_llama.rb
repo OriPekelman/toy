@@ -130,15 +130,14 @@ ATTNRES_ON = (ENV["ATTNRES"] || "") == "1"
 # K-series M10 (MTP): one extra block predicting t+2 through the tied
 # head, with a second CE root weighted by lambda. Default off = byte-null.
 MTP_ON = (ENV["FRANKEN_MTP"] || "") == "1"
-# K-series M10 is NOT FINISHED. Everything below is wired, but the
-# module's input projection currently aborts in ggml_mul_mat
-# (GGML_ASSERT(ggml_can_mul_mat) at ggml.c:3283) — see
-# docs/roadmap/m10-mtp-status-2026-08-04.md. Refuse to enable it rather
-# than hand anyone a crash; --mtp off is byte-null and unaffected.
-if MTP_ON
-  puts "toy-train-franken: --mtp is not finished — the MTP input projection aborts in ggml_mul_mat (ggml.c:3283). See docs/roadmap/m10-mtp-status-2026-08-04.md. Refusing to run rather than crash mid-training."
-  exit 1
-end
+# The module RUNS as of the projection-lens fix (the abort was e_next
+# read from the raw donor-width embedding table instead of through the
+# lens — see llama_arch.rb). --mtp off stays byte-null and
+# --mtp-lambda 0 leaves the backbone byte-identical to off. STILL
+# MISSING before M10 is complete: --mtp/--mtp-lambda on the CLI proper
+# (these env vars are the whole surface today), cost accounting for the
+# projection + extra block, t+2 accuracy in eval_ce, and the gate leg.
+# See docs/roadmap/m10-mtp-status-2026-08-04.md.
 MTP_LAMBDA = (ENV["FRANKEN_MTP_LAMBDA"] || "0.3").to_f
 if MTP_LAMBDA < 0.0
   puts "toy-train-franken: FRANKEN_MTP_LAMBDA must be >= 0"

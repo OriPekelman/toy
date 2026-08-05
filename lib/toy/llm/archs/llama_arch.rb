@@ -466,7 +466,20 @@ module Toy; module LLM; module Archs
       # uses, which is what makes this one extra block rather than a
       # second model.
       if self.seq_mtp_on == 1
-        e_next = TinyNN.tnn_get_rows(sess, self.t_seq_token_embed, self.t_seq_mtp_tok)
+        # The next-token embedding must land in MODEL space (d_model),
+        # which under the E2.3 projection lens is NOT the raw table:
+        # with seq_donor_d_in > 0 the table is donor-width and the main
+        # path projects it down (see the x_embed block above). Reading
+        # the table directly gave a d_in-wide e_next, so `pair` came out
+        # [d + d_in] instead of [2d] and the projection's mul_mat
+        # asserted. This mirrors the main path's lens exactly rather
+        # than assuming table width == d_model.
+        e_raw  = TinyNN.tnn_get_rows(sess, self.t_seq_token_embed, self.t_seq_mtp_tok)
+        if self.seq_donor_d_in > 0
+          e_next = TinyNN.tnn_matmul(sess, self.t_seq_w_proj, e_raw)
+        else
+          e_next = e_raw
+        end
         e_n    = Toy::LLM::Primitives::RMSNorm.build(sess, e_next, self.t_seq_final_norm_gamma, eps)
         pair   = TinyNN.tnn_concat(sess, x_final, e_n, 0)          # [2d, T]
         hp2    = TinyNN.tnn_matmul(sess, self.t_seq_mtp_proj, pair) # [d, T]
