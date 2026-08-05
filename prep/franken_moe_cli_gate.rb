@@ -402,6 +402,50 @@ Dir.mktmpdir("moe_cli_eval") do |dir|
   puts failures.length == n0 ? "  ok: --eval-corpus — end-of-run held-out CE (#{ce1.first.to_s.strip}); training byte-null; eval event before run_end" : "  FAIL: eval leg"
 end
 
+# ---- eval must FREEZE THE WEIGHTS, on every optimizer and under the
+# ---- toy#146 ramp (the toy#139/#146 eval-loop regression) ----
+# "lr=0 windows" was only ever enforced on the GLOBAL adamw hp vector.
+# That silently stopped being the whole story twice:
+#   - --optimizer muon/sgd: 2-D weights step through the SGD path, and
+#     t_hp_sgd kept the last TRAINING lr, so the held-out windows kept
+#     training — the metric training on its own test split. Under sgd,
+#     t_hp is unreachable from the graph and uploading it ABORTED.
+#   - --lr-schedule ramp-*: the per-layer vectors kept the training lr,
+#     so every ramped layer trained through eval.
+# Byte-null on the TRAINING curve (the leg above) cannot see any of
+# this: the damage happens after the last step event. The assertion has
+# to be that run_end's layer_sig is IDENTICAL with and without
+# --eval-corpus — i.e. the eval phase moved no weights at all.
+n0 = failures.length
+fz = %w[--steps 4 --seed 0 --shape deep --experts 4 --context 16
+        --corpus data/fineweb_gpt2_smoke.bin --moe-policy dfa-experts --lr 0.05]
+fz_ev = %w[--eval-corpus data/fineweb_gpt2_smoke.bin --eval-tokens 64]
+[["adamw", []],
+ ["muon",  %w[--optimizer muon]],
+ ["sgd",   %w[--optimizer sgd]]].each do |oname, oarg|
+  [["flat", []],
+   ["ramp", %w[--lr-schedule ramp-down --lr-lo 0.005 --lr-hi 0.05]]].each do |rname, rarg|
+    Dir.mktmpdir("moe_fz_a") do |da|
+      Dir.mktmpdir("moe_fz_b") do |db|
+        run_cli(fz + oarg + rarg, {}, da)
+        run_cli(fz + oarg + rarg + fz_ev, {}, db)
+        la = JSON.parse(File.readlines(File.join(da, "events.jsonl")).last)["layer_sig"]
+        lb = JSON.parse(File.readlines(File.join(db, "events.jsonl")).last)["layer_sig"]
+        if la.nil? || lb.nil?
+          failures << "eval-freeze(#{oname}/#{rname}): no run_end layer_sig (run died)"
+        elsif la != lb
+          d0 = (0...6).map { |i| ((lb["l#{i}"] || 0) - (la["l#{i}"] || 0)).abs }.max
+          failures << "eval-freeze(#{oname}/#{rname}): --eval-corpus MOVED the weights (max |delta| #{d0.round(3)}) — the held-out metric is training on its own split"
+        end
+      end
+    end
+  end
+end
+# The sgd arm above also covers the abort: run_cli aborts the gate on a
+# non-zero exit, so reaching this line at all means sgd + --eval-corpus
+# completed instead of dying in ggml_backend_tensor_set.
+puts failures.length == n0 ? "  ok: --eval-corpus freezes the weights — run_end layer_sig identical with/without eval on adamw/muon/sgd x flat/ramp (sgd no longer aborts)" : "  FAIL: eval-freeze leg"
+
 # ---- toy#133: --batch on the MoE CLI ----
 # Same order-swap isolation null (the mask-alloc-after-finalize bug
 # read zeros and ran unmasked — this leg pins the fix), plus B=1
@@ -1181,7 +1225,7 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
 end
 
 if failures.empty?
-  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule/attn-gate (toy#136) + optimizer (toy#139) + donor (toy#140) + freeze-experts (toy#141) + latent-moe (toy#142) + block-dfa (toy#143) + situ-glu experts (K4b/M6) + shape-deep (toy#145) + lr-schedule (toy#146) + deep-top1 per-layer routers (toy#147) + lr-control reactive (toy#148) + bundle (toy#120/#121)"
+  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce + eval-freeze (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule/attn-gate (toy#136) + optimizer (toy#139) + donor (toy#140) + freeze-experts (toy#141) + latent-moe (toy#142) + block-dfa (toy#143) + situ-glu experts (K4b/M6) + shape-deep (toy#145) + lr-schedule (toy#146) + deep-top1 per-layer routers (toy#147) + lr-control reactive (toy#148) + bundle (toy#120/#121)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe-cli]: #{f}" }

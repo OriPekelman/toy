@@ -1850,11 +1850,29 @@ module Toy
           end
 
           # toy#130: end-of-run held-out eval (lr=0 windows; weights
-          # frozen — AdamW with lr=0 is a weight no-op).
+          # frozen — an optimizer step at lr=0 is a weight no-op).
+          #
+          # "lr=0" HAS TO MEAN EVERY hp VECTOR THE GRAPH CAN REACH.
+          # This loop used to zero only the global adamw vector, which
+          # was correct while that was the only one. It stopped being
+          # correct twice:
+          #   - toy#139 (--optimizer): under muon most 2-D weights step
+          #     through the SGD path, and t_hp_sgd still held the last
+          #     TRAINING lr — so the held-out windows kept training, on
+          #     the eval split, i.e. the metric trained on its own test
+          #     data. Under sgd it was worse: t_hp is then unreachable
+          #     from the graph and has no buffer, so uploading it
+          #     ABORTED inside ggml_backend_tensor_set.
+          #   - toy#146 (--lr-schedule): the per-layer vectors likewise
+          #     kept the last training lr, so every ramped layer trained
+          #     through eval.
+          # The guards below therefore MIRROR the training loop's
+          # opt_code/lr_ramp guards exactly — same conditions, lr 0.
           if ev_corpus.length > 0
             ev_base  = ToyCorpusLoader.data_offset(ev_corpus)
             ev_bytes = File.size(ev_corpus)
             ev_hp = [0.0, b1, b2, 1.0e-8, 0.0, b1, b2]
+            ev_hp_sgd = [0.0, 0.0]
             ev_want = ev_tokens / tv
             ev_sum = 0.0
             ev_done = 0
@@ -1879,7 +1897,24 @@ module Toy
               TinyNNCuda.tnn_graph_reset_grads_only(sess)
               TinyNNCuda.upload_int_array(sess, t_tok, ev_ids)
               TinyNNCuda.tnn_upload_from_float_array(sess, t_labels, ev_lab.flat, vocabv * tv)
-              TinyNNCuda.tnn_upload_from_float_array(sess, t_hp, ev_hp, 7)
+              if opt_code != 2
+                TinyNNCuda.tnn_upload_from_float_array(sess, t_hp, ev_hp, 7)
+              end
+              if opt_code != 0
+                TinyNNCuda.tnn_upload_from_float_array(sess, t_hp_sgd, ev_hp_sgd, 2)
+              end
+              if lr_ramp
+                elp = 0
+                while elp < n_layers
+                  if opt_code != 2
+                    TinyNNCuda.tnn_upload_from_float_array(sess, tw.t_hps[elp], ev_hp, 7)
+                  end
+                  if opt_code != 0
+                    TinyNNCuda.tnn_upload_from_float_array(sess, tw.t_hps_sgd[elp], ev_hp_sgd, 2)
+                  end
+                  elp = elp + 1
+                end
+              end
               if top1
                 TinyNNCuda.tnn_upload_from_float_array(sess, t_f, fvec, nev)
               end
