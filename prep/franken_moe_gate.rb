@@ -38,6 +38,14 @@ unless File.executable?(RUNNER)
 end
 
 failures = []
+# LEG BOOKKEEPING: every leg records the failure count at its START in
+# `n0` and summarises with `failures.length == n0`, so each leg reports
+# on ITS OWN assertions. Legs used to summarise with `failures.empty?`,
+# which made every later leg print FAIL once ANY earlier leg had failed
+# — misleading exactly when you are debugging. `n0` is seeded at top
+# level so re-assignments inside blocks mutate the outer local.
+n0 = 0
+n0 = failures.length
 
 # ---- 1. twin parity ----
 out = run_moe("chain", 8)
@@ -49,7 +57,8 @@ out.each_line do |line|
   failures << "twin-parity diverged: #{line.strip}" if m.nil? || m[1] != m[2]
 end
 failures << "twin-parity: no step lines" if steps_seen == 0
-puts failures.empty? ? "  ok: twin-parity — #{steps_seen} steps byte-identical (chain)" : "  FAIL: twin-parity"
+puts failures.length == n0 ? "  ok: twin-parity — #{steps_seen} steps byte-identical (chain)" : "  FAIL: twin-parity"
+n0 = failures.length
 
 # ---- 2-4. dfa-experts ----
 out = run_moe("dfa-experts", 60)
@@ -81,7 +90,8 @@ end
 failures << "alignment: #{align_count} lines (want 240)" unless align_count == 240
 failures << "alignment: #{align_bad} malformed" unless align_bad == 0
 failures << "router: #{router_bad}/#{router_count} unhealthy g0_mean" unless router_bad == 0 && router_count == 60
-puts failures.empty? ? "  ok: dfa-experts — lane_b CE #{first_b&.round(3)} -> #{last_b&.round(4)} (BP lane -> #{last_a&.round(4)}); router healthy" : "  FAIL: dfa-experts leg"
+puts failures.length == n0 ? "  ok: dfa-experts — lane_b CE #{first_b&.round(3)} -> #{last_b&.round(4)} (BP lane -> #{last_a&.round(4)}); router healthy" : "  FAIL: dfa-experts leg"
+n0 = failures.length
 
 # ---- top1 hard-routing legs (toy#109 hard-routed MoE) ----
 out = run_moe("dfa-experts", 40)  # dense reference for comparison
@@ -99,7 +109,8 @@ routes = t1a[0].lines.select { |l| l.start_with?("route ") }
                .map { |l| l[/e0_share=(\S+)/, 1].to_f }
 failures << "top1: no route telemetry" if routes.empty?
 failures << "top1: malformed shares" unless routes.all? { |r| r >= 0.0 && r <= 1.0 }
-puts failures.empty? ? "  ok: top1 — trains (#{t1_losses.first.round(3)} -> #{t1_losses.last.round(3)}), deterministic, #{routes.length} route lines (final e0_share=#{routes.last})" : "  FAIL: top1 leg"
+puts failures.length == n0 ? "  ok: top1 — trains (#{t1_losses.first.round(3)} -> #{t1_losses.last.round(3)}), deterministic, #{routes.length} route lines (final e0_share=#{routes.last})" : "  FAIL: top1 leg"
+n0 = failures.length
 
 # ---- top1 load-balancing aux legs (the router-collapse fix) ----
 # Control contrast: WITHOUT aux the DFA-fed router starves one expert
@@ -131,7 +142,7 @@ auxbals = x1[0].lines.select { |l| l.start_with?("auxbal ") }
                 .map { |l| l[/loss=(\S+)/, 1].to_f }
 failures << "aux: #{auxbals.length} auxbal lines (want 120)" unless auxbals.length == 120
 failures << "aux: malformed auxbal values" unless auxbals.all? { |v| v.finite? && v >= 0.0 }
-puts failures.empty? ? "  ok: aux — no-aux control collapses; aux=0.05 breaks starvation (e0/e1 step-majorities #{e0_maj}/#{e1_maj} of #{tail.length}), trains (#{ax_losses.first.round(3)} -> #{ax_losses.last.round(3)}), deterministic, 120 auxbal lines" : "  FAIL: aux leg"
+puts failures.length == n0 ? "  ok: aux — no-aux control collapses; aux=0.05 breaks starvation (e0/e1 step-majorities #{e0_maj}/#{e1_maj} of #{tail.length}), trains (#{ax_losses.first.round(3)} -> #{ax_losses.last.round(3)}), deterministic, 120 auxbal lines" : "  FAIL: aux leg"
 
 # ---- 5. byte-repro ----
 r1 = run_moe("dfa-experts", 10)

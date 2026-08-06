@@ -40,6 +40,14 @@ def losses(out)
 end
 
 failures = []
+# LEG BOOKKEEPING: every leg records the failure count at its START in
+# `n0` and summarises with `failures.length == n0`, so each leg reports
+# on ITS OWN assertions. Legs used to summarise with `failures.empty?`,
+# which made every later leg print FAIL once ANY earlier leg had failed
+# — misleading exactly when you are debugging. `n0` is seeded at top
+# level so re-assignments inside blocks mutate the outer local.
+n0 = 0
+n0 = failures.length
 
 # ---- 1. lanes: train + deterministic 2x ----
 LANES = [
@@ -58,7 +66,7 @@ LANES.each do |name, args|
   lane_first[name] = a.first
 end
 failures << "lanes: dfa-experts identical to chain (policy dead on cuda)" if lane_first.empty?
-puts failures.empty? ? "  ok: 5 lanes train deterministically on CUDA (dense rides vendor-patch 0012)" : "  FAIL: lanes"
+puts failures.length == n0 ? "  ok: 5 lanes train deterministically on CUDA (dense rides vendor-patch 0012)" : "  FAIL: lanes"
 
 # ---- 2. top1 collapse + bp-spine forward-identity ----
 n0 = failures.length

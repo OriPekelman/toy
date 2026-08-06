@@ -34,6 +34,14 @@ def curve(out)
 end
 
 failures = []
+# LEG BOOKKEEPING: every leg records the failure count at its START in
+# `n0` and summarises with `failures.length == n0`, so each leg reports
+# on ITS OWN assertions. Legs used to summarise with `failures.empty?`,
+# which made every later leg print FAIL once ANY earlier leg had failed
+# — misleading exactly when you are debugging. `n0` is seeded at top
+# level so re-assignments inside blocks mutate the outer local.
+n0 = 0
+n0 = failures.length
 
 # ---- 1. empty-policy parity, both seeds ----
 [0, 1].each do |seed|
@@ -56,7 +64,8 @@ failures << "dfa: did not decrease (#{losses.first} -> #{losses.last})" unless l
 failures << "dfa: byte-repro failed (CUDA determinism)" unless d1 == d2
 ec = curve(run_bin(FRK, { "STEPS" => "8" }))
 failures << "dfa: identical to empty policy" if dc == ec
-puts failures.empty? ? "  ok: dfa arm trains (#{losses.first.round(3)} -> #{losses.last.round(3)}), deterministic, differs from chain" : "  FAIL: dfa arm"
+puts failures.length == n0 ? "  ok: dfa arm trains (#{losses.first.round(3)} -> #{losses.last.round(3)}), deterministic, differs from chain" : "  FAIL: dfa arm"
+n0 = failures.length
 
 # ---- 3. bundle ----
 Dir.mktmpdir("franken_cuda_gate") do |dir|
@@ -78,7 +87,8 @@ Dir.mktmpdir("franken_cuda_gate") do |dir|
   fj = File.join(dir, "flow.json")
   flow = File.file?(fj) ? (JSON.parse(File.read(fj)) rescue nil) : nil
   failures << "bundle: flow.json missing/invalid" if flow.nil? || flow["format"] != "toy/v1" || !flow["nodes"].is_a?(Array) || flow["nodes"].empty?
-  puts failures.empty? ? "  ok: bundle — provenance + 60 align events + run_end + checkpoint (CPU write-seam)" : "  FAIL: bundle"
+  puts failures.length == n0 ? "  ok: bundle — provenance + 60 align events + run_end + checkpoint (CPU write-seam)" : "  FAIL: bundle"
+n0 = failures.length
 end
 
 # ---- toy#124/#122: shape + corpus on the CUDA twin (determinism-scoped;
@@ -88,7 +98,8 @@ w2 = run_bin(FRK, { "FRANKEN_SHAPE" => "wide", "CORPUS" => "data/ts_seqs.bin", "
 failures << "shape-wide: cuda not deterministic" unless w1 == w2
 wl = curve(w1).map { |l| l[/loss=(\S+)/, 1].to_f }
 failures << "shape-wide: NaN/short" unless wl.length == 6 && wl.none?(&:nan?)
-puts failures.empty? ? "  ok: --shape wide + --corpus on CUDA — deterministic, trains" : "  FAIL: cuda shape leg"
+puts failures.length == n0 ? "  ok: --shape wide + --corpus on CUDA — deterministic, trains" : "  FAIL: cuda shape leg"
+n0 = failures.length
 
 # ---- toy#126: lr/warmup on the CUDA twin (determinism-scoped) ----
 l1 = run_bin(FRK, { "FRANKEN_LR" => "0.01", "FRANKEN_WARMUP" => "3", "STEPS" => "6" })
@@ -96,7 +107,8 @@ l2 = run_bin(FRK, { "FRANKEN_LR" => "0.01", "FRANKEN_WARMUP" => "3", "STEPS" => 
 failures << "lr/warmup: cuda not deterministic" unless l1 == l2
 d6 = run_bin(FRK, { "STEPS" => "6" })
 failures << "lr/warmup: curve identical to default (knob dead on cuda)" if curve(l1) == curve(d6)
-puts failures.empty? ? "  ok: --lr/--warmup on CUDA — deterministic, moves the curve" : "  FAIL: cuda lr leg"
+puts failures.length == n0 ? "  ok: --lr/--warmup on CUDA — deterministic, moves the curve" : "  FAIL: cuda lr leg"
+n0 = failures.length
 
 # ---- toy#129 item 1: TOYC pack + context on the CUDA twin ----
 abort "franken gate: data/fineweb_gpt2_smoke.bin missing — generate it: uv run prep/pretokenize_pack.py --tokens 200_000 --out data/fineweb_gpt2_smoke.bin" unless File.file?(File.join(ROOT, "data", "fineweb_gpt2_smoke.bin"))
@@ -104,20 +116,23 @@ pkc_env = { "STEPS" => "3", "CORPUS" => "data/fineweb_gpt2_smoke.bin", "FRANKEN_
 pkc1 = curve(run_bin(FRK, pkc_env))
 pkc2 = curve(run_bin(FRK, pkc_env))
 failures << "pack: cuda not deterministic" unless pkc1 == pkc2 && pkc1.length == 3
-puts failures.empty? ? "  ok: TOYC pack + ctx 64 on CUDA — deterministic" : "  FAIL: cuda pack leg"
+puts failures.length == n0 ? "  ok: TOYC pack + ctx 64 on CUDA — deterministic" : "  FAIL: cuda pack leg"
+n0 = failures.length
 
 # ---- toy#133: batch on the CUDA twin (determinism-scoped) ----
 bt1 = curve(run_bin(FRK, { "STEPS" => "3", "CORPUS" => "data/fineweb_gpt2_smoke.bin", "FRANKEN_BATCH" => "4" }))
 bt2 = curve(run_bin(FRK, { "STEPS" => "3", "CORPUS" => "data/fineweb_gpt2_smoke.bin", "FRANKEN_BATCH" => "4" }))
 failures << "batch: cuda B=4 not deterministic" unless bt1 == bt2 && bt1.length == 3
-puts failures.empty? ? "  ok: --batch B=4 on CUDA — deterministic" : "  FAIL: cuda batch leg"
+puts failures.length == n0 ? "  ok: --batch B=4 on CUDA — deterministic" : "  FAIL: cuda batch leg"
+n0 = failures.length
 
 # ---- toy#129 item 2: no-shadow on the CUDA twin (the applied-updates null) ----
 nsc_env = { "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42", "STEPS" => "6" }
 shc = curve(run_bin(FRK, nsc_env))
 nsc = curve(run_bin(FRK, nsc_env.merge("FRANKEN_NO_SHADOW" => "1")))
 failures << "no-shadow: cuda applied updates differ from shadow build" unless shc == nsc && nsc.length == 6
-puts failures.empty? ? "  ok: --no-shadow on CUDA — applied updates byte-equal shadow" : "  FAIL: cuda no-shadow leg"
+puts failures.length == n0 ? "  ok: --no-shadow on CUDA — applied updates byte-equal shadow" : "  FAIL: cuda no-shadow leg"
+n0 = failures.length
 
 # ---- toy#129 item 3: ckpt-every on the CUDA twin (sched-null) ----
 ckc_base = curve(run_bin(FRK, { "STEPS" => "5", "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42" }))
@@ -126,7 +141,7 @@ Dir.mktmpdir("franken_cuda_ck") do |dir|
   failures << "ckpt-every: cuda curve differs from no-ckpt run" unless ckc == ckc_base
   failures << "ckpt-every: missing mid-run checkpoint" unless File.file?(File.join(dir, "weights", "step_2.gguf"))
 end
-puts failures.empty? ? "  ok: --ckpt-every on CUDA — boundary checkpoint + sched-null curve" : "  FAIL: cuda ckpt leg"
+puts failures.length == n0 ? "  ok: --ckpt-every on CUDA — boundary checkpoint + sched-null curve" : "  FAIL: cuda ckpt leg"
 
 if failures.empty?
   puts "GATE PASS [franken-llama-cuda]: parity(seed 0+1) + dfa-arm + determinism + bundle + shape/corpus + lr/warmup + no-shadow (toy#109/#122/#124/#126/#129 CUDA leg)"

@@ -35,6 +35,14 @@ unless File.executable?(RUNNER)
 end
 
 failures = []
+# LEG BOOKKEEPING: every leg records the failure count at its START in
+# `n0` and summarises with `failures.length == n0`, so each leg reports
+# on ITS OWN assertions. Legs used to summarise with `failures.empty?`,
+# which made every later leg print FAIL once ANY earlier leg had failed
+# — misleading exactly when you are debugging. `n0` is seeded at top
+# level so re-assignments inside blocks mutate the outer local.
+n0 = 0
+n0 = failures.length
 
 # ---- 1. twin parity ----
 out = run_franken("chain,chain", 8)
@@ -76,7 +84,7 @@ end
 expected_aligns = 60 * 8
 failures << "alignment: #{align_count} lines (want #{expected_aligns})" unless align_count == expected_aligns
 failures << "alignment: #{align_bad} malformed cos values" unless align_bad == 0
-puts failures.empty? ? "  ok: dfa,dfa — lane_b CE #{first_b&.round(3)} -> #{last_b&.round(3)}; #{align_count} well-formed align lines" : "  FAIL: dfa leg"
+puts failures.length == n0 ? "  ok: dfa,dfa — lane_b CE #{first_b&.round(3)} -> #{last_b&.round(3)}; #{align_count} well-formed align lines" : "  FAIL: dfa leg"
 
 # ---- P3 combiner legs ----
 # mix(1.0) must byte-equal pure chain (lane parity), the strong null.

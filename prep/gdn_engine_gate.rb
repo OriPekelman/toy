@@ -32,6 +32,14 @@ unless File.executable?(RUNNER)
 end
 
 failures = []
+# LEG BOOKKEEPING: every leg records the failure count at its START in
+# `n0` and summarises with `failures.length == n0`, so each leg reports
+# on ITS OWN assertions. Legs used to summarise with `failures.empty?`,
+# which made every later leg print FAIL once ANY earlier leg had failed
+# — misleading exactly when you are debugging. `n0` is seeded at top
+# level so re-assignments inside blocks mutate the outer local.
+n0 = 0
+n0 = failures.length
 
 # ---- 1. all-attention byte-exact ----
 out, st = run_train({ "STEPS" => "5", "SEED" => "0" })
@@ -39,7 +47,8 @@ curve = out.lines.select { |l| l.start_with?("step ") }
 expect = File.readlines(FIXTURE).reject { |l| l.start_with?("#") || l.strip.empty? }
 failures << "all-attention: runner exited #{st.exitstatus}" unless st.success?
 failures << "all-attention: curve != train_baseline.txt" unless curve == expect
-puts failures.empty? ? "  ok: all-attention byte-equals train_baseline.txt (corruption gate)" : "  FAIL: all-attention"
+puts failures.length == n0 ? "  ok: all-attention byte-equals train_baseline.txt (corruption gate)" : "  FAIL: all-attention"
+n0 = failures.length
 
 # ---- 2. GDN trains ----
 out, st = run_train({ "GDN_LAYERS" => "1" })
@@ -52,7 +61,7 @@ if losses.length == 8
 else
   failures << "gdn: #{losses.length} step lines (want 8)"
 end
-puts failures.empty? ? "  ok: GDN_LAYERS=1 trains through the engine (#{losses.first&.round(3)} -> #{losses.last&.round(3)})" : "  FAIL: gdn training"
+puts failures.length == n0 ? "  ok: GDN_LAYERS=1 trains through the engine (#{losses.first&.round(3)} -> #{losses.last&.round(3)})" : "  FAIL: gdn training"
 
 # ---- 3. seed=0 trains (toy#114 mixer) ----
 out, st = run_train({ "GDN_LAYERS" => "1", "SEED" => "0" })

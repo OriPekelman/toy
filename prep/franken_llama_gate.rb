@@ -44,6 +44,13 @@ unless File.executable?(RUNNER)
 end
 
 failures = []
+# LEG BOOKKEEPING: every leg records the failure count at its START in
+# `n0` and summarises with `failures.length == n0`, so each leg reports
+# on ITS OWN assertions. Legs used to summarise with `failures.empty?`,
+# which made every later leg print FAIL once ANY earlier leg had failed
+# — misleading exactly when you are debugging. `n0` is seeded at top
+# level so re-assignments inside blocks mutate the outer local.
+n0 = 0
 
 # ---- 1. F0 byte-parity ----
 f0_out = run_franken_llama({}, nil)
@@ -115,6 +122,7 @@ Dir.mktmpdir("franken_llama_gate") do |dir|
     failures << "bundle: no flow.json"
   end
   puts "  ok: bundle — run_start(franken provenance) + 5 steps + 60 align + run_end + checkpoint; dfa curve differs" if failures.empty?
+n0 = failures.length
 end
 
 # ---- seed!=0 parity (toy#113): franken empty-policy must equal
@@ -174,7 +182,8 @@ failures << "corpus: not deterministic" unless c1 == c2
 failures << "corpus: only #{c_curve.length} steps" unless c_curve.length == 8
 d_curve = run_franken_llama({ "STEPS" => "8" }, nil).lines.select { |l| l.start_with?("step ") }
 failures << "corpus: curve identical to fixed-seq feed (stream not live)" if c_curve == d_curve
-puts failures.empty? ? "  ok: --corpus streams (deterministic, differs from fixed-seq; default feed untouched)" : "  FAIL: corpus leg"
+puts failures.length == n0 ? "  ok: --corpus streams (deterministic, differs from fixed-seq; default feed untouched)" : "  FAIL: corpus leg"
+n0 = failures.length
 
 # align-every thinning: N=3 over 6 steps -> emissions at steps 1,4 ->
 # 12 weights x 2 = 24 align events; N=1 == legacy per-step (72).
@@ -189,7 +198,8 @@ Dir.mktmpdir("franken_ae_gate") do |dir|
   failures << "align-every: wrong steps #{steps_seen.inspect} (want [1,4])" unless steps_seen == [1, 4]
   failures << "align-every: step events thinned too (#{evs.count { |e| e['kind'] == 'step' }})" unless evs.count { |e| e["kind"] == "step" } == 6
 end
-puts failures.empty? ? "  ok: --align-every thins align emissions (24 @ N=3/6 steps; step events untouched)" : "  FAIL: align-every leg"
+puts failures.length == n0 ? "  ok: --align-every thins align emissions (24 @ N=3/6 steps; step events untouched)" : "  FAIL: align-every leg"
+n0 = failures.length
 
 # ---- toy#126: --lr / --warmup (the F7b LR-sweep surface) ----
 # --lr: deterministic, actually moves the curve (default 0.001 stays
@@ -216,7 +226,8 @@ end
 wu2 = run_franken_llama(wu_env, nil).lines.select { |l| l.start_with?("step ") }
 failures << "warmup: not deterministic" unless wu1 == wu2
 failures << "warmup: curve identical to flat lr (ramp dead)" if wu1 == lr1
-puts failures.empty? ? "  ok: --lr moves the curve (deterministic); --warmup ramps to LR @N (events pin the ramp, curve differs from flat)" : "  FAIL: lr/warmup leg"
+puts failures.length == n0 ? "  ok: --lr moves the curve (deterministic); --warmup ramps to LR @N (events pin the ramp, curve differs from flat)" : "  FAIL: lr/warmup leg"
+n0 = failures.length
 
 # ---- toy#124: shape presets, byte-pinned per preset ----
 %w[wide deep].each do |sh|
@@ -261,7 +272,7 @@ failures << "pack: conflicting FRANKEN_VOCAB not rejected" if stc.success?
 hv1 = run_franken_llama({ "STEPS" => "3", "CORPUS" => "data/ts_seqs.bin", "FRANKEN_VOCAB" => "627" }, nil)
 hv0 = run_franken_llama({ "STEPS" => "3", "CORPUS" => "data/ts_seqs.bin" }, nil)
 failures << "pack: explicit FRANKEN_VOCAB=627 differs from implicit (headerless null broken)" unless hv1.lines.select { |l| l.start_with?("step ") } == hv0.lines.select { |l| l.start_with?("step ") }
-puts failures.empty? ? "  ok: TOYC pack — vocab 50257 from header, ctx 64, deterministic; vocab-conflict rejected; headerless --vocab null" : "  FAIL: pack leg"
+puts failures.length == n0 ? "  ok: TOYC pack — vocab 50257 from header, ctx 64, deterministic; vocab-conflict rejected; headerless --vocab null" : "  FAIL: pack leg"
 
 # ---- toy#133: --batch (B corpus windows per step) ----
 # THE isolation null: with distinct windows W and X, batched [W,X] and
@@ -633,6 +644,7 @@ failures << "muon: step-1 differs from adamw (step 1 is pre-update)" unless m1.f
 _om, stm = Open3.capture2e({ "STEPS" => "1", "FRANKEN_OPTIMIZER" => "sgd" }, RUNNER, chdir: ROOT)
 failures << "muon: sgd not rejected on the llama lane" if stm.success?
 puts failures.length == n0 ? "  ok: per-head Muon — trains (#{ml.first.round(3)} -> #{ml.last.round(3)}), deterministic, differs from adamw, step-1 pre-update identical; sgd rejected" : "  FAIL: muon leg"
+n0 = failures.length
 
 # ---- toy#129 item 2: --no-shadow ----
 # THE null (the roadmap's own criterion): applied updates byte-identical
@@ -658,7 +670,8 @@ _o1, st1 = Open3.capture2e({ "STEPS" => "1", "FRANKEN_POLICY" => "chain,dfa", "F
 failures << "no-shadow: ALIGN + NO_SHADOW not rejected" if st1.success?
 _o2, st2 = Open3.capture2e({ "STEPS" => "1", "FRANKEN_POLICY" => "chain,maskdfa:0.5", "FRANKEN_B_SEED" => "42", "FRANKEN_NO_SHADOW" => "1" }, RUNNER, chdir: ROOT)
 failures << "no-shadow: mask mode + NO_SHADOW not rejected" if st2.success?
-puts failures.empty? ? "  ok: --no-shadow — applied updates byte-equal shadow (the null), provenance shadow=false, align/mask guards fail loud" : "  FAIL: no-shadow leg"
+puts failures.length == n0 ? "  ok: --no-shadow — applied updates byte-equal shadow (the null), provenance shadow=false, align/mask guards fail loud" : "  FAIL: no-shadow leg"
+n0 = failures.length
 
 # ---- toy#129 item 3 (enabling seam): --ckpt-every ----
 # Mid-run checkpoints at boundaries + THE null: the write (downloads +
@@ -674,7 +687,7 @@ Dir.mktmpdir("franken_ck_gate") do |dir|
     failures << "ckpt-every: missing weights/#{ck}" unless File.file?(File.join(dir, "weights", ck))
   end
 end
-puts failures.empty? ? "  ok: --ckpt-every — boundary checkpoints written; curve byte-equals no-ckpt (write is sched-null)" : "  FAIL: ckpt-every leg"
+puts failures.length == n0 ? "  ok: --ckpt-every — boundary checkpoints written; curve byte-equals no-ckpt (write is sched-null)" : "  FAIL: ckpt-every leg"
 
 # ---- 4. byte-repro ----
 r1 = run_franken_llama({ "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42" }, nil)

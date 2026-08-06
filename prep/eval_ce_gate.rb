@@ -34,6 +34,14 @@ def run_eval(env)
 end
 
 failures = []
+# LEG BOOKKEEPING: every leg records the failure count at its START in
+# `n0` and summarises with `failures.length == n0`, so each leg reports
+# on ITS OWN assertions. Legs used to summarise with `failures.empty?`,
+# which made every later leg print FAIL once ANY earlier leg had failed
+# — misleading exactly when you are debugging. `n0` is seeded at top
+# level so re-assignments inside blocks mutate the outer local.
+n0 = 0
+n0 = failures.length
 
 Dir.mktmpdir("eval_ce_gate") do |dir|
   FileUtils.mkdir_p(File.join(dir, "weights"))
@@ -59,7 +67,7 @@ Dir.mktmpdir("eval_ce_gate") do |dir|
     failures << "eval: ce #{ce} outside the sanity band (5, 12.5)" unless ce > 5.0 && ce < 12.5
     failures << "eval: wrong window count #{l1.first}" unless l1.first.include?("windows=16 tokens=512")
   end
-  puts failures.empty? ? "  ok: 5-step checkpoint evals deterministically (#{l1.first.to_s.strip})" : "  FAIL: sanity/determinism"
+  puts failures.length == n0 ? "  ok: 5-step checkpoint evals deterministically (#{l1.first.to_s.strip})" : "  FAIL: sanity/determinism"
 
   # ---- 3. bundle ----
   n0 = failures.length

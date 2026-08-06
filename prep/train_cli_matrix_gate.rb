@@ -22,6 +22,14 @@ def probe(args)
 end
 
 failures = []
+# LEG BOOKKEEPING: every leg records the failure count at its START in
+# `n0` and summarises with `failures.length == n0`, so each leg reports
+# on ITS OWN assertions. Legs used to summarise with `failures.empty?`,
+# which made every later leg print FAIL once ANY earlier leg had failed
+# — misleading exactly when you are debugging. `n0` is seeded at top
+# level so re-assignments inside blocks mutate the outer local.
+n0 = 0
+n0 = failures.length
 
 # ---- rejection side: one wrong-recipe probe per matrix row ----
 REJECT = [
@@ -69,7 +77,7 @@ REJECT.each do |args, label|
   end
   failures << "matrix: #{args.join(' ')} — expected exit 2 + 'only valid with' (#{label}); got #{st.exitstatus}:\n#{out.lines.last(2).join}"
 end
-puts failures.empty? ? "  ok: #{REJECT.length} wrong-recipe probes all rejected by the matrix" : "  FAIL: rejection side"
+puts failures.length == n0 ? "  ok: #{REJECT.length} wrong-recipe probes all rejected by the matrix" : "  FAIL: rejection side"
 
 # ---- acceptance side: right-recipe probes get PAST the matrix ----
 n0 = failures.length
