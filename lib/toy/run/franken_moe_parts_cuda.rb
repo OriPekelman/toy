@@ -472,6 +472,11 @@ module Toy
           attr_accessor :tap_h2, :tap_a1, :tap_a2, :tap_ah, :tap_ctx, :t_onehots
           attr_accessor :t_rlogits
           attr_accessor :tap_as
+          # toy#150: the expert DOWN output (width ew_b). Parallel to
+          # tap_as, same layer-major l * E + i indexing. Kolen-Pollack
+          # feedback needs an activation at each B's OUTPUT width, and
+          # b_downs is the one B whose width had no tap.
+          attr_accessor :tap_os
           # toy#145: every activation tap is now PER LAYER — flat arrays
           # indexed by layer (tap_as is layer-major, l * E + i). The
           # scalar tap_a1/tap_a2/tap_ah/tap_ctx/tap_h2 accessors are kept
@@ -510,6 +515,7 @@ module Toy
             @t_onehots = np
             @t_rlogits = np   # toy#136: raw router logits (QB reads margins)
             @tap_as    = [np]; @tap_as.pop   # toy#128: per-expert dense acts
+            @tap_os    = [np]; @tap_os.pop   # toy#150: per-expert down outputs
             @tap_zs    = [np]; @tap_zs.pop
             @tap_blks  = [np]; @tap_blks.pop
             @tap_ahs   = [np]; @tap_ahs.pop
@@ -728,7 +734,8 @@ module Toy
               tw.tap_a2 = a_i
             end
             o_i = TinyNNCuda.tnn_matmul(sess, tw.pp[down_idx(l, ei)], a_i)   # [ℓ or DM, T]
-            gated_i = TinyNNCuda.tnn_mul(sess, o_i, g_i)  # broadcast * [1,T]
+            tw.tap_os.push(o_i)
+          gated_i = TinyNNCuda.tnn_mul(sess, o_i, g_i)  # broadcast * [1,T]
             if ei == 0
               acc = gated_i
             else
