@@ -446,6 +446,64 @@ end
 # completed instead of dying in ggml_backend_tensor_set.
 puts failures.length == n0 ? "  ok: --eval-corpus freezes the weights — run_end layer_sig identical with/without eval on adamw/muon/sgd x flat/ramp (sgd no longer aborts)" : "  FAIL: eval-freeze leg"
 
+# ---- toy#149: eval memory must NOT grow with the window count ----
+# The eval loop called next_token_guarded_batched per window, which
+# allocates a fresh tv x vocab Mat each time. At the F-series shape
+# (context 256 x batch 32 = 8192 tokens, vocab 50257) that is 3.3 GB of
+# f64 PER WINDOW, so a 64-window eval asked for ~210 GB and Tao's F9m
+# muon slice was OOM-killed (rc=137). Peak RSS grew with WINDOW COUNT,
+# which is exactly what made shrinking --eval-tokens look like a fix
+# rather than a smaller eval set.
+#
+# The eval now mutates ONE buffer incrementally, the same trick the
+# training loop uses (toy#133) and that eval_ce.rb's own header already
+# documents. The assertion is the RATIO of peak RSS at 16x the windows:
+# pre-fix it was ~3x, post-fix it is 1.00x. Gated loosely at < 1.30 so
+# it tests the LEAK, not allocator noise.
+#
+# Linux-only: /usr/bin/time -f is GNU-specific (BSD/macOS uses -l), and
+# the cross-platform gate discipline says pin behaviour, not tooling.
+n0 = failures.length
+if RUBY_PLATFORM =~ /linux/ && File.executable?("/usr/bin/time")
+  Dir.mktmpdir("moe_evalmem") do |dir|
+    run_cli(%w[--steps 2 --seed 0 --experts 4 --context 64 --batch 4
+               --corpus data/fineweb_gpt2_smoke.bin --moe-policy dfa-experts
+               --ckpt-every 2], {}, dir)
+    ck = File.join(dir, "weights", "step_2.gguf")
+    if !File.file?(ck)
+      failures << "eval-mem: no checkpoint to eval"
+    else
+      peak = lambda do |tokens|
+        out, _st = Open3.capture2e(
+          CLEAN, "/usr/bin/time", "-f", "%M",
+          File.join(ROOT, "bin", "toy"), "train", "franken-moe",
+          "--steps", "0", "--seed", "0", "--experts", "4",
+          "--context", "64", "--batch", "4",
+          "--corpus", "data/fineweb_gpt2_smoke.bin", "--moe-policy", "dfa-experts",
+          "--load-ckpt", ck,
+          "--eval-corpus", "data/fineweb_gpt2_smoke.bin",
+          "--eval-tokens", tokens.to_s, chdir: ROOT)
+        [out[/^(\d+)\s*$/, 1].to_i, out]
+      end
+      small, o_s = peak.call(1024)     # 4 windows
+      big,   o_b = peak.call(16384)    # 64 windows
+      # the separate --load-ckpt eval must WORK — Tao#149 believed it did
+      # not exist for franken-moe checkpoints; it does, and it is the
+      # supported way to score them off-line.
+      failures << "eval-mem: --load-ckpt eval produced no eval_ce line\n#{o_b.lines.last(4).join}" unless o_b.include?("eval_ce:")
+      if small <= 0 || big <= 0
+        failures << "eval-mem: could not read peak RSS (small=#{small} big=#{big})"
+      else
+        ratio = big.to_f / small.to_f
+        failures << "eval-mem: peak RSS grew #{ratio.round(2)}x for 16x the windows (#{small}KB -> #{big}KB) — the per-window label allocation is back" unless ratio < 1.30
+      end
+    end
+  end
+  puts failures.length == n0 ? "  ok: eval memory is flat in the window count (--load-ckpt eval works; peak RSS ratio < 1.3 at 16x windows)" : "  FAIL: eval-mem leg"
+else
+  puts "  skip: eval-mem leg (needs Linux + GNU /usr/bin/time)"
+end
+
 # ---- toy#133: --batch on the MoE CLI ----
 # Same order-swap isolation null (the mask-alloc-after-finalize bug
 # read zeros and ran unmasked — this leg pins the fix), plus B=1
@@ -1225,7 +1283,7 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
 end
 
 if failures.empty?
-  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce + eval-freeze (toy#130) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule/attn-gate (toy#136) + optimizer (toy#139) + donor (toy#140) + freeze-experts (toy#141) + latent-moe (toy#142) + block-dfa (toy#143) + situ-glu experts (K4b/M6) + shape-deep (toy#145) + lr-schedule (toy#146) + deep-top1 per-layer routers (toy#147) + lr-control reactive (toy#148) + bundle (toy#120/#121)"
+  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce + eval-freeze + eval-mem (toy#130/#149) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule/attn-gate (toy#136) + optimizer (toy#139) + donor (toy#140) + freeze-experts (toy#141) + latent-moe (toy#142) + block-dfa (toy#143) + situ-glu experts (K4b/M6) + shape-deep (toy#145) + lr-schedule (toy#146) + deep-top1 per-layer routers (toy#147) + lr-control reactive (toy#148) + bundle (toy#120/#121)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe-cli]: #{f}" }

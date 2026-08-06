@@ -1877,6 +1877,24 @@ module Toy
             ev_sum = 0.0
             ev_done = 0
             ev_o = ev_base + ev_offset * 4
+            # ONE label buffer for the whole eval, mutated incrementally —
+            # the same trick the training loop uses (toy#133), and the
+            # comment there literally calls it "the eval_ce trick". The
+            # eval loop was calling next_token_guarded_batched per window,
+            # which allocates a FRESH tv x vocab Mat every time: at the
+            # F-series shape (context 256 x batch 32 = 8192 tokens,
+            # vocab 50257) that is 3.3 GB of f64 PER WINDOW, so a 64-window
+            # eval asked for ~210 GB and the run was OOM-killed (toy#149 /
+            # Tao F9m rc=137). Peak RSS grew with WINDOW COUNT, which is
+            # what made shrinking --eval-tokens look like a fix.
+            ev_lab = Mat.new(tv, vocabv)
+            ev_zero = 0
+            while ev_zero < tv * vocabv
+              ev_lab.flat[ev_zero] = 0.0
+              ev_zero = ev_zero + 1
+            end
+            ev_prev = [0]; ev_prev.pop
+            evp = 0; while evp < tv; ev_prev.push(-1); evp = evp + 1; end
             evw = 0
             while evw < ev_want
               if ev_o + tv * 4 > ev_bytes
@@ -1893,7 +1911,31 @@ module Toy
                 end
                 evk = evk + 1
               end
-              ev_lab = Toy::Labels.next_token_guarded_batched(ev_ids, vocabv, ctx, batch)
+              # Incremental rewrite: clear only the cells this window set
+              # last time, then set the new ones. Same VALUES as
+              # next_token_guarded_batched (window-local next-token, the
+              # last position in each window clamps to itself), same
+              # out-of-range guard — allocation-free.
+              evb = 0
+              while evb < batch
+                ev_bs = evb * ctx
+                evk2 = 0
+                while evk2 < ctx
+                  ev_i = ev_bs + evk2
+                  if ev_prev[ev_i] >= 0
+                    ev_lab.flat[ev_i * vocabv + ev_prev[ev_i]] = 0.0
+                  end
+                  ev_t = (evk2 + 1 < ctx) ? ev_ids[ev_bs + evk2 + 1] : ev_ids[ev_i]
+                  if ev_t >= 0 && ev_t < vocabv
+                    ev_lab.flat[ev_i * vocabv + ev_t] = 1.0
+                    ev_prev[ev_i] = ev_t
+                  else
+                    ev_prev[ev_i] = -1
+                  end
+                  evk2 = evk2 + 1
+                end
+                evb = evb + 1
+              end
               TinyNNCuda.tnn_graph_reset_grads_only(sess)
               TinyNNCuda.upload_int_array(sess, t_tok, ev_ids)
               TinyNNCuda.tnn_upload_from_float_array(sess, t_labels, ev_lab.flat, vocabv * tv)

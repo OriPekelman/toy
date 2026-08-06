@@ -96,6 +96,27 @@ if gg == nil || gg == TinyNN.tnn_null_ptr
   exit 1
 end
 
+# toy#149: a franken-moe checkpoint is a DIFFERENT ARCHITECTURE, not a
+# llama checkpoint missing some keys. This runner builds a
+# LlamaSeqEngine and loads fused-llama tensor names; a toy-moe/v1
+# checkpoint carries expert/router tensors instead, so it can never be
+# scored here. Without this check the llama.* reads all return -1 and
+# the user got "model vocab -1 — wrong pack or wrong model", which points
+# at the pack rather than at the real problem. Name the cause and the
+# command that actually does the job.
+ckpt_fmt = TinyNN.tnn_gguf_get_str(gg, "toy.checkpoint_format")
+arch_s   = TinyNN.tnn_gguf_get_str(gg, "general.architecture")
+if ckpt_fmt == "toy-moe/v1" || arch_s == "toy-moe"
+  puts "toy-eval-ce: " + GGUF_P + " is a franken-moe checkpoint (" +
+       (ckpt_fmt.length > 0 ? ckpt_fmt : arch_s) +
+       "), not a fused-llama one — `toy eval ce` scores the llama architecture only."
+  puts "toy-eval-ce: score it with the MoE instrument instead, which reads its own checkpoints:"
+  puts "toy-eval-ce:   toy train franken-moe --steps 0 --load-ckpt " + GGUF_P +
+       " --eval-corpus " + PACK + " --eval-tokens N [--context C --batch B --experts E ...]"
+  puts "toy-eval-ce: the --context/--batch/--experts must MATCH the trained shape (toy#131)."
+  exit 1
+end
+
 vocab     = TinyNN.tnn_gguf_get_u32(gg, "llama.vocab_size")
 d_model   = TinyNN.tnn_gguf_get_u32(gg, "llama.embedding_length")
 d_ff      = TinyNN.tnn_gguf_get_u32(gg, "llama.feed_forward_length")

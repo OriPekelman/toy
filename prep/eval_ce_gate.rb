@@ -107,10 +107,41 @@ Dir.mktmpdir("eval_ce_gate") do |dir|
   _o5, s5 = run_eval(ev_env.merge("EVAL_OFFSET" => "300000"))
   failures << "eof: offset past pack end not rejected" if s5.success?
   puts failures.length == n0 ? "  ok: offset past EOF fails loud (zero windows)" : "  FAIL: eof"
+
+  # ---- 7. toy#149: a franken-moe checkpoint is REJECTED by name ----
+  # This runner builds a LlamaSeqEngine and loads fused-llama tensor
+  # names, so a toy-moe/v1 checkpoint can never be scored here. It used
+  # to fall through to the llama.* reads, which all return -1, and blame
+  # the PACK ("model vocab -1 — wrong pack or wrong model"). The message
+  # must name the real cause AND the command that does the job,
+  # otherwise the next person re-derives it (Tao lost a slice to this).
+  n0 = failures.length
+  moe_ck = File.join(dir, "moe_step.gguf")
+  moe_dir = File.join(dir, "moerun")
+  FileUtils.mkdir_p(moe_dir)
+  _mo, mst = Open3.capture2e(
+    { "SPINEL_DIR" => nil, "SPINEL_SKIP_PIN_CHECK" => nil },
+    File.join(ROOT, "bin", "toy"), "train", "franken-moe",
+    "--steps", "2", "--seed", "0", "--experts", "4", "--context", "16",
+    "--corpus", SMOKE, "--moe-policy", "dfa-experts",
+    "--ckpt-every", "2", "--out", moe_dir, chdir: ROOT)
+  src_ck = File.join(moe_dir, "weights", "step_2.gguf")
+  if !mst.success? || !File.file?(src_ck)
+    failures << "moe-reject: could not produce a franken-moe checkpoint to test against"
+  else
+    FileUtils.cp(src_ck, moe_ck)
+    o7, s7 = run_eval({ "GGUF" => moe_ck, "PACK" => SMOKE, "CONTEXT" => "16", "EVAL_TOKENS" => "64" })
+    failures << "moe-reject: franken-moe checkpoint not rejected" if s7.success?
+    failures << "moe-reject: message does not name the architecture (#{o7.lines.first.to_s.strip})" unless o7.include?("franken-moe checkpoint")
+    failures << "moe-reject: message does not point at the working command" unless
+      o7.include?("--load-ckpt") && o7.include?("train franken-moe")
+    failures << "moe-reject: still blames the pack ('model vocab -1')" if o7.include?("model vocab -1")
+  end
+  puts failures.length == n0 ? "  ok: franken-moe checkpoint rejected by NAME, pointing at `train franken-moe --load-ckpt` (toy#149)" : "  FAIL: moe-reject"
 end
 
 if failures.empty?
-  puts "GATE PASS [eval-ce]: sanity band + determinism + bundle + TOYC-mismatch + OOB + EOF guards (toy#130)"
+  puts "GATE PASS [eval-ce]: sanity band + determinism + bundle + TOYC-mismatch + OOB + EOF guards + moe-checkpoint rejection (toy#130/#149)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [eval-ce]: #{f}" }
