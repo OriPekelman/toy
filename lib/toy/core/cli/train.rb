@@ -142,6 +142,9 @@ module Toy
           @moe_latent   = false # franken-moe: latent expert sandwich (toy#142/K4)
           @moe_shared   = nil   # franken-moe: N shared full-width experts (toy#142/K4)
           @dfa_granularity = nil # franken-moe: matmul | block (toy#143)
+          @dfa_feedback = nil    # franken-moe: fixed | kolen-pollack (toy#150)
+          @dfa_feedback_decay = nil
+          @dfa_feedback_lr = nil
           @expert_act   = nil   # franken-moe: gelu | situ-glu (K4b/M6)
           @lr_schedule  = nil   # franken-moe: uniform | ramp-up | ramp-down (toy#146)
           @lr_lo        = nil   # franken-moe: ramp endpoint, layer 0 side
@@ -317,6 +320,9 @@ module Toy
                              "FRANKEN_FREEZE_EXPERTS" => (@freeze_experts ? "1" : ""),
                              "FRANKEN_MOE_LATENT"  => (@moe_latent ? "1" : ""),
                              "FRANKEN_DFA_GRANULARITY" => (@dfa_granularity || ""),
+                             "FRANKEN_DFA_FEEDBACK" => (@dfa_feedback || ""),
+                             "FRANKEN_DFA_FEEDBACK_DECAY" => (@dfa_feedback_decay ? @dfa_feedback_decay.to_s : ""),
+                             "FRANKEN_DFA_FEEDBACK_LR" => (@dfa_feedback_lr ? @dfa_feedback_lr.to_s : ""),
                              "FRANKEN_EXPERT_ACT" => (@expert_act || ""),
                              "FRANKEN_LR_SCHEDULE" => (@lr_schedule || ""),
                              "FRANKEN_LR_LO" => (@lr_lo ? @lr_lo.to_s : ""),
@@ -553,6 +559,38 @@ module Toy
               val = $2
               return bad_arg("--lr-#{key} must be a positive float, got #{val.inspect}") unless val =~ /\A\d*\.?\d+\z/ && val.to_f > 0.0
               key == "lo" ? @lr_lo = val.to_f : @lr_hi = val.to_f
+# toy#150: adaptive feedback. lambda/eta are meaningless
+# without the coupling, so they are rejected without it.
+when "--dfa-feedback"
+  i += 1
+  val = @argv[i]
+  return bad_arg("--dfa-feedback requires a value") if val.nil?
+  return bad_arg("--dfa-feedback must be fixed or kolen-pollack, got #{val.inspect}") unless %w[fixed kolen-pollack].include?(val)
+  @dfa_feedback = val
+when /\A--dfa-feedback=(.*)\z/
+  val = $1
+  return bad_arg("--dfa-feedback must be fixed or kolen-pollack, got #{val.inspect}") unless %w[fixed kolen-pollack].include?(val)
+  @dfa_feedback = val
+when "--dfa-feedback-decay"
+  i += 1
+  val = @argv[i]
+  return bad_arg("--dfa-feedback-decay requires a value") if val.nil?
+  return bad_arg("--dfa-feedback-decay must be a float >= 0, got #{val.inspect}") unless val =~ /\A\d*\.?\d+([eE][-+]?\d+)?\z/ && val.to_f >= 0.0
+  @dfa_feedback_decay = val.to_f
+when /\A--dfa-feedback-decay=(.*)\z/
+  val = $1
+  return bad_arg("--dfa-feedback-decay must be a float >= 0, got #{val.inspect}") unless val =~ /\A\d*\.?\d+([eE][-+]?\d+)?\z/ && val.to_f >= 0.0
+  @dfa_feedback_decay = val.to_f
+when "--dfa-feedback-lr"
+  i += 1
+  val = @argv[i]
+  return bad_arg("--dfa-feedback-lr requires a value") if val.nil?
+  return bad_arg("--dfa-feedback-lr must be a positive float, got #{val.inspect}") unless val =~ /\A\d*\.?\d+([eE][-+]?\d+)?\z/ && val.to_f > 0.0
+  @dfa_feedback_lr = val.to_f
+when /\A--dfa-feedback-lr=(.*)\z/
+  val = $1
+  return bad_arg("--dfa-feedback-lr must be a positive float, got #{val.inspect}") unless val =~ /\A\d*\.?\d+([eE][-+]?\d+)?\z/ && val.to_f > 0.0
+  @dfa_feedback_lr = val.to_f
             when "--lr-control"
               i += 1
               val = @argv[i]
@@ -979,6 +1017,7 @@ module Toy
             ["--freeze-experts", %w[franken-moe],                    @freeze_experts, " (toy#141)"],
             ["--moe-latent/--moe-shared", %w[franken-moe],           (@moe_latent || !@moe_shared.nil?), " (toy#142/K4)"],
             ["--dfa-granularity", %w[franken-moe],                   !@dfa_granularity.nil?, " (toy#143)"],
+            ["--dfa-feedback/--dfa-feedback-*", %w[franken-moe],     (!@dfa_feedback.nil? || !@dfa_feedback_decay.nil? || !@dfa_feedback_lr.nil?), " (toy#150)"],
             ["--expert-act", %w[franken-moe],                        !@expert_act.nil?, " (K4b/M6)"],
             ["--lr-schedule/--lr-lo/--lr-hi", %w[franken-moe],       (!@lr_schedule.nil? || !@lr_lo.nil? || !@lr_hi.nil?), " (toy#146)"],
             ["--lr-control/--lr-control-*", %w[franken-moe],         (!@lr_control.nil? || !@lr_control_window.nil? || !@lr_control_patience.nil? || !@lr_control_factor.nil? || !@lr_control_recover.nil? || !@lr_control_floor.nil?), " (toy#148)"],
@@ -997,6 +1036,9 @@ module Toy
           end
           if (@eval_tokens || @eval_offset) && @eval_corpus.nil?
             return bad_arg("--eval-tokens/--eval-offset need --eval-corpus")
+          end
+          if (!@dfa_feedback_decay.nil? || !@dfa_feedback_lr.nil?) && @dfa_feedback != "kolen-pollack"
+            return bad_arg("--dfa-feedback-decay/--dfa-feedback-lr need --dfa-feedback kolen-pollack")
           end
           if !@mtp_lambda.nil? && !@mtp
             return bad_arg("--mtp-lambda needs --mtp (there is no coupling to weight without the second root)")

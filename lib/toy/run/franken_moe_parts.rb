@@ -931,6 +931,37 @@ module Toy
           TinyNN.tnn_matmul(sess, a_in_t, delt_t)                       # [d_in, d_out]
         end
 
+        # toy#150: the Kolen-Pollack feedback update.
+        #
+        # B stands in for the EFFECTIVE OUTPUT PATH P — the map from a_out
+        # forward to the logits — and the loss gradient w.r.t. that path is
+        # exactly grad_P L = e . a_out^T. So the coupling is
+        #
+        #     B <- B - eta*(e a_out^T) - eta*lambda*B
+        #
+        # which IS ggml's SGD step with hp = [eta, lambda] (Kolen-Pollack
+        # with weight decay, Akrout et al. 2019 — the decay is what makes
+        # feedback and path CONVERGE rather than merely co-move). No new
+        # kernel and no new optimizer arm: B simply stops being an inert
+        # persistent input.
+        #
+        # Shapes, same transpose idiom as dfa_grad above:
+        #   e     [vocab, T] -> e_t  [T, vocab]
+        #   a_out [d_out, T] -> ao_t [T, d_out]
+        #   matmul(e_t, ao_t) = [vocab, d_out] == B exactly.
+        #
+        # NOTE the alternative "B tracks the immediate forward weight" does
+        # not typecheck here: the feedback is DIRECT, so B is [vocab, d_out]
+        # while the forward weight is [d_in, d_out].
+        def self.kp_update(sess, b, e, a_out, vocab, d_out, t_hp_fb)
+          e_t  = TinyNN.tnn_cont_2d(sess, TinyNN.tnn_transpose(sess, e), tv, vocab)
+          ao_t = TinyNN.tnn_cont_2d(sess, TinyNN.tnn_transpose(sess, a_out), tv, d_out)
+          gb   = TinyNN.tnn_matmul(sess, e_t, ao_t)
+          TinyNN.tnn_set_output(gb)
+          to = TinyNN.tnn_opt_step_sgd(sess, b, gb, t_hp_fb)
+          TinyNN.tnn_extend_backward_graph(sess, to)
+          0
+        end
         def self.wire_chain(sess, tw, t_hp, t_hp_sgd, idx)
           tg = TinyNN.tnn_tensor_grad(sess, tw.pp[idx])
           apply_step(sess, tw, t_hp, t_hp_sgd, idx, tg)

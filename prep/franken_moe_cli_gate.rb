@@ -914,6 +914,98 @@ failures << "deep-top1: --moe-aux has no effect at depth" if losses(run_cli(dt +
 failures << "deep-top1: --moe-balance qb has no effect at depth" if losses(run_cli(dt + %w[--moe-balance qb], {}, nil)) == plain_l
 puts failures.length == n0 ? "  ok: --lr-schedule ramp-up/ramp-down — uniform byte-null, both directions move the curve and differ, endpoints exact + monotonic in provenance, and the PER-LAYER WEIGHT MOVEMENT mirrors the LR profile (ramp-up moves the last block most, ramp-down the first) — direction proven structurally, not by curve; GENERIC across chain/block-dfa/muon/sgd/top1/latent; 5 guards reject" : "  FAIL: lr-schedule leg"
 
+# ---- toy#150: --dfa-feedback kolen-pollack (adaptive DFA feedback) ----
+# Every DFA experiment through F9m used a FIXED random B. This is the
+# adaptive alternative: B stands in for the effective output path P, and
+# grad_P L = e . a_out^T, so B <- B - eta*(e a_out^T) - eta*lambda*B —
+# Kolen-Pollack with decay, which is exactly ggml's SGD step.
+#
+# THE LOAD-BEARING ASSERTION IS dfa_b_sig, not the curve. A coupling
+# that silently never fires produces a perfectly healthy loss curve;
+# only a signature over the feedback matrices can tell "B moved" from
+# "B is still at its random init" (the K4b/experts_sig lesson, third
+# time it has mattered).
+#
+# GAINS ARE EXPLICIT HERE, deliberately. The ticket's default (eta tied
+# to --lr) DIVERGES at this shape — measured 1000x growth in ||B||^2
+# over 20 steps at --lr 0.02 — so the gate pins the MECHANISM at a
+# stable operating point and leaves finding the regime to F13. No
+# assertion about final loss: that is the experiment's to make.
+n0 = failures.length
+kg = %w[--steps 20 --seed 0 --shape deep --experts 4 --context 16
+        --corpus data/fineweb_gpt2_smoke.bin --moe-policy dfa-experts]
+kp = %w[--dfa-feedback kolen-pollack --dfa-feedback-lr 1e-4 --dfa-feedback-decay 0.01]
+
+kbase = losses(run_cli(kg, {}, nil))
+failures << "dfa-feedback: explicit `fixed` differs from absent (byte-null broken)" unless
+  losses(run_cli(kg + %w[--dfa-feedback fixed], {}, nil)) == kbase
+kpl = losses(run_cli(kg + kp, {}, nil))
+failures << "dfa-feedback: kolen-pollack did not run" if kpl.length != 20
+failures << "dfa-feedback: kolen-pollack does not change the curve (the coupling is inert)" if kpl == kbase
+failures << "dfa-feedback: NaN under kolen-pollack" if kpl.map(&:to_f).any?(&:nan?)
+failures << "dfa-feedback: not deterministic" unless losses(run_cli(kg + kp, {}, nil)) == kpl
+
+Dir.mktmpdir("moe_kp_fix") do |df|
+  Dir.mktmpdir("moe_kp_on") do |dk|
+    run_cli(kg + %w[--dfa-feedback fixed], {}, df)
+    run_cli(kg + kp, {}, dk)
+    ef = File.readlines(File.join(df, "events.jsonl")).map { |l| JSON.parse(l) }
+    ek = File.readlines(File.join(dk, "events.jsonl")).map { |l| JSON.parse(l) }
+    # FIXED: B must be BIT-IDENTICAL start to end — the frozen control.
+    f0 = ef.first.dig("franken_moe", "dfa_b_sig")
+    f1 = ef.last["dfa_b_sig"]
+    if f0.nil? || f1.nil?
+      failures << "dfa-feedback: dfa_b_sig missing (start=#{f0.inspect} end=#{f1.inspect})"
+    else
+      failures << "dfa-feedback: B MOVED under `fixed` (#{f0} -> #{f1}) — the fixed-B control is broken" unless f0 == f1
+    end
+    # KOLEN-POLLACK: B must provably move, and stay BOUNDED at these gains.
+    k0 = ek.first.dig("franken_moe", "dfa_b_sig")
+    k1 = ek.last["dfa_b_sig"]
+    if k0.nil? || k1.nil?
+      failures << "dfa-feedback: dfa_b_sig missing on the kp arm"
+    else
+      failures << "dfa-feedback: B did NOT move under kolen-pollack (#{k0} -> #{k1}) — builds, reports a loss, never adapts" unless (k1 - k0).abs > 1e-9
+      failures << "dfa-feedback: ||B||^2 grew #{(k1 / k0).round(1)}x at the pinned gains — the coupling is diverging, not tracking" unless k1 / k0 < 2.0
+      failures << "dfa-feedback: matched init broken (#{f0} vs #{k0})" unless (f0 - k0).abs < 1e-9
+    end
+    # The FEEDBACK-TRACKING read: |cos(B, head)| must RISE. This is the
+    # one place cos(B, P) is honestly computable — the last layer's down
+    # feedback, whose path to the logits IS the tied head.
+    c0 = ek.first.dig("franken_moe", "dfa_b_cos_head")
+    c1 = ek.last["dfa_b_cos_head"]
+    if c0.nil? || c1.nil?
+      failures << "dfa-feedback: dfa_b_cos_head missing"
+    else
+      failures << "dfa-feedback: cos(B, head) did not rise (#{c0} -> #{c1}) — B moves but not toward the forward path" unless c1.abs > c0.abs
+    end
+    fm = ek.first["franken_moe"]
+    failures << "dfa-feedback: provenance mode #{fm['dfa_feedback'].inspect}" unless fm["dfa_feedback"] == "kolen-pollack"
+    failures << "dfa-feedback: provenance does not record WHICH rule ran" unless fm["dfa_feedback_rule"] == "path"
+    failures << "dfa-feedback: provenance gains #{fm['dfa_feedback_lr'].inspect}/#{fm['dfa_feedback_decay'].inspect}" unless
+      (fm["dfa_feedback_lr"] - 1e-4).abs < 1e-12 && (fm["dfa_feedback_decay"] - 0.01).abs < 1e-12
+    failures << "dfa-feedback: `fixed` provenance not 'fixed'" unless ef.first.dig("franken_moe", "dfa_feedback") == "fixed"
+  end
+end
+# KNOWN GAP, pinned as a REJECTION rather than left silent: the
+# coupling does not yet reach block-DFA (b_blks builds its loss root
+# differently, and wiring it there left the arm running but INERT —
+# byte-identical to fixed-B). An adaptive arm that silently does not
+# adapt is the worst outcome for F13, so the combination fails loud.
+_ko, kst = Open3.capture2e(CLEAN, TOY, "train", "franken-moe", "--steps", "1",
+                           "--shape", "deep", "--moe-policy", "dfa-experts",
+                           "--dfa-granularity", "block", "--dfa-feedback", "kolen-pollack", chdir: ROOT)
+failures << "dfa-feedback: kolen-pollack + block-DFA not rejected (it would run and silently not adapt)" if kst.success?
+# Guards, fail-loud.
+[[%w[--dfa-feedback-decay 0.01], "gains without kolen-pollack"],
+ [%w[--dfa-feedback adaptive], "unknown --dfa-feedback value"],
+ [%w[--dfa-feedback kolen-pollack --dfa-feedback-lr 0], "zero feedback LR (a fixed-B run wearing the kp label)"]].each do |extra, what|
+  _o, st = Open3.capture2e(CLEAN, TOY, "train", "franken-moe", "--steps", "1",
+                           "--shape", "deep", *extra, chdir: ROOT)
+  failures << "dfa-feedback: #{what} not rejected" if st.success?
+end
+puts failures.length == n0 ? "  ok: --dfa-feedback kolen-pollack — fixed byte-null AND B bit-identical, B provably moves + stays bounded, cos(B,head) RISES, provenance names the rule, block-DFA combination REJECTED (known gap, not silent), 4 guards" : "  FAIL: dfa-feedback leg"
+
 # ---- toy#148: --lr-control reactive (the loss-reactive LR damper) ----
 # toy#146 is the static per-layer SHAPE; this is the dynamic global
 # SCALE. Composition is lr_t x lr_mul[l] x ctrl_t, and the legs below
@@ -1283,7 +1375,7 @@ Dir.mktmpdir("moe_cli_bundle") do |dir|
 end
 
 if failures.empty?
-  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce + eval-freeze + eval-mem (toy#130/#149) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule/attn-gate (toy#136) + optimizer (toy#139) + donor (toy#140) + freeze-experts (toy#141) + latent-moe (toy#142) + block-dfa (toy#143) + situ-glu experts (K4b/M6) + shape-deep (toy#145) + lr-schedule (toy#146) + deep-top1 per-layer routers (toy#147) + lr-control reactive (toy#148) + bundle (toy#120/#121)"
+  puts "GATE PASS [franken-moe-cli]: rig-null + seed semantics + dfa-experts/align + top1 collapse/aux legs + bp-router + bp-spine/detach + shape-wide (toy#124) + corpus/vocab-627 (toy#125) + align-every (toy#127) + experts (toy#128) + no-shadow/pack-header (toy#129) + eval-ce + eval-freeze + eval-mem (toy#130/#149) + lr/warmup (toy#132) + batch (toy#133) + ckpt/load (toy#131) + qb/schedule/attn-gate (toy#136) + optimizer (toy#139) + donor (toy#140) + freeze-experts (toy#141) + latent-moe (toy#142) + block-dfa (toy#143) + situ-glu experts (K4b/M6) + shape-deep (toy#145) + lr-schedule (toy#146) + deep-top1 per-layer routers (toy#147) + lr-control reactive (toy#148) + kolen-pollack feedback (toy#150) + bundle (toy#120/#121)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-moe-cli]: #{f}" }

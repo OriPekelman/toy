@@ -131,6 +131,69 @@ module Toy
           acc
         end
 
+        # toy#150: sum of squares over every EXPERT feedback matrix.
+        # Emitted in run_start and run_end. Under --dfa-feedback fixed
+        # the two must be BIT-IDENTICAL (B never moves); under
+        # kolen-pollack they must differ. This is the K4b/experts_sig
+        # lesson applied to the feedback: a coupling that silently never
+        # fires produces a perfectly healthy loss curve.
+        def self.feedback_sig(sess, bups, bdowns, bglus)
+          acc = 0.0
+          fk = 0
+          while fk < 3
+            arr = fk == 0 ? bups : (fk == 1 ? bdowns : bglus)
+            fj = 0
+            while fj < arr.length
+              n = TinyNNCuda.tnn_tensor_nelements(arr[fj])
+              buf = zeros(n)
+              TinyNNCuda.tnn_download_to_f64_array(sess, arr[fj], buf, n)
+              k = 0
+              while k < n
+                acc = acc + buf[k] * buf[k]
+                k = k + 1
+              end
+              fj = fj + 1
+            end
+            fk = fk + 1
+          end
+          acc
+        end
+
+        # toy#150: the DIRECT cos(B, P) read, and it is honestly
+        # computable in exactly ONE place — the LAST layer's down
+        # feedback, whose path to the logits IS the tied head pp[0].
+        # Every earlier layer has intervening blocks in its path, so
+        # this is deliberately scoped rather than reported as a global
+        # alignment. Layout (ggml ne0 fastest): B.ne = [vocab, dm] and
+        # pp[0].ne = [dm, vocab], so B[d*vocab + v] pairs with
+        # pp0[v*dm + d]. Only meaningful when ew_b == dm (no --moe-latent).
+        def self.feedback_cos_head(sess, b_last, t_emb, vocab, dm)
+          nb = TinyNNCuda.tnn_tensor_nelements(b_last)
+          if nb != vocab * dm
+            return 0.0
+          end
+          bb = zeros(nb)
+          TinyNNCuda.tnn_download_to_f64_array(sess, b_last, bb, nb)
+          ee = zeros(nb)
+          TinyNNCuda.tnn_download_to_f64_array(sess, t_emb, ee, nb)
+          dot = 0.0; na = 0.0; nc = 0.0
+          d = 0
+          while d < dm
+            v = 0
+            while v < vocab
+              x = bb[d * vocab + v]
+              y = ee[v * dm + d]
+              dot = dot + x * y
+              na = na + x * x
+              nc = nc + y * y
+              v = v + 1
+            end
+            d = d + 1
+          end
+          den = Math.sqrt(na) * Math.sqrt(nc)
+          den > 0.0 ? dot / den : 0.0
+        end
+
         def self.experts_sig(sess, tw, ne, dm, dff)
           acc = 0.0
           lz = 0
@@ -364,6 +427,40 @@ module Toy
           # standard N-period EMA weight. Stated here rather than left to
           # be re-derived from "window": window=50 means alpha=2/51.
           ctrl_alpha = 2.0 / (ctrl_window.to_f + 1.0)
+          # toy#150: ADAPTIVE feedback. Every DFA experiment so far used a
+          # FIXED random B; the literature's working DFA makes B track the
+          # forward path. B stands in for the effective output path P, and
+          # grad_P L = e . a_out^T, so B <- B - eta*(e a_out^T) -
+          # eta*lambda*B — Kolen-Pollack with decay, which is exactly the
+          # SGD step. See docs/roadmap/toy150-kolen-pollack-design-2026-08-06.md.
+          fb_s = ENV["FRANKEN_DFA_FEEDBACK"] || ""
+          if fb_s.length > 0 && fb_s != "fixed" && fb_s != "kolen-pollack"
+            puts "toy-train-franken-moe-cuda: FRANKEN_DFA_FEEDBACK " + fb_s + " unsupported (fixed|kolen-pollack)"
+            return 1
+          end
+          kp_on = fb_s == "kolen-pollack"
+          # toy#150: block-DFA has its own feedback matrix (b_blks) and
+          # builds its loss root differently, and wiring the coupling
+          # there left the arm INERT — it ran, and the curve was
+          # byte-identical to fixed-B. An adaptive-feedback arm that
+          # silently does not adapt is the worst possible outcome for
+          # F13, so refuse the combination until it is actually wired
+          # rather than ship something that looks like it works.
+          if kp_on && block_dfa
+            puts "toy-train-franken-moe-cuda: --dfa-feedback kolen-pollack does not yet reach --dfa-granularity block (the block feedback matrix is not coupled; the arm would run and silently NOT adapt). Use the default matmul granularity."
+            return 1
+          end
+          fbd_s = ENV["FRANKEN_DFA_FEEDBACK_DECAY"] || ""
+          fbl_s = ENV["FRANKEN_DFA_FEEDBACK_LR"]    || ""
+          if !kp_on && (fbd_s.length > 0 || fbl_s.length > 0)
+            puts "toy-train-franken-moe-cuda: --dfa-feedback-decay/-lr need --dfa-feedback kolen-pollack"
+            return 1
+          end
+          fb_decay = fbd_s.length > 0 ? fbd_s.to_f : 1.0e-3
+          if kp_on && fb_decay < 0.0
+            puts "toy-train-franken-moe-cuda: --dfa-feedback-decay must be >= 0"
+            return 1
+          end
           ns_s = ENV["FRANKEN_MOE_SHARED"] || ""
           n_shared = ns_s.length > 0 ? ns_s.to_i : 0
           if n_shared < 0
@@ -415,6 +512,15 @@ module Toy
           cosine_on = sched_s == "cosine"
           lr_s = ENV["FRANKEN_LR"] || ""
           lr = lr_s.length > 0 ? lr_s.to_f : 0.02
+          # toy#150: the feedback LR defaults to TIEING to --lr (the
+          # ticket's default), so it can only be resolved once --lr is.
+          # Recorded in provenance either way, so a bundle says which
+          # eta actually ran rather than leaving it to be re-derived.
+          fb_lr = fbl_s.length > 0 ? fbl_s.to_f : lr
+          if kp_on && fb_lr <= 0.0
+            puts "toy-train-franken-moe-cuda: --dfa-feedback-lr must be > 0 (a zero feedback LR is a FIXED-B run wearing the kolen-pollack label)"
+            return 1
+          end
           # toy#131: the toy#120 deviation come due — a NATIVE-form GGUF
           # checkpoint (per-tensor moe.* names, NO fusion, no second
           # session: tnn_gguf_w_add_tensor reads the CPU session buffers
@@ -689,6 +795,24 @@ module Toy
           end
           lb_i = lb_i + 1
           end
+          # toy#150: ggml_opt_step_sgd asserts GGML_TENSOR_FLAG_PARAM on its
+          # target, so under kolen-pollack the feedback matrices have to be
+          # marked as params — that is the ONLY difference the mode makes to
+          # allocation. The tensors themselves are allocated unconditionally
+          # above, so the alloc order and therefore the init stream are
+          # identical either way, which is what keeps `fixed` byte-null.
+          # Nothing consumes an autodiff gradient for these; the KP step feeds
+          # them the path gradient explicitly, exactly as apply_step feeds the
+          # expert weights their DFA gradient.
+          if kp_on
+            fp = 0
+            while fp < b_ups.length
+              TinyNNCuda.tnn_set_param(b_ups[fp])
+              TinyNNCuda.tnn_set_param(b_downs[fp])
+              TinyNNCuda.tnn_set_param(b_glus[fp])
+              fp = fp + 1
+            end
+          end
           sels = [np0]; sels.pop
           ei = 0
           while ei < nev
@@ -721,6 +845,15 @@ module Toy
           # buffer when the graph does not reach it, and the per-step
           # upload then aborts inside ggml_backend_tensor_set.
           t_hp_sgd = TinyNNCuda.tnn_input_1d_f32_persistent(sess, 2)
+          # toy#150: [eta, lambda] for the Kolen-Pollack feedback step.
+          # PERSISTENT and allocated HERE, before finalize_weights — a
+          # compute-context input allocated later reads ZEROS in silence
+          # (toy#133), which for this vector means eta = 0: a KP arm that
+          # never adapts and reads as a clean negative. Allocated
+          # unconditionally so the alloc order — and therefore the init
+          # stream — is identical with and without the flag, which is
+          # what keeps `fixed` byte-null.
+          t_hp_fb = TinyNNCuda.tnn_input_1d_f32_persistent(sess, 2)
           # toy#146: the per-layer LR MULTIPLIER, relative to the base
           # --lr. Keeping it a multiplier (rather than an absolute LR)
           # is what lets the ramp COMPOSE with --warmup and the cosine
@@ -1236,6 +1369,19 @@ module Toy
                   if eglu_count > 0
                     wire_dfa(sess, tw, t_hp, t_hp_sgd, eglu_base(ly) + ei, b_glus[bi], e_b, tw.tap_zs[ly], ewidth, dfv, npx + "glu" + (ei + 1).to_s)
                   end
+                  # toy#150: each B is coupled to the activation at ITS
+                  # OWN output width — that is the quantity whose path to
+                  # the logits B stands in for. up/glu feed the post-up
+                  # hidden (tap_as, width dfv); down feeds the expert
+                  # output (tap_os, width ewidth — the tap this ticket
+                  # added, since it was the one B width with no tap).
+                  if kp_on
+                    kp_update(sess, b_ups[bi],   e_b, tw.tap_as[bi], vocabv, dfv,    t_hp_fb)
+                    kp_update(sess, b_downs[bi], e_b, tw.tap_os[bi], vocabv, ewidth, t_hp_fb)
+                    if eglu_count > 0
+                      kp_update(sess, b_glus[bi], e_b, tw.tap_as[bi], vocabv, dfv, t_hp_fb)
+                    end
+                  end
                 end
                 ei = ei + 1
               end
@@ -1387,6 +1533,16 @@ module Toy
               fm.add_num("latent_dim", lat_w)
               fm.add_num("shared_experts", n_shared)
               fm.add_str("dfa_granularity", block_dfa ? "block" : "matmul")
+              fm.add_str("dfa_feedback", kp_on ? "kolen-pollack" : "fixed")
+              # WHICH rule ran, recorded so a bundle is self-describing:
+              # B tracks the effective output PATH (grad_P L = e . a_out^T),
+              # not the immediate forward weight (which cannot typecheck
+              # under direct feedback).
+              fm.add_str("dfa_feedback_rule", kp_on ? "path" : "")
+              fm.add_num("dfa_feedback_decay", fb_decay)
+              fm.add_num("dfa_feedback_lr", fb_lr)
+              fm.add_raw("dfa_b_sig", num_or_null_cli(feedback_sig(sess, b_ups, b_downs, b_glus)))
+              fm.add_raw("dfa_b_cos_head", num_or_null_cli(feedback_cos_head(sess, b_downs[b_downs.length - 1], tw.pp[0], vocabv, dmv)))
               fm.add_raw("experts_sig", num_or_null_cli(experts_sig(sess, tw, nev, dmv, dfv)))
               lsg = Toy::Json::Builder.new
               lsi2 = 0
@@ -1534,6 +1690,13 @@ module Toy
                 end
                 lpi = lpi + 1
               end
+            end
+            # toy#150: the feedback step vector. Uploaded only under
+            # kolen-pollack — under `fixed` nothing in the graph reaches
+            # t_hp_fb, so an upload would abort in tensor_set (the same
+            # unreachable-input rule as t_hp under --optimizer sgd).
+            if kp_on
+              TinyNNCuda.tnn_upload_from_float_array(sess, t_hp_fb, [fb_lr, fb_decay], 2)
             end
             if top1
               TinyNNCuda.tnn_upload_from_float_array(sess, t_f, fvec, nev)
@@ -2007,6 +2170,8 @@ module Toy
             # toy#148: where the damper ended up, and how many times it
             # fired. A run whose ctrl never left 1.0 said so here rather
             # than leaving it to be reconstructed from the step stream.
+            re.add_raw("dfa_b_sig", num_or_null_cli(feedback_sig(sess, b_ups, b_downs, b_glus)))
+            re.add_raw("dfa_b_cos_head", num_or_null_cli(feedback_cos_head(sess, b_downs[b_downs.length - 1], tw.pp[0], vocabv, dmv)))
             re.add_raw("lr_ctrl_final", ctrl.to_s)
             re.add_num("lr_ctrl_cuts",  ctrl_cuts)
             re.add_raw("exit_code",  "0")
