@@ -987,15 +987,38 @@ Dir.mktmpdir("moe_kp_fix") do |df|
     failures << "dfa-feedback: `fixed` provenance not 'fixed'" unless ef.first.dig("franken_moe", "dfa_feedback") == "fixed"
   end
 end
-# KNOWN GAP, pinned as a REJECTION rather than left silent: the
-# coupling does not yet reach block-DFA (b_blks builds its loss root
-# differently, and wiring it there left the arm running but INERT —
-# byte-identical to fixed-B). An adaptive arm that silently does not
-# adapt is the worst outcome for F13, so the combination fails loud.
-_ko, kst = Open3.capture2e(CLEAN, TOY, "train", "franken-moe", "--steps", "1",
-                           "--shape", "deep", "--moe-policy", "dfa-experts",
-                           "--dfa-granularity", "block", "--dfa-feedback", "kolen-pollack", chdir: ROOT)
-failures << "dfa-feedback: kolen-pollack + block-DFA not rejected (it would run and silently not adapt)" if kst.success?
+# COMPOSES WITH block-DFA — the granularity F13's arm uses. This leg is
+# why the composition exists at all: wiring the coupling inside the
+# surrogate-root loop ran cleanly and produced a curve BYTE-IDENTICAL to
+# fixed-B, because extend_backward_graph has nothing to attach to before
+# tnn_build_backward. The gate caught it; the fix was placement.
+#
+# Note block-DFA couples b_blks, NOT the expert B's (the experts are
+# chain-wired from the surrogate root there), so dfa_b_sig has to cover
+# b_blks or this arm reports "B frozen" while its curve provably moves.
+kb  = losses(run_cli(kg + %w[--dfa-granularity block], {}, nil))
+kbk = losses(run_cli(kg + %w[--dfa-granularity block] + kp, {}, nil))
+failures << "dfa-feedback: no effect under --dfa-granularity block (the block feedback matrix is not coupled)" if kbk.empty? || kb == kbk
+failures << "dfa-feedback: block arm short/NaN" unless kbk.length == 20 && kbk.map(&:to_f).none?(&:nan?)
+Dir.mktmpdir("moe_kp_blk") do |dbk|
+  run_cli(kg + %w[--dfa-granularity block] + kp, {}, dbk)
+  eb = File.readlines(File.join(dbk, "events.jsonl")).map { |l| JSON.parse(l) }
+  b0 = eb.first.dig("franken_moe", "dfa_b_sig")
+  b1 = eb.last["dfa_b_sig"]
+  if b0.nil? || b1.nil?
+    failures << "dfa-feedback: dfa_b_sig missing on the block arm"
+  else
+    failures << "dfa-feedback: B did NOT move under block-DFA (#{b0} -> #{b1}) — dfa_b_sig must cover b_blks" unless (b1 - b0).abs > 1e-9
+    failures << "dfa-feedback: ||B||^2 grew #{(b1 / b0).round(1)}x under block-DFA — diverging, not tracking" unless b1 / b0 < 2.0
+  end
+  cb0 = eb.first.dig("franken_moe", "dfa_b_cos_head")
+  cb1 = eb.last["dfa_b_cos_head"]
+  if cb0.nil? || cb1.nil?
+    failures << "dfa-feedback: dfa_b_cos_head missing on the block arm"
+  else
+    failures << "dfa-feedback: cos(B, head) did not rise under block-DFA (#{cb0} -> #{cb1})" unless cb1.abs > cb0.abs
+  end
+end
 # Guards, fail-loud.
 [[%w[--dfa-feedback-decay 0.01], "gains without kolen-pollack"],
  [%w[--dfa-feedback adaptive], "unknown --dfa-feedback value"],
@@ -1004,7 +1027,7 @@ failures << "dfa-feedback: kolen-pollack + block-DFA not rejected (it would run 
                            "--shape", "deep", *extra, chdir: ROOT)
   failures << "dfa-feedback: #{what} not rejected" if st.success?
 end
-puts failures.length == n0 ? "  ok: --dfa-feedback kolen-pollack — fixed byte-null AND B bit-identical, B provably moves + stays bounded, cos(B,head) RISES, provenance names the rule, block-DFA combination REJECTED (known gap, not silent), 4 guards" : "  FAIL: dfa-feedback leg"
+puts failures.length == n0 ? "  ok: --dfa-feedback kolen-pollack — fixed byte-null AND B bit-identical, B provably moves + stays bounded, cos(B,head) RISES, provenance names the rule, composes with block-DFA (b_blks coupled, telemetry follows it), 3 guards" : "  FAIL: dfa-feedback leg"
 
 # ---- toy#148: --lr-control reactive (the loss-reactive LR damper) ----
 # toy#146 is the static per-layer SHAPE; this is the dynamic global

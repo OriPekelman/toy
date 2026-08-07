@@ -159,11 +159,11 @@ module Toy
         # kolen-pollack they must differ. This is the K4b/experts_sig
         # lesson applied to the feedback: a coupling that silently never
         # fires produces a perfectly healthy loss curve.
-        def self.feedback_sig(sess, bups, bdowns, bglus)
+        def self.feedback_sig(sess, bups, bdowns, bglus, bblks)
           acc = 0.0
           fk = 0
-          while fk < 3
-            arr = fk == 0 ? bups : (fk == 1 ? bdowns : bglus)
+          while fk < 4
+            arr = fk == 0 ? bups : (fk == 1 ? bdowns : (fk == 2 ? bglus : bblks))
             fj = 0
             while fj < arr.length
               n = TinyNN.tnn_tensor_nelements(arr[fj])
@@ -461,17 +461,6 @@ module Toy
             return 1
           end
           kp_on = fb_s == "kolen-pollack"
-          # toy#150: block-DFA has its own feedback matrix (b_blks) and
-          # builds its loss root differently, and wiring the coupling
-          # there left the arm INERT — it ran, and the curve was
-          # byte-identical to fixed-B. An adaptive-feedback arm that
-          # silently does not adapt is the worst possible outcome for
-          # F13, so refuse the combination until it is actually wired
-          # rather than ship something that looks like it works.
-          if kp_on && block_dfa
-            puts "toy-train-franken-moe: --dfa-feedback kolen-pollack does not yet reach --dfa-granularity block (the block feedback matrix is not coupled; the arm would run and silently NOT adapt). Use the default matmul granularity."
-            return 1
-          end
           fbd_s = ENV["FRANKEN_DFA_FEEDBACK_DECAY"] || ""
           fbl_s = ENV["FRANKEN_DFA_FEEDBACK_LR"]    || ""
           if !kp_on && (fbd_s.length > 0 || fbl_s.length > 0)
@@ -870,6 +859,17 @@ module Toy
             b_rs.push(TinyNN.tnn_input_2d_f32_persistent(sess, nev, vocabv))
             b_blks.push(TinyNN.tnn_input_2d_f32_persistent(sess, dmv, vocabv))
             la_i = la_i + 1
+          end
+          # toy#150: same GGML_TENSOR_FLAG_PARAM requirement as the expert
+          # feedback matrices; marked here because b_blks is allocated
+          # after them. Gated on kp_on so `fixed` builds the identical
+          # graph it always did.
+          if kp_on
+            fb2 = 0
+            while fb2 < b_blks.length
+              TinyNN.tnn_set_param(b_blks[fb2])
+              fb2 = fb2 + 1
+            end
           end
           # toy#143: ONE feedback matrix for the whole block, ne=[vocab, d_model]
 
@@ -1273,6 +1273,26 @@ module Toy
           end
           TinyNN.tnn_build_backward(sess)
 
+          # toy#150: block-DFA has its OWN feedback matrix, so the coupling
+          # has to reach b_blks too. Placement is load-bearing: this MUST
+          # come after tnn_build_backward — extend_backward_graph has
+          # nothing to attach to before the backward graph exists, and
+          # wiring it inside the surrogate-root loop instead ran cleanly
+          # and produced a curve BYTE-IDENTICAL to fixed-B (an adaptive
+          # arm that silently does not adapt). The error is rebuilt here
+          # rather than reused because e_det is branch-local to the root
+          # construction; same value, and the expert lane already builds
+          # its own error after build_backward.
+          if kp_on && block_dfa
+            p_kp = TinyNN.tnn_softmax(sess, tw.t_logits)
+            e_kp = TinyNN.tnn_scale(sess, TinyNN.tnn_sub(sess, p_kp, t_labels), 1.0 / tv.to_f)
+            kpb = 0
+            while kpb < n_layers
+              kp_update(sess, b_blks[kpb], e_kp, tw.tap_blks[kpb], vocabv, dmv, t_hp_fb)
+              kpb = kpb + 1
+            end
+          end
+
           if top1
             p_sm = TinyNN.tnn_softmax(sess, tw.t_logits)
             e_b  = TinyNN.tnn_scale(sess, TinyNN.tnn_sub(sess, p_sm, t_labels), 1.0 / tv.to_f)
@@ -1576,8 +1596,8 @@ module Toy
               fm.add_str("dfa_feedback_rule", kp_on ? "path" : "")
               fm.add_num("dfa_feedback_decay", fb_decay)
               fm.add_num("dfa_feedback_lr", fb_lr)
-              fm.add_raw("dfa_b_sig", num_or_null_cli(feedback_sig(sess, b_ups, b_downs, b_glus)))
-              fm.add_raw("dfa_b_cos_head", num_or_null_cli(feedback_cos_head(sess, b_downs[b_downs.length - 1], tw.pp[0], vocabv, dmv)))
+              fm.add_raw("dfa_b_sig", num_or_null_cli(feedback_sig(sess, b_ups, b_downs, b_glus, b_blks)))
+              fm.add_raw("dfa_b_cos_head", num_or_null_cli(feedback_cos_head(sess, block_dfa ? b_blks[b_blks.length - 1] : b_downs[b_downs.length - 1], tw.pp[0], vocabv, dmv)))
               fm.add_raw("experts_sig", num_or_null_cli(experts_sig(sess, tw, nev, dmv, dfv)))
               lsg = Toy::Json::Builder.new
               lsi2 = 0
@@ -2205,8 +2225,8 @@ module Toy
             # toy#148: where the damper ended up, and how many times it
             # fired. A run whose ctrl never left 1.0 said so here rather
             # than leaving it to be reconstructed from the step stream.
-            re.add_raw("dfa_b_sig", num_or_null_cli(feedback_sig(sess, b_ups, b_downs, b_glus)))
-            re.add_raw("dfa_b_cos_head", num_or_null_cli(feedback_cos_head(sess, b_downs[b_downs.length - 1], tw.pp[0], vocabv, dmv)))
+            re.add_raw("dfa_b_sig", num_or_null_cli(feedback_sig(sess, b_ups, b_downs, b_glus, b_blks)))
+            re.add_raw("dfa_b_cos_head", num_or_null_cli(feedback_cos_head(sess, block_dfa ? b_blks[b_blks.length - 1] : b_downs[b_downs.length - 1], tw.pp[0], vocabv, dmv)))
             re.add_raw("lr_ctrl_final", ctrl.to_s)
             re.add_num("lr_ctrl_cuts",  ctrl_cuts)
             re.add_raw("exit_code",  "0")
