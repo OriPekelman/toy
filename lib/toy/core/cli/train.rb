@@ -105,6 +105,7 @@ module Toy
           @init  = nil   # warm-start init mode
           @device = "cpu"  # cpu | cuda | metal (from-scratch only for non-cpu)
           @policy = nil    # franken: per-layer credit tokens
+          @policy_scope = nil # franken: attn | ffn | all — which tensors a :dfa layer policies (toy#151)
           @dfa_b_seed  = nil  # franken B axes
           @dfa_b_dist  = nil
           @dfa_b_scale = nil
@@ -347,6 +348,7 @@ module Toy
           elsif @recipe == "franken"
             env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
                              "FRANKEN_POLICY"  => (@policy || ""),
+                             "FRANKEN_POLICY_SCOPE" => (@policy_scope || ""),
                              "FRANKEN_B_SEED"  => (@dfa_b_seed || 0).to_s,
                              "FRANKEN_B_DIST"  => (@dfa_b_dist || ""),
                              "FRANKEN_B_SCALE" => (@dfa_b_scale || ""),
@@ -453,6 +455,16 @@ module Toy
               @seed = val.to_i
             when /\A--out=(.*)\z/m
               @out = $1
+            when "--policy-scope"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--policy-scope requires a value") if val.nil?
+              return bad_arg("--policy-scope must be attn, ffn or all, got #{val.inspect}") unless %w[attn ffn all].include?(val)
+              @policy_scope = val
+            when /\A--policy-scope=(.*)\z/
+              val = $1
+              return bad_arg("--policy-scope must be attn, ffn or all, got #{val.inspect}") unless %w[attn ffn all].include?(val)
+              @policy_scope = val
             when "--policy"
               i += 1
               val = @argv[i]
@@ -996,6 +1008,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
             ["--init",          %w[warm-start],                     !@init.nil?, ""],
             ["--dfa-b-*/--align-events", %w[franken franken-moe],   (!@dfa_b_seed.nil? || !@dfa_b_dist.nil? || !@dfa_b_scale.nil? || @align_events), ""],
             ["--policy",        %w[franken],                        !@policy.nil?, ""],
+            ["--policy-scope",  %w[franken],                        !@policy_scope.nil?, " (toy#151)"],
             ["--align-every",   %w[franken franken-moe],            !@align_every.nil?, ""],
             ["--lr/--warmup",   %w[franken franken-moe],            (!@lr.nil? || !@warmup.nil?), " (toy#126/#132)"],
             ["--no-shadow",     %w[franken franken-moe],            @no_shadow, " (toy#129)"],

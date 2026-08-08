@@ -64,6 +64,7 @@ REJECT = [
   [%w[franken --lr-schedule ramp-up],     "--lr-schedule/--lr-lo/--lr-hi"],
   [%w[franken --lr-control reactive],     "--lr-control/--lr-control-*"],
   [%w[franken --dfa-feedback kolen-pollack], "--dfa-feedback/--dfa-feedback-*"],
+  [%w[from-scratch --policy-scope ffn], "--policy-scope"],
   [%w[from-scratch --ckpt-every 2],       "--ckpt-every"],
   [%w[franken --load-ckpt x.gguf],        "--load-ckpt"],
   [%w[franken --eval-corpus x.bin],       "--eval-corpus"],

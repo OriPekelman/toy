@@ -107,7 +107,13 @@ module Toy; module LLM; module Blocks
                   # per trainable weight tensor in this block.
                   :ft_weights, :ft_m, :ft_v,
                   # GH#15 — per-block activation tap targets for CKA.
-                  :tap_attn_norm, :tap_ffn_out, :tap_resid_post
+                  :tap_attn_norm, :tap_ffn_out, :tap_resid_post,
+                  # toy#151: the FFN's two INPUT activations. DFA needs the
+                  # activation feeding each policied weight; tap_ffn_out is
+                  # the down projection's OUTPUT, which is the wrong side.
+                  # tap_ffn_norm feeds gate+up (width d_model),
+                  # tap_ffn_hidden feeds down (width d_ff).
+                  :tap_ffn_norm, :tap_ffn_hidden
 
     def initialize
       @t_seq_rn1_gamma = TinyNN.tnn_null_ptr
@@ -133,6 +139,8 @@ module Toy; module LLM; module Blocks
       @ft_v       = [TinyNN.tnn_null_ptr]; @ft_v.pop
       @tap_attn_norm  = TinyNN.tnn_null_ptr
       @tap_ffn_out    = TinyNN.tnn_null_ptr
+      @tap_ffn_norm   = TinyNN.tnn_null_ptr
+      @tap_ffn_hidden = TinyNN.tnn_null_ptr
       @tap_resid_post = TinyNN.tnn_null_ptr
     end
 
@@ -231,6 +239,10 @@ module Toy; module LLM; module Blocks
 
       # SwiGLU FFN.
       t_h2    = Toy::LLM::Primitives::RMSNorm.build(sess, t_x_attn, self.t_seq_rn2_gamma, ctx.seq_eps)
+      # toy#151: gate/up read this; pinned so the DFA tap is not
+      # aliased away by the scheduler (the P0 pin-read-backs lesson).
+      self.tap_ffn_norm = t_h2
+      TinyNN.tnn_set_output(t_h2)
       t_gate  = mp_matmul(sess, ctx.seq_weight_dtype, self.t_seq_w_gate, t_h2)
       t_up    = mp_matmul(sess, ctx.seq_weight_dtype, self.t_seq_w_up,   t_h2)
       t_gated = TinyNN.tnn_null_ptr
@@ -239,6 +251,9 @@ module Toy; module LLM; module Blocks
       else
         t_gated = Toy::LLM::Primitives::SwiGLU.gate(sess, t_gate, t_up)
       end
+      # toy#151: down reads this (width d_ff).
+      self.tap_ffn_hidden = t_gated
+      TinyNN.tnn_set_output(t_gated)
       t_dn    = mp_matmul(sess, ctx.seq_weight_dtype, self.t_seq_w_down, t_gated)
       # GH#15 — tap the FFN output (pre-residual). set_output to pin.
       self.tap_ffn_out = t_dn

@@ -46,6 +46,26 @@ SEED        = (ENV["SEED"]  || "0").to_i
 TAO_RUN_DIR = ENV["TAO_RUN_DIR"] || ""
 RUN_ID      = ENV["TOY_RUN_ID"] || ""
 POLICY_S    = ENV["FRANKEN_POLICY"] || ""
+# toy#151: which tensor class a :dfa layer policies. Until this ticket
+# the per-layer policy reached attention qkv ONLY, which is exactly the
+# caveat that made Tao's F1 wash out ("only attention qkv is policied").
+# The FFN is the bulk of both params and compute, and the literature
+# puts DFA nearest to BP in MLP-shaped blocks — so it is the placement
+# worth testing.
+#
+# DEFAULT IS `attn`, deliberately: it makes every pre-toy#151 run
+# reproduce BYTE-IDENTICALLY without a new flag, so F1/F3/F6/F7b/F0
+# keep meaning what they meant. The cost is that whole-layer placement
+# must be asked for — `--policy-scope all` — which is the right way
+# round, because a flag string that silently changes meaning across a
+# commit is how a re-run gets compared to a result it does not match
+# (tao#17).
+SCOPE_S = ENV["FRANKEN_POLICY_SCOPE"] || ""
+if SCOPE_S.length > 0 && SCOPE_S != "attn" && SCOPE_S != "ffn" && SCOPE_S != "all"
+  puts "toy-train-franken: FRANKEN_POLICY_SCOPE " + SCOPE_S + " unsupported (attn|ffn|all)"
+  exit 1
+end
+SCOPE_CODE = SCOPE_S == "all" ? 0 : (SCOPE_S == "ffn" ? 2 : 1)
 B_SEED      = (ENV["FRANKEN_B_SEED"] || "0").to_i
 B_DIST_S    = ENV["FRANKEN_B_DIST"] || ""
 B_SCALE_S   = ENV["FRANKEN_B_SCALE"] || ""
@@ -498,6 +518,12 @@ end
 # INT-arg calls off the local list, the standing workaround for the
 # #688 array-param family. (opts.mla_layers is still populated above so
 # the RecipeOptions surface stays at parity with kda_layers.)
+# toy#151: the scope has to reach the cache BEFORE realize — the alloc
+# reads it to decide which param flags to skip under --no-shadow, and
+# the training-step builder reads it to decide which weights get the
+# DFA rule. Setting it later would let those two disagree, leaving a
+# live shadow acc on a weight the builder then DFA'd.
+recipe.ff_cache.franken_policy_scope_init(SCOPE_CODE)
 md = 0
 while md < MLA_LIST.length
   recipe.ff_cache.add_mla_layer!(MLA_LIST[md])
@@ -696,6 +722,13 @@ if EVENTS.length > 0
     rs.add_obj("cost", cost)
     fr = Toy::Json::Builder.new
     fr.add_raw("policy",    Toy::Json.from_int_array(policy))
+    # toy#151: the policied SET, named. A bundle from before this ticket
+    # is attention-only; without this field an old and a new run of the
+    # same FRANKEN_POLICY are indistinguishable in the record.
+    fr.add_str("policy_scope", SCOPE_S.length > 0 ? SCOPE_S : "attn")
+    fr.add_str("policied_tensors",
+               SCOPE_CODE == 1 ? "attn:q,k,v" :
+               (SCOPE_CODE == 2 ? "ffn:gate,up,down" : "attn:q,k,v+ffn:gate,up,down"))
     fr.add_num("b_seed",    B_SEED)
     fr.add_num("b_dist",    opts.dfa_b_dist)
     fr.add_num("b_scale",   opts.dfa_b_scale)

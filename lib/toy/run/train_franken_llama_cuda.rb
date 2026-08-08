@@ -45,6 +45,26 @@ SEED        = (ENV["SEED"]  || "0").to_i
 TAO_RUN_DIR = ENV["TAO_RUN_DIR"] || ""
 RUN_ID      = ENV["TOY_RUN_ID"] || ""
 POLICY_S    = ENV["FRANKEN_POLICY"] || ""
+# toy#151: which tensor class a :dfa layer policies. Until this ticket
+# the per-layer policy reached attention qkv ONLY, which is exactly the
+# caveat that made Tao's F1 wash out ("only attention qkv is policied").
+# The FFN is the bulk of both params and compute, and the literature
+# puts DFA nearest to BP in MLP-shaped blocks — so it is the placement
+# worth testing.
+#
+# DEFAULT IS `attn`, deliberately: it makes every pre-toy#151 run
+# reproduce BYTE-IDENTICALLY without a new flag, so F1/F3/F6/F7b/F0
+# keep meaning what they meant. The cost is that whole-layer placement
+# must be asked for — `--policy-scope all` — which is the right way
+# round, because a flag string that silently changes meaning across a
+# commit is how a re-run gets compared to a result it does not match
+# (tao#17).
+SCOPE_S = ENV["FRANKEN_POLICY_SCOPE"] || ""
+if SCOPE_S.length > 0 && SCOPE_S != "attn" && SCOPE_S != "ffn" && SCOPE_S != "all"
+  puts "toy-train-franken-cuda: FRANKEN_POLICY_SCOPE " + SCOPE_S + " unsupported (attn|ffn|all)"
+  exit 1
+end
+SCOPE_CODE = SCOPE_S == "all" ? 0 : (SCOPE_S == "ffn" ? 2 : 1)
 B_SEED      = (ENV["FRANKEN_B_SEED"] || "0").to_i
 B_DIST_S    = ENV["FRANKEN_B_DIST"] || ""
 B_SCALE_S   = ENV["FRANKEN_B_SCALE"] || ""
@@ -396,6 +416,10 @@ while kd < opts.kda_layers.length
   recipe.ff_cache.add_kda_layer!(opts.kda_layers[kd])
   kd = kd + 1
 end
+# toy#151: scope must reach the cache BEFORE realize — the alloc reads
+# it for the no-shadow param flags and the builder reads it for the DFA
+# set, so setting it later would let the two disagree.
+recipe.ff_cache.franken_policy_scope_init(SCOPE_CODE)
 recipe.realize!(cfg, opts)
 
 # tao#flow-json-emit (#25): self-describing run bundle, parallel to

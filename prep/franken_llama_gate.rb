@@ -95,7 +95,7 @@ Dir.mktmpdir("franken_llama_gate") do |dir|
     steps_ev = events.count { |e| e["kind"] == "step" }
     failures << "bundle: #{steps_ev} step events (want 5)" unless steps_ev == 5
     aligns = events.select { |e| e["kind"] == "align" }
-    failures << "bundle: #{aligns.length} align events (want 60 = 12 dfa weights x 5 steps)" unless aligns.length == 60
+    failures << "bundle: #{aligns.length} align events (want 60 = 12 dfa weights x 5 steps; toy#151 default scope=attn keeps this at the qkv set)" unless aligns.length == 60
     bad = aligns.count do |e|
       c = e["cos"]
       !c.is_a?(Numeric) || c.to_f.nan? || c.to_f.abs > 1.0001 ||
@@ -200,6 +200,78 @@ Dir.mktmpdir("franken_ae_gate") do |dir|
 end
 puts failures.length == n0 ? "  ok: --align-every thins align emissions (24 @ N=3/6 steps; step events untouched)" : "  FAIL: align-every leg"
 n0 = failures.length
+
+# ---- toy#151: FRANKEN_POLICY_SCOPE — policy the FFN, not just qkv ----
+# Until this ticket the per-layer policy reached ATTENTION QKV ONLY,
+# which is precisely the caveat that made Tao's F1 wash out. The FFN is
+# the bulk of params and compute, and the literature puts DFA nearest
+# to BP in MLP-shaped blocks — so it is the placement worth testing.
+#
+# The load-bearing assertions are STRUCTURAL, on the align stream's
+# `wi` (which weight each DFA gradient was computed for), not on the
+# curve. A curve that merely moves cannot tell "the FFN is policied"
+# from "the attention wiring changed". ft layout is
+# [rn1, rn2, q*nh, (k,v)*nkv, o, gate, up, down], so at nh=4/nkv=4 the
+# qkv weights are wi 2..13, the output proj is wi 14 (NEVER policied),
+# and the FFN is wi 15,16,17.
+n0 = failures.length
+sc_env = { "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42",
+           "FRANKEN_ALIGN" => "1", "STEPS" => "3", "SEED" => "0" }
+sc_wis = {}
+sc_curves = {}
+%w[attn ffn all].each do |sc|
+  Dir.mktmpdir("franken_scope_#{sc}") do |dir|
+    FileUtils.mkdir_p(File.join(dir, "weights"))
+    out = run_franken_llama(sc_env.merge("FRANKEN_POLICY_SCOPE" => sc), dir)
+    sc_curves[sc] = out.lines.select { |l| l.start_with?("step ") }
+    ev = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+    al = ev.select { |e| e["kind"] == "align" }
+    sc_wis[sc] = al.map { |e| e["wi"] }.uniq.sort
+    # every policied weight must carry a LIVE dfa gradient — the whole
+    # point is that these weights are actually updated by DFA.
+    dead = al.count { |e| e["dfa_norm"].to_f <= 0.0 }
+    failures << "policy-scope(#{sc}): #{dead}/#{al.length} align events have dfa_norm <= 0" unless dead == 0
+    failures << "policy-scope(#{sc}): provenance #{ev.first.dig('franken', 'policy_scope').inspect}" unless
+      ev.first.dig("franken", "policy_scope") == sc
+    failures << "policy-scope(#{sc}): provenance does not name the policied set" if
+      ev.first.dig("franken", "policied_tensors").to_s.empty?
+  end
+end
+FFN_WIS = [15, 16, 17]
+QKV_WIS = (2..13).to_a
+failures << "policy-scope: attn policied the FFN (#{sc_wis['attn'].inspect})" unless sc_wis["attn"] == QKV_WIS
+failures << "policy-scope: ffn policied attention (#{sc_wis['ffn'].inspect})" unless sc_wis["ffn"] == FFN_WIS
+failures << "policy-scope: all did not policy qkv+ffn (#{sc_wis['all'].inspect})" unless sc_wis["all"] == QKV_WIS + FFN_WIS
+# the attention OUTPUT projection (wi 14) is not in any scope — it is
+# not FFN, and the qkv DFA tap does not apply to it.
+%w[attn ffn all].each do |sc|
+  failures << "policy-scope(#{sc}): policied the attention output proj (wi 14)" if sc_wis[sc].include?(14)
+end
+# the three scopes must be three DIFFERENT experiments
+failures << "policy-scope: attn == ffn (scope is not isolating)" if sc_curves["attn"] == sc_curves["ffn"]
+failures << "policy-scope: all == attn (the FFN is not reaching the update)" if sc_curves["all"] == sc_curves["attn"]
+failures << "policy-scope: all == ffn (attention is not reaching the update)" if sc_curves["all"] == sc_curves["ffn"]
+# DEFAULT == attn. This is the compatibility contract: an unset scope
+# must reproduce the pre-toy#151 lane byte-for-byte, so every F1/F3/F6/
+# F7b/F0 policy string keeps meaning what it meant (tao#17). Whole-layer
+# placement is opt-in via `all`.
+def_curve = run_franken_llama(sc_env, nil).lines.select { |l| l.start_with?("step ") }
+failures << "policy-scope: default is not `attn` — pre-toy#151 runs would silently change meaning" unless def_curve == sc_curves["attn"]
+# determinism
+failures << "policy-scope: ffn not deterministic" unless
+  run_franken_llama(sc_env.merge("FRANKEN_POLICY_SCOPE" => "ffn"), nil).lines.select { |l| l.start_with?("step ") } == sc_curves["ffn"]
+# composes with depth and a real corpus (F14 runs both)
+dc = run_franken_llama(sc_env.merge("FRANKEN_POLICY" => "chain,dfa,chain,dfa,chain,dfa",
+                                    "FRANKEN_SHAPE" => "deep", "CORPUS" => "data/fineweb_gpt2_smoke.bin",
+                                    "FRANKEN_POLICY_SCOPE" => "ffn", "STEPS" => "4"), nil)
+dcl = dc.lines.select { |l| l.start_with?("step ") }
+failures << "policy-scope: ffn scope broken at --shape deep + --corpus" unless
+  dcl.length == 4 && dcl.map { |l| l[/loss=(\S+)/, 1].to_f }.none?(&:nan?)
+# guard
+_so, sst = Open3.capture2e({ "STEPS" => "1", "SEED" => "0", "FRANKEN_POLICY_SCOPE" => "mlp" },
+                           RUNNER, chdir: ROOT)
+failures << "policy-scope: unknown scope value not rejected" if sst.success?
+puts failures.length == n0 ? "  ok: FRANKEN_POLICY_SCOPE — attn/ffn/all isolate STRUCTURALLY (align wi: qkv 2-13, ffn 15-17, output-proj 14 never policied), every policied weight carries a live DFA gradient, default=attn (pre-toy#151 byte-null), deterministic, composes with deep+corpus, unknown value rejected" : "  FAIL: policy-scope leg"
 
 # ---- toy#126: --lr / --warmup (the F7b LR-sweep surface) ----
 # --lr: deterministic, actually moves the curve (default 0.001 stays
@@ -696,7 +768,7 @@ failures << "byte-repro: outputs differ" unless r1 == r2
 puts "  ok: byte-repro — two policy runs identical" if r1 == r2
 
 if failures.empty?
-  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + shape presets (toy#124) + lr/warmup (toy#126) + no-shadow/pack-header/ckpt-every (toy#129) + batch (toy#133) + K1 axes (toy#136) + KDA layer (toy#137) + hybrid/AttnRes (toy#138) + MLA kind/k3 pattern (K-series M2) + per-head muon (toy#139/K5) + MTP (K-series M10) + byte-repro (toy#112/#113)"
+  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + shape presets (toy#124) + lr/warmup (toy#126) + no-shadow/pack-header/ckpt-every (toy#129) + batch (toy#133) + policy-scope/FFN-DFA (toy#151) + K1 axes (toy#136) + KDA layer (toy#137) + hybrid/AttnRes (toy#138) + MLA kind/k3 pattern (K-series M2) + per-head muon (toy#139/K5) + MTP (K-series M10) + byte-repro (toy#112/#113)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-llama]: #{f}" }

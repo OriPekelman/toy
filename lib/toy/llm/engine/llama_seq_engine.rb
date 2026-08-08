@@ -176,6 +176,16 @@ class LlamaSeqEngine
     # in initialize — build_gdn_flags!/realize must NOT reset it (the
     # setter runs before realize).
     @seq_franken_noshadow_policy = [0]; @seq_franken_noshadow_policy.pop
+    # toy#151: which tensor class a :dfa layer policies.
+    # 0 = all (attention qkv + FFN), 1 = attn only, 2 = ffn only.
+    #
+    # DEFAULTS TO 1 (attn) — the pre-toy#151 behaviour — so a caller that
+    # never calls franken_policy_scope_init gets the OLD lane rather than
+    # silently DFA-ing the whole layer. Defaulting to 0 here meant the
+    # CUDA runner, which had not been taught the flag yet, quietly ran
+    # whole-layer DFA and emitted 75 align events instead of 60. Safe
+    # side of the default is the one that changes nothing.
+    @seq_franken_scope = 1
     @seq_nope_flag = 0
     @seq_kda_conv = 1        # toy#137 K2c: ShortConv on KDA q/k/v (K3 eq 2)
     # K-series M2: the KV latent width r. 0 = 'derive from the head
@@ -1039,7 +1049,15 @@ class LlamaSeqEngine
         end
         wp = 0
         while wp < blk.ft_weights.length
-          skip_qkv = ns_mode > 0 && wp >= 2 && wp < 2 + @seq_n_heads + 2 * @seq_n_kv
+          # toy#151: the skip set MIRRORS the builder's policied set.
+          # ft layout: [rn1, rn2, q*nh, (k,v)*nkv, o, gate, up, down] —
+          # the last three are the FFN.
+          nq_end = 2 + @seq_n_heads + 2 * @seq_n_kv
+          is_qkv_w = wp >= 2 && wp < nq_end
+          is_ffn_w = wp >= nq_end + 1 && wp < nq_end + 4
+          skip_qkv = ns_mode > 0 &&
+                     ((is_qkv_w && franken_scope_covers_attn) ||
+                      (is_ffn_w && franken_scope_covers_ffn))
           if !skip_qkv
             TinyNN.tnn_set_param(blk.ft_weights[wp])
           end
@@ -1958,6 +1976,25 @@ class LlamaSeqEngine
     @seq_nope_flag
   end
 
+  # toy#151: the policied SCOPE. Read by BOTH the alloc (which param
+  # flags to skip under no_shadow) and the training-step builder (which
+  # weights get the DFA rule), so the two cannot drift apart — that
+  # drift is what would leave a shadow acc alive for a weight the
+  # builder then DFA'd. Must be called BEFORE realize, same as
+  # franken_no_shadow_init.
+  def franken_policy_scope_init(v)
+    @seq_franken_scope = v
+    0
+  end
+
+  def franken_scope_covers_attn
+    @seq_franken_scope == 0 || @seq_franken_scope == 1
+  end
+
+  def franken_scope_covers_ffn
+    @seq_franken_scope == 0 || @seq_franken_scope == 2
+  end
+
   def franken_no_shadow_init(policy)
     @seq_franken_noshadow_policy = [0]; @seq_franken_noshadow_policy.pop
     pi = 0
@@ -1971,9 +2008,10 @@ class LlamaSeqEngine
   def franken_refresh_b!
     bi = 0
     while bi < @franken_b_handles.length
-      nb = @seq_d_head * @seq_vocab_size
+      dout = @franken_b_douts_rec[bi]
+      nb = dout * @seq_vocab_size
       sig = Toy::Train::DfaB.sigma_for(@franken_b_scale_rec, @seq_vocab_size,
-                                       @seq_d_head, @franken_b_sigma_rec)
+                                       dout, @franken_b_sigma_rec)
       TinyNN.tnn_upload_from_float_array(@sess, @franken_b_handles[bi],
         Toy::Train::DfaB.fill(nb, @franken_b_seeds_rec[bi], @franken_b_dist_rec, sig), nb)
       bi = bi + 1
@@ -2085,6 +2123,12 @@ class LlamaSeqEngine
 
     b_handles = [TinyNN.tnn_null_ptr]; b_handles.pop
     b_seeds   = [0]; b_seeds.pop
+    # toy#151: B is no longer always d_head-shaped — the FFN feedback
+    # matrices are d_ff / d_model wide. refresh_b! used to hardcode
+    # d_head, which would upload the wrong element count (and the wrong
+    # sigma) the moment an FFN weight was policied.
+    b_douts   = [0]; b_douts.pop
+    @franken_b_douts_rec = b_douts
     @franken_b_handles = b_handles
     @franken_b_seeds_rec = b_seeds
     @franken_b_dist_rec  = b_dist
@@ -2158,18 +2202,45 @@ class LlamaSeqEngine
         tw = blk.ft_weights[wi]
         # ft layout (alloc_trainable_f32_weights!): [rn1, rn2,
         # q×n_heads, (k,v)×n_kv interleaved, o, gate, up, down].
-        is_qkv = wi >= 2 && wi < 2 + nh + 2 * nkv
-        if mode > 0 && is_qkv
+        # toy#151: the policied set is no longer qkv-only. ft layout is
+        # [rn1, rn2, q*nh, (k,v)*nkv, o, gate, up, down]; the FFN is the
+        # last three. Each policied weight needs (a) a feedback matrix B
+        # sized to ITS OWN output width and (b) the activation feeding
+        # IT — not the attention norm. gate/up read tap_ffn_norm
+        # (d_model in, d_ff out); down reads tap_ffn_hidden (d_ff in,
+        # d_model out). Attention qkv keeps exactly its old wiring, so
+        # an attn-scoped run is byte-identical to the pre-toy#151 build.
+        nq_end = 2 + nh + 2 * nkv
+        is_qkv = wi >= 2 && wi < nq_end
+        is_gate_up = wi == nq_end + 1 || wi == nq_end + 2
+        is_down    = wi == nq_end + 3
+        is_ffn     = is_gate_up || is_down
+        do_dfa = mode > 0 &&
+                 ((is_qkv && franken_scope_covers_attn) ||
+                  (is_ffn && franken_scope_covers_ffn))
+        if do_dfa
           if no_shadow == 1 && mode > 1
             raise "build_training_step_franken: no_shadow supports modes 0/1 only (mode " + mode.to_s + " reads the chain grad-acc)"
           end
-          t_b = TinyNN.tnn_input_2d_f32(@sess, @seq_d_head, @seq_vocab_size)
+          w_dout = @seq_d_head
+          w_din  = @seq_d_model
+          t_tap  = blk.tap_attn_norm
+          if is_gate_up
+            w_dout = @seq_d_ff
+            w_din  = @seq_d_model
+            t_tap  = blk.tap_ffn_norm
+          elsif is_down
+            w_dout = @seq_d_model
+            w_din  = @seq_d_ff
+            t_tap  = blk.tap_ffn_hidden
+          end
+          t_b = TinyNN.tnn_input_2d_f32(@sess, w_dout, @seq_vocab_size)
           TinyNN.tnn_set_output(t_b)
           t_delta = TinyNN.tnn_matmul(@sess, t_b, t_e)
           t_tap_t = TinyNN.tnn_cont_2d(@sess,
-                      TinyNN.tnn_transpose(@sess, blk.tap_attn_norm), tb, @seq_d_model)
+                      TinyNN.tnn_transpose(@sess, t_tap), tb, w_din)
           t_del_t = TinyNN.tnn_cont_2d(@sess,
-                      TinyNN.tnn_transpose(@sess, t_delta), tb, @seq_d_head)
+                      TinyNN.tnn_transpose(@sess, t_delta), tb, w_dout)
           t_gd = TinyNN.tnn_matmul(@sess, t_tap_t, t_del_t)
           t_g = t_gd
           # P3 combiners (design §4b): mix(alpha) blends the chain
@@ -2215,6 +2286,7 @@ class LlamaSeqEngine
           emit_opt_step(tw, t_g, blk.ft_m[wi], blk.ft_v[wi], t_hp)
           b_handles.push(t_b)
           b_seeds.push(b_seed + li * 1000 + wi)
+          b_douts.push(w_dout)
           if no_shadow == 0
             @franken_align_grads.push(t_g)
             # PIN the shadow acc: for pure-:dfa weights it has NO consumer
