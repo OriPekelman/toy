@@ -338,10 +338,6 @@ while oob_m < MLA_LIST.length
 end
 # MLA is B=1 for the same reason KDA is: the head slicing reshapes on
 # seq_t, so one window per step.
-if MLA_LIST.length > 0 && BATCH > 1
-  puts "toy-train-franken: MLA layers are B=1 (the head slicing reshapes on seq_t) — drop --batch or the mla layers"
-  exit 1
-end
 hdr_v = CORPUS.length > 0 ? ToyCorpusLoader.probe_vocab(CORPUS) : 0
 env_v = (ENV["FRANKEN_VOCAB"] || "0").to_i
 if hdr_v > 0 && env_v > 0 && hdr_v != env_v
@@ -832,8 +828,8 @@ while step < STEPS
   # token the module embeds) and the t+2 one-hot. Both CLAMP at the
   # window edge, matching next_token's t+1 behaviour.
   if MTP_ON
-    recipe.ff_cache.mtp_upload!(Toy::Labels.shift_ids(seq_ids, CONTEXT, 1),
-                                Toy::Labels.next_token_k(seq_ids, VOCAB, CONTEXT, 1, 2))
+    recipe.ff_cache.mtp_upload!(Toy::Labels.shift_ids(seq_ids, CONTEXT, BATCH, 1),
+                                Toy::Labels.next_token_k(seq_ids, VOCAB, CONTEXT, BATCH, 2))
   end
   loss = recipe.step!(seq_ids, positions, m_labels, m_hp, step == 0)
   mtp_loss = MTP_ON ? recipe.ff_cache.mtp_loss_value : 0.0

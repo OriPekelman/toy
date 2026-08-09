@@ -40,7 +40,11 @@
 # at toy scale the block seam is attention-substitution, and pretending
 # otherwise would double-count parameters in the cost accounting.
 #
-# STILL B=1: the head slicing reshapes on seq_t exactly like KDABlock,
+# toy#135: BATCHED as of toy-k3 — the block-causal mask and the real
+# batch are threaded to GQA.attention. (The old note below was wrong
+# about the cause: nothing here reshapes on seq_t; the B=1 limit was a
+# NULL mask + hardcoded batch=1.)
+# Historic note: the head slicing was believed to reshape on seq_t like KDABlock,
 # so one window per step.
 #
 # Spinel hygiene: hand-written positional class, NEVER Struct.new
@@ -132,7 +136,7 @@ module Toy; module LLM; module Blocks
 
     # Forward: residual update for x [d_model, T] (B=1). Returns
     # [d_model, T].
-    def build_forward(sess, t_x, seq_t, eps)
+    def build_forward(sess, t_x, seq_t, eps, attn_mask, seq_b)
       s_v     = @mla_s_v
       n_heads = @mla_n_heads
       inner   = s_v * n_heads
@@ -149,7 +153,7 @@ module Toy; module LLM; module Blocks
         q_h = TinyNN.tnn_matmul(sess, @t_w_q[hh],   h)   # [s_v, T]
         k_h = TinyNN.tnn_matmul(sess, @t_w_k_b[hh], c)   # [s_v, T]
         v_h = TinyNN.tnn_matmul(sess, @t_w_v_b[hh], c)   # [s_v, T]
-        o_h = Toy::LLM::Primitives::MLA.head_attend(sess, q_h, k_h, v_h, s_v)
+        o_h = Toy::LLM::Primitives::MLA.head_attend(sess, q_h, k_h, v_h, s_v, attn_mask, seq_b)
         if hh == 0
           o = o_h
         else

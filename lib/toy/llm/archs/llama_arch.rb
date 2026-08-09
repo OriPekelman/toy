@@ -438,7 +438,7 @@ module Toy; module LLM; module Archs
           t_cur = self.seq_kda_blocks_ffi[li_g].build_forward(sess, t_cur, seq_t, eps)
         elsif spec_kind == Toy::LLM::Archs::LayerSpec::KIND_MLA
           # K-series M2: concrete typed call into the parallel MLA array.
-          t_cur = self.seq_mla_blocks_ffi[li_g].build_forward(sess, t_cur, seq_t, eps)
+          t_cur = self.seq_mla_blocks_ffi[li_g].build_forward(sess, t_cur, seq_t, eps, t_attn_mask, seq_b)
         else
           raise "LlamaArch#build_forward: unsupported layer kind #{spec_kind} at layer #{li_g}"
         end

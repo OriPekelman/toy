@@ -91,14 +91,22 @@ module Toy
         # batch is pinned to 1 (the B=1 branch of GQA.attention, which
         # masks with diag_mask_inf), so MLA layers carry the same B=1
         # restriction the KDA/GDN blocks do.
-        def self.head_attend(sess, q_h, k_h, v_h, s_v)
+        # toy#135 (toy-k3): mask + batch are THREADED, not assumed. This
+        # used to pass a NULL mask and a literal batch=1, which sends
+        # GQA.attention down its diag_mask_inf path — plain causal over
+        # the FLAT [T*B] stream. At B > 1 that is not a crash, it is
+        # CROSS-WINDOW ATTENTION: window 2 attends to window 1 and the
+        # loss looks fine while the windows are not independent. The
+        # block-causal mask is exactly what the GH#7 batch layout builds
+        # to prevent that, so MLA has to use it like ordinary attention.
+        def self.head_attend(sess, q_h, k_h, v_h, s_v, attn_mask, batch)
           # A bare transpose IS safe here: it feeds mul_mat directly, and
           # mul_mat's backward handles a transposed operand. It is
           # wrapping one in CONT that breaks (see above).
           v_t = TinyNN.tnn_transpose(sess, v_h)
           scale = 1.0 / Math.sqrt(s_v.to_f)
           Toy::LLM::Primitives::GQA.attention(sess, k_h, q_h, v_t,
-                                              TinyNN.tnn_null_ptr, scale, 1)
+                                              attn_mask, scale, batch)
         end
 
         # Parameter count of the latent K/V path vs the two ordinary

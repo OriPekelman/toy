@@ -949,6 +949,18 @@ class LlamaSeqEngine
     # 24L × 16-head model needs ~450k nodes for forward + backward +
     # AdamW, so we budget ~1000 nodes per (layer × head) cell + floor.
     cap = cfg.n_layers * cfg.n_heads * 1000 + 65536
+    # toy#135 (toy-k3): the heuristic above is O(layers × heads) and
+    # IGNORES CONTEXT — which is fine for attention, whose graph is
+    # T-independent in node count, but wrong for the RECURRENT forms.
+    # KDA/GDN build recur_unrolled, so their node count scales with T:
+    # a k3 pattern at L6/8-head fit at ctx 32 and blew the 65536 cap at
+    # ctx 64 with GGML_ASSERT(cgraph->n_nodes < cgraph->size). Budget
+    # per (recurrent layer × head × timestep) so the cap tracks the
+    # thing that actually grows.
+    n_recur = @seq_kda_layer_indices.length + @seq_gdn_layer_indices.length
+    if n_recur > 0
+      cap = cap + n_recur * cfg.n_heads * t_seq * 80
+    end
     TinyNN.tnn_session_set_graph_capacity(@sess, cap)
     @seq_has_untied_output = untied
     @seq_has_qkv_bias      = qkv_bias

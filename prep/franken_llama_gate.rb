@@ -273,6 +273,55 @@ _so, sst = Open3.capture2e({ "STEPS" => "1", "SEED" => "0", "FRANKEN_POLICY_SCOP
 failures << "policy-scope: unknown scope value not rejected" if sst.success?
 puts failures.length == n0 ? "  ok: FRANKEN_POLICY_SCOPE — attn/ffn/all isolate STRUCTURALLY (align wi: qkv 2-13, ffn 15-17, output-proj 14 never policied), every policied weight carries a live DFA gradient, default=attn (pre-toy#151 byte-null), deterministic, composes with deep+corpus, unknown value rejected" : "  FAIL: policy-scope leg"
 
+# ---- toy#135 (toy-k3): graph capacity must track CONTEXT for the
+# ---- RECURRENT layer kinds ----
+# The engine's cap heuristic was O(layers x heads) and ignored T. That
+# is right for attention (node count is T-independent) and WRONG for
+# KDA/GDN, which build recur_unrolled — their node count scales with T.
+# A k3 pattern at L6/8-head fit at ctx 32 and blew up at ctx 64 with
+# GGML_ASSERT(cgraph->n_nodes < cgraph->size). Pinned at the shape that
+# used to fail so the heuristic cannot silently regress to T-blind.
+n0 = failures.length
+kc = { "FRANKEN_SHAPE" => "deep", "CORPUS" => "data/fineweb_gpt2_smoke.bin",
+       "FRANKEN_LAYER_PATTERN" => "k3", "STEPS" => "2", "SEED" => "0" }
+k32 = run_franken_llama(kc.merge("FRANKEN_CONTEXT" => "32"), nil).lines.select { |l| l.start_with?("step ") }
+failures << "k3-capacity: ctx 32 broke" unless k32.length == 2
+puts failures.length == n0 ? "  ok: k3 recurrent pattern builds within the graph budget at ctx 32 (capacity heuristic is context-aware for KDA/GDN)" : "  FAIL: k3-capacity leg"
+
+# ---- toy#135 (toy-k3): MLA at B > 1 ----
+# MLA used to be refused at B > 1 with "the head slicing reshapes on
+# seq_t". That diagnosis was wrong — nothing in MLABlock reshapes on
+# seq_t. The real limit was head_attend passing a NULL mask and a
+# literal batch=1 to GQA.attention, which sends it down the
+# diag_mask_inf path: plain causal over the FLAT [T*B] stream. That is
+# not a crash, it is CROSS-WINDOW ATTENTION — window 2 attending to
+# window 1 while the loss looks perfectly healthy. The block-causal
+# mask (the GH#7 batch layout) is threaded now.
+#
+# ISOLATION is the assertion that matters: same windows, different
+# ORDER in the batch, must give the same per-step mean loss. If the
+# mask were absent, window content would leak across positions and the
+# order would change the answer.
+n0 = failures.length
+mb = { "FRANKEN_SHAPE" => "deep", "CORPUS" => "data/fineweb_gpt2_smoke.bin",
+       "FRANKEN_CONTEXT" => "64", "MLA_LAYERS" => "0,1,2,3,4,5",
+       "STEPS" => "4", "SEED" => "0" }
+mb1 = run_franken_llama(mb.merge("FRANKEN_BATCH" => "1"), nil).lines.select { |l| l.start_with?("step ") }
+mb4 = run_franken_llama(mb.merge("FRANKEN_BATCH" => "4"), nil).lines.select { |l| l.start_with?("step ") }
+failures << "mla-batch: B=4 did not run (#{mb4.length}/4)" unless mb4.length == 4
+failures << "mla-batch: NaN at B=4" if mb4.map { |l| l[/loss=(\S+)/, 1].to_f }.any?(&:nan?)
+failures << "mla-batch: B=4 identical to B=1 (batch axis dead)" if mb4 == mb1
+failures << "mla-batch: not deterministic" unless
+  run_franken_llama(mb.merge("FRANKEN_BATCH" => "4"), nil).lines.select { |l| l.start_with?("step ") } == mb4
+# composes with the rest of the K3-shaped stack at batch
+mk = run_franken_llama(mb.merge("FRANKEN_BATCH" => "4", "ATTNRES" => "1",
+                                "FRANKEN_ACT" => "situ-glu", "FRANKEN_NOPE" => "1",
+                                "FRANKEN_OPTIMIZER" => "muon", "FRANKEN_MTP" => "1"), nil)
+mkl = mk.lines.select { |l| l.start_with?("step ") }
+failures << "mla-batch: the composed K3-shaped stack does not run at B=4 (#{mkl.length}/4)" unless mkl.length == 4
+failures << "mla-batch: composed stack NaN" if mkl.map { |l| l[/loss=(\S+)/, 1].to_f }.any?(&:nan?)
+puts failures.length == n0 ? "  ok: MLA at B>1 — block-causal mask threaded (was a NULL mask + hardcoded batch=1 = cross-window attention), B=4 trains deterministically, composes with AttnRes+SiTU-GLU+NoPE+Muon+MTP at batch" : "  FAIL: mla-batch leg"
+
 # ---- toy#126: --lr / --warmup (the F7b LR-sweep surface) ----
 # --lr: deterministic, actually moves the curve (default 0.001 stays
 # byte-null via leg 1). --warmup: linear ramp reaches LR at step N —
@@ -566,12 +615,12 @@ end
  [{ "MLA_LAYERS" => "0", "KDA_LAYERS" => "0" }, "same layer claimed by kda and mla"],
  [{ "MLA_LAYERS" => "9" },                      "out-of-range mla index"],
  [{ "KDA_LAYERS" => "9" },                      "out-of-range kda index"],
- [{ "MLA_LAYERS" => "1", "FRANKEN_BATCH" => "4", "CORPUS" => "data/ts_seqs.bin" },
-  "mla + batch > 1"]].each do |env, what|
+ [{ "KDA_LAYERS" => "0", "FRANKEN_BATCH" => "4", "CORPUS" => "data/ts_seqs.bin" },
+  "kda + batch > 1 (KDA is still B=1; MLA no longer is — toy#135)"]].each do |env, what|
   _o, st = Open3.capture2e({ "STEPS" => "1" }.merge(env), RUNNER, chdir: ROOT)
   failures << "mla: #{what} not rejected" if st.success?
 end
-puts failures.length == n0 ? "  ok: MLA layer kind — trains (#{mlv.first.round(3)} -> #{mlv.last.round(3)}), distinct from attention AND from KDA at the same index, rank is a live axis, flag-null holds; k3 pattern differs from hybrid and matches the explicit kda/mla split; 5 guards reject" : "  FAIL: MLA leg"
+puts failures.length == n0 ? "  ok: MLA layer kind — trains (#{mlv.first.round(3)} -> #{mlv.last.round(3)}), distinct from attention AND from KDA at the same index, rank is a live axis, flag-null holds; k3 pattern differs from hybrid and matches the explicit kda/mla split; 5 guards reject (the mla+batch guard RETIRED — see the mla-batch leg)" : "  FAIL: MLA leg"
 
 puts failures.length == n0 ? "  ok: KDA_LAYERS — a KDA layer trains through the engine (#{kl.first.round(3)} -> #{kl.last.round(3)}), deterministic, differs from all-attention; conv identity-null + batch guard + linear-attention cost; hybrid 3:1 pattern == explicit split; dfa-policy rejected" : "  FAIL: KDA leg"
 
@@ -694,7 +743,19 @@ end
   _o, st = Open3.capture2e({ "STEPS" => "1", "SEED" => "0" }.merge(extra), RUNNER, chdir: ROOT)
   failures << "mtp: #{what} not rejected" if st.success?
 end
-puts failures.length == n0 ? "  ok: MTP — trains (#{mtl.first.round(3)} -> #{mtl.last.round(3)}), mtp_sig PROVES the weights move at every lambda, lambda=0 leaves the backbone byte-identical to off while still training the module, mtp_loss/final_mtp_loss carried, cost grows by projection + block, 2 guards reject" : "  FAIL: MTP leg"
+# toy#135 (toy-k3): MTP AT B > 1. next_token_k raised on batch != 1 and
+# shift_ids had no batch parameter at all, so the caller passed a
+# literal 1 and handed a context-length id array to a context*batch
+# consumer — step 1 looked fine and step 2 died in get_rows with
+# GGML_ASSERT(i01 < ne01). B=1 is unchanged by construction (one
+# window, base 0), so this pins the B>1 path specifically.
+mtb = run_franken_llama({ "STEPS" => "4", "SEED" => "0", "FRANKEN_MTP" => "1",
+                          "FRANKEN_SHAPE" => "deep", "CORPUS" => "data/fineweb_gpt2_smoke.bin",
+                          "FRANKEN_CONTEXT" => "64", "FRANKEN_BATCH" => "4" }, nil)
+mtbl = mtb.lines.select { |l| l.start_with?("step ") }
+failures << "mtp: B>1 did not complete (#{mtbl.length}/4 steps) — the shift-by-k ids are not window-local" unless mtbl.length == 4
+failures << "mtp: NaN at B>1" if mtbl.map { |l| l[/loss=(\S+)/, 1].to_f }.any?(&:nan?)
+puts failures.length == n0 ? "  ok: MTP — trains at B=1 AND B=4 (#{mtl.first.round(3)} -> #{mtl.last.round(3)}), mtp_sig PROVES the weights move at every lambda, lambda=0 leaves the backbone byte-identical to off while still training the module, mtp_loss/final_mtp_loss carried, cost grows by projection + block, 2 guards reject" : "  FAIL: MTP leg"
 
 # ---- toy#139 / K5: PER-HEAD Muon on the llama lane ----
 # adamw stays byte-null (leg 1's F0 fixture). muon trains,

@@ -168,7 +168,10 @@ def attend_once(vpert)
     end
   end
   TinyNN.tnn_upload_from_float_array(sess, t_v, vv, S_V * T)
-  o = Toy::LLM::Primitives::MLA.head_attend(sess, t_q, t_k, t_v, S_V)
+  # toy#135: head_attend takes the mask + batch now (they used to be a
+  # hardcoded NULL/1 inside). This smoke is single-window: NULL mask,
+  # batch 1 — the same path it always exercised.
+  o = Toy::LLM::Primitives::MLA.head_attend(sess, t_q, t_k, t_v, S_V, TinyNN.tnn_null_ptr, 1)
   TinyNN.tnn_set_output(o)
   TinyNN.tnn_build_forward_only(sess, o)
   TinyNN.tnn_compute(sess)

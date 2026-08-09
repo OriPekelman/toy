@@ -71,43 +71,66 @@ module Toy
     # at small context the MTP loss is slightly optimistic. It is
     # reported in provenance (mtp_clamped_cols) rather than left for
     # someone to rediscover from a suspiciously low second loss.
+    # toy#135 (toy-k3): WINDOW-LOCAL at B > 1. This used to raise on
+    # batch != 1, and the MTP caller dodged the raise by passing a
+    # literal 1 — which then produced a context-length id array for a
+    # context*batch input and read PAST it (GGML_ASSERT(i01 < ne01) in
+    # get_rows, at step 2). The shift now clamps at EACH window's edge,
+    # exactly as next_token_guarded_batched does for t+1.
     def self.next_token_k(seq_ids, vocab, context, batch, k)
-      if batch != 1
-        raise "Toy::Labels.next_token_k: batch " + batch.to_s + " unsupported"
+      if batch < 1
+        raise "Toy::Labels.next_token_k: batch " + batch.to_s + " < 1"
       end
-      m = Mat.new(context, vocab)
+      m = Mat.new(context * batch, vocab)
       j = 0
-      while j < context * vocab
+      while j < context * batch * vocab
         m.flat[j] = 0.0
         j = j + 1
       end
-      i = 0
-      while i < context
-        idx = i + k
-        if idx >= context
-          idx = context - 1
+      w = 0
+      while w < batch
+        base = w * context
+        i = 0
+        while i < context
+          idx = i + k
+          if idx >= context
+            idx = context - 1
+          end
+          target = seq_ids[base + idx]
+          if target >= 0 && target < vocab
+            m.flat[(base + i) * vocab + target] = 1.0
+          end
+          i = i + 1
         end
-        target = seq_ids[idx]
-        if target >= 0 && target < vocab
-          m.flat[i * vocab + target] = 1.0
-        end
-        i = i + 1
+        w = w + 1
       end
       m
     end
 
     # K-series M10: the ids the MTP module embeds — token t_{i+1} per
     # position, same clamp.
-    def self.shift_ids(seq_ids, context, k)
+    # toy#135 (toy-k3): shift-by-k ids, WINDOW-LOCAL. `batch` was absent
+    # entirely, so at B > 1 this returned a context-length array for a
+    # context*batch consumer. Each window shifts within itself and
+    # clamps at its own edge — the same discipline as next_token_k.
+    def self.shift_ids(seq_ids, context, batch, k)
+      if batch < 1
+        raise "Toy::Labels.shift_ids: batch " + batch.to_s + " < 1"
+      end
       a = [0]; a.pop
-      i = 0
-      while i < context
-        idx = i + k
-        if idx >= context
-          idx = context - 1
+      w = 0
+      while w < batch
+        base = w * context
+        i = 0
+        while i < context
+          idx = i + k
+          if idx >= context
+            idx = context - 1
+          end
+          a.push(seq_ids[base + idx])
+          i = i + 1
         end
-        a.push(seq_ids[idx])
-        i = i + 1
+        w = w + 1
       end
       a
     end
