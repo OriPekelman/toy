@@ -79,12 +79,13 @@ recipes are:
 | `franken` | dense Llama-shape model with a **per-layer credit-assignment policy** (the DFA research lane) | `--policy`, `--policy-scope`, `--dfa-granularity`, `--dfa-b-*`, `--align-events`, `--optimizer`, `--shape`, `--corpus`, … |
 | `franken-moe` | the same, MoE-shaped (routed experts, dense or top-1) | as `franken` plus `--experts`, `--routing`, `--moe-policy`, `--dfa-feedback`, `--lr-schedule`, `--lr-control`, … |
 | `mlp` | MLP classifier on a seeded synthetic task — the DFA **anchor** lane (CPU-only) | `--policy`, `--classes`, `--hidden`, `--features`, `--layers`, `--task`, `--val-batches`, `--dfa-b-*`, `--align-events` |
+| `ctr` | CTR/recommender tower: embedding tables + MLP + **scalar** sigmoid head, scored by AUC (CPU-only) | `--policy`, `--fields`, `--cardinality`, `--emb`, `--numeric`, `--hidden`, `--layers`, `--pairs`, `--lin-scale`, `--base-rate`, `--fm-branch`, `--val-batches` |
 
 An unknown recipe is rejected loud (`supported: 'from-scratch', 'lora',
-'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp'`). `--arch gpt2`
+'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp', 'ctr'`). `--arch gpt2`
 trains the from-scratch GPT-2 arch (`from-scratch` only, CPU-only);
 `--device cuda|metal` selects the per-device runner (`metal` is macOS-only;
-GPT-2, ViT-Tiny and `mlp` are CPU-only, and `franken`'s macro-DFA mode is
+GPT-2, ViT-Tiny, `mlp` and `ctr` are CPU-only, and `franken`'s macro-DFA mode is
 CPU-only by decision).
 Defaults: `--steps 5`, `--seed 0`, `--arch llama`, `--device cpu`, `--out runs/<id>`.
 Writes the run bundle (see [Run bundle layout](#run-bundle-layout)) and echoes
@@ -112,9 +113,10 @@ layer policies (dense lanes; default `attn`).
 `--optimizer adamw|muon|radam` (`radam` is `franken`-only; `sgd` is
 `franken-moe`-only).
 
-The `mlp` lane prints one extra stdout line after the curve —
-`val: acc=… loss=… n=…` — because held-out accuracy, not loss, is the
-metric its success criterion is stated in.
+The `mlp` and `ctr` lanes print one extra stdout line after the curve —
+`val: acc=… loss=… n=…` and `val: auc=… logloss=… n=… pos=…` — because
+held-out accuracy / AUC, not loss, is the metric their success criteria
+are stated in.
 
 ### `eval <model> [--top-k K] [--device cpu|cuda|metal] [--json]`
 Score a GGUF model: per-token logprobs. Default `--top-k 5`, `--device cpu`.

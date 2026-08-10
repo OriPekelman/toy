@@ -5,7 +5,7 @@ SETTLED (tao#18, tao#19) so each lane can be built without re-litigating
 it, and flags the one thing I think is still ambiguous.
 
 Build order: **#152 → #158 → #154 → #153 / #155 / #156 / #157**.
-Status: **#152 and #158 shipped** (see their sections below); **#154 next**.
+Status: **#152, #158 and #154 shipped** (see their sections below); **#153 next**.
 
 ## Settled (tao#18, tao#19 — Ori)
 
@@ -274,6 +274,91 @@ hardcoded `nb = d_head * vocab`, ignoring the per-weight `b_douts`
 toy#151 introduced — masked only because the runners call
 `franken_refresh_b!` before every step. toy#158's d_model-wide macro
 taps would have widened the same trap, so it now reads `b_douts`.
+
+## toy#154 (F18/T1) — SHIPPED, and it does NOT reproduce near-parity
+
+`toy train ctr` (runner `libexec/toy-train-ctr`, engine
+`lib/toy/llm/engine/ctr_engine.rb`, gate `prep/ctr_gate.rb`): per-field
+embedding tables → concat → MLP tower → **scalar** sigmoid head →
+logloss, per-tower-layer `--policy chain|dfa|frozen`, metric AUC
+(exact Mann-Whitney, ties at 0.5). CPU-only.
+
+**The construction had to be toy#158's, not toy#152's.** The ticket
+asks for "DFA the tower, embeddings stay chain" — and toy#152's
+direct-gradient rule propagates *nothing*, so the tables below the
+tower would have sat at init. This lane therefore uses a surrogate
+loss root per policied tower layer; the lowest one's gradient
+continues into the embeddings, which is exactly what "the tables train
+by backprop" means. The gate asserts it directly (the frozen-tower arm
+still improves 0.529 → 0.620 AUC, which is only possible if the tables
+are learning through the frozen tower).
+
+**Result, 2000 steps, 40 teacher pairs, matched init + seed, 2048
+held-out rows:**
+
+| seed | all-BP | all-DFA | frozen | BP−DFA | DFA−frozen |
+|---|---|---|---|---|---|
+| 0 | 0.706 | 0.639 | 0.620 | .067 | .019 |
+| 1 | 0.701 | 0.643 | 0.619 | .058 | .024 |
+| 2 | 0.697 | 0.638 | 0.617 | .059 | .022 |
+
+**The ticket's success target — DFA within ~0.01 AUC of BP — is NOT
+met.** DFA clears the frozen control convincingly and reproducibly, but
+lands 6 points behind BP, not 1. LR is not the explanation (swept
+0.0003 / 0.001 / 0.003 / 0.01; 0.003 is DFA's *best*).
+
+### Why, and why this does not contradict LightOn
+
+At output dim 1 the DFA update is **provably rank-1**:
+
+    delta_l = B_l · e  with e a [1, B] scalar error
+            = b_l ⊗ e            (a FIXED vector times a per-sample scalar)
+    grad W_l = b_l ⊗ ( sum_i e_i a_i )
+
+so every policied layer can only ever move its output along **one
+fixed direction** `b_l`; the rest of the layer stays at random init.
+Note this is equally true at 2 classes (softmax CE makes the two error
+rows negatives of each other), where toy#152 found DFA *matching* BP —
+so rank-1 feedback is sufficient when the hidden layers only need a
+simple transformation, and insufficient when they must synthesise
+genuinely new features. **The output-dim lens is really two effects**:
+fewer directions to align (helps) versus less information per step
+(hurts), and this lane is where the second one bites.
+
+**The reconciliation is measurable.** DeepFM — the architecture the
+ticket cites — is an FM branch **plus** a DNN tower, summed. With the
+FM branch enabled (`--fm-branch`, first-order + the exact second-order
+pairwise term):
+
+| arm | AUC |
+|---|---|
+| BP tower + FM | 0.806 |
+| **frozen tower + FM** | **0.813** |
+| DFA tower + FM | 0.651 |
+
+**The frozen tower scores as well as the trained one.** On a DeepFM
+shape the tower contributes ~nothing here, so a "DFA ≈ BP on DeepFM"
+observation is *not* evidence that DFA trains towers well — the FM
+branch is doing the work. That is the most likely reading of the
+literature number, and it is worth knowing before F18 is designed
+around it.
+
+Third: in that regime DFA is **16 points worse than frozen** — the
+toy#141 shape again (frozen experts beat both dfa and chain). A
+DFA-trained module summed into a path a BP-trained component already
+handles is net-harmful, and that has now happened on two independent
+lanes.
+
+### The task had to be built to discriminate
+
+At the shipped defaults (12 pairs, `--lin-scale` 1.0) the additive part
+of the teacher dominates, embeddings + head alone capture nearly all of
+it, and the three arms land within **0.003 AUC with the frozen control
+ahead** (.795 frozen / .793 dfa / .792 chain) — an unfalsifiable bar,
+the toy#152-with-blobs failure exactly. `--lin-scale 0.25` with 40
+pairs makes the crosses carry the signal. The gate asserts
+BP − frozen > 0.05 *first*, so a future change that quietly makes the
+task easy fails loudly instead of reporting a free pass.
 
 ## Landmines that apply
 

@@ -1,0 +1,11 @@
+# prep/fixtures/train_ctr_baseline.txt — toy#154 T1 CTR tower: the
+# DEFAULT `toy train ctr` curve (STEPS=5 SEED=0, 8 fields x card 64,
+# emb 8, 4 numeric, tower 3x64, scalar sigmoid head, batch 128,
+# lr 0.003, all-chain = plain BP, no FM branch).
+# Byte-gated by prep/ctr_gate.rb. Regenerate ONLY with a deliberate
+# numerics change: STEPS=5 SEED=0 ./libexec/toy-train-ctr.
+step 1: loss=0.6929736137390137
+step 2: loss=0.6927078366279602
+step 3: loss=0.6912016868591309
+step 4: loss=0.6908324956893921
+step 5: loss=0.686032772064209

@@ -816,6 +816,30 @@ libexec/toy-train-mlp: lib/toy/run/train_mlp.rb lib/toy/dev/toy_describe_flow.rb
 toy-train-mlp: libexec/toy-train-mlp
 .PHONY: toy-train-mlp
 
+# toy#154 (DFA-arch T1) — the CTR tower: per-field embedding tables +
+# MLP tower + SCALAR sigmoid head. SEPARATE binary (landmine #16),
+# CPU-only (tao#18). The DFA form is the toy#158 surrogate-root one,
+# NOT toy#152's direct-gradient one: the tower's injected error has to
+# propagate INTO the embedding tables for them to train at all, which
+# is what "DFA the tower, embeddings stay chain" means.
+libexec/toy-train-ctr: lib/toy/run/train_ctr.rb lib/toy/dev/toy_describe_flow.rb \
+		lib/toy/io/json_builder.rb lib/toy/io/json.rb lib/toy/io/toy_events.rb \
+		vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
+		lib/toy/io/toy_ctr_task.rb lib/toy/llm/engine/ctr_engine.rb \
+		lib/toy/llm/recipes/ctr_tower.rb lib/toy/llm/adamw.rb \
+		lib/toy/train/dfa_b.rb \
+		lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) $< -o $@
+toy-train-ctr: libexec/toy-train-ctr
+.PHONY: toy-train-ctr
+
+# toy#154 gate: the scalar-output CTR lane — logloss identity, chain
+# byte-null, determinism, embeddings-train-under-DFA, and the MANDATORY
+# success bar in AUC (~0.01 of BP, and beating the frozen control).
+.PHONY: gate-ctr
+gate-ctr: libexec/toy-train-ctr
+	ruby prep/ctr_gate.rb
+
 # toy#152 gate: chain byte-null vs absent policy, determinism, the dfa
 # effect, align-event shape (WITH wname), and the MANDATORY success bar
 # (all-DFA within gap of all-BP AND beating the frozen control, at

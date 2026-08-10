@@ -81,6 +81,8 @@ module Toy
         # (landmine #16) and CPU-only by decision (tao#18: no CUDA twins
         # for T0–T3).
         MLP_RUNNER_TARGET = "libexec/toy-train-mlp"
+        # toy#154 (DFA-arch T1) — the CTR tower. Own binary, CPU-only.
+        CTR_RUNNER_TARGET = "libexec/toy-train-ctr"
         FRANKEN_MOE_RUNNER_TARGET = "libexec/toy-train-franken-moe-cli"
         FRANKEN_MOE_CUDA_RUNNER_TARGET = "libexec/toy-train-franken-moe-cli-cuda"
         # GPT-2 GPU twins (--arch gpt2 --device cuda|metal). SEPARATE single-type
@@ -171,6 +173,15 @@ module Toy
           @teacher_dim = nil
           @task_seed   = nil
           @val_batches = nil
+          # toy#154 (ctr): the tower's own shape/task knobs.
+          @fields      = nil
+          @cardinality = nil
+          @numeric     = nil
+          @emb         = nil
+          @pairs       = nil
+          @base_rate   = nil
+          @lin_scale   = nil
+          @fm_branch   = false
           @moe_policy = nil   # franken-moe: chain | dfa-experts
           @moe_aux    = nil   # franken-moe: top1 aux-loss alpha
           @experts    = nil   # franken-moe: expert count E>=2 (toy#128)
@@ -237,7 +248,9 @@ module Toy
           #     warm-start +cuda                  in train_cuda.rb source)
           #   metal (fs only)  -> toy-train-metal
           #   cpu fs/warm-start-> toy-train
-          target = if @recipe == "mlp"
+          target = if @recipe == "ctr"
+                     CTR_RUNNER_TARGET
+                   elsif @recipe == "mlp"
                      MLP_RUNNER_TARGET
                    elsif @recipe == "franken-moe"
                      @device == "cuda" ? FRANKEN_MOE_CUDA_RUNNER_TARGET : FRANKEN_MOE_RUNNER_TARGET
@@ -337,6 +350,28 @@ module Toy
                              "MLP_B_SCALE"      => (@dfa_b_scale || ""),
                              "MLP_ALIGN"        => (@align_events ? "1" : ""),
                              "MLP_ALIGN_EVERY"  => (@align_every || 1).to_s)
+          elsif @recipe == "ctr"
+            # Lane-local CTR_* namespace, same discipline as MLP_*.
+            env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
+                             "CTR_POLICY"      => (@policy || ""),
+                             "CTR_FIELDS"      => (@fields || 8).to_s,
+                             "CTR_CARD"        => (@cardinality || 64).to_s,
+                             "CTR_NUMERIC"     => (@numeric || 4).to_s,
+                             "CTR_EMB"         => (@emb || 8).to_s,
+                             "CTR_HIDDEN"      => (@hidden || 64).to_s,
+                             "CTR_LAYERS"      => (@mlp_layers || 3).to_s,
+                             "CTR_PAIRS"       => (@pairs || 12).to_s,
+                             "CTR_BASE_RATE"   => (@base_rate ? @base_rate.to_s : ""),
+                             "CTR_LIN_SCALE"   => (@lin_scale ? @lin_scale.to_s : ""),
+                             "CTR_WIDE"        => (@fm_branch ? "1" : ""),
+                             "CTR_TASK_SEED"   => (@task_seed || 7).to_s,
+                             "CTR_BATCH"       => (@batch || 128).to_s,
+                             "CTR_VAL_BATCHES" => (@val_batches || 16).to_s,
+                             "CTR_LR"          => (@lr || ""),
+                             "CTR_WARMUP"      => (@warmup || 0).to_s,
+                             "CTR_B_SEED"      => (@dfa_b_seed || 1234).to_s,
+                             "CTR_B_DIST"      => (@dfa_b_dist || ""),
+                             "CTR_B_SCALE"     => (@dfa_b_scale || ""))
           elsif @recipe == "franken-moe"
             env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
                              "FRANKEN_MOE_ROUTING" => (@routing || "dense"),
@@ -531,6 +566,46 @@ module Toy
               when "teacher-dim" then @teacher_dim = val.to_i
               else                    @val_batches = val.to_i
               end
+            when "--fields", "--cardinality", "--numeric", "--emb", "--pairs"
+              key = @argv[i]
+              i += 1
+              val = @argv[i]
+              return bad_arg("#{key} requires a value") if val.nil?
+              min = key == "--cardinality" ? 2 : 0
+              return bad_arg("#{key} must be an integer >= #{min}, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= min
+              case key
+              when "--fields"      then @fields      = val.to_i
+              when "--cardinality" then @cardinality = val.to_i
+              when "--numeric"     then @numeric     = val.to_i
+              when "--emb"         then @emb         = val.to_i
+              else                      @pairs       = val.to_i
+              end
+            when /\A--(fields|cardinality|numeric|emb|pairs)=(.*)\z/
+              key = $1
+              val = $2
+              min = key == "cardinality" ? 2 : 0
+              return bad_arg("--#{key} must be an integer >= #{min}, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= min
+              case key
+              when "fields"      then @fields      = val.to_i
+              when "cardinality" then @cardinality = val.to_i
+              when "numeric"     then @numeric     = val.to_i
+              when "emb"         then @emb         = val.to_i
+              else                    @pairs       = val.to_i
+              end
+            when "--base-rate", "--lin-scale"
+              key = @argv[i]
+              i += 1
+              val = @argv[i]
+              return bad_arg("#{key} requires a value") if val.nil?
+              return bad_arg("#{key} must be a float in (0, 1], got #{val.inspect}") unless val =~ /\A\d*\.?\d+\z/ && val.to_f > 0.0 && val.to_f <= 1.0
+              key == "--base-rate" ? @base_rate = val.to_f : @lin_scale = val.to_f
+            when /\A--(base-rate|lin-scale)=(.*)\z/
+              key = $1
+              val = $2
+              return bad_arg("--#{key} must be a float in (0, 1], got #{val.inspect}") unless val =~ /\A\d*\.?\d+\z/ && val.to_f > 0.0 && val.to_f <= 1.0
+              key == "base-rate" ? @base_rate = val.to_f : @lin_scale = val.to_f
+            when "--fm-branch"
+              @fm_branch = true
             when "--task"
               i += 1
               val = @argv[i]
@@ -1085,8 +1160,8 @@ when /\A--dfa-feedback-lr=(.*)\z/
             return bad_arg("unexpected extra arguments: #{rest[1..].join(' ')}")
           end
           @recipe = rest.first
-          unless %w[from-scratch lora warm-start vit-tiny franken franken-moe mlp].include?(@recipe)
-            return bad_arg("unknown recipe #{@recipe.inspect}; supported: 'from-scratch', 'lora', 'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp'")
+          unless %w[from-scratch lora warm-start vit-tiny franken franken-moe mlp ctr].include?(@recipe)
+            return bad_arg("unknown recipe #{@recipe.inspect}; supported: 'from-scratch', 'lora', 'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp', 'ctr'")
           end
           # ---- toy#132: the flag x recipe MATRIX ----
           # Four llama-first flags in a row tripped franken-moe at Tao
@@ -1102,8 +1177,10 @@ when /\A--dfa-feedback-lr=(.*)\z/
             ["--model/--rank",  %w[lora],                          (!@model.nil? || !@rank.nil?), ""],
             ["--corpus",        %w[warm-start franken franken-moe], !@corpus.nil?, ""],
             ["--init",          %w[warm-start],                     !@init.nil?, ""],
-            ["--dfa-b-*/--align-events", %w[franken franken-moe mlp],   (!@dfa_b_seed.nil? || !@dfa_b_dist.nil? || !@dfa_b_scale.nil? || @align_events), ""],
-            ["--policy",        %w[franken mlp],                    !@policy.nil?, ""],
+            ["--fields/--cardinality/--numeric/--emb/--pairs", %w[ctr], (!@fields.nil? || !@cardinality.nil? || !@numeric.nil? || !@emb.nil? || !@pairs.nil?), " (toy#154)"],
+            ["--base-rate/--lin-scale/--fm-branch", %w[ctr], (!@base_rate.nil? || !@lin_scale.nil? || @fm_branch), " (toy#154)"],
+            ["--dfa-b-*/--align-events", %w[franken franken-moe mlp ctr],   (!@dfa_b_seed.nil? || !@dfa_b_dist.nil? || !@dfa_b_scale.nil? || @align_events), ""],
+            ["--policy",        %w[franken mlp ctr],                !@policy.nil?, ""],
             # tao#18 item 1: --policy-scope is DELIBERATELY not accepted
             # on mlp. The attn|ffn|all meaning stays stable across
             # lanes; an MLP has no attention to scope, and a
@@ -1111,12 +1188,14 @@ when /\A--dfa-feedback-lr=(.*)\z/
             # (--policy-tensors), never an overload of this one.
             ["--policy-scope",  %w[franken],                        !@policy_scope.nil?, " (toy#151; NOT accepted on 'mlp' — tao#18)"],
             ["--align-every",   %w[franken franken-moe mlp],        !@align_every.nil?, ""],
-            ["--lr/--warmup",   %w[franken franken-moe mlp],        (!@lr.nil? || !@warmup.nil?), " (toy#126/#132)"],
-            ["--classes/--hidden/--features/--layers", %w[mlp],     (!@classes.nil? || !@hidden.nil? || !@features.nil? || !@mlp_layers.nil?), " (toy#152)"],
-            ["--task/--task-seed/--teacher-dim/--val-batches", %w[mlp], (!@task.nil? || !@task_seed.nil? || !@teacher_dim.nil? || !@val_batches.nil?), " (toy#152)"],
+            ["--lr/--warmup",   %w[franken franken-moe mlp ctr],    (!@lr.nil? || !@warmup.nil?), " (toy#126/#132)"],
+            ["--classes/--features", %w[mlp],                       (!@classes.nil? || !@features.nil?), " (toy#152)"],
+            ["--hidden/--layers", %w[mlp ctr],                      (!@hidden.nil? || !@mlp_layers.nil?), " (toy#152/#154)"],
+            ["--task/--teacher-dim", %w[mlp],                       (!@task.nil? || !@teacher_dim.nil?), " (toy#152)"],
+            ["--task-seed/--val-batches", %w[mlp ctr],              (!@task_seed.nil? || !@val_batches.nil?), " (toy#152/#154)"],
             ["--no-shadow",     %w[franken franken-moe],            @no_shadow, " (toy#129)"],
             ["--context/--vocab", %w[franken franken-moe],          (!@context.nil? || !@vocab.nil?), " (toy#129)"],
-            ["--batch",         %w[franken franken-moe mlp],        !@batch.nil?, " (toy#133)"],
+            ["--batch",         %w[franken franken-moe mlp ctr],    !@batch.nil?, " (toy#133)"],
             ["--act",           %w[franken],                        !@act.nil?, " (toy#136/K1; MoE experts get their GLU in K4)"],
             ["--rope",          %w[franken],                        !@rope.nil?, " (toy#136/K1)"],
             ["--schedule",      %w[franken franken-moe],            !@schedule.nil?, " (toy#136/K1)"],
@@ -1210,7 +1289,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
           # The corpus rule is a TRANSFORMER-lane rule: there, B>1 means
           # B corpus windows per step. The mlp lane's batch is samples
           # from a seeded generator — there is no corpus to need.
-          if @batch && @batch > 1 && @corpus.nil? && @recipe != "mlp"
+          if @batch && @batch > 1 && @corpus.nil? && @recipe != "mlp" && @recipe != "ctr"
             return bad_arg("--batch > 1 needs --corpus (the fixed-seq feed is the byte-gated single-window contract)")
           end
           if @no_shadow && @align_events
@@ -1245,6 +1324,9 @@ when /\A--dfa-feedback-lr=(.*)\z/
           # tao#18 item 2: T0–T3 are CPU-only by decision, not by
           # accident — the anchors are small by construction, and a
           # hand-mirrored twin is exactly what drifted in toy#150/#151.
+          if @recipe == "ctr" && @device != "cpu"
+            return bad_arg("--device #{@device.inspect} is not supported for recipe 'ctr' (CPU-only by decision — tao#18)")
+          end
           if @recipe == "mlp" && @device != "cpu"
             return bad_arg("--device #{@device.inspect} is not supported for recipe 'mlp' (CPU-only by decision — tao#18: the T0 anchor is small by construction and gets no CUDA twin)")
           end
@@ -1267,6 +1349,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
           return "smollm2" if recipe == "lora"
           return "vit"     if recipe == "vit-tiny"
           return "mlp"     if recipe == "mlp"
+          return "ctr"     if recipe == "ctr"
           return "moe"     if recipe == "franken-moe"
           "llama"
         end

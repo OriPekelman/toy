@@ -33,6 +33,18 @@ wave landed alongside them, and the arc closes with the first DFA
   at each boundary and attaching a surrogate loss root per block. Because
   the cut is forward-identity, step 1 is **byte-identical to BP** — which
   is what makes macro-vs-BP numbers comparable at all.
+- **A NEGATIVE that matters (toy#154).** `toy train ctr` — embedding
+  tables + MLP tower + scalar sigmoid head, scored by AUC. LightOn put
+  DFA within ~0.01 AUC of BP on Criteo; **we do not reproduce that**.
+  DFA clears the frozen control reproducibly (+0.019–0.024 AUC across
+  seeds) but lands 6 points behind BP, not 1, and LR tuning is not the
+  explanation. At output dim 1 the DFA update is provably **rank-1** —
+  every layer can only move its output along one fixed direction — so
+  "small output dim" is really two competing effects: fewer directions
+  to align, but less information per step. The likely reconciliation is
+  measurable: with DeepFM's FM branch enabled, a **frozen** tower
+  scores as well as a trained one (0.813 vs 0.806), so near-parity on
+  that architecture is not evidence that DFA trains towers.
 - **`--optimizer radam` (toy#158)**, plus per-layer DFA reaching the FFN
   (`--policy-scope attn|ffn|all`, toy#151), adaptive Kolen-Pollack
   feedback (`--dfa-feedback`, toy#150), block-granularity DFA on the MoE
