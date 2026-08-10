@@ -201,6 +201,10 @@ class LlamaSeqEngine
     @seq_mla_kv_norm = 1     # DeepSeek's kv_a_norm; 0 only for the null
     @seq_mla_gate    = 1     # K3's full-rank output gate
     @seq_attnres = 0         # toy#138 K3b: Attention Residuals (K3 §2.2)
+    # toy#158 (F15): the per-BLOCK macro-DFA feedback matrices. Empty
+    # unless franken_macro_dfa_init(1) ran before realize.
+    @macro_b_handles = [TinyNN.tnn_null_ptr]; @macro_b_handles.pop
+    @macro_b_seeds   = [0]; @macro_b_seeds.pop
     @seq_optimizer = 0       # toy#139/K5: 0 adamw | 1 muon
     @t_seq_hp_sgd = TinyNN.tnn_null_ptr
     @ft_globals_weights = [TinyNN.tnn_null_ptr]; @ft_globals_weights.pop
@@ -2007,6 +2011,27 @@ class LlamaSeqEngine
     @seq_franken_scope == 0 || @seq_franken_scope == 2
   end
 
+  # toy#158 (F15): switch the dense lane from MICRO DFA (per-weight,
+  # today's `--policy dfa`) to MACRO DFA (LightOn arXiv:2006.12878 —
+  # one tap per block at its output, full BP inside the block, no
+  # backward chain across blocks). Must be called BEFORE realize: the
+  # arch reads it inside build_forward to place the boundary cuts.
+  #
+  # This is a RECIPE-HYGIENE lane, not a new mechanism: our transformer
+  # negatives were all micro-DFA at lr 1e-3 with AdamW, and LightOn's
+  # working recipe is macro + lr 5e-5 + RAdam-class. F15 exists to
+  # close the "did we test the wrong recipe?" doubt — LightOn's own LM
+  # result is ppl 52 (DFA) vs 34 (BP), so a NEGATIVE here is the
+  # expected outcome and still the useful one.
+  def franken_macro_dfa_init(v)
+    @seq_arch.seq_macro_dfa = v
+    0
+  end
+
+  def franken_macro_dfa_on
+    @seq_arch.seq_macro_dfa == 1
+  end
+
   def franken_no_shadow_init(policy)
     @seq_franken_noshadow_policy = [0]; @seq_franken_noshadow_policy.pop
     pi = 0
@@ -2034,7 +2059,9 @@ class LlamaSeqEngine
   attr_accessor :franken_align_grads, :franken_align_accs,
                 :franken_align_lis, :franken_align_wis,
                 :franken_mask_tensors, :franken_mask_lis, :franken_mask_wis,
-                :franken_b_handles
+                :franken_b_handles,
+                # toy#158 (F15): the per-block macro-DFA feedback set.
+                :macro_b_handles, :macro_b_seeds
 
   # toy#109 P2 — the FrankenModel training step: build_training_step's
   # full-finetune arm with a per-layer CREDIT-ASSIGNMENT policy. policy
@@ -2077,6 +2104,10 @@ class LlamaSeqEngine
     if no_shadow == 0 && @seq_franken_noshadow_policy.length > 0
       raise "build_training_step_franken: shadow build requested but the alloc ran no-shadow (dfa qkv weights lack param flags)"
     end
+    # toy#158: per-BUILD, like the arch's taps — a rebuild must not
+    # leave handles from the discarded graph in the upload list.
+    @macro_b_handles = [TinyNN.tnn_null_ptr]; @macro_b_handles.pop
+    @macro_b_seeds   = [0]; @macro_b_seeds.pop
     TinyNN.tnn_reset_for_rebuild(@sess)
     build_forward_in_current_ctx
 
@@ -2108,16 +2139,69 @@ class LlamaSeqEngine
       TinyNN.tnn_set_loss(t_total)
       TinyNN.tnn_add_to_graph(@sess, t_loss)
       TinyNN.tnn_build_forward_only(@sess, t_total)
+    elsif franken_macro_dfa_on
+      # toy#158 (F15) — MACRO DFA, the LightOn `simple` placement.
+      #
+      # The arch already cut every block boundary and recorded each
+      # block's undetached output. Here each tap gets a surrogate loss
+      # root
+      #        L_l = sum( tap_l ⊙ (B_l · e) ),     e detached
+      # whose gradient AT tap_l is exactly B_l·e — so ordinary autodiff
+      # then does full BP *inside* block l, and stops at the cut. e is
+      # DETACHED because it is the fixed error signal, not something to
+      # differentiate through (differentiating it would make the roots
+      # feed the head a second, wrong gradient).
+      #
+      # BOTH roots stay live: the CE trains the final norm + lm_head
+      # (which is how LightOn trains them too), the surrogates train
+      # everything below. They cannot double-count — the cut is what
+      # guarantees the CE cannot reach a block's internals.
+      taps = @seq_arch.seq_macro_taps
+      if taps.length != @seq_n_layers
+        raise "build_training_step_franken: macro-DFA recorded " + taps.length.to_s +
+              " block taps for " + @seq_n_layers.to_s + " layers — the arch cut and the surrogate roots disagree"
+      end
+      t_p_m = TinyNN.tnn_softmax(@sess, @t_seq_logits)
+      e_det = TinyNN.tnn_detach(@sess,
+                TinyNN.tnn_scale(@sess, TinyNN.tnn_sub(@sess, t_p_m, t_labels),
+                                 1.0 / (@seq_t * @seq_b).to_f))
+      t_blk = TinyNN.tnn_null_ptr
+      lmk = 0
+      while lmk < taps.length
+        t_bm = TinyNN.tnn_input_2d_f32(@sess, @seq_d_model, @seq_vocab_size)
+        TinyNN.tnn_set_output(t_bm)
+        delta_m = TinyNN.tnn_matmul(@sess, t_bm, e_det)          # [d_model, T*B]
+        prod_m  = TinyNN.tnn_mul(@sess, taps[lmk], delta_m)
+        term_m  = TinyNN.tnn_sum_rows(@sess,
+                    TinyNN.tnn_reshape_2d(@sess, prod_m, @seq_d_model * @seq_t * @seq_b, 1))
+        if lmk == 0
+          t_blk = term_m
+        else
+          t_blk = TinyNN.tnn_add(@sess, t_blk, term_m)
+        end
+        @macro_b_handles.push(t_bm)
+        @macro_b_seeds.push(b_seed + 77 + lmk * 1000)
+        lmk = lmk + 1
+      end
+      TinyNN.tnn_set_output(t_blk)
+      TinyNN.tnn_set_loss(t_loss)
+      TinyNN.tnn_set_loss(t_blk)
+      TinyNN.tnn_add_to_graph(@sess, t_loss)
+      TinyNN.tnn_build_forward_only(@sess, t_blk)
     else
       TinyNN.tnn_set_loss(t_loss)
       TinyNN.tnn_build_forward_only(@sess, t_loss)
     end
     TinyNN.tnn_build_backward(@sess)
 
+    # In MACRO mode the per-weight DFA rule is OFF for every weight:
+    # the injected error arrives at the block tap and autodiff carries
+    # it to the weights, which is the entire distinction from micro.
+    # Mixing the two would apply the error twice at different scopes.
     any_dfa = false
     pi = 0
     while pi < policy.length
-      if policy[pi] > 0
+      if policy[pi] > 0 && !franken_macro_dfa_on
         any_dfa = true
       end
       pi = pi + 1
@@ -2162,7 +2246,11 @@ class LlamaSeqEngine
       if li < policy.length
         mode = policy[li]
       end
-      if mode > 0 && self.seq_arch.seq_layer_kinds[li] != Toy::LLM::Archs::LayerSpec::KIND_ATTENTION
+      # MICRO dfa needs an attention layer (its tap set is qkv/FFN).
+      # MACRO does not: the tap is the BLOCK OUTPUT, which every layer
+      # kind has, so a hybrid GDN/KDA/MLA stack is legal there.
+      if mode > 0 && !franken_macro_dfa_on &&
+         self.seq_arch.seq_layer_kinds[li] != Toy::LLM::Archs::LayerSpec::KIND_ATTENTION
         raise "build_training_step_franken: :dfa on non-attention layer " + li.to_s
       end
       if @seq_is_kda[li]
@@ -2227,7 +2315,10 @@ class LlamaSeqEngine
         is_gate_up = wi == nq_end + 1 || wi == nq_end + 2
         is_down    = wi == nq_end + 3
         is_ffn     = is_gate_up || is_down
-        do_dfa = mode > 0 &&
+        # toy#158: macro mode takes EVERY weight down the chain branch —
+        # its gradient already IS the DFA-derived one, delivered through
+        # the block's surrogate root.
+        do_dfa = mode > 0 && !franken_macro_dfa_on &&
                  ((is_qkv && franken_scope_covers_attn) ||
                   (is_ffn && franken_scope_covers_ffn))
         if do_dfa
@@ -2332,6 +2423,7 @@ class LlamaSeqEngine
     # non-empty policy is a bug, not a quiet fallback).
     puts "franken: policy_len=" + policy.length.to_s +
          " dfa_wired=" + b_handles.length.to_s +
+         " macro_taps=" + @macro_b_handles.length.to_s +
          " shadow=" + (no_shadow == 1 ? "off" : "on")
 
     TinyNN.tnn_pin_all_graph_b_nodes(@sess)
@@ -2339,15 +2431,44 @@ class LlamaSeqEngine
 
     # B uploads: buffers exist only after sched alloc. Read-only leaves —
     # uploaded once, stable across computes (labels-class persistence).
+    #
+    # b_douts, NOT @seq_d_head. toy#151 made B per-weight-width (the FFN
+    # matrices are d_ff / d_model wide) and fixed franken_refresh_b!,
+    # but THIS loop kept the d_head constant — so an ffn-scoped weight
+    # got the wrong element count and the wrong sigma here. It was
+    # masked only because the runners call franken_refresh_b! before
+    # every step, including the first; any consumer that does not would
+    # have read a partly-zero B. toy#158's macro taps are d_model-wide,
+    # which would have widened the same trap.
     bi = 0
     while bi < b_handles.length
-      nb = @seq_d_head * @seq_vocab_size
-      sig = Toy::Train::DfaB.sigma_for(b_scale, @seq_vocab_size, @seq_d_head, b_sigma)
+      d_b = b_douts[bi]
+      nb  = d_b * @seq_vocab_size
+      sig = Toy::Train::DfaB.sigma_for(b_scale, @seq_vocab_size, d_b, b_sigma)
       TinyNN.tnn_upload_from_float_array(@sess, b_handles[bi],
         Toy::Train::DfaB.fill(nb, b_seeds[bi], b_dist, sig), nb)
       bi = bi + 1
     end
+    macro_refresh_b!
     [t_loss, t_labels, t_hp]
+  end
+
+  # toy#158: upload the per-BLOCK feedback matrices (ne=[vocab, d_model]).
+  # Separate from franken_refresh_b! because the two live on different
+  # axes — micro B is per policied WEIGHT and sized to that weight,
+  # macro B is per BLOCK and always d_model — and folding them into one
+  # loop is exactly how the d_head constant above went wrong.
+  def macro_refresh_b!
+    mi = 0
+    while mi < @macro_b_handles.length
+      nb  = @seq_d_model * @seq_vocab_size
+      sig = Toy::Train::DfaB.sigma_for(@franken_b_scale_rec, @seq_vocab_size,
+                                       @seq_d_model, @franken_b_sigma_rec)
+      TinyNN.tnn_upload_from_float_array(@sess, @macro_b_handles[mi],
+        Toy::Train::DfaB.fill(nb, @macro_b_seeds[mi], @franken_b_dist_rec, sig), nb)
+      mi = mi + 1
+    end
+    0
   end
 
   # GGUF type → bytes-per-row stride for per-head slicing. Mirrors the

@@ -822,6 +822,87 @@ Dir.mktmpdir("franken_ck_gate") do |dir|
 end
 puts failures.length == n0 ? "  ok: --ckpt-every — boundary checkpoints written; curve byte-equals no-ckpt (write is sched-null)" : "  FAIL: ckpt-every leg"
 
+# ---- toy#158 (F15): MACRO DFA (LightOn block-tap) + RAdam ----
+# The three things that make a run macro-DFA, asserted separately —
+# because each one can break WITHOUT breaking the others, and a run
+# that is only two of the three is a hybrid mislabelled as a recipe.
+n0 = failures.length
+mac_env = { "STEPS" => "5", "FRANKEN_POLICY" => "dfa,dfa",
+            "FRANKEN_DFA_GRANULARITY" => "block", "FRANKEN_B_SEED" => "42" }
+mac  = run_franken_llama(mac_env, nil)
+mac_c = mac.lines.select { |l| l.start_with?("step ") }
+bp_c  = f0_curve
+
+# (a) THE FORWARD IS UNCHANGED. tnn_detach is forward-identity, so the
+# macro build must predict EXACTLY what BP predicts at step 1 — that
+# is what makes the arms comparable. A cut that moved the forward
+# would invalidate every macro-vs-BP number.
+failures << "macro: step 1 differs from BP (the cut changed the FORWARD; detach must be forward-identity)\nmacro: #{mac_c[0]}bp:    #{bp_c[0]}" unless mac_c[0] == bp_c[0]
+# (b) THE BACKWARD IS DIFFERENT. Steps 2+ must diverge, or the cut did
+# not take and this is just BP under a macro label.
+failures << "macro: curve identical to BP past step 1 — the cut did not take" if mac_c == bp_c
+# (c) THE BLOCKS ACTUALLY TRAIN FROM THE INJECTED ERROR. If the
+# surrogate roots did not reach the weights, the blocks would be
+# effectively frozen and the FEEDBACK SEED could not matter. It does.
+mac_b2 = run_franken_llama(mac_env.merge("FRANKEN_B_SEED" => "43"), nil)
+failures << "macro: the B seed does not change the curve — the surrogate roots are not reaching the block weights (blocks frozen, only the head training)" if mac_b2.lines.select { |l| l.start_with?("step ") } == mac_c
+# macro != micro at the same policy: they are different recipes, and
+# conflating them is exactly what toy#158 exists to stop.
+mic = run_franken_llama({ "STEPS" => "5", "FRANKEN_POLICY" => "dfa,dfa", "FRANKEN_B_SEED" => "42" }, nil)
+failures << "macro: curve identical to MICRO dfa at the same policy" if mic.lines.select { |l| l.start_with?("step ") } == mac_c
+failures << "macro: summary does not report macro_taps=2" unless mac.include?("macro_taps=2")
+# determinism
+failures << "macro: two identical macro runs differ" unless run_franken_llama(mac_env, nil) == mac
+Dir.mktmpdir("franken_macro_gate") do |dir|
+  run_franken_llama(mac_env, dir)
+  rsm = JSON.parse(File.readlines(File.join(dir, "events.jsonl")).first)
+  fr = rsm["franken"] || {}
+  failures << "macro: provenance dfa_granularity #{fr['dfa_granularity'].inspect} (want \"block\")" unless fr["dfa_granularity"] == "block"
+  failures << "macro: provenance macro_taps #{fr['macro_taps'].inspect} (want 2)" unless fr["macro_taps"] == 2
+  failures << "macro: provenance policied_tensors #{fr['policied_tensors'].inspect} (want \"block_output\")" unless fr["policied_tensors"] == "block_output"
+end
+# The combinations that would leave a cross-block backward path alive
+# must fail LOUD, not silently produce a hybrid.
+[["FRANKEN_ALIGN", "1", "align (no chain shadow exists under macro)"],
+ ["ATTNRES", "1", "attnres (re-opens the cross-block path)"],
+ ["FRANKEN_MTP", "1", "mtp (couples across the boundary)"],
+ ["FRANKEN_NO_SHADOW", "1", "no-shadow (a micro-only axis)"]].each do |k, v, why|
+  _o, stx = Open3.capture2e(mac_env.merge(k => v), RUNNER, chdir: ROOT)
+  failures << "macro: #{why} was NOT rejected" if stx.success?
+end
+# A per-layer macro policy is not expressible (the cut is at every
+# boundary) — mixed and empty policies must fail loud.
+[["chain,dfa", "mixed policy"], ["", "empty policy"]].each do |pol, why|
+  _o, stx = Open3.capture2e(mac_env.merge("FRANKEN_POLICY" => pol), RUNNER, chdir: ROOT)
+  failures << "macro: #{why} was NOT rejected" if stx.success?
+end
+puts failures.length == n0 ? "  ok: macro-DFA (toy#158) — forward IDENTICAL to BP at step 1, backward diverges, B-seed moves the curve (blocks really train), macro != micro, provenance + 6 fail-loud guards" : "  FAIL: macro-DFA leg"
+
+# ---- toy#158 ask 2: the RAdam-class optimizer ----
+# RAdam's rectification is a per-step scalar on the LR, so the arm is
+# AdamW's graph with a shaped lr. Two things are asserted: the
+# documented DEAD ZONE (rho_t <= 4 -> no update, so the curve is FLAT
+# for the first 4 steps at beta2=0.999 — stated loudly by the runner
+# because a flat curve otherwise reads as a broken arm), and that it
+# trains afterwards.
+n0 = failures.length
+rad = run_franken_llama({ "STEPS" => "12", "FRANKEN_OPTIMIZER" => "radam" }, nil)
+rad_c = rad.lines.select { |l| l.start_with?("step ") }.map { |l| l[/loss=(.+)/, 1].to_f }
+failures << "radam: runner did not announce the dead zone" unless rad.include?("first_stepping_step=5")
+failures << "radam: the first 4 steps are not flat (rho_t <= 4 must take NO update)" unless rad_c[0, 4].uniq.length == 1
+failures << "radam: loss did not fall after the dead zone (#{rad_c[4]} -> #{rad_c[11]})" unless rad_c[11] < rad_c[4]
+failures << "radam: curve identical to adamw" if rad_c[11] == f0_curve[4][/loss=(.+)/, 1].to_f
+Dir.mktmpdir("franken_radam_gate") do |dir|
+  run_franken_llama({ "STEPS" => "6", "FRANKEN_OPTIMIZER" => "radam" }, dir)
+  rsr = JSON.parse(File.readlines(File.join(dir, "events.jsonl")).first)
+  cfg = rsr["config"] || {}
+  failures << "radam: provenance optimizer #{cfg['optimizer'].inspect}" unless cfg["optimizer"] == "radam"
+  # beta2 travels with the run: radam CHANGES it (0.999 vs adamw 0.95),
+  # so two curves at the same lr differ for this reason alone.
+  failures << "radam: provenance beta2 #{cfg['beta2'].inspect} (want 0.999)" unless cfg["beta2"] == 0.999
+end
+puts failures.length == n0 ? "  ok: radam (toy#158) — the rho_t<=4 dead zone is flat AND announced, trains after it, beta2=0.999 recorded" : "  FAIL: radam leg"
+
 # ---- 4. byte-repro ----
 r1 = run_franken_llama({ "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42" }, nil)
 r2 = run_franken_llama({ "FRANKEN_POLICY" => "chain,dfa", "FRANKEN_B_SEED" => "42" }, nil)
@@ -829,7 +910,7 @@ failures << "byte-repro: outputs differ" unless r1 == r2
 puts "  ok: byte-repro — two policy runs identical" if r1 == r2
 
 if failures.empty?
-  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + shape presets (toy#124) + lr/warmup (toy#126) + no-shadow/pack-header/ckpt-every (toy#129) + batch (toy#133) + policy-scope/FFN-DFA (toy#151) + K1 axes (toy#136) + KDA layer (toy#137) + hybrid/AttnRes (toy#138) + MLA kind/k3 pattern (K-series M2) + per-head muon (toy#139/K5) + MTP (K-series M10) + byte-repro (toy#112/#113)"
+  puts "GATE PASS [franken-llama]: F0 byte-parity + seed!=0 parity + bundle/provenance/align + dfa-effect + corpus/align-every (toy#122) + shape presets (toy#124) + lr/warmup (toy#126) + no-shadow/pack-header/ckpt-every (toy#129) + batch (toy#133) + policy-scope/FFN-DFA (toy#151) + K1 axes (toy#136) + KDA layer (toy#137) + hybrid/AttnRes (toy#138) + MLA kind/k3 pattern (K-series M2) + per-head muon (toy#139/K5) + MTP (K-series M10) + macro-DFA/RAdam (toy#158) + byte-repro (toy#112/#113)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [franken-llama]: #{f}" }

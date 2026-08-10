@@ -48,6 +48,12 @@ module Toy; module LLM; module Recipes
       if opts.attnres == 1
         @ff_cache.attnres_init(1)
       end
+      # toy#158 (F15): macro (block-tap) DFA. Set BEFORE realize —
+      # build_forward places the block-boundary cuts, so the arch has
+      # to know before it builds anything.
+      if opts.macro_dfa == 1
+        @ff_cache.franken_macro_dfa_init(1)
+      end
       if opts.optimizer != 0
         @ff_cache.optimizer_init(opts.optimizer)
       end

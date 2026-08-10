@@ -101,7 +101,12 @@ module Toy; module LLM
                   :attnres,
                   # toy#139/K5: 0 adamw (default) | 1 muon (2D hidden
                   # matrices only; per-head by toy's layout).
-                  :optimizer
+                  :optimizer,
+                  # toy#158 (F15): 1 = MACRO DFA (LightOn's block-tap
+                  # placement) instead of the per-weight micro rule.
+                  # Read BEFORE realize — it places the block-boundary
+                  # backward cuts, so it cannot be a build-time knob.
+                  :macro_dfa
 
     def initialize
       @t_seq        = 0
@@ -128,6 +133,7 @@ module Toy; module LLM
       @kda_conv   = 1
       @attnres    = 0
       @optimizer  = 0
+      @macro_dfa  = 0
     end
   end
 end; end

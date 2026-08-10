@@ -156,7 +156,16 @@ ATTNRES_ON = (ENV["ATTNRES"] || "") == "1"
 # lives on franken-moe, which owns its upload.
 OPT_S = ENV["FRANKEN_OPTIMIZER"] || ""
 if OPT_S.length > 0 && OPT_S != "adamw" && OPT_S != "muon"
-  puts "toy-train-franken-cuda: FRANKEN_OPTIMIZER " + OPT_S + " unsupported here (adamw|muon; sgd is franken-moe-only)"
+  puts "toy-train-franken-cuda: FRANKEN_OPTIMIZER " + OPT_S + " unsupported here (adamw|muon; sgd is franken-moe-only; radam is CPU-only per tao#18)"
+  exit 1
+end
+# toy#158 (F15): macro/block DFA is CPU-ONLY by decision (tao#18 — F15's
+# small case gets no CUDA twin). THIS RUNNER IS HAND-MIRRORED and does
+# not implement it, so an unguarded env would run MICRO DFA and record
+# it as macro. Fail loud instead of silently running the other recipe.
+GRAN_S = ENV["FRANKEN_DFA_GRANULARITY"] || ""
+if GRAN_S.length > 0 && GRAN_S != "matmul"
+  puts "toy-train-franken-cuda: FRANKEN_DFA_GRANULARITY " + GRAN_S + " is not implemented on the CUDA twin (CPU-only, tao#18) — this runner would silently run per-weight MICRO DFA and label it macro. Run the CPU runner."
   exit 1
 end
 # toy#138 (K3a): FRANKEN_LAYER_PATTERN=hybrid — K3's layerwise hybrid

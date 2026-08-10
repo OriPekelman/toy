@@ -17,6 +17,15 @@
 #   FRANKEN_ALIGN    — "1" => emit per-step per-weight align events
 #                      (kind:"align": cos∠(g_dfa, g_chain); opt-in — the
 #                      shadow download costs at real sizes)
+#   FRANKEN_DFA_GRANULARITY — matmul (default, per-weight MICRO DFA) |
+#                      block (toy#158/F15: LightOn MACRO DFA — one tap
+#                      per block output, full BP inside the block, no
+#                      backward chain across blocks). `block` needs an
+#                      ALL-dfa policy and is CPU-only (tao#18).
+#   FRANKEN_OPTIMIZER — adamw (default) | muon | radam (toy#158: the
+#                      RAdam rectification as a per-step LR scalar;
+#                      carries beta2=0.999 and takes NO step while
+#                      rho_t <= 4 — the runner announces that at start)
 #
 # EVENTS (toy/v1, additive per #112): run_start carries a "franken" object
 # {policy:[...], b_seed, b_dist, b_scale, b_sigma, mix_alpha, mask_tau};
@@ -38,6 +47,7 @@ require_relative "../llm/labels"
 require_relative "../train/toy_gguf_writer"
 require_relative "../train/toy_gguf_fuse"
 require_relative "../train/dfa_b"
+require_relative "../train/toy_lr_schedule"
 require_relative "../io/toy_corpus_loader"
 require_relative "../dev/toy_describe_flow"
 
@@ -131,6 +141,28 @@ if SCHED_S.length > 0 && SCHED_S != "const" && SCHED_S != "cosine"
   exit 1
 end
 COSINE_ON = SCHED_S == "cosine"
+# toy#158 (F15) — RECIPE HYGIENE. Every transformer-LM negative we have
+# (F4-F14) used MICRO DFA: per-weight `--policy dfa`, at lr 1e-3, under
+# AdamW. LightOn's WORKING recipe (arXiv:2006.12878) is MACRO DFA —
+# random feedback injected ONLY at block outputs, full BP inside the
+# block — plus lr 5e-5 and a RAdam-class optimizer. So we may have been
+# testing the wrong MODE at 20x the LR with the wrong optimizer, and
+# until that is closed our negatives are not clean.
+#
+# `block` == LightOn's `--dfa simple` (1 tap per block at its output).
+# `matmul` (default, byte-null) == today's per-weight rule. Their
+# `full` (3 taps per block) is NOT our `matmul` — ours is finer still,
+# per weight matrix.
+#
+# CALIBRATE EXPECTATIONS: LightOn's own LM number is ppl 52 (DFA) vs
+# 34 (BP). F15 exists to CLOSE A DOUBT, not to find a positive; a
+# negative here is the expected result and still the useful one.
+GRAN_S = ENV["FRANKEN_DFA_GRANULARITY"] || ""
+if GRAN_S.length > 0 && GRAN_S != "matmul" && GRAN_S != "block"
+  puts "toy-train-franken: unknown FRANKEN_DFA_GRANULARITY " + GRAN_S + " (matmul|block)"
+  exit 1
+end
+MACRO_ON = GRAN_S == "block"
 # toy#137 K2b: KDA_LAYERS="0,2" builds those layers as Kimi Delta
 # Attention blocks (K3's M1). Unset = all-attention, byte-null. The
 # indices reach the engine via runner-direct INT-arg calls below (the
@@ -184,10 +216,22 @@ end
 # recipe's unconditional hp upload would abort; the sgd control arm
 # lives on franken-moe, which owns its upload.
 OPT_S = ENV["FRANKEN_OPTIMIZER"] || ""
-if OPT_S.length > 0 && OPT_S != "adamw" && OPT_S != "muon"
-  puts "toy-train-franken: FRANKEN_OPTIMIZER " + OPT_S + " unsupported here (adamw|muon; sgd is franken-moe-only)"
+if OPT_S.length > 0 && OPT_S != "adamw" && OPT_S != "muon" && OPT_S != "radam"
+  puts "toy-train-franken: FRANKEN_OPTIMIZER " + OPT_S + " unsupported here (adamw|muon|radam; sgd is franken-moe-only)"
   exit 1
 end
+# toy#158 (F15) ask 2: RAdam rides the SAME AdamW graph node — its
+# rectification term is a per-step scalar on the LR (ToyLR.radam_rect),
+# so `radam` selects optimizer code 0 and shapes lr Ruby-side.
+#
+# It ALSO carries beta2 = 0.999, which is part of the optimizer's
+# identity (Liu et al.'s default, and LightOn's F15 recipe), NOT a
+# separate knob: rho_inf is a function of beta2, so "RAdam at
+# beta2=0.95" would rectify against a horizon nobody means. This is a
+# REAL numerics change vs `adamw` — which is the point of running the
+# arm — and it is recorded in run_start so a curve cannot be mistaken
+# for an AdamW one.
+RADAM_ON = OPT_S == "radam"
 # toy#138 (K3a): FRANKEN_LAYER_PATTERN=hybrid — K3's layerwise hybrid
 # (§2.1): THREE KDA layers then ONE global-attention layer, repeated,
 # with the FINAL layer always global ("An additional Gated MLA layer
@@ -252,6 +296,28 @@ if BATCH > 1 && CORPUS.length == 0
 end
 if NO_SHADOW && ALIGN_ON
   puts "toy-train-franken: FRANKEN_ALIGN=1 + FRANKEN_NO_SHADOW=1 — align telemetry compares the DFA grad against the chain shadow acc, which a no-shadow build does not create. Drop one."
+  exit 1
+end
+# ---- toy#158: what macro-DFA cannot be combined with, and why. ----
+# Every one of these would leave a BACKWARD PATH ACROSS BLOCKS alive,
+# which is the single property that makes a run macro-DFA. A silent
+# combination would produce a curve labelled `block` that is really a
+# hybrid — the most expensive kind of wrong result, because it looks
+# like a finding.
+if MACRO_ON && ALIGN_ON
+  puts "toy-train-franken: FRANKEN_DFA_GRANULARITY=block + FRANKEN_ALIGN=1 — align telemetry compares a DFA grad against the chain shadow, and macro-DFA CUTS the chain: there is no shadow to compare against (the weight's only gradient IS the DFA-derived one). Drop the align flag."
+  exit 1
+end
+if MACRO_ON && ATTNRES_ON
+  puts "toy-train-franken: FRANKEN_DFA_GRANULARITY=block + ATTNRES=1 — AttnRes mixes EVERY preceding block output into each layer's input, which re-opens the cross-block backward path the macro cut exists to remove."
+  exit 1
+end
+if MACRO_ON && MTP_ON
+  puts "toy-train-franken: FRANKEN_DFA_GRANULARITY=block + FRANKEN_MTP=1 — the MTP root couples back into backbone activations across the block boundary, so the cut would not hold."
+  exit 1
+end
+if MACRO_ON && NO_SHADOW
+  puts "toy-train-franken: FRANKEN_DFA_GRANULARITY=block + FRANKEN_NO_SHADOW=1 — no_shadow drops the per-WEIGHT chain grad-acc (the micro axis); macro has no per-weight DFA rule for it to pair with."
   exit 1
 end
 
@@ -414,6 +480,25 @@ def scale_sigma(s)
   0.0
 end
 
+# The LR SCHEDULE at `step` (0-indexed), before any RAdam rectification.
+# Extracted from the training loop by toy#158 so the rectification can
+# multiply it without a reassigned local (see the call site). Returns
+# Float on every path — that monomorphism is the point.
+def franken_lr_at(step, base, warmup, cosine_on, n_steps)
+  if warmup > 0 && step < warmup
+    # linear ramp; at step warmup-1 the factor is exactly 1.0 -> base
+    return base * ((step + 1).to_f / warmup.to_f)
+  end
+  if cosine_on
+    # toy#136: cosine decay base -> 0.1*base over the post-warmup span.
+    span = n_steps - warmup
+    prog = span > 0 ? ((step - warmup).to_f / span.to_f) : 1.0
+    min_lr = base * 0.1
+    return min_lr + 0.5 * (base - min_lr) * (1.0 + Math.cos(3.141592653589793 * prog))
+  end
+  base
+end
+
 # returns [cos, |a|, |b|] — norms ride into the align event (they matter:
 # zero-norm sides distinguish dead-download from dead-gradient, and the
 # |g_dfa|/|g_bp| ratio informs mix-alpha tuning).
@@ -450,6 +535,27 @@ end
 p_alpha = [0.0]; p_alpha.pop
 p_tau   = [0.0]; p_tau.pop
 policy  = parse_policy(POLICY_S, N_LAYERS, p_alpha, p_tau)
+# toy#158: macro-DFA is a WHOLE-STACK recipe. The cut is placed at every
+# block boundary by the arch, so a per-layer policy cannot select which
+# blocks are macro'd — accepting `chain,dfa` here would silently cut
+# block 0's boundary too and report a mixed run as a per-layer result.
+# Per-layer PLACEMENT is the micro axis (toy#151 / F14); this is the
+# LightOn recipe, which is uniform by construction.
+if MACRO_ON
+  mp = 0
+  while mp < policy.length
+    if policy[mp] != 1
+      puts "toy-train-franken: FRANKEN_DFA_GRANULARITY=block requires an ALL-dfa policy (layer " + mp.to_s +
+           " is not `dfa`). The macro cut is placed at EVERY block boundary — a per-layer macro policy is not expressible, and per-layer placement is the MICRO axis (--policy-scope, toy#151)."
+      exit 1
+    end
+    mp = mp + 1
+  end
+  if policy.length == 0
+    puts "toy-train-franken: FRANKEN_DFA_GRANULARITY=block with an empty policy — pass FRANKEN_POLICY=dfa,... (block granularity is a DFA recipe; chain is already full BP)"
+    exit 1
+  end
+end
 # v1: one global alpha/tau (RecipeOptions carries scalars) — first
 # non-chain layer's value wins; per-layer tables are a later slice.
 mix_alpha = 0.5
@@ -479,6 +585,7 @@ opts.act       = ACT_CODE
 opts.rope_nope = NOPE_ON ? 1 : 0
 opts.kda_conv  = KDA_CONV_OFF ? 0 : 1
 opts.attnres   = ATTNRES_ON ? 1 : 0
+opts.macro_dfa = MACRO_ON ? 1 : 0
 opts.optimizer = OPT_S == "muon" ? 1 : 0
 pi = 0
 while pi < policy.length
@@ -570,6 +677,26 @@ end
 m_labels = Toy::Labels.next_token(seq_ids, VOCAB, CONTEXT, 1)
 adamw = Toy::AdamW.for_from_scratch
 adamw.lr = LR
+# toy#158: beta2 is part of `radam`'s identity (rho_inf = 2/(1-b2)-1),
+# not a free knob — see the FRANKEN_OPTIMIZER block above.
+if RADAM_ON
+  adamw.beta2 = 0.999
+  # LOUD, because the alternative is a flat curve that reads as a
+  # broken arm: RAdam takes NO step while rho_t <= 4 (we return r_t=0
+  # there instead of Liu et al.'s non-adaptive momentum step — see
+  # ToyLR.radam_rect), and r_t then ramps in SLOWLY. At beta2=0.999
+  # that is ~4 dead steps and r_t still ~0.06 at step 12, so a 5-step
+  # smoke under radam is EXPECTED to look frozen. Say so at startup
+  # rather than let someone debug it.
+  rad_t = 1
+  while rad_t < 1000 && ToyLR.radam_rect(rad_t, adamw.beta2) <= 0.0
+    rad_t = rad_t + 1
+  end
+  puts "franken: optimizer=radam beta2=" + adamw.beta2.to_s +
+       " first_stepping_step=" + rad_t.to_s +
+       " r_t@" + rad_t.to_s + "=" + ToyLR.radam_rect(rad_t, adamw.beta2).to_s +
+       " (steps before it take NO update by construction)"
+end
 m_hp = adamw.hp(0)
 
 # ---- Events: run_start with the franken provenance object (#112). ----
@@ -626,6 +753,9 @@ if EVENTS.length > 0
     config.add_num("mla_rank", MLA_RANK.to_f)
     config.add_bool("attnres", ATTNRES_ON)
     config.add_str("optimizer", OPT_S.length > 0 ? OPT_S : "adamw")
+    # toy#158: beta2 travels with the run because `radam` changes it —
+    # two curves under the same lr differ for this reason alone.
+    config.add_raw("beta2", adamw.beta2.to_s)
     config.add_num("seed",    SEED)
     rs.add_obj("config", config)
     # toy#129 item 4: derived cost accounting — auditable FLOP-matching
@@ -723,8 +853,16 @@ if EVENTS.length > 0
     # same FRANKEN_POLICY are indistinguishable in the record.
     fr.add_str("policy_scope", SCOPE_S.length > 0 ? SCOPE_S : "attn")
     fr.add_str("policied_tensors",
-               SCOPE_CODE == 1 ? "attn:q,k,v" :
-               (SCOPE_CODE == 2 ? "ffn:gate,up,down" : "attn:q,k,v+ffn:gate,up,down"))
+               MACRO_ON ? "block_output" :
+               (SCOPE_CODE == 1 ? "attn:q,k,v" :
+                (SCOPE_CODE == 2 ? "ffn:gate,up,down" : "attn:q,k,v+ffn:gate,up,down")))
+    # toy#158: WHICH DFA. Without this a macro run and a micro run of
+    # the same FRANKEN_POLICY are indistinguishable in the record —
+    # the same trap toy#151 closed for scope. `policy_scope` above is
+    # a MICRO-only axis and is reported as-is; under macro the
+    # policied set is the block output, which policied_tensors says.
+    fr.add_str("dfa_granularity", MACRO_ON ? "block" : "matmul")
+    fr.add_num("macro_taps", recipe.ff_cache.macro_b_handles.length)
     fr.add_num("b_seed",    B_SEED)
     fr.add_num("b_dist",    opts.dfa_b_dist)
     fr.add_num("b_scale",   opts.dfa_b_scale)
@@ -811,19 +949,31 @@ while step < STEPS
     end
     m_labels = lab_inc
   end
-  if WARMUP > 0 && step < WARMUP
-    # linear ramp; at step WARMUP-1 the factor is exactly 1.0 -> LR
-    adamw.lr = LR * ((step + 1).to_f / WARMUP.to_f)
-    m_hp = adamw.hp(0)
-  elsif COSINE_ON
-    # toy#136: cosine decay LR -> 0.1*LR over the post-warmup span.
-    span = STEPS - WARMUP
-    prog = span > 0 ? ((step - WARMUP).to_f / span.to_f) : 1.0
-    min_lr = LR * 0.1
-    adamw.lr = min_lr + 0.5 * (LR - min_lr) * (1.0 + Math.cos(3.141592653589793 * prog))
+  # The per-step LR is recomputed from the BASE `LR` every step, never
+  # by mutating last step's value: toy#158's rectification MULTIPLIES
+  # the schedule, and `adamw.lr = adamw.lr * r_t` would COMPOUND across
+  # steps in the no-warmup/no-cosine case (where lr was previously set
+  # once, before the loop) — an LR decaying to zero, which reads as a
+  # converged run rather than a bug.
+  #
+  # Written as ONE expression per branch with no reassigned local:
+  # `x = LR; x = <expr>` widened the local to RbVal and the compile
+  # failed on `adamw.lr = x` (the Spinel poly-degradation family).
+  # Byte-null guard: with none of the three shaping flags, adamw.lr and
+  # m_hp stay exactly as they were built before the loop — the
+  # pre-toy#158 behaviour, which the F0 fixture pins.
+  if WARMUP > 0 || COSINE_ON || RADAM_ON
+    adamw.lr = RADAM_ON ?
+      franken_lr_at(step, LR, WARMUP, COSINE_ON, STEPS) * ToyLR.radam_rect(step + 1, adamw.beta2) :
+      franken_lr_at(step, LR, WARMUP, COSINE_ON, STEPS)
     m_hp = adamw.hp(0)
   end
   recipe.ff_cache.franken_refresh_b!   # toy#117: B leaves are per-step uploads
+  if MACRO_ON
+    # toy#158: the macro B set is the same class of graph-input leaf as
+    # the micro one (toy#117) — re-uploaded per step, not once.
+    recipe.ff_cache.macro_refresh_b!
+  end
   # K-series M10: the MTP inputs for this step — ids shifted by one (the
   # token the module embeds) and the t+2 one-hot. Both CLAMP at the
   # window edge, matching next_token's t+1 behaviour.

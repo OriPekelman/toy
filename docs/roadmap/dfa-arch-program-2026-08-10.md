@@ -5,7 +5,7 @@ SETTLED (tao#18, tao#19) so each lane can be built without re-litigating
 it, and flags the one thing I think is still ambiguous.
 
 Build order: **#152 → #158 → #154 → #153 / #155 / #156 / #157**.
-Status: **#152 shipped** (see "toy#152 — SHIPPED" below); #158 next.
+Status: **#152 and #158 shipped** (see their sections below); **#154 next**.
 
 ## Settled (tao#18, tao#19 — Ori)
 
@@ -119,7 +119,7 @@ samples (seed 0; the numbers the gate asserts):
 over-the-frozen-control gain that DFA recovers. Raw accuracy is not
 comparable across output dims (chance is 1/C); this is.
 
-Two results, both first-of-their-kind for this program:
+Three results, all first-of-their-kind for this program:
 
 1. **A POSITIVE.** At 2 classes DFA matches BP (and edges past it); at
    10 it is 3 points behind BP and 23 ahead of the frozen control. The
@@ -132,7 +132,6 @@ Two results, both first-of-their-kind for this program:
    is now a *prediction that was tested*, on the same feedback
    machinery (`Toy::Train::DfaB`) the franken lanes use — only the
    output dim differs.
-
 3. **THE MECHANISM IS VISIBLE, not just the outcome.** With
    `--align-events`, cos(g_DFA, g_BP) on the policied weights starts at
    ~0 and climbs — seed 0, 1000 steps: w1 −0.002 → 0.67, w2 −0.089 →
@@ -206,6 +205,75 @@ each other in the same LCG cycle).
 consumer keying on `franken` would read an MLP run as a transformer
 one) with the policy, the B axes, and the realised `dfa_wired` /
 `frozen` counts.
+
+## toy#158 (F15) — SHIPPED: macro-DFA + RAdam on the dense franken
+
+Recipe hygiene, not a new mechanism. Every transformer-LM negative we
+have (F4–F14) used **micro** DFA — per-weight `--policy dfa`, lr 1e-3,
+AdamW. LightOn's *working* recipe (arXiv:2006.12878) is **macro** DFA
+(random feedback injected only at block outputs, full BP inside the
+block) at lr 5e-5 with a RAdam-class optimizer. Until that is run, our
+negatives are not clean.
+
+`toy train franken --policy dfa,dfa --dfa-granularity block`
+(`FRANKEN_DFA_GRANULARITY=block`), plus `--optimizer radam`.
+
+**How the cut is built.** `llama_arch.rb` detaches the residual stream
+at every block boundary and records each block's undetached output;
+`llama_seq_engine.rb` attaches one surrogate root per block,
+`L_l = sum(tap_l ⊙ B_l·e)` with `e` detached — whose gradient *at the
+tap* is exactly the random-projected output error, so autodiff then
+does ordinary BP inside the block and stops at the cut. The CE root
+stays live and trains the final norm + lm_head, which is how LightOn
+trains them too. The embedding boundary is deliberately **not** cut:
+block 0's surrogate propagates into the embedding, matching a tinydfa
+`DFALayer` stack.
+
+**Three properties, gated separately** — each can break without
+breaking the others, and a run that is only two of the three is a
+hybrid wearing a recipe's name:
+
+1. *The forward is unchanged.* `tnn_detach` is forward-identity, so
+   step 1 is **byte-identical to BP** (6.464970588684082 either way).
+   That is what makes macro-vs-BP numbers comparable at all.
+2. *The backward is different.* Steps 2+ diverge.
+3. *The blocks really train from the injected error.* Changing
+   `--dfa-b-seed` moves the curve — if the surrogate roots were not
+   reaching the weights, the blocks would be frozen and the feedback
+   seed could not matter. This is the assertion that would catch a
+   silently-unwired macro build, which curve-watching would not.
+
+**First numbers** (2-layer gate shape, 30 steps, seed 0): BP 3.514,
+micro-DFA 3.541, **macro-DFA 5.076**, macro+RAdam 5.976. Note micro's
+near-BP number is an artifact of scope — at the default `attn` scope
+micro policies only attention qkv, so most of the net is still BP,
+while macro policies the *entire stack*. **They are not comparable
+arms**, which is exactly the confusion F15 exists to remove (and a
+large part of why F1 "washed out"). Expect F15 to stay NEGATIVE at
+scale: LightOn's own LM result is ppl 52 (DFA) vs 34 (BP).
+
+**RAdam is an LR multiplier, and where that is not RAdam.** `r_t` is a
+per-step scalar, so in the rectified regime "AdamW at lr·r_t" *is*
+RAdam exactly — no engine work, no new kernel. In the un-rectified
+early regime Liu et al. take a non-adaptive momentum step; we take
+**no step** (`r_t = 0`). At β2=0.999 that is the first 4 steps, so a
+5-step smoke under `radam` looks frozen — the runner therefore
+**announces** `first_stepping_step=5` at startup rather than letting
+someone debug a flat curve. `--optimizer radam` also carries
+β2 = 0.999 as part of its identity (ρ∞ is a function of β2), which is
+a real numerics change vs `adamw` and is recorded in run_start.
+
+**CPU-only (tao#18), and the silent-ignore trap closed.** The CUDA
+franken runner is *hand*-mirrored and does not implement macro, so
+`--device cuda --dfa-granularity block` would have run micro DFA and
+recorded it as macro. Rejected in the CLI *and* fails loud in the CUDA
+runner itself, for callers that bypass the CLI.
+
+**Drive-by fix.** The post-realize B upload in `llama_seq_engine.rb`
+hardcoded `nb = d_head * vocab`, ignoring the per-weight `b_douts`
+toy#151 introduced — masked only because the runners call
+`franken_refresh_b!` before every step. toy#158's d_model-wide macro
+taps would have widened the same trap, so it now reads `b_douts`.
 
 ## Landmines that apply
 

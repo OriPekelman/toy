@@ -397,6 +397,7 @@ module Toy
                              "FRANKEN_SHAPE"   => (@shape || "base"),
                              "CORPUS"          => (@corpus || ""),
                              "FRANKEN_OPTIMIZER" => (@optimizer || ""),
+                             "FRANKEN_DFA_GRANULARITY" => (@dfa_granularity || ""),
                              "FRANKEN_LR"      => (@lr || ""),
                              "FRANKEN_WARMUP"  => (@warmup || 0).to_s,
                              "FRANKEN_NO_SHADOW" => (@no_shadow ? "1" : ""),
@@ -789,11 +790,11 @@ when /\A--dfa-feedback-lr=(.*)\z/
               i += 1
               val = @argv[i]
               return bad_arg("--optimizer requires a value") if val.nil?
-              return bad_arg("--optimizer must be adamw, muon, or sgd, got #{val.inspect}") unless %w[adamw muon sgd].include?(val)
+              return bad_arg("--optimizer must be adamw, muon, radam, or sgd, got #{val.inspect}") unless %w[adamw muon radam sgd].include?(val)
               @optimizer = val
             when /\A--optimizer=(.*)\z/
               val = $1
-              return bad_arg("--optimizer must be adamw, muon, or sgd, got #{val.inspect}") unless %w[adamw muon sgd].include?(val)
+              return bad_arg("--optimizer must be adamw, muon, radam, or sgd, got #{val.inspect}") unless %w[adamw muon radam sgd].include?(val)
               @optimizer = val
             when "--layer-pattern"
               i += 1
@@ -1131,7 +1132,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
             ["--donor/--donor-mode/--freeze-embed", %w[franken-moe], (!@donor.nil? || !@donor_mode.nil? || @freeze_embed), " (toy#140)"],
             ["--freeze-experts", %w[franken-moe],                    @freeze_experts, " (toy#141)"],
             ["--moe-latent/--moe-shared", %w[franken-moe],           (@moe_latent || !@moe_shared.nil?), " (toy#142/K4)"],
-            ["--dfa-granularity", %w[franken-moe],                   !@dfa_granularity.nil?, " (toy#143)"],
+            ["--dfa-granularity", %w[franken franken-moe],           !@dfa_granularity.nil?, " (toy#143 moe / toy#158 dense)"],
             ["--dfa-feedback/--dfa-feedback-*", %w[franken-moe],     (!@dfa_feedback.nil? || !@dfa_feedback_decay.nil? || !@dfa_feedback_lr.nil?), " (toy#150)"],
             ["--expert-act", %w[franken-moe],                        !@expert_act.nil?, " (K4b/M6)"],
             ["--lr-schedule/--lr-lo/--lr-hi", %w[franken-moe],       (!@lr_schedule.nil? || !@lr_lo.nil? || !@lr_hi.nil?), " (toy#146)"],
@@ -1172,6 +1173,21 @@ when /\A--dfa-feedback-lr=(.*)\z/
           end
           if @load_ckpt && !File.file?(@load_ckpt)
             return bad_arg("no such file: #{@load_ckpt} (--load-ckpt takes a toy-moe/v1 checkpoint from --ckpt-every)")
+          end
+          # toy#158: radam lives on the dense franken lane only — the moe
+          # runner's optimizer allow-list does not know it, and a flag
+          # the runner ignores is worse than one it rejects.
+          if @recipe != "franken" && @optimizer == "radam"
+            return bad_arg("--optimizer radam is only valid with recipe 'franken' (toy#158/F15: the RAdam rectification is wired in the dense lane's LR path)")
+          end
+          # tao#18: F15's small case is CPU-only. The CUDA twin is a
+          # HAND-mirrored runner that does not read the granularity env
+          # at all, so without this a `--device cuda --dfa-granularity
+          # block` run would silently execute MICRO DFA and be recorded
+          # as macro — the worst kind of wrong result. (The CUDA runner
+          # also fails loud on its own, for callers that bypass the CLI.)
+          if @recipe == "franken" && @dfa_granularity == "block" && @device != "cpu"
+            return bad_arg("--dfa-granularity block is CPU-only on the franken lane (tao#18: F15's small case gets no CUDA twin)")
           end
           if @recipe == "franken" && @optimizer == "sgd"
             return bad_arg("--optimizer sgd is franken-moe-only (the llama lane's shared recipe uploads the AdamW hp unconditionally; muon keeps norms on adamw so it is fine there)")

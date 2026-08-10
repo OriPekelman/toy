@@ -58,7 +58,10 @@ REJECT = [
   [%w[franken --donor x.gguf],            "--donor"],
   [%w[franken --freeze-experts],          "--freeze-experts"],
   [%w[franken --moe-latent],              "--moe-latent"],
-  [%w[franken --dfa-granularity block],   "--dfa-granularity"],
+  # toy#158 moved --dfa-granularity onto the franken lane too, so the
+  # wrong-recipe probe has to be a recipe that has NO DFA at all.
+  [%w[from-scratch --dfa-granularity block], "--dfa-granularity"],
+  [%w[franken-moe --optimizer radam],     "--optimizer radam (franken-only)"],
   [%w[franken-moe --mla-layers 1],        "--mla-layers/--mla-rank"],
   [%w[franken --expert-act situ-glu],     "--expert-act"],
   [%w[franken --lr-schedule ramp-up],     "--lr-schedule/--lr-lo/--lr-hi"],

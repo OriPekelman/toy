@@ -109,7 +109,27 @@ module Toy; module LLM; module Archs
                   # pseudo-queries + the ones-gamma the score kernel's
                   # RMSNorm uses. Empty array = OFF (plain residual
                   # accumulation, byte-null).
-                  :seq_attnres_q, :t_seq_attnres_ones, :seq_attnres_on
+                  :seq_attnres_q, :t_seq_attnres_ones, :seq_attnres_on,
+                  # toy#158 (F15, LightOn macro-DFA arXiv:2006.12878):
+                  # seq_macro_dfa=1 CUTS the backward chain at every
+                  # block boundary and records the (undetached) block
+                  # output as that block's DFA tap. The engine then
+                  # attaches one surrogate loss root per block,
+                  # sum(tap_l ⊙ B_l·e), whose gradient AT the tap is
+                  # exactly the random-projected output error — so
+                  # autodiff does full BP *inside* the block and nothing
+                  # crosses between blocks. That is the LightOn `simple`
+                  # placement (1 tap per block at its output), as
+                  # opposed to today's per-weight `--policy dfa`.
+                  #
+                  # The cut is the point. tnn_detach is FORWARD-IDENTITY
+                  # (vendor-patch 0011), so the prediction is unchanged
+                  # and only the backward path is replaced — which is
+                  # what makes a macro run comparable to a BP run.
+                  # NOTE the embedding boundary is deliberately NOT cut:
+                  # block 0's surrogate propagates down into the
+                  # embedding, exactly as a tinydfa DFALayer stack does.
+                  :seq_macro_dfa, :seq_macro_taps
 
     def initialize
       @t_seq_token_embed      = TinyNN.tnn_null_ptr
@@ -147,6 +167,9 @@ module Toy; module LLM; module Archs
       @seq_attnres_q          = [TinyNN.tnn_null_ptr]; @seq_attnres_q.pop
       @t_seq_attnres_ones     = TinyNN.tnn_null_ptr
       @seq_attnres_on         = 0
+      # toy#158: 0 = the byte-gated default (no cut, no taps).
+      @seq_macro_dfa          = 0
+      @seq_macro_taps         = [TinyNN.tnn_null_ptr]; @seq_macro_taps.pop
     end
 
     # Reset @seq_blocks_ffi and fill it with exactly n_layers fresh
@@ -376,6 +399,11 @@ module Toy; module LLM; module Archs
                       seq_has_untied_output)
       eps   = seq_eps
       scale = 1.0 / Math.sqrt(seq_d_head.to_f)
+      # toy#158: taps are per-BUILD, and build_forward runs again on
+      # every reset_for_rebuild. Without this reset a rebuild would
+      # append a second set and the engine would wire surrogate roots
+      # onto STALE nodes from the discarded graph.
+      @seq_macro_taps = [TinyNN.tnn_null_ptr]; @seq_macro_taps.pop
 
       # Per-forward block context: the 14 config/handle values the block
       # body reads. Positional class (no keyword_init) — matches the
@@ -445,6 +473,19 @@ module Toy; module LLM; module Archs
         if self.seq_attnres_on == 1
           # f_l = (x + f_l(x)) − x, the layer's own contribution.
           ar_srcs.push(TinyNN.tnn_sub(sess, t_cur, ar_in))
+        end
+        # toy#158 (F15): the macro-DFA cut, at the block boundary and
+        # NOWHERE else. The tap is the UNDETACHED block output (the
+        # engine's surrogate root needs the real node); the value that
+        # travels on is gradient-opaque, so the CE loss reaches only the
+        # final norm + lm_head, and each block below is trained solely
+        # by its own injected error. Cutting HERE rather than inside
+        # TransformerBlock keeps every layer KIND (attention/GDN/KDA/
+        # MLA) covered by one rule — a kind-specific cut would silently
+        # leave a hybrid layer chained.
+        if self.seq_macro_dfa == 1
+          self.seq_macro_taps.push(t_cur)
+          t_cur = TinyNN.tnn_detach(sess, t_cur)
         end
         li_g = li_g + 1
       end
