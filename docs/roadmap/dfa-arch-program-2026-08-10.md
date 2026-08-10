@@ -5,6 +5,7 @@ SETTLED (tao#18, tao#19) so each lane can be built without re-litigating
 it, and flags the one thing I think is still ambiguous.
 
 Build order: **#152 → #158 → #154 → #153 / #155 / #156 / #157**.
+Status: **#152 shipped** (see "toy#152 — SHIPPED" below); #158 next.
 
 ## Settled (tao#18, tao#19 — Ori)
 
@@ -94,6 +95,117 @@ control for everything already shipped.
   the measured claim, not just the anchor.
 - Gate: the mandatory bar above, plus determinism, plus `chain`
   byte-null vs absent.
+
+## toy#152 — SHIPPED, and what it measured
+
+`toy train mlp` (runner `libexec/toy-train-mlp`, engine
+`lib/toy/llm/engine/mlp_engine.rb`, gate `prep/mlp_gate.rb`). Arms are
+per-hidden-layer policy tokens `chain | dfa | frozen`; the head always
+trains by BP (at the output layer DFA and BP coincide). CPU-only, own
+compilation unit, `MLP_*` env namespace.
+
+**The anchor holds.** At 3×64 hidden / 32 features / batch 64 / 1000
+steps / lr 0.003, matched init + seed, val accuracy on 2048 held-out
+samples (seed 0; the numbers the gate asserts):
+
+| classes | all-BP | all-DFA | frozen | recovery |
+|---------|--------|---------|--------|----------|
+| 2       | 0.940  | **0.942** | 0.772 | 1.01 |
+| 10      | 0.773  | 0.742   | 0.516  | 0.88 |
+| 100     | 0.559  | 0.412   | 0.273  | 0.49 |
+| 1000    | 0.411  | 0.265   | 0.162  | 0.42 |
+
+*recovery* = (DFA − frozen) / (BP − frozen): the share of BP's
+over-the-frozen-control gain that DFA recovers. Raw accuracy is not
+comparable across output dims (chance is 1/C); this is.
+
+Two results, both first-of-their-kind for this program:
+
+1. **A POSITIVE.** At 2 classes DFA matches BP (and edges past it); at
+   10 it is 3 points behind BP and 23 ahead of the frozen control. The
+   harness CAN reproduce a known DFA success, so the F4–F14 negatives
+   are findings about transformer LMs at vocab 50257, not harness
+   artifacts.
+2. **The output-dim lens, MEASURED.** Recovery falls monotonically
+   1.01 → 0.88 → 0.49 → 0.42 across {2, 10, 100, 1000} classes, on
+   every seed tried (0/1/2). The lens was a failure *explanation*; it
+   is now a *prediction that was tested*, on the same feedback
+   machinery (`Toy::Train::DfaB`) the franken lanes use — only the
+   output dim differs.
+
+3. **THE MECHANISM IS VISIBLE, not just the outcome.** With
+   `--align-events`, cos(g_DFA, g_BP) on the policied weights starts at
+   ~0 and climbs — seed 0, 1000 steps: w1 −0.002 → 0.67, w2 −0.089 →
+   0.60, w3 −0.04 → 0.31. That is Refinetti's "align, then memorise"
+   reproduced in our own telemetry, and it is what the gate asserts:
+   a broken DFA wiring can still move a loss curve, but it cannot make
+   the shadow gradient rotate towards a fixed random matrix. Note the
+   ordering — the layer nearest the head (w3) aligns least, which is
+   the same depth signature the F-series saw.
+
+The BP gap at 10 classes is ~3 points and stable across seeds (.031 /
+.029 / .029 for seeds 0/1/2); the gate's threshold is set ~3× above
+that spread rather than at seed 0's value.
+
+**One thing worth knowing before you read a big-#classes row: the val
+set has to be big enough.** At the runner default of 512 held-out
+samples the 1000-class recovery is noise-dominated — its numerator and
+denominator are both differences of ~0.1-accuracy estimates — and the
+100 → 1000 comparison flipped sign between two honest val sets. At
+2048 samples the ordering is stable on every seed tried. Sweeps at
+`--classes 100+` should pass `--val-batches 32`.
+
+Also measured, so nobody re-runs it: under AdamW the **B scale
+axis barely moves this lane** (inv_sqrt_fan / glorot / fixed:1.0 land
+within a point) — Adam normalises per-parameter magnitude, so only B's
+direction carries information. And DFA tolerates less LR than BP: at
+lr 0.03 the DFA val loss blows up to 78 while BP is unbothered.
+
+### Two deviations from the ticket text, both deliberate
+
+- **The task is a random-teacher network, not gaussian blobs**
+  (`--task blobs` still exists, and its degeneracy is MEASURED, not
+  assumed: at the anchor cell blobs give BP 1.000 / DFA 0.9995 /
+  **frozen 0.992**). Isotropic blobs are LINEARLY SEPARABLE, so the
+  frozen control — a random hidden stack plus a trained linear head —
+  scores as well as anything else, and the mandatory frozen-beat half
+  of the success bar could never be met by *anything*, DFA or BP. A
+  blob anchor would have been vacuous by construction, which is
+  exactly the failure mode tao#19 wrote the bar to catch. Gaussian
+  inputs with labels from a fixed random ReLU teacher is Refinetti et
+  al.'s own setup — the paper toy#152 cites — keeps every property the
+  ticket asked for (synthetic, seeded, no plumbing), and makes the
+  hidden layers load-bearing.
+- **The DFA rule includes the ⊙ f'(a) factor** the franken lane omits.
+  Franken's per-matmul surrogate projects the error straight onto the
+  weight; the anchor uses the literature rule (`ggml_silu_back` gives
+  the exact derivative). If the anchor had failed with the surrogate
+  we could not have told "DFA does not work at small output dim" from
+  "our surrogate is not DFA" — which is the one question this ticket
+  exists to answer.
+
+### For Tao (F16)
+
+Each cell is one process, ~0.5 s at 1000 steps:
+
+```
+toy train mlp --steps 1000 --seed 0 --classes 10 --val-batches 32 --policy chain,chain,chain
+toy train mlp --steps 1000 --seed 0 --classes 10 --val-batches 32 --policy dfa,dfa,dfa --align-events
+toy train mlp --steps 1000 --seed 0 --classes 10 --val-batches 32 --policy frozen,frozen,frozen
+```
+
+The three arms differ ONLY in `--policy`; init, task, and the held-out
+set are identical by construction (the val set is materialised from the
+head of one sample stream and training continues from what follows, so
+train/val disjointness does not depend on two seeds happening to miss
+each other in the same LCG cycle).
+
+`val: acc=… loss=… n=…` rides stdout; events carry per-step
+`train_acc`, the `align` events (with `wname`), and one end-of-run
+`eval` event. run_start carries a `dfa` object (NOT `franken` — a
+consumer keying on `franken` would read an MLP run as a transformer
+one) with the policy, the B axes, and the realised `dfa_wired` /
+`frozen` counts.
 
 ## Landmines that apply
 

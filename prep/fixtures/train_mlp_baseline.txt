@@ -1,0 +1,10 @@
+# prep/fixtures/train_mlp_baseline.txt — toy#152 T0 anchor: the DEFAULT
+# `toy train mlp` curve (STEPS=5 SEED=0, 3x64 hidden, 32 features, 10
+# classes, teacher task, batch 64, lr 0.003, all-chain = plain BP).
+# Byte-gated by prep/mlp_gate.rb. Regenerate ONLY with a deliberate
+# numerics change: STEPS=5 SEED=0 ./libexec/toy-train-mlp.
+step 1: loss=2.3088603019714355
+step 2: loss=2.2884457111358643
+step 3: loss=2.2833571434020996
+step 4: loss=2.2927379608154297
+step 5: loss=2.221686601638794

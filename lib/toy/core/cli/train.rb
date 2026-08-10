@@ -77,6 +77,10 @@ module Toy
         # of the byte-gated toy-train unit.
         FRANKEN_RUNNER_TARGET = "libexec/toy-train-franken-llama"
         FRANKEN_CUDA_RUNNER_TARGET = "libexec/toy-train-franken-llama-cuda"
+        # toy#152 (DFA-arch T0) — the MLP-classifier anchor. Own binary
+        # (landmine #16) and CPU-only by decision (tao#18: no CUDA twins
+        # for T0–T3).
+        MLP_RUNNER_TARGET = "libexec/toy-train-mlp"
         FRANKEN_MOE_RUNNER_TARGET = "libexec/toy-train-franken-moe-cli"
         FRANKEN_MOE_CUDA_RUNNER_TARGET = "libexec/toy-train-franken-moe-cli-cuda"
         # GPT-2 GPU twins (--arch gpt2 --device cuda|metal). SEPARATE single-type
@@ -158,6 +162,15 @@ module Toy
           @lr_control_floor    = nil # min ctrl, 0 < X <= 1
           @shape        = nil   # franken/franken-moe: preset (toy#124)
           @routing    = nil   # franken-moe: dense | top1
+          # toy#152 (mlp): the T0 anchor's own shape/task knobs.
+          @classes     = nil  # output dim — the axis under test
+          @hidden      = nil  # hidden width
+          @features    = nil  # input dim
+          @mlp_layers  = nil  # hidden layer count
+          @task        = nil  # teacher | blobs
+          @teacher_dim = nil
+          @task_seed   = nil
+          @val_batches = nil
           @moe_policy = nil   # franken-moe: chain | dfa-experts
           @moe_aux    = nil   # franken-moe: top1 aux-loss alpha
           @experts    = nil   # franken-moe: expert count E>=2 (toy#128)
@@ -224,7 +237,9 @@ module Toy
           #     warm-start +cuda                  in train_cuda.rb source)
           #   metal (fs only)  -> toy-train-metal
           #   cpu fs/warm-start-> toy-train
-          target = if @recipe == "franken-moe"
+          target = if @recipe == "mlp"
+                     MLP_RUNNER_TARGET
+                   elsif @recipe == "franken-moe"
                      @device == "cuda" ? FRANKEN_MOE_CUDA_RUNNER_TARGET : FRANKEN_MOE_RUNNER_TARGET
                    elsif @recipe == "franken"
                      @device == "cuda" ? FRANKEN_CUDA_RUNNER_TARGET : FRANKEN_RUNNER_TARGET
@@ -297,6 +312,31 @@ module Toy
             # data/vit_smoke is committed → no --corpus needed. vit IS seeded.
             env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
                              "IMG_DIR" => "data/vit_smoke")
+          elsif @recipe == "mlp"
+            # toy#152: a LANE-LOCAL env namespace (MLP_*), not the
+            # FRANKEN_* one. The two lanes share Toy::Train::DfaB, not a
+            # flag vocabulary — `frozen` is an mlp policy token with no
+            # franken counterpart, and franken's `mix:`/`mask*:` tokens
+            # have no meaning here. One namespace per lane keeps a
+            # copy-pasted command from silently half-applying.
+            env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
+                             "MLP_POLICY"       => (@policy || ""),
+                             "MLP_LAYERS"       => (@mlp_layers || 3).to_s,
+                             "MLP_HIDDEN"       => (@hidden || 64).to_s,
+                             "MLP_FEATURES"     => (@features || 32).to_s,
+                             "MLP_CLASSES"      => (@classes || 10).to_s,
+                             "MLP_TASK"         => (@task || ""),
+                             "MLP_TEACHER_DIM"  => (@teacher_dim || 32).to_s,
+                             "MLP_TASK_SEED"    => (@task_seed || 7).to_s,
+                             "MLP_BATCH"        => (@batch || 64).to_s,
+                             "MLP_VAL_BATCHES"  => (@val_batches || 8).to_s,
+                             "MLP_LR"           => (@lr || ""),
+                             "MLP_WARMUP"       => (@warmup || 0).to_s,
+                             "MLP_B_SEED"       => (@dfa_b_seed || 1234).to_s,
+                             "MLP_B_DIST"       => (@dfa_b_dist || ""),
+                             "MLP_B_SCALE"      => (@dfa_b_scale || ""),
+                             "MLP_ALIGN"        => (@align_events ? "1" : ""),
+                             "MLP_ALIGN_EVERY"  => (@align_every || 1).to_s)
           elsif @recipe == "franken-moe"
             env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
                              "FRANKEN_MOE_ROUTING" => (@routing || "dense"),
@@ -396,8 +436,10 @@ module Toy
           end
 
           # toy#130: the end-of-run eval_ce summary rides stdout alongside
-          # the byte-gated step lines.
-          losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") }.map(&:chomp)
+          # the byte-gated step lines; toy#152 adds the mlp lane's "val:"
+          # held-out line (accuracy is the metric its success bar is
+          # stated in, so it must reach the caller, not just events).
+          losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") || l.start_with?("val:") }.map(&:chomp)
           emit(run_id, run_dir, losses)
         end
 
@@ -455,6 +497,59 @@ module Toy
               @seed = val.to_i
             when /\A--out=(.*)\z/m
               @out = $1
+            # ---- toy#152 (mlp): the T0 anchor's shape/task knobs ----
+            # --classes is the AXIS UNDER TEST (the output dim our lens
+            # says DFA degrades with), so it gets a real name rather
+            # than riding --vocab: nothing here is a vocabulary.
+            when "--classes", "--hidden", "--features", "--layers",
+                 "--teacher-dim", "--val-batches"
+              key = @argv[i]
+              i += 1
+              val = @argv[i]
+              return bad_arg("#{key} requires a value") if val.nil?
+              min = key == "--classes" ? 2 : 1
+              return bad_arg("#{key} must be an integer >= #{min}, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= min
+              case key
+              when "--classes"     then @classes     = val.to_i
+              when "--hidden"      then @hidden      = val.to_i
+              when "--features"    then @features    = val.to_i
+              when "--layers"      then @mlp_layers  = val.to_i
+              when "--teacher-dim" then @teacher_dim = val.to_i
+              else                      @val_batches = val.to_i
+              end
+            when /\A--(classes|hidden|features|layers|teacher-dim|val-batches)=(.*)\z/
+              key = $1
+              val = $2
+              min = key == "classes" ? 2 : 1
+              return bad_arg("--#{key} must be an integer >= #{min}, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= min
+              case key
+              when "classes"     then @classes     = val.to_i
+              when "hidden"      then @hidden      = val.to_i
+              when "features"    then @features    = val.to_i
+              when "layers"      then @mlp_layers  = val.to_i
+              when "teacher-dim" then @teacher_dim = val.to_i
+              else                    @val_batches = val.to_i
+              end
+            when "--task"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--task requires a value") if val.nil?
+              return bad_arg("--task must be teacher or blobs, got #{val.inspect}") unless %w[teacher blobs].include?(val)
+              @task = val
+            when /\A--task=(.*)\z/
+              val = $1
+              return bad_arg("--task must be teacher or blobs, got #{val.inspect}") unless %w[teacher blobs].include?(val)
+              @task = val
+            when "--task-seed"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--task-seed requires a value") if val.nil?
+              return bad_arg("--task-seed must be a non-negative integer, got #{val.inspect}") unless val =~ /\A\d+\z/
+              @task_seed = val.to_i
+            when /\A--task-seed=(.*)\z/
+              val = $1
+              return bad_arg("--task-seed must be a non-negative integer, got #{val.inspect}") unless val =~ /\A\d+\z/
+              @task_seed = val.to_i
             when "--policy-scope"
               i += 1
               val = @argv[i]
@@ -989,8 +1084,8 @@ when /\A--dfa-feedback-lr=(.*)\z/
             return bad_arg("unexpected extra arguments: #{rest[1..].join(' ')}")
           end
           @recipe = rest.first
-          unless %w[from-scratch lora warm-start vit-tiny franken franken-moe].include?(@recipe)
-            return bad_arg("unknown recipe #{@recipe.inspect}; supported: 'from-scratch', 'lora', 'warm-start', 'vit-tiny', 'franken', 'franken-moe'")
+          unless %w[from-scratch lora warm-start vit-tiny franken franken-moe mlp].include?(@recipe)
+            return bad_arg("unknown recipe #{@recipe.inspect}; supported: 'from-scratch', 'lora', 'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp'")
           end
           # ---- toy#132: the flag x recipe MATRIX ----
           # Four llama-first flags in a row tripped franken-moe at Tao
@@ -1006,14 +1101,21 @@ when /\A--dfa-feedback-lr=(.*)\z/
             ["--model/--rank",  %w[lora],                          (!@model.nil? || !@rank.nil?), ""],
             ["--corpus",        %w[warm-start franken franken-moe], !@corpus.nil?, ""],
             ["--init",          %w[warm-start],                     !@init.nil?, ""],
-            ["--dfa-b-*/--align-events", %w[franken franken-moe],   (!@dfa_b_seed.nil? || !@dfa_b_dist.nil? || !@dfa_b_scale.nil? || @align_events), ""],
-            ["--policy",        %w[franken],                        !@policy.nil?, ""],
-            ["--policy-scope",  %w[franken],                        !@policy_scope.nil?, " (toy#151)"],
-            ["--align-every",   %w[franken franken-moe],            !@align_every.nil?, ""],
-            ["--lr/--warmup",   %w[franken franken-moe],            (!@lr.nil? || !@warmup.nil?), " (toy#126/#132)"],
+            ["--dfa-b-*/--align-events", %w[franken franken-moe mlp],   (!@dfa_b_seed.nil? || !@dfa_b_dist.nil? || !@dfa_b_scale.nil? || @align_events), ""],
+            ["--policy",        %w[franken mlp],                    !@policy.nil?, ""],
+            # tao#18 item 1: --policy-scope is DELIBERATELY not accepted
+            # on mlp. The attn|ffn|all meaning stays stable across
+            # lanes; an MLP has no attention to scope, and a
+            # head-vs-hidden split would get a DIFFERENT name
+            # (--policy-tensors), never an overload of this one.
+            ["--policy-scope",  %w[franken],                        !@policy_scope.nil?, " (toy#151; NOT accepted on 'mlp' — tao#18)"],
+            ["--align-every",   %w[franken franken-moe mlp],        !@align_every.nil?, ""],
+            ["--lr/--warmup",   %w[franken franken-moe mlp],        (!@lr.nil? || !@warmup.nil?), " (toy#126/#132)"],
+            ["--classes/--hidden/--features/--layers", %w[mlp],     (!@classes.nil? || !@hidden.nil? || !@features.nil? || !@mlp_layers.nil?), " (toy#152)"],
+            ["--task/--task-seed/--teacher-dim/--val-batches", %w[mlp], (!@task.nil? || !@task_seed.nil? || !@teacher_dim.nil? || !@val_batches.nil?), " (toy#152)"],
             ["--no-shadow",     %w[franken franken-moe],            @no_shadow, " (toy#129)"],
             ["--context/--vocab", %w[franken franken-moe],          (!@context.nil? || !@vocab.nil?), " (toy#129)"],
-            ["--batch",         %w[franken franken-moe],            !@batch.nil?, " (toy#133)"],
+            ["--batch",         %w[franken franken-moe mlp],        !@batch.nil?, " (toy#133)"],
             ["--act",           %w[franken],                        !@act.nil?, " (toy#136/K1; MoE experts get their GLU in K4)"],
             ["--rope",          %w[franken],                        !@rope.nil?, " (toy#136/K1)"],
             ["--schedule",      %w[franken franken-moe],            !@schedule.nil?, " (toy#136/K1)"],
@@ -1089,7 +1191,10 @@ when /\A--dfa-feedback-lr=(.*)\z/
           if @mla_rank && !@mla_layers && @layer_pattern != "k3"
             return bad_arg("--mla-rank needs MLA layers — pass --mla-layers or --layer-pattern k3")
           end
-          if @batch && @batch > 1 && @corpus.nil?
+          # The corpus rule is a TRANSFORMER-lane rule: there, B>1 means
+          # B corpus windows per step. The mlp lane's batch is samples
+          # from a seeded generator — there is no corpus to need.
+          if @batch && @batch > 1 && @corpus.nil? && @recipe != "mlp"
             return bad_arg("--batch > 1 needs --corpus (the fixed-seq feed is the byte-gated single-window contract)")
           end
           if @no_shadow && @align_events
@@ -1121,6 +1226,12 @@ when /\A--dfa-feedback-lr=(.*)\z/
           if @recipe == "franken-moe" && @device == "metal"
             return bad_arg("franken-moe has no metal runner yet (CUDA + CPU only, toy#134)")
           end
+          # tao#18 item 2: T0–T3 are CPU-only by decision, not by
+          # accident — the anchors are small by construction, and a
+          # hand-mirrored twin is exactly what drifted in toy#150/#151.
+          if @recipe == "mlp" && @device != "cpu"
+            return bad_arg("--device #{@device.inspect} is not supported for recipe 'mlp' (CPU-only by decision — tao#18: the T0 anchor is small by construction and gets no CUDA twin)")
+          end
           if @recipe == "vit-tiny" && @device != "cpu"
             return bad_arg("--device #{@device.inspect} is not supported for recipe 'vit-tiny' (cpu-only in this slice)")
           end
@@ -1139,6 +1250,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
         def arch_for(recipe)
           return "smollm2" if recipe == "lora"
           return "vit"     if recipe == "vit-tiny"
+          return "mlp"     if recipe == "mlp"
           return "moe"     if recipe == "franken-moe"
           "llama"
         end

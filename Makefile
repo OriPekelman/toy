@@ -797,6 +797,33 @@ libexec/toy-train-vit: lib/toy/run/train_vit.rb lib/toy/dev/toy_describe_flow.rb
 	$(SPINEL) $< -o $@
 toy-train-vit: libexec/toy-train-vit
 
+# toy#152 (DFA-arch T0) — the MLP-classifier ANCHOR runner. SEPARATE
+# binary (landmine #16), CPU-only by decision (tao#18: T0–T3 get no
+# CUDA twins — the anchors are small and twin-drift bit us twice in
+# toy#150/#151). Reads STEPS/SEED/MLP_*/TAO_RUN_DIR/TOY_RUN_ID from
+# ENV; trains on a seeded synthetic task (no corpus, no fixture to
+# pin). Shares Toy::Train::DfaB with the franken lanes — the feedback
+# machinery is the SAME code, only the output dim differs, which is
+# the whole point of the anchor.
+libexec/toy-train-mlp: lib/toy/run/train_mlp.rb lib/toy/dev/toy_describe_flow.rb \
+		lib/toy/io/json_builder.rb lib/toy/io/json.rb lib/toy/io/toy_events.rb \
+		vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
+		lib/toy/io/toy_mlp_task.rb lib/toy/llm/engine/mlp_engine.rb \
+		lib/toy/llm/recipes/mlp_classifier.rb lib/toy/llm/adamw.rb \
+		lib/toy/train/dfa_b.rb \
+		lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) $< -o $@
+toy-train-mlp: libexec/toy-train-mlp
+.PHONY: toy-train-mlp
+
+# toy#152 gate: chain byte-null vs absent policy, determinism, the dfa
+# effect, align-event shape (WITH wname), and the MANDATORY success bar
+# (all-DFA within gap of all-BP AND beating the frozen control, at
+# matched init + seed).
+.PHONY: gate-mlp
+gate-mlp: libexec/toy-train-mlp
+	ruby prep/mlp_gate.rb
+
 # P4/GPU — from-scratch CUDA TRAINING runner. CUDA twin of libexec/toy-train,
 # from-scratch ONLY (warm_start dropped). SINGLE-TYPE binary (landmine #16):
 # TinyNNCuda is the compute path; lib/toy/ffi/tinynn.rb + lib/toy/models/transformer.rb stay in

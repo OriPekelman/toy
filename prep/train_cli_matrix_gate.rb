@@ -65,6 +65,14 @@ REJECT = [
   [%w[franken --lr-control reactive],     "--lr-control/--lr-control-*"],
   [%w[franken --dfa-feedback kolen-pollack], "--dfa-feedback/--dfa-feedback-*"],
   [%w[from-scratch --policy-scope ffn], "--policy-scope"],
+  # tao#18 item 1: --policy-scope is DELIBERATELY not accepted on the
+  # mlp recipe — the attn|ffn|all meaning stays stable across lanes.
+  [%w[mlp --policy-scope ffn],            "--policy-scope"],
+  [%w[from-scratch --classes 10],         "--classes/--hidden/--features/--layers"],
+  [%w[franken --hidden 64],               "--classes/--hidden/--features/--layers"],
+  [%w[from-scratch --task teacher],       "--task/--task-seed/--teacher-dim/--val-batches"],
+  [%w[franken-moe --val-batches 4],       "--task/--task-seed/--teacher-dim/--val-batches"],
+  [%w[mlp --shape wide],                  "--shape"],
   [%w[from-scratch --ckpt-every 2],       "--ckpt-every"],
   [%w[franken --load-ckpt x.gguf],        "--load-ckpt"],
   [%w[franken --eval-corpus x.bin],       "--eval-corpus"],
@@ -92,10 +100,16 @@ failures << "matrix: franken-moe full set hit the matrix (#{out.lines.last(1).jo
 # franken + --ckpt-every without a value trips the parse rule, not the matrix
 out, st = probe(%w[franken --ckpt-every])
 failures << "matrix: franken --ckpt-every parse error wrong (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("requires a value")
+# toy#152: the mlp lane's own flags pass the matrix; --classes 1 trips
+# the LATER value rule, and --batch 64 must NOT trip the transformer
+# lane's "--batch > 1 needs --corpus" rule (the mlp batch is generated,
+# not streamed).
+out, st = probe(%w[mlp --batch 64 --classes 1])
+failures << "matrix: mlp --batch/--classes hit the wrong rule (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("--classes must be an integer >= 2")
 puts failures.length == n0 ? "  ok: right-recipe probes pass the matrix (their errors come from later rules)" : "  FAIL: acceptance side"
 
 if failures.empty?
-  puts "GATE PASS [train-cli-matrix]: #{REJECT.length} rejections + 3 acceptance probes (toy#132)"
+  puts "GATE PASS [train-cli-matrix]: #{REJECT.length} rejections + 4 acceptance probes (toy#132)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [train-cli-matrix]: #{f}" }
