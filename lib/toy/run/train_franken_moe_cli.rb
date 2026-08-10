@@ -2034,6 +2034,9 @@ module Toy
                 ae.add_num("t",     TinyNN.tnn_events_now_seconds)
                 ae.add_num("step",  s + 1)
                 ae.add_str("w",     tw.dfa_names[ai])
+                # tao#19 item 3: the same string under the CROSS-LANE
+                # key. `w` stays for back-compat with recorded runs.
+                ae.add_str("wname", tw.dfa_names[ai])
                 ae.add_raw("cos",      num_or_null_cli(cv))
                 ae.add_raw("dfa_norm", num_or_null_cli(sa))
                 ae.add_raw("bp_norm",  num_or_null_cli(sb))

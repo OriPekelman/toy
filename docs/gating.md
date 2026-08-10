@@ -80,6 +80,43 @@ ruby prep/infer_gate.rb   # exit 0 on byte-for-byte match, 1 otherwise
 `infer`/`train`/`eval` are tep-free. `serve_gate.rb` covers the
 OpenAI-compatible HTTP path.
 
+### `make gates` — the whole sweep, self-registering
+
+`make gates` runs **every** `gate-*` target; the list is parsed out of
+the Makefile itself, so a new `gate-<name>` target joins automatically
+(off-platform backend legs are filtered by `uname`). Currently **47
+targets / 55 legs**.
+
+This exists because a shared-layer change — `tinynn/*.c`, the engine
+unit, a CLI file, a toolchain pin — must sweep **all** consumers, not
+just the leg being worked on. Two regressions escaped through a green
+sibling gate before the aggregate target existed.
+
+**Leg bookkeeping.** Every leg records the failure count at its start
+(`n0 = failures.length`) and summarises with `failures.length == n0`, so
+each leg reports on *its own* assertions. Legs used to summarise with
+`failures.empty?`, which made every later leg print FAIL once any earlier
+one had failed — misleading exactly when you are debugging.
+
+### Gating a research claim, not just a curve
+
+The DFA lanes gate on **structure** wherever a loss curve cannot carry
+the claim (a saturated loss, or one dominated by data-sampling noise):
+
+- assert on **weight movement** (`layer_sig` / `experts_sig` deltas)
+  rather than curve statistics with a single-seed margin;
+- assert the **mechanism**, not only the outcome — e.g. that
+  cos(g_DFA, g_BP) *climbs* (a mis-wired DFA build can still move a
+  curve, but cannot align with a random matrix), or that changing the
+  feedback **seed** changes the curve (proving the injected error
+  actually reaches the weights);
+- when a gate asserts "arm A beats control C", **check C can lose** on
+  that task. A control that ties by construction makes the gate vacuous
+  — on linearly-separable data the frozen control scored 0.992 and no
+  arm could ever have cleared the bar;
+- pick thresholds from the **observed spread across seeds**, not from
+  one seed's value.
+
 ### Tolerance gates (numerics-varying)
 
 Most gates are byte-exact. A few exercise a path where the numerics legitimately

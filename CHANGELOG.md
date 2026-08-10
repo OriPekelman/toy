@@ -1,5 +1,89 @@
 # Changelog
 
+## Unreleased — the credit-assignment arc (toy#120–#158)
+
+Everything since v0.9.0 serves one question: **can a network be trained
+without backpropagating through it?** Two research instruments were built
+(a dense Llama-shape "franken" lane and an MoE one), the Kimi-K3 mechanism
+wave landed alongside them, and the arc closes with the first DFA
+*positive* this program has produced.
+
+### Direct Feedback Alignment — the result
+
+- **A POSITIVE, at last (toy#152).** `toy train mlp` — an MLP classifier
+  on a seeded synthetic task, the anchor lane. At 2 classes DFA **matches
+  BP** (0.942 vs 0.940 val accuracy); at 10 it is 3 points behind BP and
+  23 ahead of the frozen control. Before this, every DFA result in the
+  tree was negative and *could not be distinguished from a harness
+  artifact*. Now they can: the harness reproduces a known DFA success.
+- **The output-dimension lens, measured.** DFA's *recovery* — the share of
+  BP's over-the-frozen-control gain it recaptures — falls monotonically
+  1.01 → 0.88 → 0.49 → 0.42 across {2, 10, 100, 1000} classes, on every
+  seed tried. The lens was a failure *explanation*; it is now a tested
+  prediction, on the same feedback machinery the transformer lanes use.
+- **The mechanism is visible.** With `--align-events`, cos(g_DFA, g_BP)
+  climbs from ~0 to 0.67 over training — Refinetti's "align, then
+  memorise" reproduced in our own telemetry, and the layer nearest the
+  head aligns *least*. The gate asserts the climb: a mis-wired DFA build
+  can still move a loss curve, but it cannot make the shadow gradient
+  rotate towards a random matrix.
+- **Macro DFA (toy#158).** `--dfa-granularity block` — LightOn's recipe:
+  one random-feedback tap per block *output*, full BP inside the block,
+  no backward chain across blocks. Built by cutting the residual stream
+  at each boundary and attaching a surrogate loss root per block. Because
+  the cut is forward-identity, step 1 is **byte-identical to BP** — which
+  is what makes macro-vs-BP numbers comparable at all.
+- **`--optimizer radam` (toy#158)**, plus per-layer DFA reaching the FFN
+  (`--policy-scope attn|ffn|all`, toy#151), adaptive Kolen-Pollack
+  feedback (`--dfa-feedback`, toy#150), block-granularity DFA on the MoE
+  lane (toy#143), and the frozen-expert control (toy#141).
+- **Micro and macro are not comparable arms.** At the default
+  `--policy-scope attn`, per-weight DFA policies only attention q/k/v, so
+  most of the network is still backprop; macro policies the entire stack.
+  Reading one as the other is a large part of why an early experiment
+  "washed out". Both `dfa_granularity` and `policied_tensors` now ride in
+  every run bundle so the confusion cannot recur silently.
+
+### The Kimi-K3 mechanism wave (toy#135–#147)
+
+KDA (channel-wise delta rule with bounded decay), Gated MLA with a latent
+KV sandwich, Attention Residuals over depth, SiTU-GLU, NoPE, Quantile
+Balancing, Muon (per-head Newton–Schulz orthogonalization), Stable
+LatentMoE with shared experts, Multi-Token Prediction where λ is a
+*coupling* dial rather than a loss weight, per-layer LR schedules, and a
+loss-reactive LR damper. Each is a flag on the research instruments, each
+independently gated, each byte-null when off.
+
+### Research-instrument surface (toy#120–#134)
+
+Spec-callable `toy train franken` / `franken-moe`; real corpora (TOYC
+packs) with `--context`/`--vocab`/`--batch`; checkpoint writers and
+`--ckpt-every`; `toy eval ce` for held-out cross-entropy; run-bundle cost
+accounting; a CUDA twin of the MoE lane; the `--shape` presets; and the
+**flag × recipe matrix** — one table, gate-asserted, after four
+consecutive flags tripped at experiment runtime.
+
+### Events / consumer contract
+
+- `align` and `mask` event kinds are now **documented** in
+  [`docs/events.md`](docs/events.md), along with the run_start
+  credit-assignment provenance object.
+- Align events carry **`wname`**, a stable cross-lane weight name, in
+  every lane. `wi` is lane-local and does not travel between lanes;
+  consumers key on `wname`.
+
+### Discipline fixes worth naming
+
+- **Every gate leg reports on its own assertions** (`d878143`) — legs used
+  to summarise with the global failure list, so one early failure made
+  every later leg print FAIL, exactly when you were debugging.
+- **A held-out eval that was still training** (`d5e4c83`) — `--eval-corpus`
+  ran at lr=0 for the *global* hp vector only, so under `--optimizer` and
+  `--lr-schedule` the model kept training on its own test split.
+- **An OOM that was a leak, not a size** (`0127836`) — the eval loop
+  allocated a fresh label matrix per window; peak memory grew with window
+  *count*, which is what made shrinking the eval look like a fix.
+
 ## v0.9.0 — 2026-06-22
 
 **The Dragon / Gated-DeltaNet trainable hybrid arc.** toy grows a second block

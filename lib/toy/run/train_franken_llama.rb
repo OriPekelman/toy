@@ -28,9 +28,12 @@
 #                      rho_t <= 4 — the runner announces that at start)
 #
 # EVENTS (toy/v1, additive per #112): run_start carries a "franken" object
-# {policy:[...], b_seed, b_dist, b_scale, b_sigma, mix_alpha, mask_tau};
-# align events are {"kind":"align","phase":"train","t":…,"step":N,
-# "li":L,"wi":W,"cos":C}. step/run_end/checkpoint identical to train.rb.
+# {policy:[...], b_seed, b_dist, b_scale, b_sigma, mix_alpha, mask_tau,
+# policy_scope, policied_tensors, dfa_granularity, macro_taps}; align
+# events are {"kind":"align","phase":"train","t":…,"step":N,"li":L,
+# "wi":W,"wname":"attn_q.h0","cos":C,"dfa_norm":…,"bp_norm":…}.
+# `wi` is LANE-LOCAL; `wname` is the cross-lane key (tao#19 item 3).
+# step/run_end/checkpoint identical to train.rb.
 #
 # Spinel hygiene: as train.rb (hand-built JSON, no #{}, top-level consts,
 # typed-empty seeds, while loops, monomorphic drive).
@@ -1065,6 +1068,9 @@ while step < STEPS
       ae.add_num("step",  step + 1)
       ae.add_num("li",    recipe.ff_cache.franken_align_lis[ai])
       ae.add_num("wi",    recipe.ff_cache.franken_align_wis[ai])
+      # tao#19 item 3: `wi` is LANE-LOCAL (an index into this lane's ft
+      # layout); `wname` is what Tao's ingest keys on across lanes.
+      ae.add_str("wname", recipe.ff_cache.franken_align_wnames[ai])
       cnn = cosv3(gbuf, abuf, nw)
       ae.add_raw("cos",      num_or_null(cnn[0]))
       ae.add_raw("dfa_norm", num_or_null(cnn[1]))

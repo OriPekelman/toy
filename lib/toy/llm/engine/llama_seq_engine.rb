@@ -2032,6 +2032,47 @@ class LlamaSeqEngine
     @seq_arch.seq_macro_dfa == 1
   end
 
+  # tao#19 item 3 — the STABLE NAME of a policied weight, for the align
+  # events. Tao's ingest keys on `wname`; `wi` is a LANE-LOCAL index
+  # into this lane's ft layout and means nothing in another lane (the
+  # mlp lane has one weight per layer, the moe lane names experts), so
+  # a per-lane wi table on the consumer side was never going to hold.
+  #
+  # ft layout (alloc_trainable_f32_weights!):
+  #   [rn1, rn2, q*n_heads, (k,v)*n_kv interleaved, o, gate, up, down]
+  def franken_wname(wi, nh, nkv)
+    if wi == 0
+      return "attn_norm"
+    end
+    if wi == 1
+      return "ffn_norm"
+    end
+    if wi < 2 + nh
+      return "attn_q.h" + (wi - 2).to_s
+    end
+    nq_end = 2 + nh + 2 * nkv
+    if wi < nq_end
+      kv = wi - (2 + nh)
+      if kv % 2 == 0
+        return "attn_k.h" + (kv / 2).to_s
+      end
+      return "attn_v.h" + (kv / 2).to_s
+    end
+    if wi == nq_end
+      return "attn_output"
+    end
+    if wi == nq_end + 1
+      return "ffn_gate"
+    end
+    if wi == nq_end + 2
+      return "ffn_up"
+    end
+    if wi == nq_end + 3
+      return "ffn_down"
+    end
+    "w" + wi.to_s
+  end
+
   def franken_no_shadow_init(policy)
     @seq_franken_noshadow_policy = [0]; @seq_franken_noshadow_policy.pop
     pi = 0
@@ -2058,6 +2099,9 @@ class LlamaSeqEngine
 
   attr_accessor :franken_align_grads, :franken_align_accs,
                 :franken_align_lis, :franken_align_wis,
+                # tao#19 item 3: the stable per-weight NAME the ingest
+                # keys on (wi is lane-local and does not travel).
+                :franken_align_wnames,
                 :franken_mask_tensors, :franken_mask_lis, :franken_mask_wis,
                 :franken_b_handles,
                 # toy#158 (F15): the per-block macro-DFA feedback set.
@@ -2234,6 +2278,7 @@ class LlamaSeqEngine
     @franken_align_accs  = [TinyNN.tnn_null_ptr]; @franken_align_accs.pop
     @franken_align_lis   = [0]; @franken_align_lis.pop
     @franken_align_wis   = [0]; @franken_align_wis.pop
+    @franken_align_wnames = [""]; @franken_align_wnames.pop
     @franken_mask_tensors = [TinyNN.tnn_null_ptr]; @franken_mask_tensors.pop
     @franken_mask_lis     = [0]; @franken_mask_lis.pop
     @franken_mask_wis     = [0]; @franken_mask_wis.pop
@@ -2400,6 +2445,7 @@ class LlamaSeqEngine
             @franken_align_accs.push(t_acc_rec)
             @franken_align_lis.push(li)
             @franken_align_wis.push(wi)
+            @franken_align_wnames.push(franken_wname(wi, nh, nkv))
           end
         else
           tg = TinyNN.tnn_tensor_grad(@sess, tw)

@@ -106,6 +106,11 @@ Dir.mktmpdir("franken_llama_gate") do |dir|
     # the engine-scale telemetry sanity: dfa signal is alive
     live = aligns.count { |e| e["dfa_norm"] > 0 }
     failures << "bundle: dfa_norm not positive anywhere" unless live == aligns.length
+    # tao#19 item 3: every align event carries the CROSS-LANE key. `wi`
+    # is lane-local (an index into THIS lane's ft layout) and means
+    # nothing to a consumer reading the mlp or moe lane.
+    wn = aligns.map { |e| e["wname"] }.uniq.sort
+    failures << "bundle: align wnames #{wn.inspect} (want the 12 policied qkv names at scope=attn)" unless wn == %w[attn_k.h0 attn_k.h1 attn_k.h2 attn_k.h3 attn_q.h0 attn_q.h1 attn_q.h2 attn_q.h3 attn_v.h0 attn_v.h1 attn_v.h2 attn_v.h3]
   else
     failures << "bundle: no events.jsonl"
   end

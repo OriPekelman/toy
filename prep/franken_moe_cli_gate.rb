@@ -101,7 +101,10 @@ Dir.mktmpdir("moe_cli_dfa") do |dir|
     !e["cos"].is_a?(Numeric) || e["cos"].to_f.abs > 1.0001 ||
       !e["dfa_norm"].is_a?(Numeric) || e["dfa_norm"] <= 0 ||
       !e["bp_norm"].is_a?(Numeric) || e["bp_norm"] < 0 ||
-      !%w[up1 down1 up2 down2].include?(e["w"])
+      !%w[up1 down1 up2 down2].include?(e["w"]) ||
+      # tao#19 item 3: the CROSS-LANE key must carry the same string as
+      # the legacy per-lane `w` (which stays for recorded-run compat).
+      e["wname"] != e["w"]
   end
   failures << "dfa-experts: #{bad} malformed align events" unless bad == 0
   chain60 = losses(run_cli(%w[--steps 60 --seed 0], {}, nil))

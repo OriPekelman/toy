@@ -116,6 +116,40 @@ block (`arch`, `name`, `vocab`, `d_model`, `n_layers`, `n_heads`, `n_kv`,
 field (a baseline `run_id`) is optional; if set, consumers should expect
 `compare` events later in the stream.
 
+#### Credit-assignment provenance (the DFA lanes)
+
+A run whose credit assignment is not plain backprop carries a
+provenance object naming **exactly what was policied**, so two runs of
+the same nominal policy string can never be silently different
+experiments. The dense/MoE franken lanes use the key `franken`; the MLP
+lane uses `dfa` (a consumer keying on `franken` must not read an MLP
+run as a transformer one).
+
+```json
+"franken": {
+  "policy": [0, 1], "b_seed": 42, "b_dist": "gaussian",
+  "b_scale": "inv_sqrt_fan", "b_sigma": 0.0,
+  "policy_scope": "attn", "policied_tensors": "attn:q,k,v",
+  "dfa_granularity": "matmul", "macro_taps": 0, "shadow": true
+}
+```
+
+| field | meaning |
+| --- | --- |
+| `policy` | per-layer credit codes. Dense/MoE: `0` chain, `1` dfa, `2` mix, `3`/`4` mask. MLP lane: `0` chain, `1` dfa, `2` **frozen** (the control arm — layer stays at init, head still trains). |
+| `b_seed` / `b_dist` / `b_scale` / `b_sigma` | the fixed-random-feedback axes (`Toy::Train::DfaB`). |
+| `policy_scope` | `attn` (default) / `ffn` / `all` — which tensor class a `:dfa` layer policies. A MICRO-only axis. |
+| `policied_tensors` | the resolved set, spelled out (`attn:q,k,v`, `ffn:gate,up,down`, `block_output`, …). |
+| `dfa_granularity` | `matmul` = per-weight **micro** DFA; `block` = **macro** DFA (LightOn's block-output tap, full BP inside the block, no backward chain across blocks). |
+| `macro_taps` | number of block taps actually wired under `block`. Zero under a macro policy is a bug, not a fallback. |
+| `shadow` | whether the chain grad-acc exists (`--no-shadow` drops it; align telemetry then has nothing to compare against and is rejected). |
+
+**Micro and macro are not comparable arms.** At the default
+`policy_scope: attn`, micro policies only attention q/k/v — most of the
+network is still trained by backprop — while `dfa_granularity: block`
+policies the entire stack. Always read `dfa_granularity` and
+`policied_tensors` together before comparing two DFA runs.
+
 `model.weight_type` (optional) is the weight storage/compute dtype —
 `"f32"` (default), `"f16"`, or `"bf16"` — surfaced by the from-scratch
 trainer for the mixed-precision path (GH#9). Consumers asserting numerical
@@ -193,6 +227,53 @@ suffix: `blk.0.attn_q.weight#lora_a` / `#lora_b`.
 { "kind": "grad", "phase": "train", "t": 0.420, "step": 1,
   "param": "blk.0.attn_q.weight", "head": 0, "shape": [64, 576],
   "l2": 0.0312, "abs_mean": 0.00041, "nan_count": 0 }
+```
+
+### `align` (credit-assignment telemetry — the DFA lanes)
+
+Emitted per (step, policied weight) when a DFA lane runs with align
+telemetry on (`--align-events` / `FRANKEN_ALIGN=1` / `MLP_ALIGN=1`,
+thinnable with `--align-every N`). It reports the angle between the
+**DFA gradient actually applied** and the **backprop gradient that
+would have been applied** — the shadow — so a run can be read for
+*whether the feedback aligns*, not just whether the loss moved.
+
+```json
+{ "kind": "align", "phase": "train", "t": 1.7, "step": 12,
+  "li": 1, "wi": 6, "wname": "attn_k.h0",
+  "cos": 0.3149, "dfa_norm": 1.327, "bp_norm": 0.144 }
+```
+
+| field | meaning |
+| --- | --- |
+| `li` | layer index (0-based). Stable across lanes. |
+| `wi` | **LANE-LOCAL** weight index — an index into *that lane's* weight layout. It does **not** mean the same thing in another lane. |
+| `wname` | **the cross-lane key.** A stable string naming the weight: `attn_q.h0`, `attn_k.h2`, `attn_output`, `ffn_gate`, `ffn_up`, `ffn_down`, `attn_norm`, `ffn_norm` (dense transformer); `up1`/`down1`/`up2`/`down2` (MoE experts); `w1`…`wL` (MLP tower). |
+| `cos` | cosine angle between the DFA gradient and the chain (BP) shadow. |
+| `dfa_norm`, `bp_norm` | L2 of each side. A **zero norm distinguishes a dead download from a dead gradient** — that is why both are carried rather than the angle alone. |
+
+**Consumers should key on `wname`, not `wi`** (tao#19 item 3). The MoE
+lane additionally emits the same string under the legacy key `w`, kept
+for runs recorded before the convention was unified.
+
+A rising `cos` over training is the "align, then memorise" signature
+(Refinetti et al. 2021) — the BP gradient rotating towards the fixed
+random feedback. It is a far sharper health signal than the loss curve:
+a mis-wired DFA build can still move a loss curve, but it cannot make
+the shadow gradient align with a random matrix.
+
+Non-finite values serialize as `null` (see [Producer guarantees](#producer-guarantees)).
+
+### `mask`
+
+Emitted alongside `align` for the P3 combiner policies
+(`maskdfa:<tau>` / `maskbp:<tau>`), one per (step, masked weight).
+`density` is the mean of the smooth near-hard gate — 1.0 = the source
+signal passes untouched, 0.0 = fully gated.
+
+```json
+{ "kind": "mask", "phase": "train", "t": 1.7, "step": 12,
+  "li": 1, "wi": 6, "density": 0.62 }
 ```
 
 ### `op_timing`

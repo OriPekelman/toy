@@ -76,14 +76,45 @@ recipes are:
 | `lora` | LoRA adapters over a frozen base GGUF | `--model <gguf>` (base, default `data/smollm2-135m-native.gguf`), `--rank N` (default 8) |
 | `warm-start` | fine-tune from donor embeddings over a streamed corpus | `--corpus <path>` (default `data/ts_seqs.bin`), `--init <mode>` (default `scratch`) |
 | `vit-tiny` | ViT-Tiny image classifier on the committed smoke corpus (CPU-only) | — |
+| `franken` | dense Llama-shape model with a **per-layer credit-assignment policy** (the DFA research lane) | `--policy`, `--policy-scope`, `--dfa-granularity`, `--dfa-b-*`, `--align-events`, `--optimizer`, `--shape`, `--corpus`, … |
+| `franken-moe` | the same, MoE-shaped (routed experts, dense or top-1) | as `franken` plus `--experts`, `--routing`, `--moe-policy`, `--dfa-feedback`, `--lr-schedule`, `--lr-control`, … |
+| `mlp` | MLP classifier on a seeded synthetic task — the DFA **anchor** lane (CPU-only) | `--policy`, `--classes`, `--hidden`, `--features`, `--layers`, `--task`, `--val-batches`, `--dfa-b-*`, `--align-events` |
 
 An unknown recipe is rejected loud (`supported: 'from-scratch', 'lora',
-'warm-start', 'vit-tiny'`). `--arch gpt2` trains the from-scratch GPT-2 arch
-(`from-scratch` only, CPU-only); `--device cuda|metal` selects the per-device
-runner (`metal` is macOS-only; GPT-2 and ViT-Tiny are CPU-only).
+'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp'`). `--arch gpt2`
+trains the from-scratch GPT-2 arch (`from-scratch` only, CPU-only);
+`--device cuda|metal` selects the per-device runner (`metal` is macOS-only;
+GPT-2, ViT-Tiny and `mlp` are CPU-only, and `franken`'s macro-DFA mode is
+CPU-only by decision).
 Defaults: `--steps 5`, `--seed 0`, `--arch llama`, `--device cpu`, `--out runs/<id>`.
 Writes the run bundle (see [Run bundle layout](#run-bundle-layout)) and echoes
 the byte-deterministic loss curve to stdout.
+
+#### Flag x recipe is a MATRIX, and it is gated
+
+Every recipe-specific flag is rejected under the wrong recipe (exit 2,
+`only valid with recipe …`), *before* any build or runner spawn. The
+table lives in one place (`lib/toy/core/cli/train.rb`'s `flag_matrix`)
+and `prep/train_cli_matrix_gate.rb` asserts every row — recipe parity is
+a cell flip, not a scattered set of one-off checks.
+
+#### The DFA lanes in one paragraph
+
+`--policy chain,dfa,…` sets credit assignment **per layer**:
+`chain` = backprop, `dfa` = fixed random feedback, and on `mlp` also
+`frozen` (the control arm — the layer stays at init while the head still
+trains). `--policy-scope attn|ffn|all` selects which tensors a `:dfa`
+layer policies (dense lanes; default `attn`).
+`--dfa-granularity matmul|block` selects **micro** (per-weight) vs
+**macro** (one tap per block output, full BP inside the block) DFA.
+`--align-events` emits the `align` telemetry described in
+[events.md](events.md#align-credit-assignment-telemetry--the-dfa-lanes).
+`--optimizer adamw|muon|radam` (`radam` is `franken`-only; `sgd` is
+`franken-moe`-only).
+
+The `mlp` lane prints one extra stdout line after the curve —
+`val: acc=… loss=… n=…` — because held-out accuracy, not loss, is the
+metric its success criterion is stated in.
 
 ### `eval <model> [--top-k K] [--device cpu|cuda|metal] [--json]`
 Score a GGUF model: per-token logprobs. Default `--top-k 5`, `--device cpu`.
