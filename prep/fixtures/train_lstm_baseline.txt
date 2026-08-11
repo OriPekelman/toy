@@ -1,0 +1,10 @@
+# prep/fixtures/train_lstm_baseline.txt — the toy#157 LSTM lane's default
+# 5-step curve (libexec/toy-train-lstm with no LSTM_* env at all: 1 layer,
+# hidden 64, features 24, T=64, 4 classes, delayed-cue task, all-chain,
+# lr 0.03).
+# Regenerate: STEPS=5 SEED=0 ./libexec/toy-train-lstm | grep '^step '
+step 1: loss=1.3788046836853027
+step 2: loss=1.4332829713821411
+step 3: loss=1.3934253454208374
+step 4: loss=1.359115719795227
+step 5: loss=1.496370792388916

@@ -833,6 +833,34 @@ libexec/toy-train-ctr: lib/toy/run/train_ctr.rb lib/toy/dev/toy_describe_flow.rb
 toy-train-ctr: libexec/toy-train-ctr
 .PHONY: toy-train-ctr
 
+# toy#157 (DFA-arch T3) — the LSTM lane, the SSM rehearsal. SEPARATE
+# binary (landmine #16), CPU-only. Reuses toy#155's delayed-cue task
+# generator UNCHANGED so the two lanes are an architecture comparison
+# rather than two anecdotes.
+libexec/toy-train-lstm: lib/toy/run/train_lstm.rb lib/toy/dev/toy_describe_flow.rb \
+		lib/toy/io/json_builder.rb lib/toy/io/json.rb lib/toy/io/toy_events.rb \
+		vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
+		lib/toy/io/toy_ssm_task.rb lib/toy/llm/engine/lstm_engine.rb \
+		lib/toy/llm/recipes/lstm_seq.rb lib/toy/llm/adamw.rb \
+		lib/toy/train/dfa_b.rb \
+		lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) $< -o $@
+toy-train-lstm: libexec/toy-train-lstm
+.PHONY: toy-train-lstm
+
+# toy#157 gate: chain byte-null, forward-identity under detach, the B
+# seed, the MANDATORY success bar, and the MEMORY measurement in BYTES
+# that the ticket's success target is stated in.
+#
+# NOT WRITTEN YET. prep/lstm_gate.rb does not exist, so `make gates`
+# fails here — deliberately left dangling rather than removed, so the
+# battery names the missing piece instead of quietly skipping a lane.
+# See docs/roadmap/HANDOVER-toy157-2026-08-11.md; prep/ssm_gate.rb is
+# the closest template.
+.PHONY: gate-lstm
+gate-lstm: libexec/toy-train-lstm
+	ruby prep/lstm_gate.rb
+
 # toy#156 (DFA-arch T2) — the latent diffusion denoiser. SEPARATE binary
 # (landmine #16), CPU-only. Scoped strictly to a LOW-DIM latent: the
 # eps-prediction target has the input's dimensionality, so pixel
