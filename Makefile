@@ -842,7 +842,7 @@ libexec/toy-train-lstm: lib/toy/run/train_lstm.rb lib/toy/dev/toy_describe_flow.
 		vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
 		lib/toy/io/toy_ssm_task.rb lib/toy/llm/engine/lstm_engine.rb \
 		lib/toy/llm/recipes/lstm_seq.rb lib/toy/llm/adamw.rb \
-		lib/toy/train/dfa_b.rb \
+		lib/toy/train/dfa_b.rb lib/toy/train/stream_bytes.rb \
 		lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
 	$(SPINEL) $< -o $@
 toy-train-lstm: libexec/toy-train-lstm
@@ -894,7 +894,7 @@ libexec/toy-train-ssm: lib/toy/run/train_ssm.rb lib/toy/dev/toy_describe_flow.rb
 		vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
 		lib/toy/io/toy_ssm_task.rb lib/toy/llm/engine/ssm_engine.rb \
 		lib/toy/llm/recipes/ssm_seq.rb lib/toy/llm/adamw.rb \
-		lib/toy/train/dfa_b.rb \
+		lib/toy/train/dfa_b.rb lib/toy/train/stream_bytes.rb \
 		lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
 	$(SPINEL) $< -o $@
 toy-train-ssm: libexec/toy-train-ssm

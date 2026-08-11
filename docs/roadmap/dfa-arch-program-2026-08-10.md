@@ -884,23 +884,127 @@ plus a trained head already integrates it. Measured, asserted.
 ### For Tao (F21)
 
 ```
-toy train lstm --steps 4000 --seed 0 --policy chain
-toy train lstm --steps 4000 --seed 0 --policy dfa                    # layer cut
-toy train lstm --steps 4000 --seed 0 --policy dfa --dfa-cut step
-toy train lstm --steps 4000 --seed 0 --policy frozen
+toy train lstm --steps 4000 --lr 0.02 --warmup 200 --seed 0 --policy chain
+toy train lstm --steps 4000 --lr 0.02 --warmup 200 --seed 0 --policy dfa                  # layer cut
+toy train lstm --steps 4000 --lr 0.02 --warmup 200 --seed 0 --policy dfa --dfa-cut step
+toy train lstm --steps 4000 --lr 0.02 --warmup 200 --seed 0 --policy frozen
 #  ... and the whole grid at seeds 1 and 2, which is NOT optional here
 ```
 
-The runner's DEFAULTS are the fair cell (lr 0.02, warmup 200), so those
-commands need neither flag — and `--warmup` is forwarded as UNSET rather
-than `0` on this lane for exactly that reason. `--warmup 0` still
-disables the ramp explicitly.
+**Write the cell out in full, every time.** It is not the default and
+must not become one. toy#157 shipped the 200-step ramp as the runner's
+default for a single commit; within hours a consumer's
+`--lr 0.03 --steps 2000` inherited it and produced a 3-seed matrix under
+a cell name that was not the cell it ran. The giveaway was that its
+FROZEN row matched byte-for-byte while every trained arm moved — frozen
+takes no optimizer step, so it is the one arm invariant to the LR
+schedule. Defaults on this lane now change nothing.
 
 Arms differ ONLY in `--policy` / `--dfa-cut`. **Run all three seeds** —
 see above for what a one-seed reading of this lane produces. **No
 `--align-events`** (rejected by the CLI). The memory half of the success
 target is not met and is not measurable in this harness; take it up at
 tao#21 rather than re-measuring here.
+
+## toy#159 — the analytic streaming instrument: the memory claim, finally decidable
+
+Both recurrent lanes reported the ticket's memory target as a negative,
+in different units and for the same structural reason:
+
+| lane | instrument | per-step cut vs BPTT |
+|---|---|---|
+| toy#155 | realized graph NODES | 31% MORE |
+| toy#157 | realized graph BYTES | 17% MORE, no better with L |
+
+No better measuring fixes that. **In a graph autodiff every forward
+tensor is materialised whatever the credit rule**, so a harness that
+BUILDS the whole unrolled graph cannot exhibit a streaming win — the
+measurement was answering a different question from the one the ticket
+asks. tao#21 listed the ways out; this is the cheapest, and the only one
+needing no second execution engine.
+
+`lib/toy/train/stream_bytes.rb` computes, from each cell's own shapes,
+what a STREAMING implementation would have to hold. Both lanes now print
+it beside the measured line:
+
+```
+graph:  nodes=2116 bytes=15578112                       # MEASURED — what toy builds
+stream: bptt=3868160 sqrt_t=984576 cut=78336 cut_vs_bptt=49.37x cut_vs_sqrt_t=12.56x replay=2x_fwd
+```
+
+LSTM lane defaults (hidden 64, batch 32, 1 layer, 4 classes):
+
+| T | BPTT | BPTT + sqrt-T checkpointing | **per-step cut (replay)** |
+|---|---|---|---|
+| 16 | 968 192 | 501 248 | **78 336** |
+| 64 | 3 868 160 | 984 576 | **78 336** |
+| 128 | 7 734 784 | 1 467 904 | **78 336** |
+| 1024 | 61 867 520 | 3 884 544 | **78 336** |
+
+**Constant in T, as the claim requires** — 49x under BPTT at T=64,
+789x at T=1024, and still 12.6x / 49.6x against BPTT's own best
+counter-move. That is the "k-times-less activation memory for sequence
+length L" the ticket asks for, stated under a model rather than
+measured on a harness that cannot exhibit it.
+
+toy#155's lane gets the same instrument, so F19's table can finally be
+restated in it (lane defaults: d_inner 48, d_model 24, batch 32,
+2 layers, conv K=4):
+
+| T | BPTT | BPTT + sqrt-T | **per-step cut** |
+|---|---|---|---|
+| 16 | 2 606 592 | 1 353 216 | **213 504** |
+| 64 | 10 421 760 | 2 655 744 | **213 504** |
+| 128 | 20 841 984 | 3 958 272 | **213 504** |
+
+Two lane-specific details the gate pins. The causal conv's K-1 window
+lands in the **carry**, not the per-step term — it is O(K) in the kernel
+width, so it does not make the arm O(T). And `--selection lti` reports a
+strictly smaller cell (127 488 vs 213 504) because its dt/C/gate
+branches are weights rather than per-step activations; the gate asserts
+that inequality, since equal figures would mean the instrument is not
+reading the selection at all.
+
+**The memory claim and the accuracy claim now point opposite ways on
+this lane, and that is the honest F19 summary**: toy#155 measured the
+per-step cut collapsing to chance under selection, so the arm that would
+buy the 48x is the arm that cannot do the task there. On toy#157's
+gated LSTM the same arm solves it — which is why the cross-architecture
+contrast, not the memory number, is the transferable result.
+
+### The sharp version, which is not what the tickets assumed
+
+The win is **not a property of the credit rule alone.** The surrogate's
+error `e = softmax(logits) − labels` is known only after the last-step
+readout, and step t's update needs step t's own activations. So the cut
+has exactly two ways to spend itself: keep every step's activations
+until the error arrives (O(T) — what this harness does, hence the bigger
+graph), or **replay** the forward once the error is known and update
+each step as it passes (O(1), at ~2x forward compute).
+
+Replay is legal precisely BECAUSE no gradient crosses a timestep: the
+steps are independent and can be revisited in any order. Under BPTT it
+is not available at all — the backward must traverse time in order.
+**What cutting the time axis buys is the LEGALITY of the replay, not a
+smaller graph.** Both numbers ship, with the compute price inline
+(`replay=2x_fwd`), because either alone misleads: the measured one reads
+as "DFA costs more memory", the analytic one as a free win.
+
+The instrument is honest in the other direction too — it quotes
+sqrt-T checkpointing (O(√T) at ~1.5x compute) so the cut is not
+compared only against BP's worst case, and it excludes weights,
+optimizer moments and gradient buffers, which are equal across arms and
+independent of T.
+
+### What it does NOT do
+
+It does not make toy stream. It replaces "the target is unmeasurable
+here" with "here is the target's value under a stated model, next to the
+measured cost of not implementing it" — enough for F19/F21 to be decided
+rather than deferred. It also confirms tao#21's recommendation against
+spending the deferred F19 CUDA twin: a device port changes throughput,
+not what the graph materialises, and the quantity that moves the claim
+is not measured on a device at all.
 
 ## Landmines that apply
 

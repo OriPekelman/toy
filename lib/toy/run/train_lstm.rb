@@ -37,10 +37,10 @@
 #   LSTM_TASK_SEED  — task seed, SEPARATE from SEED (default 7)
 #   LSTM_BATCH      — sequences per step (default 32)
 #   LSTM_VAL_BATCHES— held-out batches evaluated at the end (default 8)
-#   LSTM_LR         — default 0.02   } the lane's MEASURED fair cell; see
-#   LSTM_WARMUP     — default 200    } the grid at the LR constant below.
-#                     LSTM_WARMUP=0 disables the ramp (an EMPTY string
-#                     means "unset", so the default applies).
+#   LSTM_LR         — default 0.02 (see the grid at the LR constant)
+#   LSTM_WARMUP     — default 0. The lane's fair cell wants 200, and says
+#                     so explicitly rather than defaulting to it; see the
+#                     LR constant below for why that is not negotiable.
 #   LSTM_B_SEED / LSTM_B_DIST / LSTM_B_SCALE — the DfaB feedback axes
 #
 # STDOUT (byte-gated): "step <N>: loss=<float>" per step, then
@@ -100,14 +100,10 @@ B_DIST_S    = ENV["LSTM_B_DIST"]  || ""
 B_SCALE_S   = ENV["LSTM_B_SCALE"] || ""
 
 NOISE   = NOISE_S.length   > 0 ? NOISE_S.to_f   : 1.0
-# THE DEFAULTS ARE THE LANE'S MEASURED FAIR CELL: lr 0.02 + warmup 200
-# (at 4000 steps). They are not inherited and not guessed — they are the
-# BP arm's OWN BEST over a swept (lr x warmup x seed) grid, because a
-# lane whose default cannot train its BP arm reports the DFA arms
-# beating it, which is this lane's characteristic wrong result and has
-# now nearly happened three times.
-#
-# Val accuracy at 4000 steps, seeds 0/1/2, no warmup:
+# THE LANE'S FAIR CELL IS `--lr 0.02 --warmup 200 --steps 4000`, AND IT
+# IS NOT THE DEFAULT — it is written out, in full, everywhere the lane's
+# numbers are stated (the gate's CELL, the roadmap's For-Tao block,
+# docs/cli.md). Val accuracy at 4000 steps, seeds 0/1/2, no warmup:
 #
 #   lr 0.005   BP .504 / 1.000 /  .996     DFA(step) 1.000 / 1.000 / 1.000
 #   lr 0.010   BP .250 / 1.000 /  .996     DFA(step) 1.000 / 1.000 / 1.000
@@ -117,17 +113,25 @@ NOISE   = NOISE_S.length   > 0 ? NOISE_S.to_f   : 1.0
 # Every arm is bimodal (solves it, or sits at chance .250 on 4 classes).
 # The per-step DFA cut solves 12 of 12 cells; BP solves 7, and WHICH rate
 # works depends on the SEED — so no learning rate alone gives a BP arm
-# that trains at every seed. WARMUP is what does: at lr 0.02, warmup 200
-# turns BP's .250/.996/1.000 into 1.000/.992/1.000. That is why the
-# warmup default is 200 here and 0 on every other lane, and why the CLI
-# forwards an EMPTY string when --warmup is absent rather than "0" — a
-# CLI that always sent 0 would silently defeat this default and hand the
-# user back the untrained-BP trap.
+# that trains at every seed. A 200-step warmup is what does: at lr 0.02
+# it turns BP's .250/.996/1.000 into 1.000/.992/1.000.
 #
-# The earlier 0.03 default was seed-0 luck: it is the ONE rate seed 0
-# trains at and the one seeds 1 and 2 fail at.
+# THIS LANE SHIPPED THAT WARMUP AS A DEFAULT ONCE, AND IT WAS WRONG.
+# The reasoning was that a default which cannot train the BP arm is how
+# this lane kept nearly reporting "DFA beats BP". The reasoning was right
+# about the trap and wrong about the fix: a default that reinterprets an
+# existing config silently relabels other people's experiments. Within
+# hours, Tao's `--lr 0.03 --steps 2000` inherited the ramp and produced a
+# 3-seed matrix under a cell name that was not the cell it ran (its
+# frozen row matched byte-for-byte — frozen takes no optimizer step and
+# is the one arm invariant to the schedule — while every trained arm
+# moved). Defaults here change NOTHING; the cell is spelled out instead.
+#
+# The LR default of 0.02 stands: it is the better rate at either warmup
+# (2 of 3 seeds bare, 3 of 3 with the ramp). The 0.03 it replaced was
+# seed-0 luck — the ONE rate seed 0 trains at and seeds 1 and 2 fail at.
 LR      = LR_S.length      > 0 ? LR_S.to_f      : 0.02
-WARMUP  = WARMUP_S.length  > 0 ? WARMUP_S.to_i  : 200
+WARMUP  = WARMUP_S.length  > 0 ? WARMUP_S.to_i  : 0
 
 # ---- fail loud on every out-of-range shape (never-mask). ----
 if STEPS < 1
@@ -387,6 +391,13 @@ if EVENTS.length > 0
     # implementation could get away with.
     cost.add_num("graph_nodes", recipe.lr_cache.lstm_graph_nodes)
     cost.add_num("graph_bytes", recipe.lr_cache.lstm_graph_bytes)
+    # toy#159 — ANALYTIC, and named so a consumer cannot confuse them
+    # with the measured pair above. stream_cut_bytes is O(1) in T and
+    # assumes a 2x-forward replay; stream_sqrt_t_bytes is BPTT's own best
+    # counter-move, quoted so the cut is not compared only to BP's worst.
+    cost.add_num("stream_bptt_bytes",   recipe.lr_cache.lstm_stream_bptt)
+    cost.add_num("stream_sqrt_t_bytes", recipe.lr_cache.lstm_stream_sqrt)
+    cost.add_num("stream_cut_bytes",    recipe.lr_cache.lstm_stream_cut)
     rs.add_obj("cost", cost)
     config = Toy::Json::Builder.new
     config.add_num("steps",       STEPS)
@@ -533,6 +544,15 @@ puts "val: acc=" + val_acc.to_s + " loss=" + val_loss.to_s + " n=" + val_seen.to
 # metric; read the caveat on cost.graph_bytes above first.
 puts "graph: nodes=" + recipe.lr_cache.lstm_graph_nodes.to_s +
      " bytes=" + recipe.lr_cache.lstm_graph_bytes.to_s
+# toy#159 — the ANALYTIC line, printed next to the measured one and never
+# instead of it. `graph:` is what toy BUILDS; `stream:` is what a
+# streaming implementation would HOLD, which is the quantity the ticket's
+# memory target is actually about and the one no graph measurement here
+# can exhibit. The cut's figure is O(1) in T and costs a 2x forward
+# replay, which rides the line so the number cannot be quoted as free.
+puts Toy::Train::StreamBytes.line(recipe.lr_cache.lstm_stream_bptt,
+                                  recipe.lr_cache.lstm_stream_sqrt,
+                                  recipe.lr_cache.lstm_stream_cut)
 
 if EVENTS.length > 0 && TinyNN.tnn_events_active == 1
   ev = Toy::Json::Builder.new

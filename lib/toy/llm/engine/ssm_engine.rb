@@ -118,6 +118,7 @@
 
 require_relative "../../models/transformer"
 require_relative "../../train/dfa_b"
+require_relative "../../train/stream_bytes"
 
 module Toy; module LLM; module Engine
 class SsmEngine
@@ -158,6 +159,7 @@ class SsmEngine
                 :ssm_b_handles, :ssm_b_seeds, :ssm_b_douts,
                 :ssm_b_dist, :ssm_b_scale, :ssm_b_sigma,
                 :ssm_dfa_wired, :ssm_frozen_count, :ssm_graph_nodes,
+                :ssm_stream_bptt, :ssm_stream_sqrt, :ssm_stream_cut,
                 :ssm_dt_init
 
   ROLE_IN    = 0
@@ -205,6 +207,9 @@ class SsmEngine
     @ssm_dfa_wired = 0
     @ssm_frozen_count = 0
     @ssm_graph_nodes  = 0
+    @ssm_stream_bptt  = 0
+    @ssm_stream_sqrt  = 0
+    @ssm_stream_cut   = 0
   end
 
   # Allocate every PARAM + its Adam moments, the persistent sequence
@@ -553,9 +558,31 @@ class SsmEngine
     # actually build is the only activation-memory proxy this harness
     # can measure honestly (see the runner).
     @ssm_graph_nodes = TinyNN.tnn_graph_n_nodes(@sess)
+    measure_stream!
 
     refresh_b!
     [@t_loss, @t_labels, @t_hp]
+  end
+
+  # toy#159 — THE OTHER HALF OF THE MEMORY QUESTION, and it is ANALYTIC.
+  # The node count above is what this harness BUILDS; a graph autodiff
+  # materialises every forward tensor whatever the credit rule, which is
+  # why this lane had to report the ticket's memory target as a negative.
+  # These three figures come from the cell's own shapes instead. Note the
+  # conv window lands in the CARRY, not the per-step term: it is O(K),
+  # fixed by the kernel width, so it does not make the arm O(T).
+  def measure_stream!
+    sel   = @ssm_selection == SELECT_SELECTIVE
+    live  = Toy::Train::StreamBytes.ssm_step_live(@ssm_d_inner, @ssm_d_model,
+                                                  @ssm_batch, @ssm_layers, sel)
+    inp   = Toy::Train::StreamBytes.bytes_2d(@ssm_d_model, @ssm_batch)
+    carry = Toy::Train::StreamBytes.ssm_carry(@ssm_d_inner, @ssm_batch,
+                                              @ssm_layers, @ssm_conv_k)
+    head  = Toy::Train::StreamBytes.head(@ssm_classes, @ssm_batch)
+    @ssm_stream_bptt = Toy::Train::StreamBytes.bptt(live, inp, head, @ssm_t)
+    @ssm_stream_sqrt = Toy::Train::StreamBytes.bptt_sqrt_checkpointed(live, inp, carry, head, @ssm_t)
+    @ssm_stream_cut  = Toy::Train::StreamBytes.cut_replay(live, inp, carry, head)
+    nil
   end
 
   # Row k of the depthwise conv kernel as a broadcastable [d_inner, 1].

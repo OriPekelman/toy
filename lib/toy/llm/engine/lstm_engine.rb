@@ -63,6 +63,7 @@
 
 require_relative "../../models/transformer"
 require_relative "../../train/dfa_b"
+require_relative "../../train/stream_bytes"
 
 module Toy; module LLM; module Engine
 class LstmEngine
@@ -87,7 +88,8 @@ class LstmEngine
                 :lstm_b_handles, :lstm_b_seeds,
                 :lstm_b_dist, :lstm_b_scale, :lstm_b_sigma,
                 :lstm_dfa_wired, :lstm_frozen_count,
-                :lstm_graph_nodes, :lstm_graph_bytes, :lstm_taps
+                :lstm_graph_nodes, :lstm_graph_bytes, :lstm_taps,
+                :lstm_stream_bptt, :lstm_stream_sqrt, :lstm_stream_cut
 
   def initialize
     @sess         = TinyNN.tnn_null_ptr
@@ -120,6 +122,9 @@ class LstmEngine
     @lstm_graph_nodes = 0
     @lstm_graph_bytes = 0
     @lstm_taps = 0
+    @lstm_stream_bptt = 0
+    @lstm_stream_sqrt = 0
+    @lstm_stream_cut  = 0
   end
 
   def realize_for_random_init(d_in, hidden, t_len, batch, n_classes,
@@ -378,6 +383,26 @@ class LstmEngine
       i = i + 1
     end
     @lstm_graph_bytes = total
+    measure_stream!
+    nil
+  end
+
+  # toy#159 — THE OTHER HALF OF THE MEMORY QUESTION, and it is ANALYTIC.
+  # measure_graph! above reports what this harness BUILDS; a graph
+  # autodiff materialises every forward tensor whatever the credit rule,
+  # so it can never exhibit a streaming win and both recurrent lanes had
+  # to report the target as a negative. These three figures are derived
+  # from the cell's own shapes — see lib/toy/train/stream_bytes.rb for
+  # what is counted, what is not, and why the cut's O(1) figure carries a
+  # 2x-forward replay price rather than being free.
+  def measure_stream!
+    live  = Toy::Train::StreamBytes.lstm_step_live(@lstm_hidden, @lstm_batch, @lstm_layers)
+    inp   = Toy::Train::StreamBytes.bytes_2d(@lstm_d_in, @lstm_batch)
+    carry = Toy::Train::StreamBytes.lstm_carry(@lstm_hidden, @lstm_batch, @lstm_layers)
+    head  = Toy::Train::StreamBytes.head(@lstm_classes, @lstm_batch)
+    @lstm_stream_bptt = Toy::Train::StreamBytes.bptt(live, inp, head, @lstm_t)
+    @lstm_stream_sqrt = Toy::Train::StreamBytes.bptt_sqrt_checkpointed(live, inp, carry, head, @lstm_t)
+    @lstm_stream_cut  = Toy::Train::StreamBytes.cut_replay(live, inp, carry, head)
     nil
   end
 

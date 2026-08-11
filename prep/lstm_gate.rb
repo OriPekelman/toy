@@ -16,7 +16,8 @@
 #   7. THE CROSS-ARCHITECTURE CONTRAST: the IDENTICAL per-step cut, on
 #      toy#155's selective scan, at its own cell. This lane's reason to
 #      exist.
-#   8. THE MEMORY MEASUREMENT, in the units the ticket asks for.
+#   8. THE MEMORY MEASUREMENT, in the units the ticket asks for, and
+#      8b. the ANALYTIC streaming instrument beside it (toy#159).
 #   9. THE DEGENERATE TASK, measured.
 #  10. FAIL-LOUD.
 #  11. CLI.
@@ -70,7 +71,9 @@ require "fileutils"
 # BP's OWN BEST CELL, found by sweeping lr x warmup x seed (see above).
 # Warmup is load-bearing for the BP arm and inert-ish for the DFA ones:
 # at lr 0.02 with no warmup BP reads .250 at seed 0, with warmup 200 it
-# reads 1.000. Do not "simplify" it away.
+# reads 1.000. Do not "simplify" it away — and note it is spelled out
+# here rather than defaulted in the runner ON PURPOSE: shipping it as a
+# default relabelled a consumer's experiment within hours of landing.
 CELL  = { "STEPS" => "4000", "LSTM_LR" => "0.02", "LSTM_WARMUP" => "200" }.freeze
 SEEDS = %w[0 1 2].freeze
 # Margins sit far under the measured effects rather than at any seed's
@@ -112,6 +115,19 @@ def graph_bytes(out)
   b = line[/bytes=(\d+)/, 1]
   raise "lstm_gate: graph line has no bytes= field: #{line}" unless b
   b.to_i
+end
+
+# toy#159 — the ANALYTIC line. Returns {bptt:, sqrt_t:, cut:}.
+def stream_bytes(out)
+  line = out.lines.find { |l| l.start_with?("stream: ") }
+  raise "lstm_gate: no stream line in\n#{out}" unless line
+  h = {}
+  %w[bptt sqrt_t cut].each do |k|
+    v = line[/\b#{k}=(\d+)/, 1]
+    raise "lstm_gate: stream line has no #{k}= field: #{line}" unless v
+    h[k] = v.to_i
+  end
+  h
 end
 
 unless File.executable?(RUNNER)
@@ -387,6 +403,43 @@ puts failures.length == n0 ?
   "  ok: MEMORY measured in BYTES — the per-step cut costs MORE than BPTT at both lengths, and no better with L (tao#21)" :
   "  FAIL: memory"
 
+# ---- 8b. the ANALYTIC streaming instrument (toy#159) ----
+# The measured leg above answers "what does toy BUILD". This one answers
+# the question the ticket actually asks — "what would a streaming
+# implementation HOLD" — and the two disagreeing is the finding, not a
+# discrepancy to be reconciled away. Asserted here:
+#   * cut is CONSTANT in T (that is the whole claim), and
+#   * bptt is LINEAR in T, and
+#   * the MEASURED graph still contradicts both, so nobody quotes the
+#     analytic win as if toy had implemented it.
+n0 = failures.length
+st = {}
+%w[16 64 128].each do |t|
+  st[t] = stream_bytes(run_lstm({ "STEPS" => "1", "LSTM_SEQ" => t }, nil))
+end
+puts format("    stream T=16/64/128: cut=%d/%d/%d  bptt=%d/%d/%d",
+            st["16"]["cut"], st["64"]["cut"], st["128"]["cut"],
+            st["16"]["bptt"], st["64"]["bptt"], st["128"]["bptt"])
+unless st["16"]["cut"] == st["64"]["cut"] && st["64"]["cut"] == st["128"]["cut"]
+  failures << "STREAM: the per-step cut's analytic bytes are NOT constant in T (#{st['16']['cut']}/#{st['64']['cut']}/#{st['128']['cut']} at T=16/64/128). O(1) in T is the entire claim — if this figure moved with T, it acquired a T term and is no longer measuring a streaming implementation"
+end
+# 4x the length must cost ~4x under BPTT (the head term is the only
+# non-scaling part, so allow a small slack rather than demanding exact).
+grow = st["64"]["bptt"].to_f / st["16"]["bptt"].to_f
+if grow < 3.9 || grow > 4.1
+  failures << "STREAM: analytic bptt grew #{grow.round(3)}x from T=16 to T=64, expected ~4x — BPTT holding every step's activations IS the O(T) baseline the cut is stated against"
+end
+if st["64"]["cut"] >= st["64"]["sqrt_t"]
+  failures << "STREAM: at T=64 the cut (#{st['64']['cut']}) is not below sqrt-T checkpointed BPTT (#{st['64']['sqrt_t']}) — the instrument quotes BP's own best counter-move so the win is not measured against BP's worst case only, and the claim needs to survive that comparison"
+end
+# The two instruments must keep disagreeing, in the direction measured.
+if mem["64"]["step"] <= st["64"]["cut"]
+  failures << "STREAM: the MEASURED graph bytes for the step cut (#{mem['64']['step']}) are no longer above the ANALYTIC streaming figure (#{st['64']['cut']}). The gap between what toy builds and what a streaming implementation would hold is the whole point of carrying both numbers — if it closed, toy started streaming, which would be a much bigger change than this instrument"
+end
+puts failures.length == n0 ?
+  "  ok: STREAM (toy#159) — the analytic cut is CONSTANT in T while bptt is linear, it beats sqrt-T checkpointing too, and it still disagrees with what toy actually builds" :
+  "  FAIL: streaming instrument"
+
 # ---- 9. the degenerate task, measured ----
 # `mean` spreads the class signal over every step, so no carry across
 # time is needed and a FROZEN recurrence plus a trained head already
@@ -426,9 +479,10 @@ Dir.mktmpdir("lstm_gate_cli") do |dir|
   out, st = Open3.capture2e({ "SPINEL_SKIP_PIN_CHECK" => nil }, TOY, "train", "lstm",
                             "--steps", "5", "--seed", "0", "--out", dir, chdir: ROOT)
   if st.success?
-    failures << "cli: `toy train lstm` curve != the runner's default curve — the CLI's defaults must reproduce the lane, LR INCLUDED (this lane's default is 0.03, NOT the ssm lane's 0.003)" unless curve(out) == base_curve
+    failures << "cli: `toy train lstm` curve != the runner's default curve — the CLI and the runner must agree on every default, LR INCLUDED (0.02 here, NOT the ssm lane's 0.003), and --warmup must reach the runner as 0 when unset" unless curve(out) == base_curve
     failures << "cli: `toy train lstm` did not echo the val line" unless out.lines.any? { |l| l.start_with?("val: ") }
     failures << "cli: `toy train lstm` did not echo the graph line (the memory number rides stdout so a --seq sweep can read it without opening a bundle)" unless out.lines.any? { |l| l.start_with?("graph: ") }
+    failures << "cli: `toy train lstm` did not echo the stream line (toy#159 — the ANALYTIC figure the memory claim is actually stated in; the CLI dropping it would leave callers with only the measured number, which is the one that says the opposite)" unless out.lines.any? { |l| l.start_with?("stream: ") }
   else
     failures << "cli: `toy train lstm` exited #{st.exitstatus}:\n#{out.lines.last(5).join}"
   end

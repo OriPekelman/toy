@@ -434,15 +434,13 @@ module Toy
                              "DIFF_ALIGN_EVERY" => (@align_every || 1).to_s)
           elsif @recipe == "lstm"
             # Lane-local LSTM_* namespace, same discipline as the others.
-            # LSTM_LR and LSTM_WARMUP are forwarded EMPTY when unset, so
-            # the runner's own defaults (0.02 / 200 — the lane's measured
-            # fair cell) apply. Every other lane sends "0" for warmup;
-            # doing that here would silently override a default that is
-            # load-bearing: at lr 0.02 the BP arm reads .250 at seed 0
-            # with no ramp and 1.000 with it, so a CLI-defeated warmup
-            # hands the user an untrained BP arm that the DFA arms then
-            # "beat" (toy#157). An explicit `--warmup 0` still reaches
-            # the runner as "0" and still disables the ramp.
+            # Defaults CHANGE NOTHING here, deliberately. This lane's
+            # fair cell is `--lr 0.02 --warmup 200 --steps 4000` and it
+            # is written out wherever the lane's numbers are stated, NOT
+            # folded into a default: toy#157 shipped the 200-step ramp as
+            # a default for one commit and Tao's `--lr 0.03 --steps 2000`
+            # silently inherited it, relabelling a 3-seed matrix. Flag
+            # strings are experiment identity in this repo.
             env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
                              "LSTM_POLICY"      => (@policy || ""),
                              "LSTM_DFA_CUT"     => (@dfa_cut || ""),
@@ -458,7 +456,7 @@ module Toy
                              "LSTM_BATCH"       => (@batch || 32).to_s,
                              "LSTM_VAL_BATCHES" => (@val_batches || 8).to_s,
                              "LSTM_LR"          => (@lr || ""),
-                             "LSTM_WARMUP"      => (@warmup ? @warmup.to_s : ""),
+                             "LSTM_WARMUP"      => (@warmup || 0).to_s,
                              "LSTM_B_SEED"      => (@dfa_b_seed || 1234).to_s,
                              "LSTM_B_DIST"      => (@dfa_b_dist || ""),
                              "LSTM_B_SCALE"     => (@dfa_b_scale || ""))
@@ -641,7 +639,12 @@ module Toy
           # toy#155 adds "train:" (gnn) and "graph:" (ssm): the graph-size
           # line is how a sweep over --seq reads the arms' scaling
           # without opening a bundle.
-          losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") || l.start_with?("val:") || l.start_with?("train:") || l.start_with?("graph:") || l.start_with?("gen:") }.map(&:chomp)
+          # toy#159 adds "stream:" — the ANALYTIC activation-memory line
+          # the recurrent lanes print beside the measured "graph:" one.
+          # It has to reach the caller for the same reason "graph:" does:
+          # a sweep over --seq reads the arms' scaling from stdout, and
+          # this is the line the memory claim is actually stated in.
+          losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") || l.start_with?("val:") || l.start_with?("train:") || l.start_with?("graph:") || l.start_with?("stream:") || l.start_with?("gen:") }.map(&:chomp)
           emit(run_id, run_dir, losses)
         end
 

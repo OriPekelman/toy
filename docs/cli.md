@@ -147,14 +147,16 @@ comparison rather than two anecdotes. They do *not* share
 selective-scan parts an LSTM has no counterpart for; those are rejected
 on `lstm` by the same matrix.
 
-`lstm` is the one lane whose `--lr`/`--warmup` DEFAULTS are a measured
-cell rather than a convention: 0.02 with a 200-step ramp, which is the
-BP arm's own best over a swept (lr x warmup x seed) grid. Its BP arm is
-bimodal on this task — it solves it or sits at chance, and which rate
-works depends on the seed — so a default that could not train BP would
-report the DFA arms beating it. For the same reason `--warmup` is
-forwarded to this runner as *unset* when you do not pass it, instead of
-`0` as on every other lane; `--warmup 0` still disables the ramp.
+`lstm`'s BP arm is **bimodal** on this task — it solves it (~1.000) or
+sits at chance (.250), and which learning rate works depends on the
+*seed*. Its fair cell is therefore
+`--lr 0.02 --warmup 200 --steps 4000`, the BP arm's own best over a
+swept (lr x warmup x seed) grid, and that cell is always written out in
+full. It is deliberately **not** folded into the defaults: toy#157
+shipped the 200-step ramp as a default for exactly one commit, and a
+consumer's `--lr 0.03 --steps 2000` silently inherited it and relabelled
+a 3-seed matrix. Defaults on this lane change nothing (`--warmup 0`);
+the cell is spelled out instead.
 
 The `mlp`, `ctr` and `gnn` lanes print extra stdout lines after the
 curve — `val: acc=… loss=… n=…`, `val: auc=… logloss=… n=… pos=…`, and
@@ -165,7 +167,8 @@ train/val GAP as by val accuracy. `ssm` also prints
 `graph: nodes=…`, the realized graph size — how a sweep over `--seq`
 reads the arms' scaling. Read it as node count, never as bytes: in a
 graph autodiff every forward tensor is materialised whatever the credit
-rule.
+rule. For what a *streaming* implementation would hold instead, read the
+`stream:` line beneath it (toy#159, below).
 
 `lstm` prints the same line with the missing half — `graph: nodes=…
 bytes=…`, where `bytes` is `ggml_nbytes` summed over every node of the
@@ -173,9 +176,41 @@ realized graph, i.e. the materialised activation footprint its ticket's
 memory target is stated in. The caveat above still travels with it and
 is the finding: cutting BPTT does **not** shrink the graph. Measured at
 T=64, the per-step cut costs 17% MORE bytes than BPTT (15 578 112 vs
-13 289 988), and the gap grows with `--seq`. See tao#21 — what the
-claim actually needs is an analytic streaming figure alongside this
-measured one.
+13 289 988), and the gap grows with `--seq`.
+
+#### The `stream:` line — ANALYTIC, not measured (toy#159)
+
+Both recurrent lanes print a second memory line, and the distinction
+between the two is the whole point:
+
+```
+graph:  nodes=2116 bytes=15578112                       # MEASURED — what toy builds
+stream: bptt=3868160 sqrt_t=984576 cut=78336 cut_vs_bptt=49.37x cut_vs_sqrt_t=12.56x replay=2x_fwd
+```
+
+`stream:` is computed from the cell's shapes, **not** by walking a
+graph: it is what a streaming implementation would have to hold, which
+is the quantity the F19/F21 success target is actually about and the one
+no graph measurement here can exhibit.
+
+- `bptt` — every step's activations live for the ordered backward: O(T).
+- `cut` — the per-step cut, replaying the forward once the error is
+  known and updating each step as it passes: **O(1) in T**. Identical
+  across `--seq 16/64/128`, and that invariance is gated.
+- `sqrt_t` — BPTT's own best counter-move, sqrt-T checkpointing at
+  ~1.5x forward compute, quoted so the cut is not compared only against
+  BP's worst case.
+- `replay=2x_fwd` — the price of `cut`, stated inline. It is not free.
+
+The win is real but it is not a property of the credit rule alone: the
+surrogate's error is known only after the last-step readout, so an O(1)
+implementation must replay the forward. **What cutting the time axis
+buys is the LEGALITY of that replay** — steps become independent, so
+they can be revisited in any order — which is precisely what BPTT
+cannot do, and precisely why the *measured* graph comes out bigger
+rather than smaller. Weights, optimizer moments and gradient buffers are
+excluded from both sides: they are equal across arms and independent of
+T, so they would only dilute the ratio.
 
 `diff` prints `gen: energy=…` — the ENERGY DISTANCE between generated
 and held-out real samples. It is the lane's headline metric and **lower

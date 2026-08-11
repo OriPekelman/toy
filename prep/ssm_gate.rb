@@ -91,6 +91,19 @@ def graph_nodes(out)
   line[/nodes=(\d+)/, 1].to_i
 end
 
+# toy#159 — the ANALYTIC line. Returns {bptt:, sqrt_t:, cut:}.
+def stream_bytes(out)
+  line = out.lines.find { |l| l.start_with?("stream: ") }
+  raise "ssm_gate: no stream line in\n#{out}" unless line
+  h = {}
+  %w[bptt sqrt_t cut].each do |k|
+    v = line[/\b#{k}=(\d+)/, 1]
+    raise "ssm_gate: stream line has no #{k}= field: #{line}" unless v
+    h[k] = v.to_i
+  end
+  h
+end
+
 unless File.executable?(RUNNER)
   build_out, build_st = Open3.capture2e("make", "-C", ROOT, "libexec/toy-train-ssm")
   unless build_st.success? && File.executable?(RUNNER)
@@ -275,6 +288,42 @@ mean_fz = val_acc(run_ssm(CELL.merge("SSM_TASK" => "mean", "SSM_POLICY" => "froz
 cue_fz  = rows["selective"]["frozen"]
 failures << "degenerate task: --task mean frozen #{mean_fz} is not far above the cue task's frozen #{cue_fz} — `mean` is documented as solvable without memory OR selection, and the default `cue` task is justified against that measurement" unless mean_fz > cue_fz + 0.25
 puts failures.length == n0 ? "  ok: --task mean is measurably degenerate (a FROZEN recurrence solves it), which is why `cue` is the default" : "  FAIL: degenerate task"
+
+# ---- 8b. the ANALYTIC streaming instrument (toy#159) ----
+# This lane reported the ticket's memory target as a negative measured in
+# graph NODES (the step cut is 31% BIGGER). That answered "what does toy
+# BUILD"; the ticket asks "what would a streaming implementation HOLD".
+# toy#159 adds the second number, and the two disagreeing IS the finding.
+# Note the conv window: it is O(K) in the kernel width, so it belongs to
+# the carry and must NOT make the cut grow with T.
+n0 = failures.length
+sst = {}
+%w[16 64 128].each do |t|
+  sst[t] = stream_bytes(run_ssm({ "STEPS" => "1", "SSM_SEQ" => t }, nil))
+end
+puts format("    stream T=16/64/128: cut=%d/%d/%d  bptt=%d/%d/%d",
+            sst["16"]["cut"], sst["64"]["cut"], sst["128"]["cut"],
+            sst["16"]["bptt"], sst["64"]["bptt"], sst["128"]["bptt"])
+unless sst["16"]["cut"] == sst["64"]["cut"] && sst["64"]["cut"] == sst["128"]["cut"]
+  failures << "STREAM: the per-step cut's analytic bytes are NOT constant in T (#{sst['16']['cut']}/#{sst['64']['cut']}/#{sst['128']['cut']} at T=16/64/128). O(1) in T is the entire claim, and on this lane it also proves the causal conv's K-1 window stayed in the CARRY rather than becoming a per-step term"
+end
+sgrow = sst["64"]["bptt"].to_f / sst["16"]["bptt"].to_f
+if sgrow < 3.9 || sgrow > 4.1
+  failures << "STREAM: analytic bptt grew #{sgrow.round(3)}x from T=16 to T=64, expected ~4x"
+end
+if sst["64"]["cut"] >= sst["64"]["sqrt_t"]
+  failures << "STREAM: at T=64 the cut (#{sst['64']['cut']}) is not below sqrt-T checkpointed BPTT (#{sst['64']['sqrt_t']}) — the claim has to survive BP's own best counter-move, not just BP's worst case"
+end
+# The lti arm holds fewer per-step tensors (dt/C/gate are weights there,
+# not activations) — a smaller cell, same O(.) structure. Assert the
+# instrument actually reads the selection rather than hardcoding one.
+lti_cut = stream_bytes(run_ssm({ "STEPS" => "1", "SSM_SELECTION" => "lti" }, nil))["cut"]
+if lti_cut >= sst["64"]["cut"]
+  failures << "STREAM: --selection lti reports #{lti_cut} bytes, not less than selective's #{sst['64']['cut']} — under lti the dt/C/gate branches are WEIGHTS, not per-step activations, so the live set is strictly smaller. Equal figures mean the instrument is not reading the selection at all"
+end
+puts failures.length == n0 ?
+  "  ok: STREAM (toy#159) — the analytic cut is CONSTANT in T (conv window stays O(K)), beats sqrt-T checkpointing, and tracks --selection" :
+  "  FAIL: streaming instrument"
 
 # ---- 9. fail-loud ----
 n0 = failures.length

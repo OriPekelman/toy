@@ -374,6 +374,10 @@ if EVENTS.length > 0
     # visible here and this number must not be read as if it were. What
     # it does show is how the two arms' graphs scale with SSM_SEQ.
     cost.add_num("graph_nodes", recipe.sq_cache.ssm_graph_nodes)
+    # toy#159 — ANALYTIC, named apart from the measured graph_* above.
+    cost.add_num("stream_bptt_bytes",   recipe.sq_cache.ssm_stream_bptt)
+    cost.add_num("stream_sqrt_t_bytes", recipe.sq_cache.ssm_stream_sqrt)
+    cost.add_num("stream_cut_bytes",    recipe.sq_cache.ssm_stream_cut)
     rs.add_obj("cost", cost)
     config = Toy::Json::Builder.new
     config.add_num("steps",       STEPS)
@@ -520,6 +524,14 @@ puts "val: acc=" + val_acc.to_s + " loss=" + val_loss.to_s + " n=" + val_seen.to
 # arms' scaling without opening a bundle. Read the caveat on
 # cost.graph_nodes above before drawing a memory conclusion from it.
 puts "graph: nodes=" + recipe.sq_cache.ssm_graph_nodes.to_s
+# toy#159 — the ANALYTIC line, next to the measured one and never instead
+# of it. `graph:` is what toy BUILDS; `stream:` is what a streaming
+# implementation would HOLD, which is what this lane's memory target was
+# always about and what a graph measurement cannot show. The cut's figure
+# is O(1) in T and costs a 2x forward replay, which rides the line.
+puts Toy::Train::StreamBytes.line(recipe.sq_cache.ssm_stream_bptt,
+                                  recipe.sq_cache.ssm_stream_sqrt,
+                                  recipe.sq_cache.ssm_stream_cut)
 
 if EVENTS.length > 0 && TinyNN.tnn_events_active == 1
   ev = Toy::Json::Builder.new
