@@ -1,0 +1,9 @@
+# prep/fixtures/train_diff_baseline.txt — the toy#156 diffusion lane's
+# default 5-step curve (libexec/toy-train-diff, no DIFF_* env: latent 16,
+# 3x128 denoiser, 8-mode mixture, T=100, all-chain).
+# Regenerate: STEPS=5 SEED=0 ./libexec/toy-train-diff | grep '^step '
+step 1: loss=1.293217420578003
+step 2: loss=1.154160499572754
+step 3: loss=1.0533311367034912
+step 4: loss=1.0666213035583496
+step 5: loss=1.0249272584915161

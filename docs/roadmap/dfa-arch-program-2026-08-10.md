@@ -5,8 +5,8 @@ SETTLED (tao#18, tao#19) so each lane can be built without re-litigating
 it, and flags the one thing I think is still ambiguous.
 
 Build order: **#152 → #158 → #154 → #153 / #155 / #156 / #157**.
-Status: **#152, #158, #154, #153 and #155 shipped** (see their sections
-below); **#156 / #157 next**.
+Status: **#152, #158, #154, #153, #155 and #156 shipped** (see their
+sections below); **#157 next**.
 
 ## Settled (tao#18, tao#19 — Ori)
 
@@ -627,6 +627,98 @@ telemetry that silently means nothing. Gate on the B seed instead.
 measurement above, it would not show the memory win either — that needs
 a streaming implementation, not a device port. Worth deciding before
 anyone spends the twin.
+
+## toy#156 (F20/T2) — SHIPPED: DFA BEATS BP at latent 4, and the lens bites earlier on a generative objective
+
+`toy train diff` (runner `libexec/toy-train-diff`, engine
+`lib/toy/llm/engine/diff_engine.rb`, task `lib/toy/io/toy_diff_task.rb`,
+gate `prep/diff_gate.rb`): a time-conditioned eps-prediction MLP
+denoiser over a LOW-DIM latent, per-layer `--policy chain|dfa|frozen`,
+scored by a GENERATIVE metric. CPU-only. The DFA rule is toy#152's
+canonical direct-gradient one (with the (*)f' factor), so a result here
+is comparable to the MLP anchor straight across — only the output
+dimension and the loss differ.
+
+**The metric is generative, not denoising MSE**, because the ticket asks
+for that and because the two genuinely disagree: a denoiser can have a
+respectable MSE and generate nothing like the data. The headline is the
+ENERGY DISTANCE between `eval_n` ancestrally-sampled points and `eval_n`
+held-out reals — a proper metric, so **LOWER IS BETTER** and the success
+bar inverts. A slightly negative value means "indistinguishable at this
+sample size" (the estimator is unbiased), not a bug.
+
+### The result: a POSITIVE, and the lens boundary
+
+All three arms at ONE shared learning rate (3e-4), 10000 steps, so the
+arms differ ONLY in `--policy`:
+
+| latent | seed | all-BP | **all-DFA** | frozen |
+|---|---|---|---|---|
+| 4 | 0 | 0.102 | **0.010** | 0.590 |
+| 4 | 1 | 0.184 | **0.135** | 1.084 |
+| 4 | 2 | 0.131 | **0.072** | 1.005 |
+| 16 | 0 | 0.130 | 0.979 | 9.020 |
+
+**At latent 4 DFA BEATS BP on every seed** while both crush the frozen
+control — the ticket's success target met and exceeded. At latent 16
+DFA is 7.5x WORSE than BP (15-27x at each arm's own best LR across
+seeds), while still beating frozen 9x.
+
+The full lens at each arm's own best LR, 10000 steps, seed 0:
+
+| latent | 2 | 4 | 8 | 16 | 32 |
+|---|---|---|---|---|---|
+| BP | -0.013 | 0.085 | 0.079 | 0.036 | 0.399 |
+| DFA | 0.007 | 0.010 | 0.195 | 0.979 | 2.746 |
+| frozen | 0.029 | 0.226 | 1.053 | 6.761 | 45.451 |
+
+DFA's energy rises monotonically with the output dim and it beats the
+frozen control at every one. **The boundary sits between 4 and 16 —
+much lower than the classification lens, where toy#152 was still
+comfortable at 10 classes.** The same lens applies to a generative
+objective but bites earlier, which is worth carrying into F20's design.
+
+At latent 2 the frozen control is nearly as good as BP (0.029 vs
+-0.013), i.e. that cell is degenerate — the lens boundary and the
+control-can-lose boundary are adjacent, which is exactly why the bar is
+stated at latent 4.
+
+### A schedule bug that was SILENT IN THE LOSS
+
+Ho et al.'s betas (1e-4 ... 0.02) assume T = 1000. At this lane's
+T = 100 they leave **abar_T = 0.60** — the forward process never reaches
+noise, so the ancestral sampler, which starts from pure N(0, I), starts
+OUT OF DISTRIBUTION. Measured at those defaults: BP had the **best**
+denoising MSE (.684) and the **worst** energy distance (29.1, against
+4.95 for an untrained net), with a perfectly healthy training curve
+throughout. The defaults are now 1e-3 ... 0.15 (abar_T = 3.5e-4) and the
+runner REFUSES to start if abar_T > 0.01, naming the fix. Gated.
+
+`--task single` (one Gaussian instead of the mixture) is this lane's
+`blobs`: chain -.0020 / dfa -.0011 / frozen -.0012, i.e. a FROZEN
+denoiser reproduces it as well as a trained one. Measured, asserted.
+
+### For Tao (F20)
+
+```
+toy train diff --steps 10000 --seed 0 --lr 0.0003 --latent 4 --policy chain,chain,chain
+toy train diff ... --policy dfa,dfa,dfa
+toy train diff ... --policy frozen,frozen,frozen
+#  ... and again at --latent 8 / 16 / 32 for the lens
+```
+
+Arms differ ONLY in `--policy`. **Use lr 3e-4 for arm comparisons**:
+BP's own best is 3e-3 (energy .036 at latent 16) but DFA diverges there
+(4.6e6 at 1e-2), so a 3e-3 cell compares a converged BP against a broken
+DFA. 3e-4 is the highest rate both arms tolerate — and DFA tolerating
+less LR than BP is toy#152's finding restated. **10000 steps is also
+load-bearing**: at 3000 steps BP has not converged at 3e-4 (latent 16:
+BP .802 vs DFA .947, which reads as parity) and the lane's result would
+invert.
+
+This lane DOES carry `--align-events` (unlike ssm): it uses the direct
+rule, so the DFA update is a separate tensor from the chain shadow and
+cos(g_dfa, g_bp) is meaningful. It climbs, as in toy#152.
 
 ## Landmines that apply
 

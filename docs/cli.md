@@ -82,12 +82,13 @@ recipes are:
 | `ctr` | CTR/recommender tower: embedding tables + MLP + **scalar** sigmoid head, scored by AUC (CPU-only) | `--policy`, `--fields`, `--cardinality`, `--emb`, `--numeric`, `--hidden`, `--layers`, `--pairs`, `--lin-scale`, `--base-rate`, `--fm-branch`, `--val-batches` |
 | `gnn` | GCN-class node classification over a normalised adjacency, transductive semi-supervised (CPU-only). Runs on a seeded graph or on real Cora (`ruby prep/fetch_cora.rb`) | `--policy`, `--graph`, `--layers`, `--hidden`, `--classes`, `--features`, `--nodes`, `--degree`, `--homophily`, `--feat-signal`, `--train-per-class`, `--task`, `--feedback-route`, `--feedback-hops`, `--weight-decay` |
 | `ssm` | selective-scan / Mamba-lite sequence classifier — an UNROLLED input-dependent linear recurrence + conv branch + gating, last-step readout (CPU-only) | `--policy`, `--dfa-cut`, `--selection`, `--layers`, `--seq`, `--d-model`, `--d-inner`, `--conv-k`, `--classes`, `--task`, `--cue-span`, `--noise`, `--dt-init` |
+| `diff` | latent diffusion denoiser — time-conditioned eps-prediction over a LOW-DIM latent, scored by a generative metric (CPU-only) | `--policy`, `--latent`, `--time-feat`, `--layers`, `--hidden`, `--task`, `--modes`, `--spread`, `--mode-scale`, `--diff-steps`, `--beta-lo`, `--beta-hi`, `--eval-n`, `--align-events` |
 
 An unknown recipe is rejected loud (`supported: 'from-scratch', 'lora',
-'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp', 'ctr', 'gnn', 'ssm'`). `--arch gpt2`
+'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp', 'ctr', 'gnn', 'ssm', 'diff'`). `--arch gpt2`
 trains the from-scratch GPT-2 arch (`from-scratch` only, CPU-only);
 `--device cuda|metal` selects the per-device runner (`metal` is macOS-only;
-GPT-2, ViT-Tiny, `mlp`, `ctr`, `gnn` and `ssm` are CPU-only, and `franken`'s macro-DFA mode is
+GPT-2, ViT-Tiny, `mlp`, `ctr`, `gnn`, `ssm` and `diff` are CPU-only, and `franken`'s macro-DFA mode is
 CPU-only by decision).
 Defaults: `--steps 5`, `--seed 0`, `--arch llama`, `--device cpu`, `--out runs/<id>`.
 Writes the run bundle (see [Run bundle layout](#run-bundle-layout)) and echoes
@@ -145,6 +146,12 @@ train/val GAP as by val accuracy. `ssm` also prints
 reads the arms' scaling. Read it as node count, never as bytes: in a
 graph autodiff every forward tensor is materialised whatever the credit
 rule.
+
+`diff` prints `gen: energy=…` — the ENERGY DISTANCE between generated
+and held-out real samples. It is the lane's headline metric and **lower
+is better**, the opposite direction from every accuracy-scored lane
+here; a slightly negative value means the two sets are indistinguishable
+at that sample size, not that something broke.
 
 ### `eval <model> [--top-k K] [--device cpu|cuda|metal] [--json]`
 Score a GGUF model: per-token logprobs. Default `--top-k 5`, `--device cpu`.

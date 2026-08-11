@@ -113,6 +113,19 @@ REJECT = [
   [%w[ssm --hidden 32],                    "--hidden"],
   [%w[ssm --features 16],                  "--features"],
   [%w[ssm --graph data/gnn_cora],          "--graph"],
+  # toy#156 (diff). --latent is the OUTPUT DIM under test and has its
+  # own name rather than riding --classes: this lane regresses epsilon.
+  [%w[mlp --latent 8],                     "--latent/--time-feat"],
+  [%w[ssm --time-feat 4],                  "--latent/--time-feat"],
+  [%w[gnn --modes 4],                      "--modes/--spread/--mode-scale"],
+  [%w[ctr --spread 2.0],                   "--modes/--spread/--mode-scale"],
+  [%w[franken --diff-steps 50],            "--diff-steps/--beta-lo/--beta-hi"],
+  [%w[mlp --beta-hi 0.2],                  "--diff-steps/--beta-lo/--beta-hi"],
+  [%w[ssm --eval-n 256],                   "--eval-n"],
+  [%w[diff --policy-scope ffn],            "--policy-scope"],
+  [%w[diff --dfa-cut step],                "--dfa-cut"],
+  [%w[diff --seq 32],                      "--seq/--d-model/--d-inner/--conv-k"],
+  [%w[diff --graph data/gnn_cora],         "--graph"],
 ]
 REJECT.each do |args, label|
   out, st = probe(args)
@@ -149,10 +162,14 @@ failures << "matrix: gnn full flag set hit the matrix (#{out.lines.last(1).join.
 # the LATER --task token rule.
 out, st = probe(%w[ssm --seq 32 --d-model 16 --d-inner 32 --conv-k 2 --selection lti --dfa-cut step --cue-span 4 --noise 0.5 --dt-init -4.0 --task community])
 failures << "matrix: ssm full flag set hit the matrix (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("--task community is only valid with recipe 'gnn'")
+# toy#156: the diff lane's own flags all pass the matrix; the run stops
+# at the LATER --task token rule.
+out, st = probe(%w[diff --latent 8 --time-feat 4 --modes 4 --spread 3.0 --mode-scale 0.4 --diff-steps 50 --beta-lo 0.002 --beta-hi 0.2 --eval-n 256 --task cue])
+failures << "matrix: diff full flag set hit the matrix (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("--task cue is only valid with recipe 'ssm'")
 puts failures.length == n0 ? "  ok: right-recipe probes pass the matrix (their errors come from later rules)" : "  FAIL: acceptance side"
 
 if failures.empty?
-  puts "GATE PASS [train-cli-matrix]: #{REJECT.length} rejections + 6 acceptance probes (toy#132/#153/#155)"
+  puts "GATE PASS [train-cli-matrix]: #{REJECT.length} rejections + 7 acceptance probes (toy#132/#153/#155/#156)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [train-cli-matrix]: #{f}" }

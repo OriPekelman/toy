@@ -833,6 +833,28 @@ libexec/toy-train-ctr: lib/toy/run/train_ctr.rb lib/toy/dev/toy_describe_flow.rb
 toy-train-ctr: libexec/toy-train-ctr
 .PHONY: toy-train-ctr
 
+# toy#156 (DFA-arch T2) — the latent diffusion denoiser. SEPARATE binary
+# (landmine #16), CPU-only. Scoped strictly to a LOW-DIM latent: the
+# eps-prediction target has the input's dimensionality, so pixel
+# diffusion would defeat DFA the way vocab 50257 defeats the LM lanes.
+libexec/toy-train-diff: lib/toy/run/train_diff.rb lib/toy/dev/toy_describe_flow.rb \
+		lib/toy/io/json_builder.rb lib/toy/io/json.rb lib/toy/io/toy_events.rb \
+		vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
+		lib/toy/io/toy_diff_task.rb lib/toy/llm/engine/diff_engine.rb \
+		lib/toy/llm/recipes/diff_denoiser.rb lib/toy/llm/adamw.rb \
+		lib/toy/train/dfa_b.rb \
+		lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) $< -o $@
+toy-train-diff: libexec/toy-train-diff
+.PHONY: toy-train-diff
+
+# toy#156 gate: chain byte-null, determinism, the align phase, and the
+# MANDATORY success bar stated on a GENERATIVE metric (energy distance,
+# where LOWER is better — the bar inverts).
+.PHONY: gate-diff
+gate-diff: libexec/toy-train-diff
+	ruby prep/diff_gate.rb
+
 # toy#155 (DFA-arch T2) — the selective-scan / Mamba-lite lane. The
 # recurrence is UNROLLED over T from differentiable primitives, because
 # ggml's fused SSM_SCAN/SSM_CONV have no backward (ggml_compute_backward
