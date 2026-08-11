@@ -86,6 +86,10 @@ module Toy
         # toy#153 (DFA-arch T1) — the GNN node-classification lane. Own
         # binary, CPU-only.
         GNN_RUNNER_TARGET = "libexec/toy-train-gnn"
+        # toy#155 (DFA-arch T2) — the selective-scan / Mamba-lite lane.
+        # Own binary, CPU-only this slice (tao#19 defers its CUDA twin to
+        # the long-sequence memory measurement).
+        SSM_RUNNER_TARGET = "libexec/toy-train-ssm"
         FRANKEN_MOE_RUNNER_TARGET = "libexec/toy-train-franken-moe-cli"
         FRANKEN_MOE_CUDA_RUNNER_TARGET = "libexec/toy-train-franken-moe-cli-cuda"
         # GPT-2 GPU twins (--arch gpt2 --device cuda|metal). SEPARATE single-type
@@ -195,6 +199,16 @@ module Toy
           @feedback_route = nil  # direct | structure
           @feedback_hops  = nil
           @weight_decay   = nil
+          # toy#155 (ssm): the sequence lane's own shape/task knobs.
+          @seq            = nil
+          @d_model        = nil
+          @d_inner        = nil
+          @conv_k         = nil
+          @selection      = nil  # selective | lti
+          @dfa_cut        = nil  # layer | step
+          @cue_span       = nil
+          @noise          = nil
+          @dt_init        = nil
           @moe_policy = nil   # franken-moe: chain | dfa-experts
           @moe_aux    = nil   # franken-moe: top1 aux-loss alpha
           @experts    = nil   # franken-moe: expert count E>=2 (toy#128)
@@ -261,7 +275,9 @@ module Toy
           #     warm-start +cuda                  in train_cuda.rb source)
           #   metal (fs only)  -> toy-train-metal
           #   cpu fs/warm-start-> toy-train
-          target = if @recipe == "gnn"
+          target = if @recipe == "ssm"
+                     SSM_RUNNER_TARGET
+                   elsif @recipe == "gnn"
                      GNN_RUNNER_TARGET
                    elsif @recipe == "ctr"
                      CTR_RUNNER_TARGET
@@ -365,6 +381,30 @@ module Toy
                              "MLP_B_SCALE"      => (@dfa_b_scale || ""),
                              "MLP_ALIGN"        => (@align_events ? "1" : ""),
                              "MLP_ALIGN_EVERY"  => (@align_every || 1).to_s)
+          elsif @recipe == "ssm"
+            # Lane-local SSM_* namespace, same discipline as the others.
+            env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
+                             "SSM_POLICY"      => (@policy || ""),
+                             "SSM_SELECTION"   => (@selection || ""),
+                             "SSM_DFA_CUT"     => (@dfa_cut || ""),
+                             "SSM_LAYERS"      => (@mlp_layers || 2).to_s,
+                             "SSM_D_MODEL"     => (@d_model || 24).to_s,
+                             "SSM_D_INNER"     => (@d_inner || 48).to_s,
+                             "SSM_SEQ"         => (@seq || 64).to_s,
+                             "SSM_CONV_K"      => (@conv_k || 4).to_s,
+                             "SSM_CLASSES"     => (@classes || 4).to_s,
+                             "SSM_TASK"        => (@task || ""),
+                             "SSM_CUE_SPAN"    => (@cue_span ? @cue_span.to_s : ""),
+                             "SSM_NOISE"       => (@noise ? @noise.to_s : ""),
+                             "SSM_TASK_SEED"   => (@task_seed || 7).to_s,
+                             "SSM_BATCH"       => (@batch || 32).to_s,
+                             "SSM_VAL_BATCHES" => (@val_batches || 8).to_s,
+                             "SSM_DT_INIT"     => (@dt_init ? @dt_init.to_s : ""),
+                             "SSM_LR"          => (@lr || ""),
+                             "SSM_WARMUP"      => (@warmup || 0).to_s,
+                             "SSM_B_SEED"      => (@dfa_b_seed || 1234).to_s,
+                             "SSM_B_DIST"      => (@dfa_b_dist || ""),
+                             "SSM_B_SCALE"     => (@dfa_b_scale || ""))
           elsif @recipe == "gnn"
             # Lane-local GNN_* namespace, same discipline as MLP_*/CTR_*.
             env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
@@ -517,7 +557,10 @@ module Toy
           # the byte-gated step lines; toy#152 adds the mlp lane's "val:"
           # held-out line (accuracy is the metric its success bar is
           # stated in, so it must reach the caller, not just events).
-          losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") || l.start_with?("val:") }.map(&:chomp)
+          # toy#155 adds "train:" (gnn) and "graph:" (ssm): the graph-size
+          # line is how a sweep over --seq reads the arms' scaling
+          # without opening a bundle.
+          losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") || l.start_with?("val:") || l.start_with?("train:") || l.start_with?("graph:") }.map(&:chomp)
           emit(run_id, run_dir, losses)
         end
 
@@ -708,6 +751,77 @@ module Toy
               when "feat-signal"  then @feat_signal  = val.to_f
               else                     @weight_decay = val.to_f
               end
+            # ---- toy#155 (ssm): the sequence lane's own knobs ----
+            when "--seq", "--d-model", "--d-inner", "--conv-k", "--cue-span"
+              key = @argv[i]
+              i += 1
+              val = @argv[i]
+              return bad_arg("#{key} requires a value") if val.nil?
+              min = key == "--d-model" ? 2 : 1
+              return bad_arg("#{key} must be an integer >= #{min}, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= min
+              case key
+              when "--seq"      then @seq      = val.to_i
+              when "--d-model"  then @d_model  = val.to_i
+              when "--d-inner"  then @d_inner  = val.to_i
+              when "--conv-k"   then @conv_k   = val.to_i
+              else                   @cue_span = val.to_i
+              end
+            when /\A--(seq|d-model|d-inner|conv-k|cue-span)=(.*)\z/
+              key = $1
+              val = $2
+              min = key == "d-model" ? 2 : 1
+              return bad_arg("--#{key} must be an integer >= #{min}, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= min
+              case key
+              when "seq"      then @seq      = val.to_i
+              when "d-model"  then @d_model  = val.to_i
+              when "d-inner"  then @d_inner  = val.to_i
+              when "conv-k"   then @conv_k   = val.to_i
+              else                 @cue_span = val.to_i
+              end
+            when "--noise"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--noise requires a value") if val.nil?
+              return bad_arg("--noise must be a non-negative float, got #{val.inspect}") unless val =~ /\A\d*\.?\d+\z/
+              @noise = val.to_f
+            when /\A--noise=(.*)\z/
+              val = $1
+              return bad_arg("--noise must be a non-negative float, got #{val.inspect}") unless val =~ /\A\d*\.?\d+\z/
+              @noise = val.to_f
+            # --dt-init is NEGATIVE by default (-5.0): it is a pre-softplus
+            # logit, and a value near 0 gives a one-step half-life that no
+            # arm can learn a delayed-cue task from. So this one flag needs
+            # a SIGNED parser — the other float flags deliberately do not.
+            when "--dt-init"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--dt-init requires a value") if val.nil?
+              return bad_arg("--dt-init must be a float, got #{val.inspect}") unless val =~ /\A-?\d*\.?\d+\z/
+              @dt_init = val.to_f
+            when /\A--dt-init=(.*)\z/
+              val = $1
+              return bad_arg("--dt-init must be a float, got #{val.inspect}") unless val =~ /\A-?\d*\.?\d+\z/
+              @dt_init = val.to_f
+            when "--selection"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--selection requires a value") if val.nil?
+              return bad_arg("--selection must be selective or lti, got #{val.inspect}") unless %w[selective lti].include?(val)
+              @selection = val
+            when /\A--selection=(.*)\z/
+              val = $1
+              return bad_arg("--selection must be selective or lti, got #{val.inspect}") unless %w[selective lti].include?(val)
+              @selection = val
+            when "--dfa-cut"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--dfa-cut requires a value") if val.nil?
+              return bad_arg("--dfa-cut must be layer or step, got #{val.inspect}") unless %w[layer step].include?(val)
+              @dfa_cut = val
+            when /\A--dfa-cut=(.*)\z/
+              val = $1
+              return bad_arg("--dfa-cut must be layer or step, got #{val.inspect}") unless %w[layer step].include?(val)
+              @dfa_cut = val
             when "--feedback-route"
               i += 1
               val = @argv[i]
@@ -722,11 +836,11 @@ module Toy
               i += 1
               val = @argv[i]
               return bad_arg("--task requires a value") if val.nil?
-              return bad_arg("--task must be teacher, blobs or community, got #{val.inspect}") unless %w[teacher blobs community].include?(val)
+              return bad_arg("--task must be teacher, blobs, community, cue or mean, got #{val.inspect}") unless %w[teacher blobs community cue mean].include?(val)
               @task = val
             when /\A--task=(.*)\z/
               val = $1
-              return bad_arg("--task must be teacher, blobs or community, got #{val.inspect}") unless %w[teacher blobs community].include?(val)
+              return bad_arg("--task must be teacher, blobs, community, cue or mean, got #{val.inspect}") unless %w[teacher blobs community cue mean].include?(val)
               @task = val
             when "--task-seed"
               i += 1
@@ -1272,8 +1386,8 @@ when /\A--dfa-feedback-lr=(.*)\z/
             return bad_arg("unexpected extra arguments: #{rest[1..].join(' ')}")
           end
           @recipe = rest.first
-          unless %w[from-scratch lora warm-start vit-tiny franken franken-moe mlp ctr gnn].include?(@recipe)
-            return bad_arg("unknown recipe #{@recipe.inspect}; supported: 'from-scratch', 'lora', 'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp', 'ctr', 'gnn'")
+          unless %w[from-scratch lora warm-start vit-tiny franken franken-moe mlp ctr gnn ssm].include?(@recipe)
+            return bad_arg("unknown recipe #{@recipe.inspect}; supported: 'from-scratch', 'lora', 'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp', 'ctr', 'gnn', 'ssm'")
           end
           # ---- toy#132: the flag x recipe MATRIX ----
           # Four llama-first flags in a row tripped franken-moe at Tao
@@ -1291,8 +1405,14 @@ when /\A--dfa-feedback-lr=(.*)\z/
             ["--init",          %w[warm-start],                     !@init.nil?, ""],
             ["--fields/--cardinality/--numeric/--emb/--pairs", %w[ctr], (!@fields.nil? || !@cardinality.nil? || !@numeric.nil? || !@emb.nil? || !@pairs.nil?), " (toy#154)"],
             ["--base-rate/--lin-scale/--fm-branch", %w[ctr], (!@base_rate.nil? || !@lin_scale.nil? || @fm_branch), " (toy#154)"],
-            ["--dfa-b-*/--align-events", %w[franken franken-moe mlp ctr gnn],   (!@dfa_b_seed.nil? || !@dfa_b_dist.nil? || !@dfa_b_scale.nil? || @align_events), ""],
-            ["--policy",        %w[franken mlp ctr gnn],            !@policy.nil?, ""],
+            ["--dfa-b-*",       %w[franken franken-moe mlp ctr gnn ssm], (!@dfa_b_seed.nil? || !@dfa_b_dist.nil? || !@dfa_b_scale.nil?), ""],
+            # --align-events deliberately EXCLUDES ssm: its DFA update
+            # arrives through autodiff from the surrogate roots, so it
+            # lands in the same accumulator a BP run would use and there
+            # is no second tensor to take a cosine against. Accepting the
+            # flag would emit telemetry that silently means nothing.
+            ["--align-events",  %w[franken franken-moe mlp ctr gnn], @align_events, ""],
+            ["--policy",        %w[franken mlp ctr gnn ssm],        !@policy.nil?, ""],
             # toy#153 (gnn). --feedback-route is DELIBERATELY not
             # --dfa-feedback: franken-moe's --dfa-feedback selects how B
             # is UPDATED (fixed|kolen-pollack), this selects how the
@@ -1304,6 +1424,15 @@ when /\A--dfa-feedback-lr=(.*)\z/
             ["--train-per-class", %w[gnn],                          !@train_per_class.nil?, " (toy#153)"],
             ["--feedback-route/--feedback-hops", %w[gnn],           (!@feedback_route.nil? || !@feedback_hops.nil?), " (toy#153)"],
             ["--weight-decay",  %w[gnn],                            !@weight_decay.nil?, " (toy#153)"],
+            # toy#155 (ssm). --dfa-cut is NOT --dfa-granularity:
+            # franken's granularity picks matmul-vs-block in DEPTH, this
+            # picks layer-vs-step in TIME. Different axis, different name.
+            ["--seq/--d-model/--d-inner/--conv-k", %w[ssm],
+             (!@seq.nil? || !@d_model.nil? || !@d_inner.nil? || !@conv_k.nil?), " (toy#155)"],
+            ["--selection",     %w[ssm],                            !@selection.nil?, " (toy#155)"],
+            ["--dfa-cut",       %w[ssm],                            !@dfa_cut.nil?, " (toy#155)"],
+            ["--cue-span/--noise/--dt-init", %w[ssm],
+             (!@cue_span.nil? || !@noise.nil? || !@dt_init.nil?), " (toy#155)"],
             # tao#18 item 1: --policy-scope is DELIBERATELY not accepted
             # on mlp. The attn|ffn|all meaning stays stable across
             # lanes; an MLP has no attention to scope, and a
@@ -1311,18 +1440,21 @@ when /\A--dfa-feedback-lr=(.*)\z/
             # (--policy-tensors), never an overload of this one.
             ["--policy-scope",  %w[franken],                        !@policy_scope.nil?, " (toy#151; NOT accepted on 'mlp' — tao#18)"],
             ["--align-every",   %w[franken franken-moe mlp gnn],    !@align_every.nil?, ""],
-            ["--lr/--warmup",   %w[franken franken-moe mlp ctr gnn], (!@lr.nil? || !@warmup.nil?), " (toy#126/#132)"],
-            ["--classes/--features", %w[mlp gnn],                   (!@classes.nil? || !@features.nil?), " (toy#152/#153)"],
-            ["--hidden/--layers", %w[mlp ctr gnn],                  (!@hidden.nil? || !@mlp_layers.nil?), " (toy#152/#154/#153)"],
-            ["--task/--teacher-dim", %w[mlp gnn],                   (!@task.nil? || !@teacher_dim.nil?), " (toy#152/#153)"],
-            ["--task-seed",     %w[mlp ctr gnn],                    !@task_seed.nil?, " (toy#152/#154/#153)"],
+            ["--lr/--warmup",   %w[franken franken-moe mlp ctr gnn ssm], (!@lr.nil? || !@warmup.nil?), " (toy#126/#132)"],
+            ["--classes",       %w[mlp gnn ssm],                    !@classes.nil?, " (toy#152/#153/#155)"],
+            ["--features",      %w[mlp gnn],                        !@features.nil?, " (toy#152/#153)"],
+            ["--hidden",        %w[mlp ctr gnn],                    !@hidden.nil?, " (toy#152/#154/#153)"],
+            ["--layers",        %w[mlp ctr gnn ssm],                !@mlp_layers.nil?, " (toy#152/#154/#153/#155)"],
+            ["--task",          %w[mlp gnn ssm],                    !@task.nil?, " (toy#152/#153/#155)"],
+            ["--teacher-dim",   %w[mlp gnn],                        !@teacher_dim.nil?, " (toy#152/#153)"],
+            ["--task-seed",     %w[mlp ctr gnn ssm],                !@task_seed.nil?, " (toy#152/#154/#153/#155)"],
             # --val-batches stays mlp/ctr: the gnn lane is TRANSDUCTIVE,
             # its held-out set is a node mask over the one graph, so
             # "how many val batches" has nothing to size.
-            ["--val-batches",   %w[mlp ctr],                        !@val_batches.nil?, " (toy#152/#154)"],
+            ["--val-batches",   %w[mlp ctr ssm],                    !@val_batches.nil?, " (toy#152/#154/#155)"],
             ["--no-shadow",     %w[franken franken-moe],            @no_shadow, " (toy#129)"],
             ["--context/--vocab", %w[franken franken-moe],          (!@context.nil? || !@vocab.nil?), " (toy#129)"],
-            ["--batch",         %w[franken franken-moe mlp ctr],    !@batch.nil?, " (toy#133)"],
+            ["--batch",         %w[franken franken-moe mlp ctr ssm], !@batch.nil?, " (toy#133)"],
             ["--act",           %w[franken],                        !@act.nil?, " (toy#136/K1; MoE experts get their GLU in K4)"],
             ["--rope",          %w[franken],                        !@rope.nil?, " (toy#136/K1)"],
             ["--schedule",      %w[franken franken-moe],            !@schedule.nil?, " (toy#136/K1)"],
@@ -1416,7 +1548,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
           # The corpus rule is a TRANSFORMER-lane rule: there, B>1 means
           # B corpus windows per step. The mlp lane's batch is samples
           # from a seeded generator — there is no corpus to need.
-          if @batch && @batch > 1 && @corpus.nil? && @recipe != "mlp" && @recipe != "ctr"
+          if @batch && @batch > 1 && @corpus.nil? && !%w[mlp ctr ssm].include?(@recipe)
             return bad_arg("--batch > 1 needs --corpus (the fixed-seq feed is the byte-gated single-window contract)")
           end
           if @no_shadow && @align_events
@@ -1461,11 +1593,17 @@ when /\A--dfa-feedback-lr=(.*)\z/
           # shared: `blobs` is the mlp anchor's degenerate control and
           # `community` is the gnn lane's. Accepting the wrong one would
           # silently run the default task under an experiment label.
+          if (@task == "cue" || @task == "mean") && @recipe != "ssm"
+            return bad_arg("--task #{@task} is only valid with recipe 'ssm' (toy#155)")
+          end
           if @task == "community" && @recipe != "gnn"
             return bad_arg("--task community is only valid with recipe 'gnn' (toy#153); 'mlp' takes teacher|blobs")
           end
           if @task == "blobs" && @recipe != "mlp"
-            return bad_arg("--task blobs is only valid with recipe 'mlp' (toy#152); 'gnn' takes teacher|community")
+            return bad_arg("--task blobs is only valid with recipe 'mlp' (toy#152); 'gnn' takes teacher|community, 'ssm' takes cue|mean")
+          end
+          if @recipe == "ssm" && @device != "cpu"
+            return bad_arg("--device #{@device.inspect} is not supported for recipe 'ssm' (CPU-only this slice — tao#19 defers the F19 CUDA twin to the long-sequence memory measurement)")
           end
           if @recipe == "gnn" && @device != "cpu"
             return bad_arg("--device #{@device.inspect} is not supported for recipe 'gnn' (CPU-only by decision — tao#18)")
@@ -1491,6 +1629,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
           return "mlp"     if recipe == "mlp"
           return "ctr"     if recipe == "ctr"
           return "gnn"     if recipe == "gnn"
+          return "ssm"     if recipe == "ssm"
           return "moe"     if recipe == "franken-moe"
           "llama"
         end

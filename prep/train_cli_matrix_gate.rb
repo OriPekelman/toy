@@ -98,6 +98,21 @@ REJECT = [
   [%w[gnn --policy-scope ffn],             "--policy-scope"],
   [%w[gnn --val-batches 4],                "--val-batches"],
   [%w[gnn --fm-branch],                    "--base-rate/--lin-scale/--fm-branch"],
+  # toy#155 (ssm). --dfa-cut is NOT --dfa-granularity: franken's picks
+  # matmul-vs-block in DEPTH, this picks layer-vs-step in TIME. And
+  # --align-events is rejected on ssm on purpose — its DFA update lands
+  # in the same accumulator a BP run uses, so a cosine would be telemetry
+  # that silently means nothing.
+  [%w[gnn --seq 32],                       "--seq/--d-model/--d-inner/--conv-k"],
+  [%w[franken --d-inner 32],               "--seq/--d-model/--d-inner/--conv-k"],
+  [%w[mlp --selection lti],                "--selection"],
+  [%w[mlp --dfa-cut step],                 "--dfa-cut"],
+  [%w[ctr --cue-span 8],                   "--cue-span/--noise/--dt-init"],
+  [%w[ssm --align-events],                 "--align-events"],
+  [%w[ssm --policy-scope ffn],             "--policy-scope"],
+  [%w[ssm --hidden 32],                    "--hidden"],
+  [%w[ssm --features 16],                  "--features"],
+  [%w[ssm --graph data/gnn_cora],          "--graph"],
 ]
 REJECT.each do |args, label|
   out, st = probe(args)
@@ -130,10 +145,14 @@ failures << "matrix: mlp --batch/--classes hit the wrong rule (#{out.lines.last(
 # the flag name is shared with mlp.
 out, st = probe(%w[gnn --nodes 512 --degree 8 --feedback-route structure --feedback-hops 2 --weight-decay 0.01 --task blobs])
 failures << "matrix: gnn full flag set hit the matrix (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("--task blobs is only valid with recipe 'mlp'")
+# toy#155: the ssm lane's own flags all pass the matrix; the run stops at
+# the LATER --task token rule.
+out, st = probe(%w[ssm --seq 32 --d-model 16 --d-inner 32 --conv-k 2 --selection lti --dfa-cut step --cue-span 4 --noise 0.5 --dt-init -4.0 --task community])
+failures << "matrix: ssm full flag set hit the matrix (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("--task community is only valid with recipe 'gnn'")
 puts failures.length == n0 ? "  ok: right-recipe probes pass the matrix (their errors come from later rules)" : "  FAIL: acceptance side"
 
 if failures.empty?
-  puts "GATE PASS [train-cli-matrix]: #{REJECT.length} rejections + 5 acceptance probes (toy#132/#153)"
+  puts "GATE PASS [train-cli-matrix]: #{REJECT.length} rejections + 6 acceptance probes (toy#132/#153/#155)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [train-cli-matrix]: #{f}" }

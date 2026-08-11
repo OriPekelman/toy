@@ -5,8 +5,8 @@ SETTLED (tao#18, tao#19) so each lane can be built without re-litigating
 it, and flags the one thing I think is still ambiguous.
 
 Build order: **#152 → #158 → #154 → #153 / #155 / #156 / #157**.
-Status: **#152, #158, #154 and #153 shipped** (see their sections below);
-**#155 / #156 / #157 next**.
+Status: **#152, #158, #154, #153 and #155 shipped** (see their sections
+below); **#156 / #157 next**.
 
 ## Settled (tao#18, tao#19 — Ori)
 
@@ -500,6 +500,133 @@ a fetcher away. PubMed (19717 nodes) is NOT reachable with a dense
 [N,N] adjacency — 389 M floats and 25 GFLOP per propagation — and would
 need a sparse matmul in the shim. Say so rather than quietly reporting
 two of three.
+
+## toy#155 (F19/T2) — SHIPPED: the ticket's structural argument, INVERTED
+
+`toy train ssm` (runner `libexec/toy-train-ssm`, engine
+`lib/toy/llm/engine/ssm_engine.rb`, task `lib/toy/io/toy_ssm_task.rb`,
+gate `prep/ssm_gate.rb`): a stack of channel-wise **selective** linear
+recurrences (input-dependent decay + causal depthwise conv + gating), a
+small-output sequence-classification head reading the LAST timestep, and
+per-layer `--policy chain|dfa|frozen` on a `--dfa-cut layer|step` axis.
+CPU-only.
+
+**The recurrence is unrolled from differentiable primitives, and that is
+not a shortcut.** ggml ships fused SSM_SCAN/SSM_CONV and the shim
+exposes them, but `ggml_compute_backward` covers 43 ops and neither is
+among them — they are inference-only and abort under autodiff. It is
+also the honest construction: the BPTT graph the DFA arm claims to avoid
+has to exist before avoiding it means anything.
+
+### The result: DFA matches BP, but ONLY at the layer cut
+
+Delayed-cue task (one marked cue in the first quarter, noise everywhere
+else, readout at step 64), 600 steps, matched init + seed:
+
+| selection | seed | BP | **DFA (layer cut)** | DFA (step cut) | frozen |
+|---|---|---|---|---|---|
+| selective | 0 | 1.000 | **0.996** | 0.250 | 0.227 |
+| selective | 1 | 0.992 | **0.988** | 0.250 | 0.227 |
+| selective | 2 | 0.988 | **1.000** | 0.238 | 0.238 |
+| lti | 0 | 0.750 | 0.645 | 0.645 | 0.305 |
+| lti | 1 | 0.730 | 0.621 | 0.668 | 0.270 |
+| lti | 2 | 0.738 | 0.656 | 0.617 | 0.266 |
+
+**The success bar is MET at the layer cut** — DFA tracks BP to within
+.012 and clears the frozen control by .76. That is the program's third
+positive, on the architecture with no DFA precedent at all.
+
+### And the ticket's structural argument comes out backwards
+
+toy#155's thesis: *"the SSM core is a LINEAR RECURRENCE, and a
+random-feedback error injected per step composes through the same linear
+operator, so random-feedback credit assignment is mathematically natural
+here."* Its caveat: *"in the purely-LINEAR case FA collapses to plain
+gradient descent, so the interesting alignment MUST live in the
+NONLINEAR parts."*
+
+Read the DFA(step) column against that. **Cutting BPTT entirely is FREE
+in the linear model** (step .645 vs layer .645 — equal to within noise)
+**and CATASTROPHIC in the selective one** (.99 → chance). And it is not
+an LR artifact: swept 3e-5 … 1e-2, the best per-step cell is .355
+against a .227 frozen control and a 1.000 BP.
+
+So the linearity that makes random feedback compose neatly is exactly
+what makes the per-step cut cost nothing — and the selection that makes
+the model *good* is exactly what makes it fail. **The kill-BPTT value
+prop is available only in the regime where the model cannot do the
+task.** That is a sharper statement than "DFA works here" and it is what
+F19 should be designed around.
+
+Leg 7 of the gate pins BOTH halves, because either alone is
+misreadable: the lti equality alone looks like "the step cut works", the
+selective collapse alone looks like a broken build. Together they are
+the finding — and the lti equality doubles as the proof that the step
+cut is correctly *wired*, since a dead cut could not learn at all.
+
+### The activation-memory claim does NOT hold up in this harness
+
+The ticket's success target is "matches BP at k-times-less activation
+memory". Measured (realized graph nodes; every arm linear in T):
+
+| T | BP | DFA (layer) | DFA (step) |
+|---|---|---|---|
+| 16 | 814 | 858 | 1077 |
+| 32 | 1646 | 1722 | 2165 |
+| 64 | 3310 | 3450 | 4341 |
+| 128 | 6638 | 6906 | 8693 |
+
+The step cut's graph is **31% BIGGER**, not smaller — the detach dups
+and the per-step surrogate terms are net additions. In a graph-based
+autodiff every forward tensor is materialised whatever the credit rule,
+so the streaming memory win DFA promises is not expressible as a graph
+rewrite; it needs a streaming implementation. `cost.graph_nodes` carries
+that caveat in the bundle so nobody reads the number as bytes saved.
+
+### Two construction findings worth carrying to F20/F21
+
+1. **A per-step linear surrogate needs a tap that can change the
+   prediction.** The first build tapped the layer output at every step;
+   with a last-step readout, the FINAL layer's `o_t` for t < T-1 has no
+   functional path to the prediction at all, so the global error is not
+   a proxy target there — it is not a target at all, the surrogate has
+   nothing to balance it, and the weights run away (measured: loss 1e24,
+   then NaN). The state `h_t` is the only per-step quantity that always
+   has such a path, because it is what propagates forward in time. This
+   is a general rule for injecting DFA into any recurrent or
+   late-readout architecture.
+2. **The unreachable-input landmine fired again** (toy#154, franken-moe
+   `t_hp` under `--optimizer sgd`): under the layer cut there are no
+   state taps, so that tap family's feedback matrix is consumed by
+   nothing, gets NO backend buffer, and the upload aborts inside
+   `ggml_backend_tensor_set`. Allocate a B only if its tap family is
+   non-empty.
+
+`--task mean` is this lane's `blobs`: the class signal is spread over
+every step, so neither memory nor selection is needed and a FROZEN
+recurrence already integrates it. Selectable, measured, asserted.
+
+### For Tao (F19)
+
+```
+toy train ssm --steps 600 --seed 0 --policy chain,chain
+toy train ssm --steps 600 --seed 0 --policy dfa,dfa                    # layer cut
+toy train ssm --steps 600 --seed 0 --policy dfa,dfa --dfa-cut step
+toy train ssm --steps 600 --seed 0 --policy frozen,frozen
+#  ... and the whole grid again under --selection lti
+```
+
+Arms differ ONLY in `--policy` / `--dfa-cut` / `--selection`. **No
+`--align-events` on this lane**, and that is structural: the DFA update
+arrives through autodiff from the surrogate roots, so it lands in the
+SAME accumulator a BP run would use and there is no second tensor to
+take a cosine against. The CLI rejects the flag rather than emitting
+telemetry that silently means nothing. Gate on the B seed instead.
+
+**The long-sequence CUDA twin is still not built** and, given the graph
+measurement above, it would not show the memory win either — that needs
+a streaming implementation, not a device port. Worth deciding before
+anyone spends the twin.
 
 ## Landmines that apply
 

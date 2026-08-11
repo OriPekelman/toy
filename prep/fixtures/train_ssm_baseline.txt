@@ -1,0 +1,9 @@
+# prep/fixtures/train_ssm_baseline.txt — the toy#155 SSM lane's default
+# 5-step curve (libexec/toy-train-ssm with no SSM_* env at all: the
+# selective 2-layer Mamba-lite, T=64, delayed-cue task, all-chain).
+# Regenerate: STEPS=5 SEED=0 ./libexec/toy-train-ssm | grep '^step '
+step 1: loss=1.4982799291610718
+step 2: loss=2.1280245780944824
+step 3: loss=1.4356375932693481
+step 4: loss=1.7568455934524536
+step 5: loss=1.8722206354141235

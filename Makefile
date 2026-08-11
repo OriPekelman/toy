@@ -833,6 +833,31 @@ libexec/toy-train-ctr: lib/toy/run/train_ctr.rb lib/toy/dev/toy_describe_flow.rb
 toy-train-ctr: libexec/toy-train-ctr
 .PHONY: toy-train-ctr
 
+# toy#155 (DFA-arch T2) — the selective-scan / Mamba-lite lane. The
+# recurrence is UNROLLED over T from differentiable primitives, because
+# ggml's fused SSM_SCAN/SSM_CONV have no backward (ggml_compute_backward
+# covers 43 ops and neither is among them) — and because the BPTT graph
+# the DFA arm claims to avoid has to exist before avoiding it means
+# anything. SEPARATE binary (landmine #16), CPU-only this slice: tao#19
+# defers this lane's CUDA twin to the long-sequence memory measurement.
+libexec/toy-train-ssm: lib/toy/run/train_ssm.rb lib/toy/dev/toy_describe_flow.rb \
+		lib/toy/io/json_builder.rb lib/toy/io/json.rb lib/toy/io/toy_events.rb \
+		vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
+		lib/toy/io/toy_ssm_task.rb lib/toy/llm/engine/ssm_engine.rb \
+		lib/toy/llm/recipes/ssm_seq.rb lib/toy/llm/adamw.rb \
+		lib/toy/train/dfa_b.rb \
+		lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) $< -o $@
+toy-train-ssm: libexec/toy-train-ssm
+.PHONY: toy-train-ssm
+
+# toy#155 gate: chain byte-null, determinism, the per-step DFA cut
+# (proved by the B seed moving the curve), the LTI control the ticket
+# demands, and the MANDATORY success bar.
+.PHONY: gate-ssm
+gate-ssm: libexec/toy-train-ssm
+	ruby prep/ssm_gate.rb
+
 # toy#153 (DFA-arch T1) — the GNN node-classification lane: message
 # passing over a symmetric-normalised adjacency, per-layer policy, and
 # `--dfa-feedback structure` (DFA-GNN's error-along-the-graph feedback).
