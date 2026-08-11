@@ -37,7 +37,10 @@
 #   LSTM_TASK_SEED  — task seed, SEPARATE from SEED (default 7)
 #   LSTM_BATCH      — sequences per step (default 32)
 #   LSTM_VAL_BATCHES— held-out batches evaluated at the end (default 8)
-#   LSTM_LR / LSTM_WARMUP
+#   LSTM_LR         — default 0.02   } the lane's MEASURED fair cell; see
+#   LSTM_WARMUP     — default 200    } the grid at the LR constant below.
+#                     LSTM_WARMUP=0 disables the ramp (an EMPTY string
+#                     means "unset", so the default applies).
 #   LSTM_B_SEED / LSTM_B_DIST / LSTM_B_SCALE — the DfaB feedback axes
 #
 # STDOUT (byte-gated): "step <N>: loss=<float>" per step, then
@@ -91,26 +94,40 @@ TASK_SEED   = (ENV["LSTM_TASK_SEED"] || "7").to_i
 BATCH       = (ENV["LSTM_BATCH"] || "32").to_i
 VAL_BATCHES = (ENV["LSTM_VAL_BATCHES"] || "8").to_i
 LR_S        = ENV["LSTM_LR"] || ""
-WARMUP      = (ENV["LSTM_WARMUP"] || "0").to_i
+WARMUP_S    = ENV["LSTM_WARMUP"] || ""
 B_SEED      = (ENV["LSTM_B_SEED"] || "1234").to_i
 B_DIST_S    = ENV["LSTM_B_DIST"]  || ""
 B_SCALE_S   = ENV["LSTM_B_SCALE"] || ""
 
 NOISE   = NOISE_S.length   > 0 ? NOISE_S.to_f   : 1.0
-# 0.03, and it is NOT the 0.003 the other sequence lane uses. Measured
-# on this lane's own arms (defaults otherwise, seed 0, val accuracy):
+# THE DEFAULTS ARE THE LANE'S MEASURED FAIR CELL: lr 0.02 + warmup 200
+# (at 4000 steps). They are not inherited and not guessed — they are the
+# BP arm's OWN BEST over a swept (lr x warmup x seed) grid, because a
+# lane whose default cannot train its BP arm reports the DFA arms
+# beating it, which is this lane's characteristic wrong result and has
+# now nearly happened three times.
 #
-#   lr 0.001   600 steps BP .258   2000 steps BP .285
-#   lr 0.010   600 steps BP .242   2000 steps BP .254
-#   lr 0.030   600 steps BP .199   2000 steps BP 1.000   <- the default
+# Val accuracy at 4000 steps, seeds 0/1/2, no warmup:
 #
-# BP needs BOTH the higher rate AND the longer run: every other cell in
-# that sweep leaves it at chance (.25 on 4 classes). A lane defaulted to
-# 0.003 would ship a `chain` arm that CANNOT learn its own task, and
-# would then report the DFA arms beating it — which is exactly the wrong
-# result this lane nearly produced twice (the other time was a bias-free
-# LSTM; see lstm_engine.rb on why b_f initialises to 1.0).
-LR      = LR_S.length      > 0 ? LR_S.to_f      : 0.03
+#   lr 0.005   BP .504 / 1.000 /  .996     DFA(step) 1.000 / 1.000 / 1.000
+#   lr 0.010   BP .250 / 1.000 /  .996     DFA(step) 1.000 / 1.000 / 1.000
+#   lr 0.020   BP .250 /  .996 / 1.000     DFA(step) 1.000 /  .996 / 1.000
+#   lr 0.030   BP 1.000 / .250 /  .238     DFA(step) 1.000 / 1.000 /  .996
+#
+# Every arm is bimodal (solves it, or sits at chance .250 on 4 classes).
+# The per-step DFA cut solves 12 of 12 cells; BP solves 7, and WHICH rate
+# works depends on the SEED — so no learning rate alone gives a BP arm
+# that trains at every seed. WARMUP is what does: at lr 0.02, warmup 200
+# turns BP's .250/.996/1.000 into 1.000/.992/1.000. That is why the
+# warmup default is 200 here and 0 on every other lane, and why the CLI
+# forwards an EMPTY string when --warmup is absent rather than "0" — a
+# CLI that always sent 0 would silently defeat this default and hand the
+# user back the untrained-BP trap.
+#
+# The earlier 0.03 default was seed-0 luck: it is the ONE rate seed 0
+# trains at and the one seeds 1 and 2 fail at.
+LR      = LR_S.length      > 0 ? LR_S.to_f      : 0.02
+WARMUP  = WARMUP_S.length  > 0 ? WARMUP_S.to_i  : 200
 
 # ---- fail loud on every out-of-range shape (never-mask). ----
 if STEPS < 1
@@ -341,7 +358,7 @@ if EVENTS.length > 0
     rs.add_str("started_at", TinyNN.tnn_events_iso8601_now)
     rs.add_str("run_id", rid)
     rs.add_str("phase", "train")
-    rs.add_str("name", "ssm")
+    rs.add_str("name", "lstm")
     Toy::Events.add_provenance(rs,
       TinyNN.tnn_provenance_host_name, TinyNN.tnn_provenance_host_os,
       TinyNN.tnn_provenance_host_arch,
@@ -384,7 +401,7 @@ if EVENTS.length > 0
     config.add_num("warmup",      WARMUP)
     rs.add_obj("config", config)
     # NOT the "franken" key — a consumer keying on `franken` would read
-    # an SSM run as a transformer one (tao#19 item 3).
+    # an LSTM run as a transformer one (tao#19 item 3).
     dfa = Toy::Json::Builder.new
     dfa.add_raw("policy",  Toy::Json.from_int_array(POLICY))
     dfa.add_str("cut",     CUT_S == "step" ? "step" : "layer")
@@ -536,7 +553,7 @@ if EVENTS.length > 0 && TinyNN.tnn_events_active == 1
   re.add_num("final_step", STEPS)
   re.add_raw("final_loss", num_or_null(final_loss))
   re.add_raw("val_acc",    num_or_null(val_acc))
-  # No checkpoint: there is no SSM GGUF writer and no infer consumer for
+  # No checkpoint: there is no LSTM GGUF writer and no infer consumer for
   # this arch — the lane's product is the metric, not the weights.
   re.add_str("checkpoint", "none")
   re.add_raw("exit_code",  "0")

@@ -82,13 +82,14 @@ recipes are:
 | `ctr` | CTR/recommender tower: embedding tables + MLP + **scalar** sigmoid head, scored by AUC (CPU-only) | `--policy`, `--fields`, `--cardinality`, `--emb`, `--numeric`, `--hidden`, `--layers`, `--pairs`, `--lin-scale`, `--base-rate`, `--fm-branch`, `--val-batches` |
 | `gnn` | GCN-class node classification over a normalised adjacency, transductive semi-supervised (CPU-only). Runs on a seeded graph or on real Cora (`ruby prep/fetch_cora.rb`) | `--policy`, `--graph`, `--layers`, `--hidden`, `--classes`, `--features`, `--nodes`, `--degree`, `--homophily`, `--feat-signal`, `--train-per-class`, `--task`, `--feedback-route`, `--feedback-hops`, `--weight-decay` |
 | `ssm` | selective-scan / Mamba-lite sequence classifier — an UNROLLED input-dependent linear recurrence + conv branch + gating, last-step readout (CPU-only) | `--policy`, `--dfa-cut`, `--selection`, `--layers`, `--seq`, `--d-model`, `--d-inner`, `--conv-k`, `--classes`, `--task`, `--cue-span`, `--noise`, `--dt-init` |
+| `lstm` | gated recurrence: a stack of textbook LSTM cells UNROLLED over T, last-step readout, on the same task + cut axis as `ssm` (CPU-only) | `--policy`, `--dfa-cut`, `--layers`, `--hidden`, `--features`, `--seq`, `--classes`, `--task`, `--cue-span`, `--noise`, `--batch`, `--val-batches`, `--task-seed`, `--lr`, `--dfa-b-*` |
 | `diff` | latent diffusion denoiser — time-conditioned eps-prediction over a LOW-DIM latent, scored by a generative metric (CPU-only) | `--policy`, `--latent`, `--time-feat`, `--layers`, `--hidden`, `--task`, `--modes`, `--spread`, `--mode-scale`, `--diff-steps`, `--beta-lo`, `--beta-hi`, `--eval-n`, `--align-events` |
 
 An unknown recipe is rejected loud (`supported: 'from-scratch', 'lora',
-'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp', 'ctr', 'gnn', 'ssm', 'diff'`). `--arch gpt2`
+'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp', 'ctr', 'gnn', 'ssm', 'lstm', 'diff'`). `--arch gpt2`
 trains the from-scratch GPT-2 arch (`from-scratch` only, CPU-only);
 `--device cuda|metal` selects the per-device runner (`metal` is macOS-only;
-GPT-2, ViT-Tiny, `mlp`, `ctr`, `gnn`, `ssm` and `diff` are CPU-only, and `franken`'s macro-DFA mode is
+GPT-2, ViT-Tiny, `mlp`, `ctr`, `gnn`, `ssm`, `lstm` and `diff` are CPU-only, and `franken`'s macro-DFA mode is
 CPU-only by decision).
 Defaults: `--steps 5`, `--seed 0`, `--arch llama`, `--device cpu`, `--out runs/<id>`.
 Writes the run bundle (see [Run bundle layout](#run-bundle-layout)) and echoes
@@ -126,15 +127,34 @@ feedback matrix B is *updated* (`fixed|kolen-pollack`), a different axis.
 A different meaning gets a different name (the tao#18 `--policy-scope`
 discipline).
 
-`ssm` adds `--dfa-cut layer|step` and `--selection selective|lti`.
-`layer` cuts only the layer boundary and injects the random feedback
-once, at the readout step, with BPTT intact inside the layer; `step`
-additionally detaches the state at every timestep, so no gradient
-crosses time at all. It is **not** spelled `--dfa-granularity`: that one
+`ssm` and `lstm` add `--dfa-cut layer|step`; `--selection selective|lti`
+is `ssm`-only. `layer` cuts only the layer boundary and injects the
+random feedback once, at the readout step, with BPTT intact inside the
+layer; `step` additionally detaches the state at every timestep (on
+`lstm`, both `h_{t-1}` and `c_{t-1}`), so no gradient crosses time at
+all. It is **not** spelled `--dfa-granularity`: that one
 picks matmul-vs-block in *depth*, this picks layer-vs-step in *time*.
-`--align-events` is REJECTED on `ssm` — its DFA update arrives through
-autodiff from the surrogate roots, so it lands in the same accumulator a
-BP run uses and a cosine against it would mean nothing.
+`--align-events` is REJECTED on `ssm` and `lstm` — their DFA update
+arrives through autodiff from the surrogate roots, so it lands in the
+same accumulator a BP run uses and a cosine against it would mean
+nothing.
+
+The two recurrent lanes share `--seq`, `--classes`, `--task cue|mean`,
+`--cue-span` and `--noise` because `lstm` reuses `ssm`'s delayed-cue
+generator **unchanged** — that is what makes the pair an architecture
+comparison rather than two anecdotes. They do *not* share
+`--d-inner`/`--conv-k`/`--selection`/`--dt-init`, which name
+selective-scan parts an LSTM has no counterpart for; those are rejected
+on `lstm` by the same matrix.
+
+`lstm` is the one lane whose `--lr`/`--warmup` DEFAULTS are a measured
+cell rather than a convention: 0.02 with a 200-step ramp, which is the
+BP arm's own best over a swept (lr x warmup x seed) grid. Its BP arm is
+bimodal on this task — it solves it or sits at chance, and which rate
+works depends on the seed — so a default that could not train BP would
+report the DFA arms beating it. For the same reason `--warmup` is
+forwarded to this runner as *unset* when you do not pass it, instead of
+`0` as on every other lane; `--warmup 0` still disables the ramp.
 
 The `mlp`, `ctr` and `gnn` lanes print extra stdout lines after the
 curve — `val: acc=… loss=… n=…`, `val: auc=… logloss=… n=… pos=…`, and
@@ -146,6 +166,16 @@ train/val GAP as by val accuracy. `ssm` also prints
 reads the arms' scaling. Read it as node count, never as bytes: in a
 graph autodiff every forward tensor is materialised whatever the credit
 rule.
+
+`lstm` prints the same line with the missing half — `graph: nodes=…
+bytes=…`, where `bytes` is `ggml_nbytes` summed over every node of the
+realized graph, i.e. the materialised activation footprint its ticket's
+memory target is stated in. The caveat above still travels with it and
+is the finding: cutting BPTT does **not** shrink the graph. Measured at
+T=64, the per-step cut costs 17% MORE bytes than BPTT (15 578 112 vs
+13 289 988), and the gap grows with `--seq`. See tao#21 — what the
+claim actually needs is an analytic streaming figure alongside this
+measured one.
 
 `diff` prints `gen: energy=…` — the ENERGY DISTANCE between generated
 and held-out real samples. It is the lane's headline metric and **lower

@@ -93,6 +93,9 @@ module Toy
         # toy#156 (DFA-arch T2) — the latent diffusion denoiser. Own
         # binary, CPU-only.
         DIFF_RUNNER_TARGET = "libexec/toy-train-diff"
+        # toy#157 (DFA-arch T3) — the LSTM lane, the SSM rehearsal. Own
+        # binary, CPU-only (tao#18/#19: no CUDA twin for T0–T3).
+        LSTM_RUNNER_TARGET = "libexec/toy-train-lstm"
         FRANKEN_MOE_RUNNER_TARGET = "libexec/toy-train-franken-moe-cli"
         FRANKEN_MOE_CUDA_RUNNER_TARGET = "libexec/toy-train-franken-moe-cli-cuda"
         # GPT-2 GPU twins (--arch gpt2 --device cuda|metal). SEPARATE single-type
@@ -222,6 +225,12 @@ module Toy
           @beta_lo        = nil
           @beta_hi        = nil
           @eval_n         = nil
+          # toy#157 (lstm) adds NO ivars of its own: it is deliberately
+          # the same shape/task/cut axis as the ssm lane (--seq, --classes,
+          # --task cue|mean, --cue-span, --noise, --dfa-cut layer|step) so
+          # the two lanes read as one architecture comparison. What it does
+          # NOT reuse is --selection/--d-inner/--conv-k/--dt-init, which
+          # name selective-scan parts an LSTM does not have.
           @moe_policy = nil   # franken-moe: chain | dfa-experts
           @moe_aux    = nil   # franken-moe: top1 aux-loss alpha
           @experts    = nil   # franken-moe: expert count E>=2 (toy#128)
@@ -288,7 +297,9 @@ module Toy
           #     warm-start +cuda                  in train_cuda.rb source)
           #   metal (fs only)  -> toy-train-metal
           #   cpu fs/warm-start-> toy-train
-          target = if @recipe == "diff"
+          target = if @recipe == "lstm"
+                     LSTM_RUNNER_TARGET
+                   elsif @recipe == "diff"
                      DIFF_RUNNER_TARGET
                    elsif @recipe == "ssm"
                      SSM_RUNNER_TARGET
@@ -421,6 +432,36 @@ module Toy
                              "DIFF_B_SCALE"    => (@dfa_b_scale || ""),
                              "DIFF_ALIGN"      => (@align_events ? "1" : ""),
                              "DIFF_ALIGN_EVERY" => (@align_every || 1).to_s)
+          elsif @recipe == "lstm"
+            # Lane-local LSTM_* namespace, same discipline as the others.
+            # LSTM_LR and LSTM_WARMUP are forwarded EMPTY when unset, so
+            # the runner's own defaults (0.02 / 200 — the lane's measured
+            # fair cell) apply. Every other lane sends "0" for warmup;
+            # doing that here would silently override a default that is
+            # load-bearing: at lr 0.02 the BP arm reads .250 at seed 0
+            # with no ramp and 1.000 with it, so a CLI-defeated warmup
+            # hands the user an untrained BP arm that the DFA arms then
+            # "beat" (toy#157). An explicit `--warmup 0` still reaches
+            # the runner as "0" and still disables the ramp.
+            env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
+                             "LSTM_POLICY"      => (@policy || ""),
+                             "LSTM_DFA_CUT"     => (@dfa_cut || ""),
+                             "LSTM_LAYERS"      => (@mlp_layers || 1).to_s,
+                             "LSTM_HIDDEN"      => (@hidden || 64).to_s,
+                             "LSTM_FEATURES"    => (@features || 24).to_s,
+                             "LSTM_SEQ"         => (@seq || 64).to_s,
+                             "LSTM_CLASSES"     => (@classes || 4).to_s,
+                             "LSTM_TASK"        => (@task || ""),
+                             "LSTM_CUE_SPAN"    => (@cue_span ? @cue_span.to_s : ""),
+                             "LSTM_NOISE"       => (@noise ? @noise.to_s : ""),
+                             "LSTM_TASK_SEED"   => (@task_seed || 7).to_s,
+                             "LSTM_BATCH"       => (@batch || 32).to_s,
+                             "LSTM_VAL_BATCHES" => (@val_batches || 8).to_s,
+                             "LSTM_LR"          => (@lr || ""),
+                             "LSTM_WARMUP"      => (@warmup ? @warmup.to_s : ""),
+                             "LSTM_B_SEED"      => (@dfa_b_seed || 1234).to_s,
+                             "LSTM_B_DIST"      => (@dfa_b_dist || ""),
+                             "LSTM_B_SCALE"     => (@dfa_b_scale || ""))
           elsif @recipe == "ssm"
             # Lane-local SSM_* namespace, same discipline as the others.
             env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
@@ -1475,8 +1516,8 @@ when /\A--dfa-feedback-lr=(.*)\z/
             return bad_arg("unexpected extra arguments: #{rest[1..].join(' ')}")
           end
           @recipe = rest.first
-          unless %w[from-scratch lora warm-start vit-tiny franken franken-moe mlp ctr gnn ssm diff].include?(@recipe)
-            return bad_arg("unknown recipe #{@recipe.inspect}; supported: 'from-scratch', 'lora', 'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp', 'ctr', 'gnn', 'ssm', 'diff'")
+          unless %w[from-scratch lora warm-start vit-tiny franken franken-moe mlp ctr gnn ssm lstm diff].include?(@recipe)
+            return bad_arg("unknown recipe #{@recipe.inspect}; supported: 'from-scratch', 'lora', 'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp', 'ctr', 'gnn', 'ssm', 'lstm', 'diff'")
           end
           # ---- toy#132: the flag x recipe MATRIX ----
           # Four llama-first flags in a row tripped franken-moe at Tao
@@ -1494,14 +1535,16 @@ when /\A--dfa-feedback-lr=(.*)\z/
             ["--init",          %w[warm-start],                     !@init.nil?, ""],
             ["--fields/--cardinality/--numeric/--emb/--pairs", %w[ctr], (!@fields.nil? || !@cardinality.nil? || !@numeric.nil? || !@emb.nil? || !@pairs.nil?), " (toy#154)"],
             ["--base-rate/--lin-scale/--fm-branch", %w[ctr], (!@base_rate.nil? || !@lin_scale.nil? || @fm_branch), " (toy#154)"],
-            ["--dfa-b-*",       %w[franken franken-moe mlp ctr gnn ssm diff], (!@dfa_b_seed.nil? || !@dfa_b_dist.nil? || !@dfa_b_scale.nil?), ""],
-            # --align-events deliberately EXCLUDES ssm: its DFA update
-            # arrives through autodiff from the surrogate roots, so it
-            # lands in the same accumulator a BP run would use and there
-            # is no second tensor to take a cosine against. Accepting the
-            # flag would emit telemetry that silently means nothing.
+            ["--dfa-b-*",       %w[franken franken-moe mlp ctr gnn ssm lstm diff], (!@dfa_b_seed.nil? || !@dfa_b_dist.nil? || !@dfa_b_scale.nil?), ""],
+            # --align-events deliberately EXCLUDES ssm AND lstm: on both,
+            # the DFA update arrives through autodiff from the surrogate
+            # roots, so it lands in the same accumulator a BP run would
+            # use and there is no second tensor to take a cosine against.
+            # Accepting the flag would emit telemetry that silently means
+            # nothing. Those two lanes gate on the B SEED moving the dfa
+            # curve instead (toy#158's discipline).
             ["--align-events",  %w[franken franken-moe mlp ctr gnn diff], @align_events, ""],
-            ["--policy",        %w[franken mlp ctr gnn ssm diff],   !@policy.nil?, ""],
+            ["--policy",        %w[franken mlp ctr gnn ssm lstm diff],   !@policy.nil?, ""],
             # toy#153 (gnn). --feedback-route is DELIBERATELY not
             # --dfa-feedback: franken-moe's --dfa-feedback selects how B
             # is UPDATED (fixed|kolen-pollack), this selects how the
@@ -1516,12 +1559,20 @@ when /\A--dfa-feedback-lr=(.*)\z/
             # toy#155 (ssm). --dfa-cut is NOT --dfa-granularity:
             # franken's granularity picks matmul-vs-block in DEPTH, this
             # picks layer-vs-step in TIME. Different axis, different name.
-            ["--seq/--d-model/--d-inner/--conv-k", %w[ssm],
-             (!@seq.nil? || !@d_model.nil? || !@d_inner.nil? || !@conv_k.nil?), " (toy#155)"],
+            # toy#157 (lstm) shares the SEQUENCE knobs with ssm — same
+            # task generator, same cut axis, which is what makes the two
+            # lanes an architecture comparison. It does NOT share the
+            # selective-scan-shaped ones (--d-inner/--conv-k/--selection/
+            # --dt-init name parts an LSTM has no counterpart for), so
+            # those rows stay ssm-only rather than widening.
+            ["--seq",           %w[ssm lstm],                       !@seq.nil?, " (toy#155/#157)"],
+            ["--d-model/--d-inner/--conv-k", %w[ssm],
+             (!@d_model.nil? || !@d_inner.nil? || !@conv_k.nil?), " (toy#155)"],
             ["--selection",     %w[ssm],                            !@selection.nil?, " (toy#155)"],
-            ["--dfa-cut",       %w[ssm],                            !@dfa_cut.nil?, " (toy#155)"],
-            ["--cue-span/--noise/--dt-init", %w[ssm],
-             (!@cue_span.nil? || !@noise.nil? || !@dt_init.nil?), " (toy#155)"],
+            ["--dfa-cut",       %w[ssm lstm],                       !@dfa_cut.nil?, " (toy#155/#157)"],
+            ["--cue-span/--noise", %w[ssm lstm],
+             (!@cue_span.nil? || !@noise.nil?), " (toy#155/#157)"],
+            ["--dt-init",       %w[ssm],                            !@dt_init.nil?, " (toy#155)"],
             # toy#156 (diff). --latent is the OUTPUT DIM under test and
             # gets a real name rather than riding --classes: this lane
             # regresses epsilon, it does not classify.
@@ -1539,21 +1590,21 @@ when /\A--dfa-feedback-lr=(.*)\z/
             # (--policy-tensors), never an overload of this one.
             ["--policy-scope",  %w[franken],                        !@policy_scope.nil?, " (toy#151; NOT accepted on 'mlp' — tao#18)"],
             ["--align-every",   %w[franken franken-moe mlp gnn diff], !@align_every.nil?, ""],
-            ["--lr/--warmup",   %w[franken franken-moe mlp ctr gnn ssm diff], (!@lr.nil? || !@warmup.nil?), " (toy#126/#132)"],
-            ["--classes",       %w[mlp gnn ssm],                    !@classes.nil?, " (toy#152/#153/#155)"],
-            ["--features",      %w[mlp gnn],                        !@features.nil?, " (toy#152/#153)"],
-            ["--hidden",        %w[mlp ctr gnn diff],               !@hidden.nil?, " (toy#152/#154/#153/#156)"],
-            ["--layers",        %w[mlp ctr gnn ssm diff],           !@mlp_layers.nil?, " (toy#152/#154/#153/#155/#156)"],
-            ["--task",          %w[mlp gnn ssm diff],               !@task.nil?, " (toy#152/#153/#155/#156)"],
+            ["--lr/--warmup",   %w[franken franken-moe mlp ctr gnn ssm lstm diff], (!@lr.nil? || !@warmup.nil?), " (toy#126/#132)"],
+            ["--classes",       %w[mlp gnn ssm lstm],               !@classes.nil?, " (toy#152/#153/#155/#157)"],
+            ["--features",      %w[mlp gnn lstm],                   !@features.nil?, " (toy#152/#153/#157)"],
+            ["--hidden",        %w[mlp ctr gnn lstm diff],          !@hidden.nil?, " (toy#152/#154/#153/#157/#156)"],
+            ["--layers",        %w[mlp ctr gnn ssm lstm diff],      !@mlp_layers.nil?, " (toy#152/#154/#153/#155/#157/#156)"],
+            ["--task",          %w[mlp gnn ssm lstm diff],          !@task.nil?, " (toy#152/#153/#155/#157/#156)"],
             ["--teacher-dim",   %w[mlp gnn],                        !@teacher_dim.nil?, " (toy#152/#153)"],
-            ["--task-seed",     %w[mlp ctr gnn ssm diff],           !@task_seed.nil?, " (toy#152/#154/#153/#155/#156)"],
+            ["--task-seed",     %w[mlp ctr gnn ssm lstm diff],      !@task_seed.nil?, " (toy#152/#154/#153/#155/#157/#156)"],
             # --val-batches stays mlp/ctr: the gnn lane is TRANSDUCTIVE,
             # its held-out set is a node mask over the one graph, so
             # "how many val batches" has nothing to size.
-            ["--val-batches",   %w[mlp ctr ssm],                    !@val_batches.nil?, " (toy#152/#154/#155)"],
+            ["--val-batches",   %w[mlp ctr ssm lstm],               !@val_batches.nil?, " (toy#152/#154/#155/#157)"],
             ["--no-shadow",     %w[franken franken-moe],            @no_shadow, " (toy#129)"],
             ["--context/--vocab", %w[franken franken-moe],          (!@context.nil? || !@vocab.nil?), " (toy#129)"],
-            ["--batch",         %w[franken franken-moe mlp ctr ssm diff], !@batch.nil?, " (toy#133)"],
+            ["--batch",         %w[franken franken-moe mlp ctr ssm lstm diff], !@batch.nil?, " (toy#133)"],
             ["--act",           %w[franken],                        !@act.nil?, " (toy#136/K1; MoE experts get their GLU in K4)"],
             ["--rope",          %w[franken],                        !@rope.nil?, " (toy#136/K1)"],
             ["--schedule",      %w[franken franken-moe],            !@schedule.nil?, " (toy#136/K1)"],
@@ -1647,7 +1698,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
           # The corpus rule is a TRANSFORMER-lane rule: there, B>1 means
           # B corpus windows per step. The mlp lane's batch is samples
           # from a seeded generator — there is no corpus to need.
-          if @batch && @batch > 1 && @corpus.nil? && !%w[mlp ctr ssm diff].include?(@recipe)
+          if @batch && @batch > 1 && @corpus.nil? && !%w[mlp ctr ssm lstm diff].include?(@recipe)
             return bad_arg("--batch > 1 needs --corpus (the fixed-seq feed is the byte-gated single-window contract)")
           end
           if @no_shadow && @align_events
@@ -1695,20 +1746,31 @@ when /\A--dfa-feedback-lr=(.*)\z/
           if (@task == "mixture" || @task == "single") && @recipe != "diff"
             return bad_arg("--task #{@task} is only valid with recipe 'diff' (toy#156)")
           end
-          if (@task == "cue" || @task == "mean") && @recipe != "ssm"
-            return bad_arg("--task #{@task} is only valid with recipe 'ssm' (toy#155)")
+          # cue|mean is the SHARED sequence-task vocabulary of the two
+          # recurrent lanes — toy#157 reuses toy#155's generator verbatim,
+          # so the token set has to be shared too or the same experiment
+          # would need two names.
+          if (@task == "cue" || @task == "mean") && !%w[ssm lstm].include?(@recipe)
+            return bad_arg("--task #{@task} is only valid with recipe 'ssm' or 'lstm' (toy#155/#157)")
           end
           if @task == "community" && @recipe != "gnn"
             return bad_arg("--task community is only valid with recipe 'gnn' (toy#153); 'mlp' takes teacher|blobs")
           end
           if @task == "blobs" && @recipe != "mlp"
-            return bad_arg("--task blobs is only valid with recipe 'mlp' (toy#152); 'gnn' takes teacher|community, 'ssm' takes cue|mean")
+            return bad_arg("--task blobs is only valid with recipe 'mlp' (toy#152); 'gnn' takes teacher|community, 'ssm'/'lstm' take cue|mean")
           end
           if @recipe == "diff" && @device != "cpu"
             return bad_arg("--device #{@device.inspect} is not supported for recipe 'diff' (CPU-only by decision — tao#18)")
           end
           if @recipe == "ssm" && @device != "cpu"
             return bad_arg("--device #{@device.inspect} is not supported for recipe 'ssm' (CPU-only this slice — tao#19 defers the F19 CUDA twin to the long-sequence memory measurement)")
+          end
+          # tao#21: a device port changes THROUGHPUT, not what the graph
+          # materialises — and this lane's success target is stated in
+          # materialised bytes. So the CUDA twin would not move the
+          # measurement it exists for, and is not spent.
+          if @recipe == "lstm" && @device != "cpu"
+            return bad_arg("--device #{@device.inspect} is not supported for recipe 'lstm' (CPU-only by decision — tao#18/#21: a device twin changes throughput, not the materialised activation bytes this lane measures)")
           end
           if @recipe == "gnn" && @device != "cpu"
             return bad_arg("--device #{@device.inspect} is not supported for recipe 'gnn' (CPU-only by decision — tao#18)")
@@ -1735,6 +1797,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
           return "ctr"     if recipe == "ctr"
           return "gnn"     if recipe == "gnn"
           return "ssm"     if recipe == "ssm"
+          return "lstm"    if recipe == "lstm"
           return "diff"    if recipe == "diff"
           return "moe"     if recipe == "franken-moe"
           "llama"

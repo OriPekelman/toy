@@ -103,16 +103,33 @@ REJECT = [
   # --align-events is rejected on ssm on purpose — its DFA update lands
   # in the same accumulator a BP run uses, so a cosine would be telemetry
   # that silently means nothing.
-  [%w[gnn --seq 32],                       "--seq/--d-model/--d-inner/--conv-k"],
-  [%w[franken --d-inner 32],               "--seq/--d-model/--d-inner/--conv-k"],
+  [%w[gnn --seq 32],                       "--seq"],
+  [%w[franken --d-inner 32],               "--d-model/--d-inner/--conv-k"],
   [%w[mlp --selection lti],                "--selection"],
   [%w[mlp --dfa-cut step],                 "--dfa-cut"],
-  [%w[ctr --cue-span 8],                   "--cue-span/--noise/--dt-init"],
+  [%w[ctr --cue-span 8],                   "--cue-span/--noise"],
   [%w[ssm --align-events],                 "--align-events"],
   [%w[ssm --policy-scope ffn],             "--policy-scope"],
   [%w[ssm --hidden 32],                    "--hidden"],
   [%w[ssm --features 16],                  "--features"],
   [%w[ssm --graph data/gnn_cora],          "--graph"],
+  # toy#157 (lstm). It SHARES the sequence knobs with ssm — same task
+  # generator, same cut axis, which is what makes the two lanes one
+  # architecture comparison — but NOT the selective-scan-shaped ones.
+  # Both directions are probed: a --d-inner/--selection/--dt-init that
+  # leaked onto the LSTM lane would name a part it does not have, and
+  # --align-events is rejected here for the same reason as on ssm (the
+  # DFA update lands in the accumulator a BP run uses, so a cosine
+  # against it would be telemetry that silently means nothing).
+  [%w[lstm --selection lti],               "--selection"],
+  [%w[lstm --d-inner 32],                  "--d-model/--d-inner/--conv-k"],
+  [%w[lstm --conv-k 2],                    "--d-model/--d-inner/--conv-k"],
+  [%w[lstm --dt-init -4.0],                "--dt-init"],
+  [%w[mlp --dt-init -4.0],                 "--dt-init"],
+  [%w[lstm --align-events],                "--align-events"],
+  [%w[lstm --policy-scope ffn],            "--policy-scope"],
+  [%w[lstm --graph data/gnn_cora],         "--graph"],
+  [%w[lstm --latent 8],                    "--latent/--time-feat"],
   # toy#156 (diff). --latent is the OUTPUT DIM under test and has its
   # own name rather than riding --classes: this lane regresses epsilon.
   [%w[mlp --latent 8],                     "--latent/--time-feat"],
@@ -165,11 +182,19 @@ failures << "matrix: ssm full flag set hit the matrix (#{out.lines.last(1).join.
 # toy#156: the diff lane's own flags all pass the matrix; the run stops
 # at the LATER --task token rule.
 out, st = probe(%w[diff --latent 8 --time-feat 4 --modes 4 --spread 3.0 --mode-scale 0.4 --diff-steps 50 --beta-lo 0.002 --beta-hi 0.2 --eval-n 256 --task cue])
-failures << "matrix: diff full flag set hit the matrix (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("--task cue is only valid with recipe 'ssm'")
+failures << "matrix: diff full flag set hit the matrix (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("--task cue is only valid with recipe 'ssm' or 'lstm'")
+# toy#157: the lstm lane's own flags all pass the matrix, INCLUDING the
+# sequence knobs it shares with ssm; the run stops at the LATER --task
+# token rule. `cue`/`mean` are shared by the two recurrent lanes on
+# purpose — the same generator would otherwise need two names.
+out, st = probe(%w[lstm --seq 32 --classes 4 --hidden 32 --features 16 --layers 1 --dfa-cut step --cue-span 4 --noise 0.5 --batch 8 --val-batches 2 --task-seed 3 --lr 0.03 --task community])
+failures << "matrix: lstm full flag set hit the matrix (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("--task community is only valid with recipe 'gnn'")
+out, st = probe(%w[lstm --task cue --device cuda])
+failures << "matrix: lstm --task cue was rejected — cue|mean is SHARED by ssm and lstm (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("not supported for recipe 'lstm'")
 puts failures.length == n0 ? "  ok: right-recipe probes pass the matrix (their errors come from later rules)" : "  FAIL: acceptance side"
 
 if failures.empty?
-  puts "GATE PASS [train-cli-matrix]: #{REJECT.length} rejections + 7 acceptance probes (toy#132/#153/#155/#156)"
+  puts "GATE PASS [train-cli-matrix]: #{REJECT.length} rejections + 9 acceptance probes (toy#132/#153/#155/#156/#157)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [train-cli-matrix]: #{f}" }

@@ -5,8 +5,8 @@ SETTLED (tao#18, tao#19) so each lane can be built without re-litigating
 it, and flags the one thing I think is still ambiguous.
 
 Build order: **#152 → #158 → #154 → #153 / #155 / #156 / #157**.
-Status: **#152, #158, #154, #153, #155 and #156 shipped** (see their
-sections below); **#157 next**.
+Status: **all seven shipped** — #152, #158, #154, #153, #155, #156 and
+#157 (see their sections below). The wave is complete.
 
 ## Settled (tao#18, tao#19 — Ori)
 
@@ -719,6 +719,188 @@ invert.
 This lane DOES carry `--align-events` (unlike ssm): it uses the direct
 rule, so the DFA update is a separate tensor from the chain shadow and
 cos(g_dfa, g_bp) is meaningful. It climbs, as in toy#152.
+
+## toy#157 (F21/T3) — SHIPPED: the per-step cut HOLDS on a gated LSTM and COLLAPSES on the selective scan
+
+`toy train lstm` (runner `libexec/toy-train-lstm`, engine
+`lib/toy/llm/engine/lstm_engine.rb`, recipe
+`lib/toy/llm/recipes/lstm_seq.rb`, gate `prep/lstm_gate.rb`): a stack of
+textbook LSTM cells (i/f/o/g, 12 weights per layer) UNROLLED over T, a
+small-output head reading the LAST timestep, per-layer
+`--policy chain|dfa|frozen` on the same `--dfa-cut layer|step` axis
+toy#155 introduced. CPU-only.
+
+**It reuses toy#155's delayed-cue generator UNCHANGED**
+(`lib/toy/io/toy_ssm_task.rb`). Holding the task fixed is what makes the
+two lanes an architecture comparison instead of two anecdotes, and it is
+why the contrast below can be read straight across.
+
+### The headline: same cut, same task, opposite outcome
+
+Each lane at its own fair cell, seed 0 (the LSTM row's other two seeds
+are in the next table):
+
+| architecture | BP | DFA (layer cut) | **DFA (step cut — no BPTT at all)** | frozen |
+|---|---|---|---|---|
+| selective scan (toy#155) | 1.000 | 0.996 | **0.250 — chance** | 0.227 |
+| **gated LSTM (this lane)** | 1.000 | 0.242 | **1.000** | 0.266 |
+
+On the SSM the per-step cut destroyed the task; on the LSTM it solves
+it. The gates are the difference: an LSTM's forget gate can hold the
+cue in `c_t` without any gradient crossing a timestep, so a per-step
+random-feedback update has something to sharpen. The selective scan's
+input-dependent decay — the part that makes it good — is exactly the
+part that needs credit assigned ACROSS time. **"Can you delete BPTT?"
+has no architecture-independent answer**, and that is what this lane was
+built to establish. It agrees with Folchini et al. (ISC-HPC 2025).
+
+### The bar: at BP's own best cell, on all three seeds
+
+lr 0.02 + warmup 200, 4000 steps — the BP arm's best over a swept
+(lr x warmup x seed) grid, so "matches BP" means matching a BP that
+trained. Matched init, arms differ only in `--policy` / `--dfa-cut`:
+
+| seed | BP | DFA (layer cut) | **DFA (step cut)** | frozen |
+|---|---|---|---|---|
+| 0 | 1.000 | 0.242 | **1.000** | 0.266 |
+| 1 | 0.992 | 0.258 | **0.996** | 0.254 |
+| 2 | 1.000 | 0.988 | **1.000** | 0.238 |
+
+**The success bar is MET, and by the arm that keeps NO BPTT at all**:
+the per-step cut tracks BP to within .004 on every seed and clears the
+frozen control by .74. Note which arm fails: `--dfa-cut layer`, the one
+that keeps BPTT *inside* the layer and injects the random feedback once,
+is at chance on two of three seeds. It gets the worst of both — the
+instability of 64-step BPTT plus a single-tap error signal — and that
+ordering (step cut > BP > layer cut in robustness) is the opposite of
+the intuition that more true gradient is safer.
+
+### The second finding: BPTT is the FRAGILE arm here
+
+Every arm on this task is bimodal — it either solves it (~1.000) or sits
+at chance (.250 on 4 classes). Val accuracy at 4000 steps, no warmup:
+
+| lr | BP (seeds 0/1/2) | DFA `--dfa-cut step` (seeds 0/1/2) |
+|---|---|---|
+| 0.005 | 0.504 / 1.000 / 0.996 | 1.000 / 1.000 / 1.000 |
+| 0.010 | 0.250 / 1.000 / 0.996 | 1.000 / 1.000 / 1.000 |
+| 0.020 | 0.250 / 0.996 / 1.000 | 1.000 / 0.996 / 1.000 |
+| 0.030 | **1.000** / 0.250 / 0.238 | 1.000 / 1.000 / 0.996 |
+
+**The per-step cut solves 12 of 12 cells. BPTT solves 7 of 12, and WHICH
+learning rate works depends on the SEED** — seed 0 needs 0.03 and fails
+below it; seeds 1 and 2 need 0.005–0.02 and fail at 0.03. Warmup (the
+nearest thing this harness has to the gradient clipping that normally
+stabilises long BPTT) moves BP but is itself cell-dependent — BP over
+seeds 0/1/2 at 4000 steps:
+
+| warmup | lr 0.005 | lr 0.01 | lr 0.02 |
+|---|---|---|---|
+| 0 | .504 / 1.000 / .996 | .250 / 1.000 / .996 | .250 / .996 / 1.000 |
+| 200 | .730 / 1.000 / 1.000 | 1.000 / 1.000 / **.250** | **1.000 / .992 / 1.000** |
+| 500 | **.258** / 1.000 / 1.000 | 1.000 / .992 / .996 | 1.000 / 1.000 / 1.000 |
+
+Two cells make BP healthy at all three seeds (warmup 200 @ lr 0.02, and
+warmup 500 @ lr 0.02); the bar is stated at the first. Steps alone also
+work eventually — seed 0 at lr 0.005 with no warmup reaches .996 at 8000
+steps and 1.000 at 16000, i.e. 4x the budget the per-step cut needs.
+
+That asymmetry is not a subtlety of the bar, it IS the result. The arm
+with no gradient crossing time never has a gradient to explode, so it is
+indifferent to the rate; BPTT through 64 gated steps is threading a
+needle. **The honest statement is therefore not "DFA matches BP" but
+"DFA matches BP at BP's best cell, and reaches it from anywhere."**
+
+**Caveat, stated because it bounds the claim: this harness has no
+gradient clipping**, and clipping is the standard fix for exactly the
+BPTT failure mode above. Some of BP's fragility is ours, not the
+method's. Adam's per-parameter normalisation is a partial substitute and
+the warmup sweep is the rest of the honest effort, but a clipped BPTT
+arm would be the fairer control. Worth a decision before F21 leans on
+the stability half of this result.
+
+### Why the bar is stated over THREE seeds, unlike every other lane
+
+The half-built state of this lane reported the fair cell as lr 0.03 /
+2000 steps, where BP reads 1.000 and both DFA arms read ~.99 — a clean
+"DFA matches BP". At seeds 1 and 2 that same cell gives BP **.250 and
+.270**, i.e. below its own frozen control. A one-seed bar there would
+have shipped "DFA ties BP" on seed luck, and a one-seed bar anywhere in
+the 0.005–0.02 band would have shipped "DFA BEATS BP" on the same luck
+in the other direction. This is the THIRD time this lane nearly shipped
+a wrong result from an undertrained BP arm (the first two: a bias-free
+LSTM whose carry was dead at init, and the inherited 0.003 default).
+Hence: the gate runs all three seeds, and the roadmap states the grid,
+not a row.
+
+### The memory claim: measured in the ticket's own units, and NOT met
+
+toy#155 could only report graph NODE COUNT. This lane sums
+`ggml_nbytes` over every node of the realized graph — the actual
+materialised activation footprint the ticket states its target in:
+
+| T | BP | DFA (layer) | DFA (step) |
+|---|---|---|---|
+| 16 | 3 312 132 | 3 387 912 | 3 879 552 |
+| 32 | 6 638 084 | 6 763 016 | 7 779 072 |
+| 64 | 13 289 988 | 13 513 224 | 15 578 112 |
+| 128 | 26 593 796 | 27 013 640 | 31 176 192 |
+
+The per-step cut costs **17% MORE bytes**, and the ratio does not
+improve with L — the better instrument confirms toy#155's node count.
+Same structural reason: in a graph autodiff every forward tensor is
+materialised whatever the credit rule, so the streaming win is not
+expressible as a graph rewrite. **Filed as tao#21** with both lanes'
+tables and three options for what would actually measure it (cheapest:
+an ANALYTIC streaming-bytes figure alongside the measured graph bytes).
+tao#21 also recommends NOT spending tao#19's deferred F19 CUDA twin: a
+device port changes throughput, not what the graph materialises.
+
+### Construction notes
+
+1. **The gate biases are load-bearing and were missing.** Without them
+   f_t = sigmoid(0) = 0.5 at init, so the cell state halves every step
+   and 0.5^64 is nothing — the carry is dead before training starts.
+   Measured in that state: BPTT .199 (below chance) against per-step DFA
+   .969, a spectacular-looking "DFA beats BPTT" that was really a
+   crippled LSTM. `b_f` now initialises to 1.0 (Jozefowicz et al. 2015).
+2. **One tap family is enough here**, unlike the SSM lane: `h_t` IS the
+   layer output and it reaches the prediction from every step, so every
+   per-step tap is well-posed. toy#155 needed a second family precisely
+   because its per-step layer output was inert at the final layer.
+3. **`--align-events` is rejected**, as on ssm: the DFA update arrives
+   through autodiff from the surrogate roots, so it lands in the SAME
+   accumulator a BP run uses and there is no second tensor to take a
+   cosine against. The gate proves the feedback reaches the weights via
+   the B SEED instead (toy#158's discipline).
+4. The runner shipped with `run_start.name = "ssm"` — invisible in the
+   curve, and it mislabels every bundle a consumer reads. Fixed, and the
+   gate now asserts the lane's own name.
+
+`--task mean` is this lane's `blobs`: the class signal is spread over
+every step, so no carry across time is needed and a FROZEN recurrence
+plus a trained head already integrates it. Measured, asserted.
+
+### For Tao (F21)
+
+```
+toy train lstm --steps 4000 --seed 0 --policy chain
+toy train lstm --steps 4000 --seed 0 --policy dfa                    # layer cut
+toy train lstm --steps 4000 --seed 0 --policy dfa --dfa-cut step
+toy train lstm --steps 4000 --seed 0 --policy frozen
+#  ... and the whole grid at seeds 1 and 2, which is NOT optional here
+```
+
+The runner's DEFAULTS are the fair cell (lr 0.02, warmup 200), so those
+commands need neither flag — and `--warmup` is forwarded as UNSET rather
+than `0` on this lane for exactly that reason. `--warmup 0` still
+disables the ramp explicitly.
+
+Arms differ ONLY in `--policy` / `--dfa-cut`. **Run all three seeds** —
+see above for what a one-seed reading of this lane produces. **No
+`--align-events`** (rejected by the CLI). The memory half of the success
+target is not met and is not measurable in this harness; take it up at
+tao#21 rather than re-measuring here.
 
 ## Landmines that apply
 

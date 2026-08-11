@@ -852,13 +852,12 @@ toy-train-lstm: libexec/toy-train-lstm
 # seed, the MANDATORY success bar, and the MEMORY measurement in BYTES
 # that the ticket's success target is stated in.
 #
-# NOT WRITTEN YET. prep/lstm_gate.rb does not exist, so `make gates`
-# fails here — deliberately left dangling rather than removed, so the
-# battery names the missing piece instead of quietly skipping a lane.
-# See docs/roadmap/HANDOVER-toy157-2026-08-11.md; prep/ssm_gate.rb is
-# the closest template.
+# It also depends on the SSM runner, and that is the point of the lane:
+# one leg runs the IDENTICAL per-step cut on toy#155's selective scan and
+# asserts it collapses there while holding here. A cross-architecture
+# claim that only ever runs one architecture is not a measurement.
 .PHONY: gate-lstm
-gate-lstm: libexec/toy-train-lstm
+gate-lstm: libexec/toy-train-lstm libexec/toy-train-ssm
 	ruby prep/lstm_gate.rb
 
 # toy#156 (DFA-arch T2) — the latent diffusion denoiser. SEPARATE binary
