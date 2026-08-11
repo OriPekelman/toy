@@ -83,6 +83,9 @@ module Toy
         MLP_RUNNER_TARGET = "libexec/toy-train-mlp"
         # toy#154 (DFA-arch T1) — the CTR tower. Own binary, CPU-only.
         CTR_RUNNER_TARGET = "libexec/toy-train-ctr"
+        # toy#153 (DFA-arch T1) — the GNN node-classification lane. Own
+        # binary, CPU-only.
+        GNN_RUNNER_TARGET = "libexec/toy-train-gnn"
         FRANKEN_MOE_RUNNER_TARGET = "libexec/toy-train-franken-moe-cli"
         FRANKEN_MOE_CUDA_RUNNER_TARGET = "libexec/toy-train-franken-moe-cli-cuda"
         # GPT-2 GPU twins (--arch gpt2 --device cuda|metal). SEPARATE single-type
@@ -182,6 +185,16 @@ module Toy
           @base_rate   = nil
           @lin_scale   = nil
           @fm_branch   = false
+          # toy#153 (gnn): the graph lane's own shape/task/feedback knobs.
+          @graph          = nil  # bundle prefix (prep/fetch_cora.rb)
+          @nodes          = nil
+          @degree         = nil
+          @homophily      = nil
+          @feat_signal    = nil
+          @train_per_class = nil
+          @feedback_route = nil  # direct | structure
+          @feedback_hops  = nil
+          @weight_decay   = nil
           @moe_policy = nil   # franken-moe: chain | dfa-experts
           @moe_aux    = nil   # franken-moe: top1 aux-loss alpha
           @experts    = nil   # franken-moe: expert count E>=2 (toy#128)
@@ -248,7 +261,9 @@ module Toy
           #     warm-start +cuda                  in train_cuda.rb source)
           #   metal (fs only)  -> toy-train-metal
           #   cpu fs/warm-start-> toy-train
-          target = if @recipe == "ctr"
+          target = if @recipe == "gnn"
+                     GNN_RUNNER_TARGET
+                   elsif @recipe == "ctr"
                      CTR_RUNNER_TARGET
                    elsif @recipe == "mlp"
                      MLP_RUNNER_TARGET
@@ -350,6 +365,33 @@ module Toy
                              "MLP_B_SCALE"      => (@dfa_b_scale || ""),
                              "MLP_ALIGN"        => (@align_events ? "1" : ""),
                              "MLP_ALIGN_EVERY"  => (@align_every || 1).to_s)
+          elsif @recipe == "gnn"
+            # Lane-local GNN_* namespace, same discipline as MLP_*/CTR_*.
+            env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
+                             "GNN_POLICY"          => (@policy || ""),
+                             "GNN_LAYERS"          => (@mlp_layers || 1).to_s,
+                             "GNN_HIDDEN"          => (@hidden || 32).to_s,
+                             "GNN_GRAPH"           => (@graph || ""),
+                             "GNN_NODES"           => (@nodes ? @nodes.to_s : ""),
+                             "GNN_FEATURES"        => (@features ? @features.to_s : ""),
+                             "GNN_CLASSES"         => (@classes ? @classes.to_s : ""),
+                             "GNN_DEGREE"          => (@degree ? @degree.to_s : ""),
+                             "GNN_HOMOPHILY"       => (@homophily ? @homophily.to_s : ""),
+                             "GNN_FEAT_SIGNAL"     => (@feat_signal ? @feat_signal.to_s : ""),
+                             "GNN_TASK"            => (@task || ""),
+                             "GNN_TEACHER_DIM"     => (@teacher_dim ? @teacher_dim.to_s : ""),
+                             "GNN_TASK_SEED"       => (@task_seed || 7).to_s,
+                             "GNN_TRAIN_PER_CLASS" => (@train_per_class ? @train_per_class.to_s : ""),
+                             "GNN_FEEDBACK_ROUTE"  => (@feedback_route || ""),
+                             "GNN_FEEDBACK_HOPS"   => (@feedback_hops ? @feedback_hops.to_s : ""),
+                             "GNN_LR"              => (@lr || ""),
+                             "GNN_WD"              => (@weight_decay ? @weight_decay.to_s : ""),
+                             "GNN_WARMUP"          => (@warmup || 0).to_s,
+                             "GNN_B_SEED"          => (@dfa_b_seed || 1234).to_s,
+                             "GNN_B_DIST"          => (@dfa_b_dist || ""),
+                             "GNN_B_SCALE"         => (@dfa_b_scale || ""),
+                             "GNN_ALIGN"           => (@align_events ? "1" : ""),
+                             "GNN_ALIGN_EVERY"     => (@align_every || 1).to_s)
           elsif @recipe == "ctr"
             # Lane-local CTR_* namespace, same discipline as MLP_*.
             env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
@@ -606,15 +648,85 @@ module Toy
               key == "base-rate" ? @base_rate = val.to_f : @lin_scale = val.to_f
             when "--fm-branch"
               @fm_branch = true
+            # ---- toy#153 (gnn): the graph lane's own knobs ----
+            when "--graph"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--graph requires a value") if val.nil?
+              @graph = val
+            when /\A--graph=(.*)\z/m
+              @graph = $1
+            when "--nodes", "--degree", "--train-per-class", "--feedback-hops"
+              key = @argv[i]
+              i += 1
+              val = @argv[i]
+              return bad_arg("#{key} requires a value") if val.nil?
+              # --degree 0 is legal and meaningful: an EDGELESS graph
+              # makes the propagation the identity, so the lane
+              # degenerates to a plain MLP — the control that says
+              # whether the graph is load-bearing at all.
+              min = key == "--degree" ? 0 : 1
+              return bad_arg("#{key} must be an integer >= #{min}, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= min
+              return bad_arg("--feedback-hops must be in 1..8, got #{val.inspect}") if key == "--feedback-hops" && val.to_i > 8
+              case key
+              when "--nodes"           then @nodes           = val.to_i
+              when "--degree"          then @degree          = val.to_i
+              when "--train-per-class" then @train_per_class = val.to_i
+              else                          @feedback_hops   = val.to_i
+              end
+            when /\A--(nodes|degree|train-per-class|feedback-hops)=(.*)\z/
+              key = $1
+              val = $2
+              min = key == "degree" ? 0 : 1
+              return bad_arg("--#{key} must be an integer >= #{min}, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= min
+              return bad_arg("--feedback-hops must be in 1..8, got #{val.inspect}") if key == "feedback-hops" && val.to_i > 8
+              case key
+              when "nodes"           then @nodes           = val.to_i
+              when "degree"          then @degree          = val.to_i
+              when "train-per-class" then @train_per_class = val.to_i
+              else                        @feedback_hops   = val.to_i
+              end
+            when "--homophily", "--feat-signal", "--weight-decay"
+              key = @argv[i]
+              i += 1
+              val = @argv[i]
+              return bad_arg("#{key} requires a value") if val.nil?
+              return bad_arg("#{key} must be a non-negative float, got #{val.inspect}") unless val =~ /\A\d*\.?\d+\z/
+              return bad_arg("--homophily must be in [0, 1], got #{val.inspect}") if key == "--homophily" && val.to_f > 1.0
+              case key
+              when "--homophily"    then @homophily    = val.to_f
+              when "--feat-signal"  then @feat_signal  = val.to_f
+              else                       @weight_decay = val.to_f
+              end
+            when /\A--(homophily|feat-signal|weight-decay)=(.*)\z/
+              key = $1
+              val = $2
+              return bad_arg("--#{key} must be a non-negative float, got #{val.inspect}") unless val =~ /\A\d*\.?\d+\z/
+              return bad_arg("--homophily must be in [0, 1], got #{val.inspect}") if key == "homophily" && val.to_f > 1.0
+              case key
+              when "homophily"    then @homophily    = val.to_f
+              when "feat-signal"  then @feat_signal  = val.to_f
+              else                     @weight_decay = val.to_f
+              end
+            when "--feedback-route"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--feedback-route requires a value") if val.nil?
+              return bad_arg("--feedback-route must be direct or structure, got #{val.inspect}") unless %w[direct structure].include?(val)
+              @feedback_route = val
+            when /\A--feedback-route=(.*)\z/
+              val = $1
+              return bad_arg("--feedback-route must be direct or structure, got #{val.inspect}") unless %w[direct structure].include?(val)
+              @feedback_route = val
             when "--task"
               i += 1
               val = @argv[i]
               return bad_arg("--task requires a value") if val.nil?
-              return bad_arg("--task must be teacher or blobs, got #{val.inspect}") unless %w[teacher blobs].include?(val)
+              return bad_arg("--task must be teacher, blobs or community, got #{val.inspect}") unless %w[teacher blobs community].include?(val)
               @task = val
             when /\A--task=(.*)\z/
               val = $1
-              return bad_arg("--task must be teacher or blobs, got #{val.inspect}") unless %w[teacher blobs].include?(val)
+              return bad_arg("--task must be teacher, blobs or community, got #{val.inspect}") unless %w[teacher blobs community].include?(val)
               @task = val
             when "--task-seed"
               i += 1
@@ -1160,8 +1272,8 @@ when /\A--dfa-feedback-lr=(.*)\z/
             return bad_arg("unexpected extra arguments: #{rest[1..].join(' ')}")
           end
           @recipe = rest.first
-          unless %w[from-scratch lora warm-start vit-tiny franken franken-moe mlp ctr].include?(@recipe)
-            return bad_arg("unknown recipe #{@recipe.inspect}; supported: 'from-scratch', 'lora', 'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp', 'ctr'")
+          unless %w[from-scratch lora warm-start vit-tiny franken franken-moe mlp ctr gnn].include?(@recipe)
+            return bad_arg("unknown recipe #{@recipe.inspect}; supported: 'from-scratch', 'lora', 'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp', 'ctr', 'gnn'")
           end
           # ---- toy#132: the flag x recipe MATRIX ----
           # Four llama-first flags in a row tripped franken-moe at Tao
@@ -1179,20 +1291,35 @@ when /\A--dfa-feedback-lr=(.*)\z/
             ["--init",          %w[warm-start],                     !@init.nil?, ""],
             ["--fields/--cardinality/--numeric/--emb/--pairs", %w[ctr], (!@fields.nil? || !@cardinality.nil? || !@numeric.nil? || !@emb.nil? || !@pairs.nil?), " (toy#154)"],
             ["--base-rate/--lin-scale/--fm-branch", %w[ctr], (!@base_rate.nil? || !@lin_scale.nil? || @fm_branch), " (toy#154)"],
-            ["--dfa-b-*/--align-events", %w[franken franken-moe mlp ctr],   (!@dfa_b_seed.nil? || !@dfa_b_dist.nil? || !@dfa_b_scale.nil? || @align_events), ""],
-            ["--policy",        %w[franken mlp ctr],                !@policy.nil?, ""],
+            ["--dfa-b-*/--align-events", %w[franken franken-moe mlp ctr gnn],   (!@dfa_b_seed.nil? || !@dfa_b_dist.nil? || !@dfa_b_scale.nil? || @align_events), ""],
+            ["--policy",        %w[franken mlp ctr gnn],            !@policy.nil?, ""],
+            # toy#153 (gnn). --feedback-route is DELIBERATELY not
+            # --dfa-feedback: franken-moe's --dfa-feedback selects how B
+            # is UPDATED (fixed|kolen-pollack), this selects how the
+            # error is ROUTED (direct|structure). Different axis, so a
+            # different name — the tao#18 --policy-scope discipline.
+            ["--graph",         %w[gnn],                            !@graph.nil?, " (toy#153)"],
+            ["--nodes/--degree/--homophily/--feat-signal", %w[gnn],
+             (!@nodes.nil? || !@degree.nil? || !@homophily.nil? || !@feat_signal.nil?), " (toy#153)"],
+            ["--train-per-class", %w[gnn],                          !@train_per_class.nil?, " (toy#153)"],
+            ["--feedback-route/--feedback-hops", %w[gnn],           (!@feedback_route.nil? || !@feedback_hops.nil?), " (toy#153)"],
+            ["--weight-decay",  %w[gnn],                            !@weight_decay.nil?, " (toy#153)"],
             # tao#18 item 1: --policy-scope is DELIBERATELY not accepted
             # on mlp. The attn|ffn|all meaning stays stable across
             # lanes; an MLP has no attention to scope, and a
             # head-vs-hidden split would get a DIFFERENT name
             # (--policy-tensors), never an overload of this one.
             ["--policy-scope",  %w[franken],                        !@policy_scope.nil?, " (toy#151; NOT accepted on 'mlp' — tao#18)"],
-            ["--align-every",   %w[franken franken-moe mlp],        !@align_every.nil?, ""],
-            ["--lr/--warmup",   %w[franken franken-moe mlp ctr],    (!@lr.nil? || !@warmup.nil?), " (toy#126/#132)"],
-            ["--classes/--features", %w[mlp],                       (!@classes.nil? || !@features.nil?), " (toy#152)"],
-            ["--hidden/--layers", %w[mlp ctr],                      (!@hidden.nil? || !@mlp_layers.nil?), " (toy#152/#154)"],
-            ["--task/--teacher-dim", %w[mlp],                       (!@task.nil? || !@teacher_dim.nil?), " (toy#152)"],
-            ["--task-seed/--val-batches", %w[mlp ctr],              (!@task_seed.nil? || !@val_batches.nil?), " (toy#152/#154)"],
+            ["--align-every",   %w[franken franken-moe mlp gnn],    !@align_every.nil?, ""],
+            ["--lr/--warmup",   %w[franken franken-moe mlp ctr gnn], (!@lr.nil? || !@warmup.nil?), " (toy#126/#132)"],
+            ["--classes/--features", %w[mlp gnn],                   (!@classes.nil? || !@features.nil?), " (toy#152/#153)"],
+            ["--hidden/--layers", %w[mlp ctr gnn],                  (!@hidden.nil? || !@mlp_layers.nil?), " (toy#152/#154/#153)"],
+            ["--task/--teacher-dim", %w[mlp gnn],                   (!@task.nil? || !@teacher_dim.nil?), " (toy#152/#153)"],
+            ["--task-seed",     %w[mlp ctr gnn],                    !@task_seed.nil?, " (toy#152/#154/#153)"],
+            # --val-batches stays mlp/ctr: the gnn lane is TRANSDUCTIVE,
+            # its held-out set is a node mask over the one graph, so
+            # "how many val batches" has nothing to size.
+            ["--val-batches",   %w[mlp ctr],                        !@val_batches.nil?, " (toy#152/#154)"],
             ["--no-shadow",     %w[franken franken-moe],            @no_shadow, " (toy#129)"],
             ["--context/--vocab", %w[franken franken-moe],          (!@context.nil? || !@vocab.nil?), " (toy#129)"],
             ["--batch",         %w[franken franken-moe mlp ctr],    !@batch.nil?, " (toy#133)"],
@@ -1330,6 +1457,19 @@ when /\A--dfa-feedback-lr=(.*)\z/
           if @recipe == "mlp" && @device != "cpu"
             return bad_arg("--device #{@device.inspect} is not supported for recipe 'mlp' (CPU-only by decision — tao#18: the T0 anchor is small by construction and gets no CUDA twin)")
           end
+          # --task's TOKEN SET is lane-local even though the flag name is
+          # shared: `blobs` is the mlp anchor's degenerate control and
+          # `community` is the gnn lane's. Accepting the wrong one would
+          # silently run the default task under an experiment label.
+          if @task == "community" && @recipe != "gnn"
+            return bad_arg("--task community is only valid with recipe 'gnn' (toy#153); 'mlp' takes teacher|blobs")
+          end
+          if @task == "blobs" && @recipe != "mlp"
+            return bad_arg("--task blobs is only valid with recipe 'mlp' (toy#152); 'gnn' takes teacher|community")
+          end
+          if @recipe == "gnn" && @device != "cpu"
+            return bad_arg("--device #{@device.inspect} is not supported for recipe 'gnn' (CPU-only by decision — tao#18)")
+          end
           if @recipe == "vit-tiny" && @device != "cpu"
             return bad_arg("--device #{@device.inspect} is not supported for recipe 'vit-tiny' (cpu-only in this slice)")
           end
@@ -1350,6 +1490,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
           return "vit"     if recipe == "vit-tiny"
           return "mlp"     if recipe == "mlp"
           return "ctr"     if recipe == "ctr"
+          return "gnn"     if recipe == "gnn"
           return "moe"     if recipe == "franken-moe"
           "llama"
         end

@@ -82,6 +82,22 @@ REJECT = [
   [%w[from-scratch --shape wide],         "--shape"],
   [%w[franken --routing top1],            "--routing"],
   [%w[franken --experts 4],               "--experts"],
+  # toy#153 (gnn). --feedback-route is DELIBERATELY a different name
+  # from franken-moe's --dfa-feedback: one selects how B is UPDATED,
+  # the other how the error is ROUTED. Probing BOTH directions is the
+  # point — a lane-local flag leaking into a neighbouring lane is how
+  # a swept command line silently records a cell it never ran.
+  [%w[from-scratch --graph data/gnn_cora], "--graph"],
+  [%w[mlp --graph data/gnn_cora],          "--graph"],
+  [%w[franken --nodes 512],                "--nodes/--degree/--homophily/--feat-signal"],
+  [%w[mlp --degree 8],                     "--nodes/--degree/--homophily/--feat-signal"],
+  [%w[ctr --train-per-class 20],           "--train-per-class"],
+  [%w[franken-moe --feedback-route structure], "--feedback-route/--feedback-hops"],
+  [%w[mlp --feedback-hops 2],              "--feedback-route/--feedback-hops"],
+  [%w[franken --weight-decay 0.01],        "--weight-decay"],
+  [%w[gnn --policy-scope ffn],             "--policy-scope"],
+  [%w[gnn --val-batches 4],                "--val-batches"],
+  [%w[gnn --fm-branch],                    "--base-rate/--lin-scale/--fm-branch"],
 ]
 REJECT.each do |args, label|
   out, st = probe(args)
@@ -109,10 +125,15 @@ failures << "matrix: franken --ckpt-every parse error wrong (#{out.lines.last(1)
 # not streamed).
 out, st = probe(%w[mlp --batch 64 --classes 1])
 failures << "matrix: mlp --batch/--classes hit the wrong rule (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("--classes must be an integer >= 2")
+# toy#153: the gnn lane's own flags all pass the matrix; the run then
+# stops at the LATER --task token rule, which is lane-local even though
+# the flag name is shared with mlp.
+out, st = probe(%w[gnn --nodes 512 --degree 8 --feedback-route structure --feedback-hops 2 --weight-decay 0.01 --task blobs])
+failures << "matrix: gnn full flag set hit the matrix (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("--task blobs is only valid with recipe 'mlp'")
 puts failures.length == n0 ? "  ok: right-recipe probes pass the matrix (their errors come from later rules)" : "  FAIL: acceptance side"
 
 if failures.empty?
-  puts "GATE PASS [train-cli-matrix]: #{REJECT.length} rejections + 4 acceptance probes (toy#132)"
+  puts "GATE PASS [train-cli-matrix]: #{REJECT.length} rejections + 5 acceptance probes (toy#132/#153)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [train-cli-matrix]: #{f}" }

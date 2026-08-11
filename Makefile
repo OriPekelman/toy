@@ -833,6 +833,40 @@ libexec/toy-train-ctr: lib/toy/run/train_ctr.rb lib/toy/dev/toy_describe_flow.rb
 toy-train-ctr: libexec/toy-train-ctr
 .PHONY: toy-train-ctr
 
+# toy#153 (DFA-arch T1) — the GNN node-classification lane: message
+# passing over a symmetric-normalised adjacency, per-layer policy, and
+# `--dfa-feedback structure` (DFA-GNN's error-along-the-graph feedback).
+# SEPARATE binary (landmine #16), CPU-only (tao#18). Reads its graph
+# either from a seed (contextual SBM + random GNN teacher) or from a
+# bundle prep/fetch_cora.rb writes — no committed fixture either way.
+libexec/toy-train-gnn: lib/toy/run/train_gnn.rb lib/toy/dev/toy_describe_flow.rb \
+		lib/toy/io/json_builder.rb lib/toy/io/json.rb lib/toy/io/toy_events.rb \
+		vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
+		lib/toy/io/toy_gnn_task.rb lib/toy/llm/engine/gnn_engine.rb \
+		lib/toy/llm/recipes/gnn_node.rb lib/toy/llm/adamw.rb \
+		lib/toy/train/dfa_b.rb \
+		lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) $< -o $@
+toy-train-gnn: libexec/toy-train-gnn
+.PHONY: toy-train-gnn
+
+# toy#153 gate: chain byte-null, determinism, the masked-CE/semi-
+# supervised wiring, structure-aware feedback as a REAL arm (it must
+# move the curve AND reach the unlabelled nodes), and the MANDATORY
+# success bar (all-DFA within gap of all-BP AND beating the frozen
+# control, at matched init + seed).
+# The Cora bundle is a REAL prerequisite, not an optional extra: the
+# lane's mandatory success bar is stated on Cora (the seeded graph
+# provably cannot carry it — see prep/gnn_gate.rb leg 8), so a gate that
+# skipped it when the data were absent would not be a mandatory bar.
+# One 168 KB download, then cached in data/cora.tgz.
+data/gnn_cora.meta.i32:
+	ruby prep/fetch_cora.rb
+
+.PHONY: gate-gnn
+gate-gnn: libexec/toy-train-gnn data/gnn_cora.meta.i32
+	ruby prep/gnn_gate.rb
+
 # toy#154 gate: the scalar-output CTR lane — logloss identity, chain
 # byte-null, determinism, embeddings-train-under-DFA, and the MANDATORY
 # success bar in AUC (~0.01 of BP, and beating the frozen control).

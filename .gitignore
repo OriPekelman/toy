@@ -42,6 +42,16 @@ data/qwen25_prompt_ids.txt
 data/gpt2-bpe-vocab.tsv
 data/gpt2-bpe-merges.tsv
 data/gpt2-bpe-bytechars.tsv
+# toy#153 — the GNN lane's graph bundles + the cached Cora tarball. All
+# regenerable with `ruby prep/fetch_cora.rb`; the feature matrix alone is
+# 15 MB, which is exactly the kind of artefact the >5 MB pre-commit guard
+# exists to keep out.
+data/cora.tgz
+data/gnn_*.meta.i32
+data/gnn_*.feat.f32
+data/gnn_*.edge.i32
+data/gnn_*.label.i32
+data/gnn_*.split.i32
 prep/_hf_cache/
 # Scratch logs from `make hello` / progress wrappers
 prep/_convert.log

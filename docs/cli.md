@@ -80,12 +80,13 @@ recipes are:
 | `franken-moe` | the same, MoE-shaped (routed experts, dense or top-1) | as `franken` plus `--experts`, `--routing`, `--moe-policy`, `--dfa-feedback`, `--lr-schedule`, `--lr-control`, … |
 | `mlp` | MLP classifier on a seeded synthetic task — the DFA **anchor** lane (CPU-only) | `--policy`, `--classes`, `--hidden`, `--features`, `--layers`, `--task`, `--val-batches`, `--dfa-b-*`, `--align-events` |
 | `ctr` | CTR/recommender tower: embedding tables + MLP + **scalar** sigmoid head, scored by AUC (CPU-only) | `--policy`, `--fields`, `--cardinality`, `--emb`, `--numeric`, `--hidden`, `--layers`, `--pairs`, `--lin-scale`, `--base-rate`, `--fm-branch`, `--val-batches` |
+| `gnn` | GCN-class node classification over a normalised adjacency, transductive semi-supervised (CPU-only). Runs on a seeded graph or on real Cora (`ruby prep/fetch_cora.rb`) | `--policy`, `--graph`, `--layers`, `--hidden`, `--classes`, `--features`, `--nodes`, `--degree`, `--homophily`, `--feat-signal`, `--train-per-class`, `--task`, `--feedback-route`, `--feedback-hops`, `--weight-decay` |
 
 An unknown recipe is rejected loud (`supported: 'from-scratch', 'lora',
-'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp', 'ctr'`). `--arch gpt2`
+'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp', 'ctr', 'gnn'`). `--arch gpt2`
 trains the from-scratch GPT-2 arch (`from-scratch` only, CPU-only);
 `--device cuda|metal` selects the per-device runner (`metal` is macOS-only;
-GPT-2, ViT-Tiny, `mlp` and `ctr` are CPU-only, and `franken`'s macro-DFA mode is
+GPT-2, ViT-Tiny, `mlp`, `ctr` and `gnn` are CPU-only, and `franken`'s macro-DFA mode is
 CPU-only by decision).
 Defaults: `--steps 5`, `--seed 0`, `--arch llama`, `--device cpu`, `--out runs/<id>`.
 Writes the run bundle (see [Run bundle layout](#run-bundle-layout)) and echoes
@@ -102,9 +103,9 @@ a cell flip, not a scattered set of one-off checks.
 #### The DFA lanes in one paragraph
 
 `--policy chain,dfa,…` sets credit assignment **per layer**:
-`chain` = backprop, `dfa` = fixed random feedback, and on `mlp` also
-`frozen` (the control arm — the layer stays at init while the head still
-trains). `--policy-scope attn|ffn|all` selects which tensors a `:dfa`
+`chain` = backprop, `dfa` = fixed random feedback, and on `mlp`, `ctr`
+and `gnn` also `frozen` (the control arm — the layer stays at init while
+the head still trains). `--policy-scope attn|ffn|all` selects which tensors a `:dfa`
 layer policies (dense lanes; default `attn`).
 `--dfa-granularity matmul|block` selects **micro** (per-weight) vs
 **macro** (one tap per block output, full BP inside the block) DFA.
@@ -113,10 +114,22 @@ layer policies (dense lanes; default `attn`).
 `--optimizer adamw|muon|radam` (`radam` is `franken`-only; `sgd` is
 `franken-moe`-only).
 
-The `mlp` and `ctr` lanes print one extra stdout line after the curve —
-`val: acc=… loss=… n=…` and `val: auc=… logloss=… n=… pos=…` — because
-held-out accuracy / AUC, not loss, is the metric their success criteria
-are stated in.
+`gnn` adds `--feedback-route direct|structure` (+ `--feedback-hops N`):
+`structure` spreads the error along the graph before the random
+projection, so an UNLABELLED node — which has exactly zero direct error
+in this semi-supervised setting — receives a pseudo-error from its
+labelled neighbourhood. This is deliberately **not** spelled
+`--dfa-feedback`: `franken-moe`'s flag of that name selects how the
+feedback matrix B is *updated* (`fixed|kolen-pollack`), a different axis.
+A different meaning gets a different name (the tao#18 `--policy-scope`
+discipline).
+
+The `mlp`, `ctr` and `gnn` lanes print extra stdout lines after the
+curve — `val: acc=… loss=… n=…`, `val: auc=… logloss=… n=… pos=…`, and
+for `gnn` a `train:` line as well — because held-out accuracy / AUC, not
+loss, is the metric their success criteria are stated in. `gnn` reports
+both sides of the split because its arms separate as much by their
+train/val GAP as by val accuracy.
 
 ### `eval <model> [--top-k K] [--device cpu|cuda|metal] [--json]`
 Score a GGUF model: per-token logprobs. Default `--top-k 5`, `--device cpu`.

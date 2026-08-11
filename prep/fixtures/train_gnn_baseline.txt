@@ -1,0 +1,9 @@
+# prep/fixtures/train_gnn_baseline.txt — the toy#153 GNN lane's default
+# 5-step curve (libexec/toy-train-gnn with no GNN_* env at all: the
+# synthetic 2048-node contextual-SBM graph, 1 hidden layer, all-chain).
+# Regenerate: STEPS=5 SEED=0 ./libexec/toy-train-gnn | grep '^step '
+step 1: loss=1.9560272693634033
+step 2: loss=1.9548081159591675
+step 3: loss=1.9531246423721313
+step 4: loss=1.9511170387268066
+step 5: loss=1.9488619565963745

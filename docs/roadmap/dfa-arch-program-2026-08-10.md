@@ -5,7 +5,8 @@ SETTLED (tao#18, tao#19) so each lane can be built without re-litigating
 it, and flags the one thing I think is still ambiguous.
 
 Build order: **#152 → #158 → #154 → #153 / #155 / #156 / #157**.
-Status: **#152, #158 and #154 shipped** (see their sections below); **#153 next**.
+Status: **#152, #158, #154 and #153 shipped** (see their sections below);
+**#155 / #156 / #157 next**.
 
 ## Settled (tao#18, tao#19 — Ori)
 
@@ -359,6 +360,146 @@ the toy#152-with-blobs failure exactly. `--lin-scale 0.25` with 40
 pairs makes the crosses carry the signal. The gate asserts
 BP − frozen > 0.05 *first*, so a future change that quietly makes the
 task easy fails loudly instead of reporting a free pass.
+
+## toy#153 (F17/T1) — SHIPPED, and it is the program's SECOND positive
+## — the first where DFA BEATS BP
+
+`toy train gnn` (runner `libexec/toy-train-gnn`, engine
+`lib/toy/llm/engine/gnn_engine.rb`, task `lib/toy/io/toy_gnn_task.rb`,
+gate `prep/gnn_gate.rb`): message passing over the symmetric-normalised
+adjacency `S = D^-1/2 (A+I) D^-1/2`, per-layer `--policy
+chain|dfa|frozen`, a MASKED cross-entropy over the labelled nodes only,
+and DFA-GNN's structure-aware feedback as `--feedback-route structure`.
+CPU-only. Runs on a seeded contextual-SBM graph by default and on **the
+real Cora citation graph** via `GNN_GRAPH=data/gnn_cora`
+(`ruby prep/fetch_cora.rb`, one 168 KB download).
+
+**Result on Cora** (canonical 2-layer GCN: 1 hidden layer + head, width
+64, lr 0.01, 100 steps, matched init + seed, val = all 2568 non-training
+nodes):
+
+| seed | all-BP | all-DFA | DFA(structure) | frozen |
+|---|---|---|---|---|
+| 0 | 0.697 | **0.762** | 0.764 | 0.618 |
+| 1 | 0.661 | **0.759** | — | 0.590 |
+| 2 | 0.643 | **0.760** | — | 0.524 |
+
+**The ticket's success target — all-DFA matches BP node accuracy on
+Cora — is MET and exceeded.** DFA is above BP on every seed and clears
+the frozen control by .14–.24. This is the program's first lane where
+DFA does not merely approach BP.
+
+### Four things that keep it honest
+
+1. **BP is not under-tuned, and it is not stopped at the wrong
+   moment.** lr 0.01 is BP's OWN best on this graph (BP val .351 /
+   .661 / .697 / .668 / .593 at lr .001 / .003 / .01 / .03 / .1).
+   Weight decay does not rescue it (`GNN_WD` swept 0 → .05 moves BP
+   .695 → .698). And the step budget is not the explanation either —
+   **DFA is ahead at every budget**, and gets there far faster:
+
+   | steps | all-BP | all-DFA | DFA(structure, 3 hops) | frozen |
+   |---|---|---|---|---|
+   | 20  | 0.405 | **0.768** | 0.778 | 0.582 |
+   | 50  | 0.668 | **0.769** | 0.775 | 0.610 |
+   | 100 | 0.697 | **0.762** | 0.773 | 0.618 |
+   | 200 | 0.695 | **0.716** | 0.733 | 0.618 |
+
+   BP's best (.697 @100) is 7 points under DFA's best (.769 @50), and
+   at 20 full-graph steps DFA is already at its peak while BP is barely
+   off the floor. Whatever DFA is doing on this architecture, it is
+   also enormously more step-efficient with 140 labels.
+2. **DFA is dramatically more seed-stable than BP** — .759–.762
+   (spread .003) against BP's .643–.697 (spread .054). That is the
+   signature of a regulariser, not of a better gradient.
+3. **THE ALIGNMENT PHASE DOES NOT HAPPEN HERE.** toy#152's MLP anchor
+   reproduced Refinetti's "align, then memorise" (cos(g_dfa, g_bp)
+   climbing to .6 and staying). On this lane cos is transient at best —
+   seeded graph seed 0 peaks at +.359 by step 61 then falls to −.124,
+   seed 2 never leaves the noise — and on Cora it never exceeds +.096
+   and **ends NEGATIVE (−.057)**. So on the architecture where DFA
+   BEATS BP, the DFA update is mildly ANTI-correlated with the BP one.
+   Whatever is working here, it is not DFA approximating backprop. That
+   is the ticket's own skeptic hypothesis (an implicit
+   regulariser/architecture effect) surviving its first real test, and
+   `prep/gnn_gate.rb` asserts it so a future change that makes cos
+   converge fails loudly instead of quietly rewriting the mechanism.
+4. **Our BP is below a fully-regularised published GCN** (~.815 with
+   dropout + weight decay + width 16 + early stopping). So the claim is
+   "DFA beats BP AT MATCHED RECIPE", not "DFA beats a tuned GCN" —
+   DFA's .762 is also below .815.
+
+**Structure-aware feedback is real but small.** On Cora it adds
++.002 (1 hop) → +.007 (2) → +.011 (3) over vanilla DFA; on the seeded
+graph at lr .003 it adds +.07. The big win is DFA itself, not the
+graph-aware twist DFA-GNN is named for.
+
+### The seeded graph cannot carry the bar, and that is measured
+
+The mandatory success bar presupposes that **BP** beats the frozen
+control — otherwise the cell says nothing about anybody
+([[control-arm-must-be-able-to-lose]]). On the seeded graph BP − frozen
+FLIPS SIGN across seeds (+.086 / +.033 / +.020 at 300 steps; +.034 /
+−.012 / +.021 at 600; negative at features 128). In a GNN,
+**neighbourhood aggregation is ARCHITECTURE, not learning** — a frozen
+random hidden stack still smooths features over the graph — so on a
+synthetic graph whose labels are largely recoverable from that
+smoothing, training the hidden layers buys almost nothing.
+
+Cora escapes this because its 1433-dim bag-of-words forces the hidden
+layer to **compress**, and a random projection loses what a learned one
+keeps. That is the single property that makes a frozen control able to
+lose in this architecture, and it is why the seeded defaults are
+features 64 / hidden 32 rather than the other way round. The gate
+states the bar on Cora (a Makefile prerequisite, not a skippable leg)
+and pins the seeded graph's own limit in a separate leg.
+
+`--task community` (labels == community id) is this lane's `blobs`: a
+FROZEN net already scores .922 against BP's .982, so no
+credit-assignment rule can be distinguished near that ceiling. Selectable,
+measured, and asserted — not assumed.
+
+### Two construction notes
+
+- **The first propagation is folded into the host preprocessing.** The
+  engine is handed `S·X`, not `X`. `S` and `X` are both constant so
+  `S(XW) == (SX)W` exactly, and it keeps an N²×feat_dim matmul out of
+  every step — on Cora the difference between 10.5 GFLOP and 0. It
+  changes no gradient: neither BP nor DFA differentiates a constant.
+- **The propagation sits BEFORE the weight in each layer**, so no `S`
+  appears in the DFA backward except the one `--feedback-route` puts
+  there. That is what makes direct-vs-structure a clean contrast — and
+  the gate pins it with an identity: at `--degree 0` the graph is
+  edgeless, `S = I`, `S^k e == e`, so `structure` must be
+  BYTE-IDENTICAL to `direct` there and differ once edges exist. One
+  assertion proves both "the hops are applied" and "they go through the
+  adjacency".
+
+### For Tao (F17)
+
+```
+ruby prep/fetch_cora.rb        # once; 168 KB, cached in data/
+toy train gnn --graph data/gnn_cora --layers 1 --hidden 64 \
+  --lr 0.01 --steps 100 --seed 0 --policy chain
+toy train gnn ... --policy dfa
+toy train gnn ... --policy dfa --feedback-route structure --feedback-hops 3
+toy train gnn ... --policy frozen
+```
+
+Arms differ ONLY in `--policy` / `--feedback-route`. `train:` and
+`val:` lines ride stdout (the train/val GAP separates the arms as much
+as val accuracy does); run_start carries a `dfa` object with
+`feedback` + `feedback_hops`, and `cost.propagation_flops_per_step`
+separately from the params-only count, because message passing is
+parameter-free and a params-only cost reads this lane as far cheaper
+than it is.
+
+**CiteSeer/PubMed are NOT wired.** `prep/fetch_cora.rb` writes a
+generic 5-file bundle and the loader is dataset-agnostic, so CiteSeer is
+a fetcher away. PubMed (19717 nodes) is NOT reachable with a dense
+[N,N] adjacency — 389 M floats and 25 GFLOP per propagation — and would
+need a sparse matmul in the shim. Say so rather than quietly reporting
+two of three.
 
 ## Landmines that apply
 

@@ -248,7 +248,7 @@ would have been applied** — the shadow — so a run can be read for
 | --- | --- |
 | `li` | layer index (0-based). Stable across lanes. |
 | `wi` | **LANE-LOCAL** weight index — an index into *that lane's* weight layout. It does **not** mean the same thing in another lane. |
-| `wname` | **the cross-lane key.** A stable string naming the weight: `attn_q.h0`, `attn_k.h2`, `attn_output`, `ffn_gate`, `ffn_up`, `ffn_down`, `attn_norm`, `ffn_norm` (dense transformer); `up1`/`down1`/`up2`/`down2` (MoE experts); `w1`…`wL` (MLP tower). |
+| `wname` | **the cross-lane key.** A stable string naming the weight: `attn_q.h0`, `attn_k.h2`, `attn_output`, `ffn_gate`, `ffn_up`, `ffn_down`, `attn_norm`, `ffn_norm` (dense transformer); `up1`/`down1`/`up2`/`down2` (MoE experts); `w1`…`wL` (the MLP anchor, the CTR tower, and the GNN lane — one weight per layer, so `wi` is always 0 there). |
 | `cos` | cosine angle between the DFA gradient and the chain (BP) shadow. |
 | `dfa_norm`, `bp_norm` | L2 of each side. A **zero norm distinguishes a dead download from a dead gradient** — that is why both are carried rather than the angle alone. |
 
