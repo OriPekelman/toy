@@ -83,13 +83,14 @@ recipes are:
 | `gnn` | GCN-class node classification over a normalised adjacency, transductive semi-supervised (CPU-only). Runs on a seeded graph or on real Cora (`ruby prep/fetch_cora.rb`) | `--policy`, `--graph`, `--layers`, `--hidden`, `--classes`, `--features`, `--nodes`, `--degree`, `--homophily`, `--feat-signal`, `--train-per-class`, `--task`, `--feedback-route`, `--feedback-hops`, `--weight-decay` |
 | `ssm` | selective-scan / Mamba-lite sequence classifier — an UNROLLED input-dependent linear recurrence + conv branch + gating, last-step readout (CPU-only) | `--policy`, `--dfa-cut`, `--selection`, `--layers`, `--seq`, `--d-model`, `--d-inner`, `--conv-k`, `--classes`, `--task`, `--cue-span`, `--noise`, `--dt-init` |
 | `lstm` | gated recurrence: a stack of textbook LSTM cells UNROLLED over T, last-step readout, on the same task + cut axis as `ssm` (CPU-only) | `--policy`, `--dfa-cut`, `--layers`, `--hidden`, `--features`, `--seq`, `--classes`, `--task`, `--cue-span`, `--noise`, `--batch`, `--val-batches`, `--task-seed`, `--lr`, `--dfa-b-*` |
+| `gtx` | graph transformer — masked self-attention whose mask **is an adjacency**, small relation head (16 classes), inductive relational retrieval (CPU-only) | `--policy`, `--dfa-cut`, `--layers`, `--d-model`, `--heads`, `--d-ff`, `--entities`, `--types`, `--features`, `--task`, `--noise`, `--batch`, `--val-batches`, `--task-seed`, `--dfa-b-*` |
 | `diff` | latent diffusion denoiser — time-conditioned eps-prediction over a LOW-DIM latent, scored by a generative metric (CPU-only) | `--policy`, `--latent`, `--time-feat`, `--layers`, `--hidden`, `--task`, `--modes`, `--spread`, `--mode-scale`, `--diff-steps`, `--beta-lo`, `--beta-hi`, `--eval-n`, `--align-events` |
 
 An unknown recipe is rejected loud (`supported: 'from-scratch', 'lora',
-'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp', 'ctr', 'gnn', 'ssm', 'lstm', 'diff'`). `--arch gpt2`
+'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp', 'ctr', 'gnn', 'ssm', 'lstm', 'gtx', 'diff'`). `--arch gpt2`
 trains the from-scratch GPT-2 arch (`from-scratch` only, CPU-only);
 `--device cuda|metal` selects the per-device runner (`metal` is macOS-only;
-GPT-2, ViT-Tiny, `mlp`, `ctr`, `gnn`, `ssm`, `lstm` and `diff` are CPU-only, and `franken`'s macro-DFA mode is
+GPT-2, ViT-Tiny, `mlp`, `ctr`, `gnn`, `ssm`, `lstm`, `gtx` and `diff` are CPU-only, and `franken`'s macro-DFA mode is
 CPU-only by decision).
 Defaults: `--steps 5`, `--seed 0`, `--arch llama`, `--device cpu`, `--out runs/<id>`.
 Writes the run bundle (see [Run bundle layout](#run-bundle-layout)) and echoes
@@ -211,6 +212,21 @@ cannot do, and precisely why the *measured* graph comes out bigger
 rather than smaller. Weights, optimizer moments and gradient buffers are
 excluded from both sides: they are equal across arms and independent of
 T, so they would only dilute the ratio.
+
+`gtx` puts **attention** on the same `--dfa-cut layer|step` axis: `layer`
+taps each block's output with BP intact inside the block, `step`
+additionally detaches the attention **probabilities** so no gradient
+crosses the token-mixing (Q and K then get their own random-feedback
+taps, or the arm would just be "attention frozen"). Its `--task
+relational|local` mirrors the other lanes' degenerate control: under
+`local` a node's type is readable from its own features, so no retrieval
+is needed at all.
+
+**The `gtx` arms do not share a learning rate, and that is a result
+rather than an inconvenience.** BP's cell is `--lr 0.003`; the DFA arms
+want ~3x less, and at BP's rate DFA reads chance. A single-LR matrix on
+this lane would report "attention is DFA-hostile" — the opposite of what
+it measures. Always state the LR with the arm.
 
 `diff` prints `gen: energy=…` — the ENERGY DISTANCE between generated
 and held-out real samples. It is the lane's headline metric and **lower

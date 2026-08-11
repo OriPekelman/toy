@@ -833,6 +833,33 @@ libexec/toy-train-ctr: lib/toy/run/train_ctr.rb lib/toy/dev/toy_describe_flow.rb
 toy-train-ctr: libexec/toy-train-ctr
 .PHONY: toy-train-ctr
 
+# toy#160 (DFA-arch T4) — the GRAPH TRANSFORMER. SEPARATE binary
+# (landmine #16), CPU-only. Its job is to DISAMBIGUATE the program's one
+# unresolved negative: every transformer-LM run was DFA at a ~50k-vocab
+# output, so "attention is DFA-hostile" and "the output dim was too big"
+# were never separated. This lane keeps the attention and shrinks the
+# head to 16 relation classes.
+libexec/toy-train-gtx: lib/toy/run/train_gtx.rb lib/toy/dev/toy_describe_flow.rb \
+		lib/toy/io/json_builder.rb lib/toy/io/json.rb lib/toy/io/toy_events.rb \
+		vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
+		lib/toy/io/toy_gtx_task.rb lib/toy/llm/engine/gtx_engine.rb \
+		lib/toy/llm/recipes/gtx_graph.rb lib/toy/llm/adamw.rb \
+		lib/toy/train/dfa_b.rb \
+		lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) $< -o $@
+toy-train-gtx: libexec/toy-train-gtx
+.PHONY: toy-train-gtx
+
+# toy#160 gate: chain byte-null, determinism, the B seed, the MANDATORY
+# success bar with each arm at ITS OWN best LR, and the two controls
+# that make the lane mean anything — frozen must LOSE (the mask
+# aggregates for free, so the task is built to make averaging useless)
+# and the head must stay SMALL (re-entering the 50k regime would answer
+# the wrong question).
+.PHONY: gate-gtx
+gate-gtx: libexec/toy-train-gtx
+	ruby prep/gtx_gate.rb
+
 # toy#157 (DFA-arch T3) — the LSTM lane, the SSM rehearsal. SEPARATE
 # binary (landmine #16), CPU-only. Reuses toy#155's delayed-cue task
 # generator UNCHANGED so the two lanes are an architecture comparison

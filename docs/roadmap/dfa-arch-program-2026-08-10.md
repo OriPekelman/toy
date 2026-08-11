@@ -4,9 +4,10 @@ Tao filed six new architecture lanes plus F15. This records what is
 SETTLED (tao#18, tao#19) so each lane can be built without re-litigating
 it, and flags the one thing I think is still ambiguous.
 
-Build order: **#152 → #158 → #154 → #153 / #155 / #156 / #157**.
-Status: **all seven shipped** — #152, #158, #154, #153, #155, #156 and
-#157 (see their sections below). The wave is complete.
+Build order: **#152 → #158 → #154 → #153 / #155 / #156 / #157**, then
+the instrument (#159) and the disambiguation lane (#160).
+Status: **all shipped** — #152, #158, #154, #153, #155, #156, #157,
+#159 and #160 (see their sections below).
 
 ## Settled (tao#18, tao#19 — Ori)
 
@@ -1005,6 +1006,123 @@ rather than deferred. It also confirms tao#21's recommendation against
 spending the deferred F19 CUDA twin: a device port changes throughput,
 not what the graph materialises, and the quantity that moves the claim
 is not measured on a device at all.
+
+## toy#160 (F22/T4) — SHIPPED: ATTENTION IS NOT DFA-HOSTILE; it was the output dim
+
+`toy train gtx` (runner `libexec/toy-train-gtx`, engine
+`lib/toy/llm/engine/gtx_engine.rb`, task `lib/toy/io/toy_gtx_task.rb`,
+gate `prep/gtx_gate.rb`): masked self-attention whose mask **is an
+adjacency**, per-block `--policy chain|dfa|frozen`, a small
+relation-classification head, and the `--dfa-cut layer|step` axis
+extended to the token-mixing. CPU-only.
+
+**The question.** The program had one unresolved negative — the
+transformer LM — and it CONFOUNDED two things: every LM run was DFA at
+a ~50k-vocab output, while F13/F18 established that DFA degrades as the
+OUTPUT DIMENSION grows. Attention, or the vocab? Nobody had separated
+them. This lane keeps the attention and shrinks the head to 16 classes.
+
+### The result: a POSITIVE, and the confound resolves in attention's favour
+
+1500 steps, seeds 0/1/2, **each arm at ITS OWN best LR**:
+
+| arm | lr | s0 | s1 | s2 | mean |
+|---|---|---|---|---|---|
+| chain (BP) | 0.003 | .983 | .990 | .981 | **.985** |
+| **dfa (layer cut)** | 0.001 | .872 | .947 | .940 | **.920** |
+| dfa (step cut) | 0.001 | .127 | .154 | .165 | .149 |
+| frozen | 0.003 | .090 | .138 | .105 | .111 |
+
+**Block-tap DFA reaches 93% of BP on a transformer, and beats the frozen
+control by .81.** So attention is not the problem: the transformer-LM
+negative was about the output dimension, and F22's route A is worth
+pursuing with attention intact.
+
+**The per-arm LR is not generosity, it is the whole result.** At BP's
+own rate (0.01) the DFA arm reads **.064 — chance**. A single-LR matrix
+would have published "attention is DFA-hostile", the exact opposite of
+the truth, and it would have been quoted against the entire graph-LLM
+route. DFA tolerating less LR than BP is toy#152's finding restated;
+this is the lane where ignoring it would have cost the most.
+
+### The mixing cut collapses — and that completes a four-lane pattern
+
+`--dfa-cut step` (no gradient through the attention probabilities, with
+Q/K getting their own random-feedback taps) scores .149 against the
+layer cut's .920. Attention's PATTERN has to be learned through the true
+gradient; random feedback at the block boundary is fine, random feedback
+*into the mixing* is not.
+
+Read across the lanes that share this axis:
+
+| architecture | what the mixing does | per-step / mixing cut |
+|---|---|---|
+| gated LSTM (#157) | carries state through a forget gate | **HOLDS** (1.000) |
+| selective scan (#155) | input-dependent selection | COLLAPSES (.250 = chance) |
+| graph transformer (#160) | learned attention retrieval | COLLAPSES (.149) |
+
+The pattern: where the architecture's own mechanism must be LEARNED
+through the mixing — selection, attention — cutting the gradient there
+kills it. Where the mixing is a gated carry that per-step random
+feedback can still shape, it survives. "Can you delete the gradient
+through the mixing?" has an architecture-dependent answer, and this is
+now measured on three of them.
+
+### The task took FOUR builds, and the frozen control caught every bad one
+
+A structural attention mask aggregates each node's neighbourhood for
+free, so a frozen random transformer is already a neighbourhood
+averager — this lane's control is load-bearing in a way the others' are
+not. Measured, in order:
+
+1. **verbatim key match** → frozen **1.000**. A random projection
+   approximately preserves inner products (Johnson-Lindenstrauss), so
+   random Q/K already scored the match above the distractors: retrieval
+   needed no learning at all.
+2. **permuted key, pair-level split** → frozen **.957**. The head
+   memorised each entity's fingerprint; because every entity appeared in
+   training, held-out PAIRS leaked.
+3. **permuted key, entity-level split** → BP itself stuck at **.246**.
+   Memorising 36 training entities was cheaper than learning the rule,
+   so nothing forced the rule.
+4. **permuted key, content redrawn every step** → works. An entity index
+   means nothing across steps, so the only learnable thing is the
+   retrieval itself.
+
+Every one of those was caught by asking "can the control lose?" rather
+than by reading the code. `--task local` (type readable from the node's
+own features) is the degenerate control and doubles as the DFA sanity
+check: DFA solves it, which is what makes the step-cut collapse a
+finding rather than a wiring bug.
+
+### Construction note: the error lives on PAIRS, the taps on NODES
+
+The CE error is [R, P] over pairs while every tap is [d_model, N] over
+nodes. The error is routed onto nodes through a constant incidence
+matrix (1 where a node is an endpoint of that pair), which is toy#153's
+structure-aware route in its simplest form. Consequence, recorded
+because it is honest rather than incidental: ATTRIBUTE nodes are
+endpoints of no pair and receive zero direct error. Weights are shared
+across nodes so they still learn from the entity columns; spreading the
+node error along the adjacency is the obvious next axis if it matters.
+
+### For Tao (F22)
+
+```
+toy train gtx --steps 1500 --seed 0 --lr 0.003 --policy chain,chain
+toy train gtx --steps 1500 --seed 0 --lr 0.001 --policy dfa,dfa                  # layer cut
+toy train gtx --steps 1500 --seed 0 --lr 0.001 --policy dfa,dfa --dfa-cut step
+toy train gtx --steps 1500 --seed 0 --lr 0.003 --policy frozen,frozen
+#  ... and all three seeds
+```
+
+**State the LR with the arm — the arms do not share one here**, and a
+matrix run at BP's rate reports the opposite conclusion. `--lm-init` is
+NOT built: with the content-resampled task, from-scratch BP reaches .985
+and the frozen control sits at .111, so the acceptance bar is already
+stateable without pretrained init. GLM's from-scratch-craters result is
+about real ConceptNet with a T5-sized model; it does not bind here, and
+the lane says so with a measurement rather than assuming either way.
 
 ## Landmines that apply
 

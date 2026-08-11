@@ -96,6 +96,10 @@ module Toy
         # toy#157 (DFA-arch T3) — the LSTM lane, the SSM rehearsal. Own
         # binary, CPU-only (tao#18/#19: no CUDA twin for T0–T3).
         LSTM_RUNNER_TARGET = "libexec/toy-train-lstm"
+        # toy#160 (DFA-arch T4) — the graph transformer, which separates
+        # ATTENTION from OUTPUT DIM on the program's one open negative.
+        # Own binary, CPU-only.
+        GTX_RUNNER_TARGET = "libexec/toy-train-gtx"
         FRANKEN_MOE_RUNNER_TARGET = "libexec/toy-train-franken-moe-cli"
         FRANKEN_MOE_CUDA_RUNNER_TARGET = "libexec/toy-train-franken-moe-cli-cuda"
         # GPT-2 GPU twins (--arch gpt2 --device cuda|metal). SEPARATE single-type
@@ -208,6 +212,14 @@ module Toy
           # toy#155 (ssm): the sequence lane's own shape/task knobs.
           @seq            = nil
           @d_model        = nil
+          # toy#160 (gtx): the graph transformer's own shape knobs.
+          # --heads/--d-ff/--types are net-new; --nodes, --features,
+          # --pairs, --task and --dfa-cut are shared with the lanes that
+          # already own those names.
+          @heads          = nil
+          @d_ff           = nil
+          @types          = nil
+          @entities       = nil
           @d_inner        = nil
           @conv_k         = nil
           @selection      = nil  # selective | lti
@@ -297,7 +309,9 @@ module Toy
           #     warm-start +cuda                  in train_cuda.rb source)
           #   metal (fs only)  -> toy-train-metal
           #   cpu fs/warm-start-> toy-train
-          target = if @recipe == "lstm"
+          target = if @recipe == "gtx"
+                     GTX_RUNNER_TARGET
+                   elsif @recipe == "lstm"
                      LSTM_RUNNER_TARGET
                    elsif @recipe == "diff"
                      DIFF_RUNNER_TARGET
@@ -432,6 +446,33 @@ module Toy
                              "DIFF_B_SCALE"    => (@dfa_b_scale || ""),
                              "DIFF_ALIGN"      => (@align_events ? "1" : ""),
                              "DIFF_ALIGN_EVERY" => (@align_every || 1).to_s)
+          elsif @recipe == "gtx"
+            # Lane-local GTX_* namespace, same discipline as the others.
+            # NOTE the LR default (0.003) is BP's, and the DFA arms want
+            # ~3x less — measured, and stated in the roadmap rather than
+            # folded into a default, for the reason toy#157 learned the
+            # hard way: a default that silently redefines a cell
+            # relabels other people's experiments.
+            env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
+                             "GTX_POLICY"      => (@policy || ""),
+                             "GTX_DFA_CUT"     => (@dfa_cut || ""),
+                             "GTX_BLOCKS"      => (@mlp_layers || 2).to_s,
+                             "GTX_D_MODEL"     => (@d_model || 64).to_s,
+                             "GTX_HEADS"       => (@heads || 4).to_s,
+                             "GTX_D_FF"        => (@d_ff || 128).to_s,
+                             "GTX_ENTITIES"    => (@entities || 48).to_s,
+                             "GTX_TYPES"       => (@types || 4).to_s,
+                             "GTX_FEATURES"    => (@features || 16).to_s,
+                             "GTX_NOISE"       => (@noise ? @noise.to_s : ""),
+                             "GTX_TASK"        => (@task || ""),
+                             "GTX_PAIRS"       => (@batch || 128).to_s,
+                             "GTX_VAL_BATCHES" => (@val_batches || 8).to_s,
+                             "GTX_TASK_SEED"   => (@task_seed || 7).to_s,
+                             "GTX_LR"          => (@lr || ""),
+                             "GTX_WARMUP"      => (@warmup || 0).to_s,
+                             "GTX_B_SEED"      => (@dfa_b_seed || 1234).to_s,
+                             "GTX_B_DIST"      => (@dfa_b_dist || ""),
+                             "GTX_B_SCALE"     => (@dfa_b_scale || ""))
           elsif @recipe == "lstm"
             # Lane-local LSTM_* namespace, same discipline as the others.
             # Defaults CHANGE NOTHING here, deliberately. This lane's
@@ -884,6 +925,37 @@ module Toy
               when "beta-lo"    then @beta_lo    = val.to_f
               else                   @beta_hi    = val.to_f
               end
+            # ---- toy#160 (gtx): the graph transformer's own knobs ----
+            # --entities is NOT --nodes and the pairs-per-step count is
+            # NOT --pairs: `--nodes` is the gnn lane's graph size and
+            # `--pairs` is the ctr lane's feature crosses. A different
+            # meaning gets a different name (the tao#18 --policy-scope
+            # discipline); pairs-per-step is just --batch, which already
+            # means "samples per step" on every lane that has one.
+            when "--heads", "--d-ff", "--types", "--entities"
+              key = @argv[i]
+              i += 1
+              val = @argv[i]
+              return bad_arg("#{key} requires a value") if val.nil?
+              min = key == "--types" ? 2 : 1
+              return bad_arg("#{key} must be an integer >= #{min}, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= min
+              case key
+              when "--heads"    then @heads    = val.to_i
+              when "--d-ff"     then @d_ff     = val.to_i
+              when "--types"    then @types    = val.to_i
+              else                   @entities = val.to_i
+              end
+            when /\A--(heads|d-ff|types|entities)=(.*)\z/
+              key = $1
+              val = $2
+              min = key == "types" ? 2 : 1
+              return bad_arg("--#{key} must be an integer >= #{min}, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= min
+              case key
+              when "heads"    then @heads    = val.to_i
+              when "d-ff"     then @d_ff     = val.to_i
+              when "types"    then @types    = val.to_i
+              else                 @entities = val.to_i
+              end
             # ---- toy#155 (ssm): the sequence lane's own knobs ----
             when "--seq", "--d-model", "--d-inner", "--conv-k", "--cue-span"
               key = @argv[i]
@@ -969,11 +1041,11 @@ module Toy
               i += 1
               val = @argv[i]
               return bad_arg("--task requires a value") if val.nil?
-              return bad_arg("--task must be teacher, blobs, community, cue, mean, mixture or single, got #{val.inspect}") unless %w[teacher blobs community cue mean mixture single].include?(val)
+              return bad_arg("--task must be teacher, blobs, community, cue, mean, relational, local, mixture or single, got #{val.inspect}") unless %w[teacher blobs community cue mean relational local mixture single].include?(val)
               @task = val
             when /\A--task=(.*)\z/
               val = $1
-              return bad_arg("--task must be teacher, blobs, community, cue, mean, mixture or single, got #{val.inspect}") unless %w[teacher blobs community cue mean mixture single].include?(val)
+              return bad_arg("--task must be teacher, blobs, community, cue, mean, relational, local, mixture or single, got #{val.inspect}") unless %w[teacher blobs community cue mean relational local mixture single].include?(val)
               @task = val
             when "--task-seed"
               i += 1
@@ -1519,8 +1591,8 @@ when /\A--dfa-feedback-lr=(.*)\z/
             return bad_arg("unexpected extra arguments: #{rest[1..].join(' ')}")
           end
           @recipe = rest.first
-          unless %w[from-scratch lora warm-start vit-tiny franken franken-moe mlp ctr gnn ssm lstm diff].include?(@recipe)
-            return bad_arg("unknown recipe #{@recipe.inspect}; supported: 'from-scratch', 'lora', 'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp', 'ctr', 'gnn', 'ssm', 'lstm', 'diff'")
+          unless %w[from-scratch lora warm-start vit-tiny franken franken-moe mlp ctr gnn ssm lstm gtx diff].include?(@recipe)
+            return bad_arg("unknown recipe #{@recipe.inspect}; supported: 'from-scratch', 'lora', 'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp', 'ctr', 'gnn', 'ssm', 'lstm', 'gtx', 'diff'")
           end
           # ---- toy#132: the flag x recipe MATRIX ----
           # Four llama-first flags in a row tripped franken-moe at Tao
@@ -1538,7 +1610,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
             ["--init",          %w[warm-start],                     !@init.nil?, ""],
             ["--fields/--cardinality/--numeric/--emb/--pairs", %w[ctr], (!@fields.nil? || !@cardinality.nil? || !@numeric.nil? || !@emb.nil? || !@pairs.nil?), " (toy#154)"],
             ["--base-rate/--lin-scale/--fm-branch", %w[ctr], (!@base_rate.nil? || !@lin_scale.nil? || @fm_branch), " (toy#154)"],
-            ["--dfa-b-*",       %w[franken franken-moe mlp ctr gnn ssm lstm diff], (!@dfa_b_seed.nil? || !@dfa_b_dist.nil? || !@dfa_b_scale.nil?), ""],
+            ["--dfa-b-*",       %w[franken franken-moe mlp ctr gnn ssm lstm gtx diff], (!@dfa_b_seed.nil? || !@dfa_b_dist.nil? || !@dfa_b_scale.nil?), ""],
             # --align-events deliberately EXCLUDES ssm AND lstm: on both,
             # the DFA update arrives through autodiff from the surrogate
             # roots, so it lands in the same accumulator a BP run would
@@ -1547,7 +1619,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
             # nothing. Those two lanes gate on the B SEED moving the dfa
             # curve instead (toy#158's discipline).
             ["--align-events",  %w[franken franken-moe mlp ctr gnn diff], @align_events, ""],
-            ["--policy",        %w[franken mlp ctr gnn ssm lstm diff],   !@policy.nil?, ""],
+            ["--policy",        %w[franken mlp ctr gnn ssm lstm gtx diff],   !@policy.nil?, ""],
             # toy#153 (gnn). --feedback-route is DELIBERATELY not
             # --dfa-feedback: franken-moe's --dfa-feedback selects how B
             # is UPDATED (fixed|kolen-pollack), this selects how the
@@ -1569,12 +1641,18 @@ when /\A--dfa-feedback-lr=(.*)\z/
             # --dt-init name parts an LSTM has no counterpart for), so
             # those rows stay ssm-only rather than widening.
             ["--seq",           %w[ssm lstm],                       !@seq.nil?, " (toy#155/#157)"],
-            ["--d-model/--d-inner/--conv-k", %w[ssm],
-             (!@d_model.nil? || !@d_inner.nil? || !@conv_k.nil?), " (toy#155)"],
+            ["--d-model",       %w[ssm gtx],                        !@d_model.nil?, " (toy#155/#160)"],
+            ["--d-inner/--conv-k", %w[ssm],
+             (!@d_inner.nil? || !@conv_k.nil?), " (toy#155)"],
             ["--selection",     %w[ssm],                            !@selection.nil?, " (toy#155)"],
-            ["--dfa-cut",       %w[ssm lstm],                       !@dfa_cut.nil?, " (toy#155/#157)"],
-            ["--cue-span/--noise", %w[ssm lstm],
-             (!@cue_span.nil? || !@noise.nil?), " (toy#155/#157)"],
+            # toy#160 puts ATTENTION on the same cut axis: `layer` taps
+            # the block output with BP intact inside it, `step` cuts the
+            # gradient through the attention pattern itself.
+            ["--dfa-cut",       %w[ssm lstm gtx],                   !@dfa_cut.nil?, " (toy#155/#157/#160)"],
+            ["--heads/--d-ff/--types/--entities", %w[gtx],
+             (!@heads.nil? || !@d_ff.nil? || !@types.nil? || !@entities.nil?), " (toy#160)"],
+            ["--cue-span",      %w[ssm lstm],                       !@cue_span.nil?, " (toy#155/#157)"],
+            ["--noise",          %w[ssm lstm gtx],                   !@noise.nil?, " (toy#155/#157/#160)"],
             ["--dt-init",       %w[ssm],                            !@dt_init.nil?, " (toy#155)"],
             # toy#156 (diff). --latent is the OUTPUT DIM under test and
             # gets a real name rather than riding --classes: this lane
@@ -1593,21 +1671,21 @@ when /\A--dfa-feedback-lr=(.*)\z/
             # (--policy-tensors), never an overload of this one.
             ["--policy-scope",  %w[franken],                        !@policy_scope.nil?, " (toy#151; NOT accepted on 'mlp' — tao#18)"],
             ["--align-every",   %w[franken franken-moe mlp gnn diff], !@align_every.nil?, ""],
-            ["--lr/--warmup",   %w[franken franken-moe mlp ctr gnn ssm lstm diff], (!@lr.nil? || !@warmup.nil?), " (toy#126/#132)"],
+            ["--lr/--warmup",   %w[franken franken-moe mlp ctr gnn ssm lstm gtx diff], (!@lr.nil? || !@warmup.nil?), " (toy#126/#132)"],
             ["--classes",       %w[mlp gnn ssm lstm],               !@classes.nil?, " (toy#152/#153/#155/#157)"],
-            ["--features",      %w[mlp gnn lstm],                   !@features.nil?, " (toy#152/#153/#157)"],
+            ["--features",      %w[mlp gnn lstm gtx],               !@features.nil?, " (toy#152/#153/#157/#160)"],
             ["--hidden",        %w[mlp ctr gnn lstm diff],          !@hidden.nil?, " (toy#152/#154/#153/#157/#156)"],
-            ["--layers",        %w[mlp ctr gnn ssm lstm diff],      !@mlp_layers.nil?, " (toy#152/#154/#153/#155/#157/#156)"],
-            ["--task",          %w[mlp gnn ssm lstm diff],          !@task.nil?, " (toy#152/#153/#155/#157/#156)"],
+            ["--layers",        %w[mlp ctr gnn ssm lstm gtx diff],  !@mlp_layers.nil?, " (toy#152/#154/#153/#155/#157/#160/#156)"],
+            ["--task",          %w[mlp gnn ssm lstm gtx diff],      !@task.nil?, " (toy#152/#153/#155/#157/#160/#156)"],
             ["--teacher-dim",   %w[mlp gnn],                        !@teacher_dim.nil?, " (toy#152/#153)"],
-            ["--task-seed",     %w[mlp ctr gnn ssm lstm diff],      !@task_seed.nil?, " (toy#152/#154/#153/#155/#157/#156)"],
+            ["--task-seed",     %w[mlp ctr gnn ssm lstm gtx diff],  !@task_seed.nil?, " (toy#152/#154/#153/#155/#157/#160/#156)"],
             # --val-batches stays mlp/ctr: the gnn lane is TRANSDUCTIVE,
             # its held-out set is a node mask over the one graph, so
             # "how many val batches" has nothing to size.
-            ["--val-batches",   %w[mlp ctr ssm lstm],               !@val_batches.nil?, " (toy#152/#154/#155/#157)"],
+            ["--val-batches",   %w[mlp ctr ssm lstm gtx],           !@val_batches.nil?, " (toy#152/#154/#155/#157/#160)"],
             ["--no-shadow",     %w[franken franken-moe],            @no_shadow, " (toy#129)"],
             ["--context/--vocab", %w[franken franken-moe],          (!@context.nil? || !@vocab.nil?), " (toy#129)"],
-            ["--batch",         %w[franken franken-moe mlp ctr ssm lstm diff], !@batch.nil?, " (toy#133)"],
+            ["--batch",         %w[franken franken-moe mlp ctr ssm lstm gtx diff], !@batch.nil?, " (toy#133; on gtx it is the labelled PAIRS per step)"],
             ["--act",           %w[franken],                        !@act.nil?, " (toy#136/K1; MoE experts get their GLU in K4)"],
             ["--rope",          %w[franken],                        !@rope.nil?, " (toy#136/K1)"],
             ["--schedule",      %w[franken franken-moe],            !@schedule.nil?, " (toy#136/K1)"],
@@ -1701,7 +1779,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
           # The corpus rule is a TRANSFORMER-lane rule: there, B>1 means
           # B corpus windows per step. The mlp lane's batch is samples
           # from a seeded generator — there is no corpus to need.
-          if @batch && @batch > 1 && @corpus.nil? && !%w[mlp ctr ssm lstm diff].include?(@recipe)
+          if @batch && @batch > 1 && @corpus.nil? && !%w[mlp ctr ssm lstm gtx diff].include?(@recipe)
             return bad_arg("--batch > 1 needs --corpus (the fixed-seq feed is the byte-gated single-window contract)")
           end
           if @no_shadow && @align_events
@@ -1756,6 +1834,9 @@ when /\A--dfa-feedback-lr=(.*)\z/
           if (@task == "cue" || @task == "mean") && !%w[ssm lstm].include?(@recipe)
             return bad_arg("--task #{@task} is only valid with recipe 'ssm' or 'lstm' (toy#155/#157)")
           end
+          if (@task == "relational" || @task == "local") && @recipe != "gtx"
+            return bad_arg("--task #{@task} is only valid with recipe 'gtx' (toy#160)")
+          end
           if @task == "community" && @recipe != "gnn"
             return bad_arg("--task community is only valid with recipe 'gnn' (toy#153); 'mlp' takes teacher|blobs")
           end
@@ -1774,6 +1855,9 @@ when /\A--dfa-feedback-lr=(.*)\z/
           # measurement it exists for, and is not spent.
           if @recipe == "lstm" && @device != "cpu"
             return bad_arg("--device #{@device.inspect} is not supported for recipe 'lstm' (CPU-only by decision — tao#18/#21: a device twin changes throughput, not the materialised activation bytes this lane measures)")
+          end
+          if @recipe == "gtx" && @device != "cpu"
+            return bad_arg("--device #{@device.inspect} is not supported for recipe 'gtx' (CPU-only by decision — tao#18: the cross-architecture lanes are small by construction and get no CUDA twin)")
           end
           if @recipe == "gnn" && @device != "cpu"
             return bad_arg("--device #{@device.inspect} is not supported for recipe 'gnn' (CPU-only by decision — tao#18)")
@@ -1801,6 +1885,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
           return "gnn"     if recipe == "gnn"
           return "ssm"     if recipe == "ssm"
           return "lstm"    if recipe == "lstm"
+          return "gtx"     if recipe == "gtx"
           return "diff"    if recipe == "diff"
           return "moe"     if recipe == "franken-moe"
           "llama"

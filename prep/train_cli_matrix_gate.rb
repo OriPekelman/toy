@@ -143,6 +143,24 @@ REJECT = [
   [%w[diff --dfa-cut step],                "--dfa-cut"],
   [%w[diff --seq 32],                      "--seq/--d-model/--d-inner/--conv-k"],
   [%w[diff --graph data/gnn_cora],         "--graph"],
+  # toy#160 (gtx). --entities is NOT --nodes (the gnn lane's graph size)
+  # and the pairs-per-step count is NOT --pairs (the ctr lane's feature
+  # crosses) — a different meaning gets a different name, and both
+  # directions are probed. --dfa-cut IS shared: toy#160 puts attention on
+  # the same layer|step axis the recurrent lanes use.
+  [%w[mlp --heads 4],                      "--heads/--d-ff/--types/--entities"],
+  [%w[ssm --entities 32],                  "--heads/--d-ff/--types/--entities"],
+  [%w[lstm --types 4],                     "--heads/--d-ff/--types/--entities"],
+  [%w[gnn --d-ff 128],                     "--heads/--d-ff/--types/--entities"],
+  [%w[gtx --align-events],                 "--align-events"],
+  [%w[gtx --policy-scope ffn],             "--policy-scope"],
+  [%w[gtx --selection lti],                "--selection"],
+  [%w[gtx --seq 32],                       "--seq"],
+  [%w[gtx --dt-init -4.0],                 "--dt-init"],
+  [%w[gtx --cue-span 8],                   "--cue-span"],
+  [%w[gtx --graph data/gnn_cora],          "--graph"],
+  [%w[gtx --hidden 32],                    "--hidden"],
+  [%w[gtx --latent 8],                     "--latent/--time-feat"],
 ]
 REJECT.each do |args, label|
   out, st = probe(args)
@@ -183,6 +201,15 @@ failures << "matrix: ssm full flag set hit the matrix (#{out.lines.last(1).join.
 # at the LATER --task token rule.
 out, st = probe(%w[diff --latent 8 --time-feat 4 --modes 4 --spread 3.0 --mode-scale 0.4 --diff-steps 50 --beta-lo 0.002 --beta-hi 0.2 --eval-n 256 --task cue])
 failures << "matrix: diff full flag set hit the matrix (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("--task cue is only valid with recipe 'ssm' or 'lstm'")
+# toy#160: the gtx lane's own flags all pass the matrix; the run stops at
+# the LATER --task token rule. `relational`/`local` are gtx-local, the
+# way `cue`/`mean` belong to the two recurrent lanes.
+out, st = probe(%w[gtx --heads 2 --d-ff 64 --types 4 --entities 32 --d-model 32 --features 16 --layers 2 --dfa-cut step --batch 64 --val-batches 2 --task-seed 3 --lr 0.001 --noise 0.2 --task community])
+failures << "matrix: gtx full flag set hit the matrix (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("--task community is only valid with recipe 'gnn'")
+out, st = probe(%w[gtx --task relational --device cuda])
+failures << "matrix: gtx --task relational was rejected (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("not supported for recipe 'gtx'")
+out, st = probe(%w[mlp --task relational])
+failures << "matrix: mlp --task relational not rejected (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("only valid with recipe 'gtx'")
 # toy#157: the lstm lane's own flags all pass the matrix, INCLUDING the
 # sequence knobs it shares with ssm; the run stops at the LATER --task
 # token rule. `cue`/`mean` are shared by the two recurrent lanes on
@@ -194,7 +221,7 @@ failures << "matrix: lstm --task cue was rejected — cue|mean is SHARED by ssm 
 puts failures.length == n0 ? "  ok: right-recipe probes pass the matrix (their errors come from later rules)" : "  FAIL: acceptance side"
 
 if failures.empty?
-  puts "GATE PASS [train-cli-matrix]: #{REJECT.length} rejections + 9 acceptance probes (toy#132/#153/#155/#156/#157)"
+  puts "GATE PASS [train-cli-matrix]: #{REJECT.length} rejections + 12 acceptance probes (toy#132/#153/#155/#156/#157/#160)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [train-cli-matrix]: #{f}" }

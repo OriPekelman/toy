@@ -1,0 +1,14 @@
+# prep/fixtures/train_gtx_baseline.txt — the toy#160 graph-transformer
+# lane's default 5-step curve (libexec/toy-train-gtx with no GTX_* env at
+# all: 2 blocks, d_model 64, 4 heads, d_ff 128, 48 entities, 4 types
+# (16 classes), 16 features, 128 pairs/step, relational task, all-chain,
+# lr 0.003, no warmup).
+# NOTE the arms do NOT share a learning rate on this lane: 0.003 is BP's
+# and the DFA arms want ~3x less. That is stated in the roadmap and in
+# the gate's CELL rather than folded into a default (toy#157's lesson).
+# Regenerate: STEPS=5 SEED=0 ./libexec/toy-train-gtx | grep '^step '
+step 1: loss=3.993638038635254
+step 2: loss=4.237183094024658
+step 3: loss=4.0996809005737305
+step 4: loss=4.11287260055542
+step 5: loss=3.8812215328216553
