@@ -161,6 +161,12 @@ REJECT = [
   [%w[gtx --graph data/gnn_cora],          "--graph"],
   [%w[gtx --hidden 32],                    "--hidden"],
   [%w[gtx --latent 8],                     "--latent/--time-feat"],
+  # toy#162: --clip-grad is the lstm lane's FAIR BPTT control, not a
+  # general tuning knob — its effect is unmeasured on every other lane,
+  # and a knob whose effect nobody measured is worse offered than absent.
+  [%w[ssm --clip-grad 1.0],                "--clip-grad"],
+  [%w[gtx --clip-grad 1.0],                "--clip-grad"],
+  [%w[franken --clip-grad 1.0],            "--clip-grad"],
 ]
 REJECT.each do |args, label|
   out, st = probe(args)

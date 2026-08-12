@@ -18,12 +18,13 @@ module Toy; module LLM; module Recipes
     end
 
     def realize!(d_in, hidden, t_len, batch, n_classes, n_layers, seed,
-                 init_scale, policy, cut, b_seed, b_dist, b_scale, b_sigma)
+                 init_scale, policy, cut, b_seed, b_dist, b_scale, b_sigma,
+                 clip)
       @lr_cache.realize_for_random_init(d_in, hidden, t_len, batch,
                                         n_classes, n_layers, seed,
                                         init_scale)
       result = @lr_cache.build_training_step(policy, cut, b_seed, b_dist,
-                                              b_scale, b_sigma)
+                                              b_scale, b_sigma, clip)
       @lr_t_loss   = result[0]
       @lr_t_labels = result[1]
       @lr_t_hp     = result[2]

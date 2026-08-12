@@ -5,9 +5,9 @@ SETTLED (tao#18, tao#19) so each lane can be built without re-litigating
 it, and flags the one thing I think is still ambiguous.
 
 Build order: **#152 → #158 → #154 → #153 / #155 / #156 / #157**, then
-the instrument (#159) and the disambiguation lane (#160).
-Status: **all shipped** — #152, #158, #154, #153, #155, #156, #157,
-#159 and #160 (see their sections below).
+the instrument (#159), the disambiguation lane (#160) and the fair BPTT
+control (#162). Status: **all shipped** — #152, #158, #154, #153, #155,
+#156, #157, #159, #160 and #162 (see their sections below).
 
 ## Settled (tao#18, tao#19 — Ori)
 
@@ -812,13 +812,11 @@ indifferent to the rate; BPTT through 64 gated steps is threading a
 needle. **The honest statement is therefore not "DFA matches BP" but
 "DFA matches BP at BP's best cell, and reaches it from anywhere."**
 
-**Caveat, stated because it bounds the claim: this harness has no
-gradient clipping**, and clipping is the standard fix for exactly the
-BPTT failure mode above. Some of BP's fragility is ours, not the
-method's. Adam's per-parameter normalisation is a partial substitute and
-the warmup sweep is the rest of the honest effort, but a clipped BPTT
-arm would be the fairer control. Worth a decision before F21 leans on
-the stability half of this result.
+**The caveat this section used to carry — "toy has no gradient clipping,
+so some of BP's fragility may be ours" — is RESOLVED, and the claim
+survived.** toy#162 built the clipping and it does not rescue BP: cells
+solved out of 12 go 7 (unclipped) → 8 (clip 1.0) → 7 (clip 0.1), while
+the per-step cut stays 12/12. See the toy#162 section.
 
 ### Why the bar is stated over THREE seeds, unlike every other lane
 
@@ -1123,6 +1121,65 @@ and the frozen control sits at .111, so the acceptance bar is already
 stateable without pretrained init. GLM's from-scratch-craters result is
 about real ConceptNet with a T5-sized model; it does not bind here, and
 the lane says so with a measurement rather than assuming either way.
+
+## toy#162 — the FAIR BPTT control: BP's fragility is BPTT's, not ours
+
+toy#157 measured BPTT as the fragile arm and Tao began recording that as
+a *stabiliser* mechanism for DFA. The lane's own write-up flagged the
+hole: **toy had no gradient clipping**, which is the standard fix for
+exactly that failure mode (Pascanu et al. 2013), so part of the
+fragility might have been the harness. This closes it.
+
+`--clip-grad NORM` (env `LSTM_CLIP_GRAD`) implements GLOBAL-norm
+clipping — one norm over all stepped parameters, applied in-graph
+BEFORE the AdamW moments. **Off by default and byte-null when absent**,
+so every cell the lane already published still means what it said.
+
+### It does not rescue BP
+
+Cells SOLVED (val ≥ .9) out of the 12 (lr × seed) at 4000 steps:
+
+| arm | unclipped | clip 1.0 | clip 0.1 |
+|---|---|---|---|
+| chain (BP) | 7/12 | **8/12** | **7/12** |
+| dfa (step cut) | 12/12 | **12/12** | — |
+
+Clipping moves individual cells but not the fragility. What it actually
+does is **re-roll which cells land in the good basin** — at clip 0.1
+seed 0 solves at every rate while seed 2 mostly fails, the exact inverse
+of the unclipped pattern:
+
+| cell | unclipped | clip 1.0 | clip 0.1 |
+|---|---|---|---|
+| lr .01, seed 0 | .250 | .250 | **1.000** |
+| lr .03, seed 1 | .250 | **.992** | **1.000** |
+| lr .005, seed 2 | .996 | 1.000 | **.266** |
+
+That non-monotonicity is itself the diagnosis. If this were plain
+exploding gradients, a tighter clip would help monotonically; instead
+the arm is BIMODAL — it either catches the cue or it does not — and
+every hyperparameter, clipping included, just re-rolls the dice. **The
+per-step DFA cut is the only arm invariant to all of them.**
+
+So toy#157's stability finding stands with its fair control applied, and
+F21 can record the stabiliser mechanism. The honest phrasing is not
+"BPTT explodes and clipping is missing" but "on this task BPTT's success
+is basin luck that no standard stabiliser removes, while cutting the
+time axis removes the basin problem entirely".
+
+### Scope
+
+`lstm` only. The ssm lane's BP arm already reaches 1.000, so its
+comparison was never at risk; the CLI rejects `--clip-grad` everywhere
+else rather than offering a knob whose effect is unmeasured there.
+Implemented from existing ops (`sum`/`sqrt`/`div`/`scale_bias`/`mul`
+with a `[1,1]` broadcast), so there is no new shim function and no
+CUDA/Metal mirror obligation.
+
+**Why it could not be done on the learning rate.** Under Adam, clipping
+and LR scaling are not the same operation: clipping changes what `m` and
+`v` accumulate, an LR scale does not. A "clip" implemented on the hp
+vector would have been a different experiment wearing this one's name.
 
 ## Landmines that apply
 

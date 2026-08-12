@@ -148,6 +148,14 @@ comparison rather than two anecdotes. They do *not* share
 selective-scan parts an LSTM has no counterpart for; those are rejected
 on `lstm` by the same matrix.
 
+`lstm` also carries `--clip-grad NORM` (toy#162): global-norm gradient
+clipping, applied in-graph before the AdamW moments, **off by default
+and byte-null when absent**. It exists as the fair control for the
+lane's stability claim rather than as a tuning knob — measured, it does
+*not* make the BP arm reliable (7/12 solved cells unclipped, 8/12 at
+norm 1.0, 7/12 at norm 0.1), it re-rolls which cells work. It is
+rejected on every other recipe.
+
 `lstm`'s BP arm is **bimodal** on this task — it solves it (~1.000) or
 sits at chance (.250), and which learning rate works depends on the
 *seed*. Its fair cell is therefore

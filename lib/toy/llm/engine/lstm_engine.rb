@@ -89,7 +89,8 @@ class LstmEngine
                 :lstm_b_dist, :lstm_b_scale, :lstm_b_sigma,
                 :lstm_dfa_wired, :lstm_frozen_count,
                 :lstm_graph_nodes, :lstm_graph_bytes, :lstm_taps,
-                :lstm_stream_bptt, :lstm_stream_sqrt, :lstm_stream_cut
+                :lstm_stream_bptt, :lstm_stream_sqrt, :lstm_stream_cut,
+                :lstm_clip
 
   def initialize
     @sess         = TinyNN.tnn_null_ptr
@@ -125,6 +126,7 @@ class LstmEngine
     @lstm_stream_bptt = 0
     @lstm_stream_sqrt = 0
     @lstm_stream_cut  = 0
+    @lstm_clip        = 0.0
   end
 
   def realize_for_random_init(d_in, hidden, t_len, batch, n_classes,
@@ -187,7 +189,8 @@ class LstmEngine
     nil
   end
 
-  def build_training_step(policy, cut, b_seed, b_dist, b_scale, b_sigma)
+  def build_training_step(policy, cut, b_seed, b_dist, b_scale, b_sigma, clip)
+    @lstm_clip    = clip
     @lstm_cut     = cut
     @lstm_b_dist  = b_dist
     @lstm_b_scale = b_scale
@@ -334,6 +337,15 @@ class LstmEngine
     # toy#150: every extend_backward_graph below MUST come after this.
     TinyNN.tnn_build_backward(@sess)
 
+    # toy#162 — GLOBAL-NORM GRADIENT CLIPPING, in-graph and BEFORE the
+    # AdamW moments. Two passes over the stepped weights: one to build
+    # the norm, one to apply the scale. See clip_scale! for why this
+    # cannot be done by scaling the learning rate instead.
+    t_clip = TinyNN.tnn_null_ptr
+    if @lstm_clip > 0.0
+      t_clip = clip_scale!(policy)
+    end
+
     wk = 0
     while wk < @ft_weights.length
       lyr = @ft_layer[wk]
@@ -345,6 +357,11 @@ class LstmEngine
         # No optimizer step: the layer stays at init.
       else
         tg = TinyNN.tnn_tensor_grad(@sess, @ft_weights[wk])
+        if @lstm_clip > 0.0
+          # [1,1] broadcasts into any gradient shape (ggml repeats src1
+          # into src0), so one scalar scale multiplies every gradient.
+          tg = TinyNN.tnn_mul(@sess, tg, t_clip)
+        end
         to = TinyNN.tnn_opt_step_adamw(@sess, @ft_weights[wk], tg,
                                         @ft_m[wk], @ft_v[wk], @t_hp)
         TinyNN.tnn_extend_backward_graph(@sess, to)
@@ -359,13 +376,75 @@ class LstmEngine
          " policy_len=" + policy.length.to_s +
          " dfa_wired=" + @lstm_dfa_wired.to_s +
          " frozen=" + @lstm_frozen_count.to_s +
-         " taps=" + @lstm_taps.to_s
+         " taps=" + @lstm_taps.to_s +
+         " clip=" + (@lstm_clip > 0.0 ? @lstm_clip.to_s : "off")
 
     TinyNN.tnn_pin_all_graph_b_nodes(@sess)
     TinyNN.tnn_realize_backward(@sess)
     measure_graph!
     refresh_b!
     [@t_loss, @t_labels, @t_hp]
+  end
+
+  # toy#162 — the clip factor, as a [1,1] tensor built IN THE GRAPH:
+  #
+  #     scale = clip / max(clip, ||g||)
+  #
+  # i.e. the standard global-norm clip (Pascanu et al. 2013), the form
+  # the BPTT literature means. Every parameter that will be STEPPED
+  # contributes to the one norm; a frozen layer contributes nothing,
+  # because clipping a gradient nobody applies would change the scale
+  # other layers see for no reason.
+  #
+  # THIS CANNOT BE DONE BY SCALING THE LEARNING RATE. Under Adam the two
+  # differ: clipping changes what `m` and `v` ACCUMULATE, an LR scale
+  # does not. A "clip" implemented on the hp vector would be a different
+  # experiment wearing this one's name.
+  #
+  # ggml has no max/abs, so max(clip, n) is built as
+  # (n + clip + |n - clip|) / 2 with |x| = sqrt(x*x) — exact for the
+  # scalars involved, and every op already exists (no new shim function,
+  # hence no CUDA/Metal mirror obligation).
+  def clip_scale!(policy)
+    t_sum = TinyNN.tnn_null_ptr
+    started = false
+    ci = 0
+    while ci < @ft_weights.length
+      lyr = @ft_layer[ci]
+      mode = POLICY_CHAIN
+      if lyr < @lstm_layers && lyr < policy.length
+        mode = policy[lyr]
+      end
+      if lyr < @lstm_layers && mode == POLICY_FROZEN
+        # not stepped: out of the norm
+      else
+        g = TinyNN.tnn_tensor_grad(@sess, @ft_weights[ci])
+        n = @ft_din[ci] * @ft_dout[ci]
+        sq = TinyNN.tnn_sum_rows(@sess,
+               TinyNN.tnn_reshape_2d(@sess, TinyNN.tnn_mul(@sess, g, g), n, 1))
+        if started
+          t_sum = TinyNN.tnn_add(@sess, t_sum, sq)
+        else
+          t_sum = sq
+          started = true
+        end
+      end
+      ci = ci + 1
+    end
+    if !started
+      # Nothing is stepped (an all-frozen arm). Return a 1.0 scalar so
+      # the caller stays one code path; it multiplies nothing anyway.
+      return TinyNN.tnn_null_ptr
+    end
+    t_norm = TinyNN.tnn_sqrt(@sess, t_sum)                       # ||g||
+    t_d    = TinyNN.tnn_scale_bias(@sess, t_norm, 1.0, -@lstm_clip)   # n - c
+    t_abs  = TinyNN.tnn_sqrt(@sess, TinyNN.tnn_mul(@sess, t_d, t_d))  # |n - c|
+    t_max  = TinyNN.tnn_scale(@sess,
+               TinyNN.tnn_add(@sess,
+                 TinyNN.tnn_scale_bias(@sess, t_norm, 1.0, @lstm_clip), t_abs),
+               0.5)                                              # max(n, c)
+    t_ones = TinyNN.tnn_scale_bias(@sess, t_max, 0.0, 1.0)
+    TinyNN.tnn_scale(@sess, TinyNN.tnn_div(@sess, t_ones, t_max), @lstm_clip)
   end
 
   # THE MEMORY INSTRUMENT. Sum ggml_nbytes over every node of the

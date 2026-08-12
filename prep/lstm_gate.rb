@@ -18,6 +18,7 @@
 #      exist.
 #   8. THE MEMORY MEASUREMENT, in the units the ticket asks for, and
 #      8b. the ANALYTIC streaming instrument beside it (toy#159).
+#   8c. --clip-grad, THE FAIR BPTT CONTROL (toy#162).
 #   9. THE DEGENERATE TASK, measured.
 #  10. FAIL-LOUD.
 #  11. CLI.
@@ -53,10 +54,15 @@
 # lr 0.02, BP reads 1.000/.992/1.000 — and the bar is stated there, on
 # all three seeds, so "matches BP" means matching a BP that trained.
 #
-# Caveat that bounds the stability half: this harness has NO gradient
-# clipping, the standard fix for the BPTT failure above. Warmup is the
-# nearest available damper and is used. A clipped BPTT arm would be the
-# fairer control; see the roadmap.
+# THE STABILITY HALF NOW HAS ITS FAIR CONTROL (toy#162). Gradient
+# clipping — the standard fix for exactly this BPTT failure mode — is
+# implemented (`--clip-grad`, global norm, off by default) and it does
+# NOT rescue BP. Cells solved (>= .9) out of the 12 (lr x seed) at 4000
+# steps: unclipped 7, clip 1.0 -> 8, clip 0.1 -> 7, while the per-step
+# DFA cut stays 12/12 with clipping on. Clipping RE-ROLLS which cells
+# land in the good basin (at clip 0.1, seed 0 solves everywhere and seed
+# 2 mostly fails — the exact inverse of the unclipped pattern) without
+# making BP reliable. So the fragility is BPTT's, not the harness's.
 ROOT    = File.expand_path("..", __dir__)
 RUNNER  = File.join(ROOT, "libexec", "toy-train-lstm")
 SSM     = File.join(ROOT, "libexec", "toy-train-ssm")
@@ -440,6 +446,37 @@ puts failures.length == n0 ?
   "  ok: STREAM (toy#159) — the analytic cut is CONSTANT in T while bptt is linear, it beats sqrt-T checkpointing too, and it still disagrees with what toy actually builds" :
   "  FAIL: streaming instrument"
 
+# ---- 8c. --clip-grad: the FAIR BPTT control (toy#162) ----
+# Three properties, and the third is the finding.
+n0 = failures.length
+huge = run_lstm({ "STEPS" => "20", "LSTM_CLIP_GRAD" => "1e9" }, nil)
+tiny = run_lstm({ "STEPS" => "20", "LSTM_CLIP_GRAD" => "0.01" }, nil)
+clip_det1 = run_lstm({ "STEPS" => "20", "LSTM_CLIP_GRAD" => "0.05" }, nil)
+clip_det2 = run_lstm({ "STEPS" => "20", "LSTM_CLIP_GRAD" => "0.05" }, nil)
+failures << "clip: a 1e9 norm changed the curve — a clip that can never bind MUST be a no-op, or --clip-grad is not clipping, it is perturbing" unless curve(huge) == curve(ch20)
+failures << "clip: a 0.01 norm did NOT change the curve — clipping that never binds cannot be a control for anything" if curve(tiny) == curve(ch20)
+failures << "clip: two identical clipped runs differ" unless clip_det1 == clip_det2
+# THE FINDING. At this cell BP fails clipped exactly as it fails
+# unclipped, while the per-step cut solves it. If clipping ever DID
+# rescue BP here, toy#157's stability claim would be a harness artifact
+# and both the roadmap and Tao's F21 conclusion would need correcting —
+# so this leg is the tripwire for that, not decoration.
+clip_cell = { "STEPS" => "4000", "SEED" => "0", "LSTM_LR" => "0.01",
+              "LSTM_WARMUP" => "0", "LSTM_CLIP_GRAD" => "1.0" }
+clip_bp   = val_acc(run_lstm(clip_cell.merge("LSTM_POLICY" => "chain"), nil))
+clip_step = val_acc(run_lstm(clip_cell.merge("LSTM_POLICY" => "dfa",
+                                             "LSTM_DFA_CUT" => "step"), nil))
+puts format("    clipped (norm 1.0, lr 0.01, seed 0): chain=%.4f dfa(step)=%.4f", clip_bp, clip_step)
+if clip_bp > 0.5
+  failures << "FAIR CONTROL: with gradient clipping at norm 1.0, BP scored #{clip_bp} at a cell it fails at unclipped (.250). If the standard BPTT stabiliser now rescues BP, then toy#157's 'BPTT is the fragile arm' is substantially OUR harness and not the method — correct the roadmap and tao#20 BEFORE re-baselining this threshold. Measured over the full grid: clipping moves BP from 7/12 to 8/12 solved cells and re-rolls WHICH ones, without making it reliable"
+end
+if clip_step < STEP_FLOOR
+  failures << "FAIR CONTROL: the per-step cut scored #{clip_step} with clipping on — the cut is supposed to be indifferent to it (12/12 measured), and if clipping is what carries the DFA arm then the lane's comparison is not what it says"
+end
+puts failures.length == n0 ?
+  "  ok: --clip-grad is a no-op when it cannot bind, binds when it can, is deterministic, and does NOT rescue BP (toy#162 — the stability claim survives its fair control)" :
+  "  FAIL: clip-grad"
+
 # ---- 9. the degenerate task, measured ----
 # `mean` spreads the class signal over every step, so no carry across
 # time is needed and a FROZEN recurrence plus a trained head already
@@ -467,11 +504,13 @@ n0 = failures.length
   [{ "LSTM_FEATURES" => "1" },                    "LSTM_FEATURES=1"],
   [{ "LSTM_VAL_BATCHES" => "0" },                 "LSTM_VAL_BATCHES=0"],
   [{ "LSTM_CUE_SPAN" => "64" },                   "cue span == sequence length (no delay left to carry)"],
+  [{ "LSTM_CLIP_GRAD" => "0" },                   "LSTM_CLIP_GRAD=0 (omit it to disable, do not set a fake norm)"],
+  [{ "LSTM_CLIP_GRAD" => "-1" },                  "negative LSTM_CLIP_GRAD"],
 ].each do |env, label|
   out, st = Open3.capture2e({ "STEPS" => "2" }.merge(env), RUNNER, chdir: ROOT)
   failures << "fail-loud: #{label} exited 0 (silently did nothing):\n#{out.lines.last(2).join}" if st.success?
 end
-puts failures.length == n0 ? "  ok: 12 degenerate configs all fail loud instead of quietly doing nothing" : "  FAIL: fail-loud"
+puts failures.length == n0 ? "  ok: 14 degenerate configs all fail loud instead of quietly doing nothing" : "  FAIL: fail-loud"
 
 # ---- 11. CLI ----
 n0 = failures.length
@@ -495,6 +534,7 @@ Dir.mktmpdir("lstm_gate_cli") do |dir|
     [%w[lstm --dt-init -4.0],      "lstm accepted --dt-init"],
     [%w[lstm --task blobs],        "lstm accepted --task blobs"],
     [%w[mlp --dfa-cut step],       "mlp accepted --dfa-cut"],
+    [%w[ssm --clip-grad 1.0],      "ssm accepted --clip-grad (toy#162 is the lstm lane's fair control; widening it is a follow-on)"],
     [%w[gnn --seq 32],             "gnn accepted --seq"],
   ].each do |argv, label|
     sout, sst = Open3.capture2e({}, TOY, "train", *argv, chdir: ROOT)

@@ -220,6 +220,10 @@ module Toy
           @d_ff           = nil
           @types          = nil
           @entities       = nil
+          # toy#162 (lstm): global-norm gradient clipping. nil = OFF, and
+          # off is byte-null — every cell toy#157 published was measured
+          # without it.
+          @clip_grad      = nil
           @d_inner        = nil
           @conv_k         = nil
           @selection      = nil  # selective | lti
@@ -500,7 +504,8 @@ module Toy
                              "LSTM_WARMUP"      => (@warmup || 0).to_s,
                              "LSTM_B_SEED"      => (@dfa_b_seed || 1234).to_s,
                              "LSTM_B_DIST"      => (@dfa_b_dist || ""),
-                             "LSTM_B_SCALE"     => (@dfa_b_scale || ""))
+                             "LSTM_B_SCALE"     => (@dfa_b_scale || ""),
+                             "LSTM_CLIP_GRAD"   => (@clip_grad ? @clip_grad.to_s : ""))
           elsif @recipe == "ssm"
             # Lane-local SSM_* namespace, same discipline as the others.
             env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
@@ -983,6 +988,19 @@ module Toy
               when "conv-k"   then @conv_k   = val.to_i
               else                 @cue_span = val.to_i
               end
+            # toy#162: a POSITIVE float. There is no "--clip-grad 0" —
+            # omitting the flag is how you turn it off, so a 0 would be a
+            # setting that silently means "unset".
+            when "--clip-grad"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--clip-grad requires a value") if val.nil?
+              return bad_arg("--clip-grad must be a positive float (omit it to disable clipping), got #{val.inspect}") unless val =~ /\A\d*\.?\d+([eE][+-]?\d+)?\z/ && val.to_f > 0.0
+              @clip_grad = val.to_f
+            when /\A--clip-grad=(.*)\z/
+              val = $1
+              return bad_arg("--clip-grad must be a positive float (omit it to disable clipping), got #{val.inspect}") unless val =~ /\A\d*\.?\d+([eE][+-]?\d+)?\z/ && val.to_f > 0.0
+              @clip_grad = val.to_f
             when "--noise"
               i += 1
               val = @argv[i]
@@ -1652,6 +1670,10 @@ when /\A--dfa-feedback-lr=(.*)\z/
             ["--heads/--d-ff/--types/--entities", %w[gtx],
              (!@heads.nil? || !@d_ff.nil? || !@types.nil? || !@entities.nil?), " (toy#160)"],
             ["--cue-span",      %w[ssm lstm],                       !@cue_span.nil?, " (toy#155/#157)"],
+            # toy#162: the FAIR BPTT control lives on the lane whose
+            # stability claim needs it. Widening it is a follow-on, not
+            # a default.
+            ["--clip-grad",     %w[lstm],                           !@clip_grad.nil?, " (toy#162)"],
             ["--noise",          %w[ssm lstm gtx],                   !@noise.nil?, " (toy#155/#157/#160)"],
             ["--dt-init",       %w[ssm],                            !@dt_init.nil?, " (toy#155)"],
             # toy#156 (diff). --latent is the OUTPUT DIM under test and

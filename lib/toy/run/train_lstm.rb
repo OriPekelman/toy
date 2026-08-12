@@ -42,6 +42,9 @@
 #                     so explicitly rather than defaulting to it; see the
 #                     LR constant below for why that is not negotiable.
 #   LSTM_B_SEED / LSTM_B_DIST / LSTM_B_SCALE — the DfaB feedback axes
+#   LSTM_CLIP_GRAD  — global-norm gradient clipping (toy#162). OFF by
+#                     default and byte-null when absent: every cell this
+#                     lane has ever published was measured without it.
 #
 # STDOUT (byte-gated): "step <N>: loss=<float>" per step, then
 # "val: acc=... loss=... n=..." and "graph: nodes=<n> bytes=<b>".
@@ -98,6 +101,7 @@ WARMUP_S    = ENV["LSTM_WARMUP"] || ""
 B_SEED      = (ENV["LSTM_B_SEED"] || "1234").to_i
 B_DIST_S    = ENV["LSTM_B_DIST"]  || ""
 B_SCALE_S   = ENV["LSTM_B_SCALE"] || ""
+CLIP_S      = ENV["LSTM_CLIP_GRAD"] || ""
 
 NOISE   = NOISE_S.length   > 0 ? NOISE_S.to_f   : 1.0
 # THE LANE'S FAIR CELL IS `--lr 0.02 --warmup 200 --steps 4000`, AND IT
@@ -131,6 +135,10 @@ NOISE   = NOISE_S.length   > 0 ? NOISE_S.to_f   : 1.0
 # (2 of 3 seeds bare, 3 of 3 with the ramp). The 0.03 it replaced was
 # seed-0 luck — the ONE rate seed 0 trains at and seeds 1 and 2 fail at.
 LR      = LR_S.length      > 0 ? LR_S.to_f      : 0.02
+# 0.0 means OFF, and off is the default: toy#157's whole fragility grid
+# was measured without clipping, and a default that quietly re-defines
+# those cells would relabel every number the lane has published.
+CLIP    = CLIP_S.length    > 0 ? CLIP_S.to_f    : 0.0
 WARMUP  = WARMUP_S.length  > 0 ? WARMUP_S.to_i  : 0
 
 # ---- fail loud on every out-of-range shape (never-mask). ----
@@ -164,6 +172,12 @@ if BATCH < 1
 end
 if VAL_BATCHES < 1
   puts "toy-train-lstm: LSTM_VAL_BATCHES must be >= 1, got " + VAL_BATCHES.to_s
+  exit 1
+end
+if CLIP_S.length > 0 && CLIP <= 0.0
+  puts "toy-train-lstm: LSTM_CLIP_GRAD must be a POSITIVE norm (omit it to" +
+       " disable clipping; 0 or negative would silently mean off while" +
+       " looking like a setting), got " + CLIP_S
   exit 1
 end
 if CUT_S.length > 0 && CUT_S != "layer" && CUT_S != "step"
@@ -304,7 +318,7 @@ POLICY = parse_lstm_policy(POLICY_S, N_LAYERS)
 recipe = Toy::LLM::Recipes::LstmSeq.new
 recipe.realize!(D_MODEL, D_HIDDEN, SEQ_T, BATCH, N_CLASSES, N_LAYERS,
                 SEED, 1.0, POLICY, DFA_CUT, B_SEED, dist_code(B_DIST_S),
-                scale_code(B_SCALE_S), scale_sigma(B_SCALE_S))
+                scale_code(B_SCALE_S), scale_sigma(B_SCALE_S), CLIP)
 # tao#flow-json-emit (#25): self-describing run bundle.
 ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe.lr_cache.sess)
 
@@ -410,6 +424,9 @@ if EVENTS.length > 0
     config.add_raw("noise",       NOISE.to_s)
     config.add_raw("lr",          LR.to_s)
     config.add_num("warmup",      WARMUP)
+    # toy#162: 0 means the run had NO clipping — the state every cell
+    # this lane published before #162 was measured in.
+    config.add_raw("clip_grad",   CLIP.to_s)
     rs.add_obj("config", config)
     # NOT the "franken" key — a consumer keying on `franken` would read
     # an LSTM run as a transformer one (tao#19 item 3).
