@@ -42,6 +42,15 @@
 #                     fixed graph leaves open.
 #   GTX_TASK_SEED   — task seed, SEPARATE from SEED (default 7)
 #   GTX_LR / GTX_WARMUP
+#
+#   toy#161 RETROFIT MODE (GTX_RETROFIT=1):
+#   GTX_PRETRAIN_STEPS — BP steps on the PRETRAIN task (default 1500)
+#   GTX_PRETRAIN_LR    — BP's own cell for phase 1 (default 0.003)
+#   GTX_ADAPTER_POLICY — chain | dfa | frozen  (the arm under test)
+#   GTX_ADAPTER_LAYERS — stacked pair-site adapters (default 2)
+#   GTX_ADAPTER_RANK   — bottleneck width (default 16)
+#   GTX_FREEZE_BACKBONE— 1 (default) freezes AND DETACHES the backbone
+#   STEPS / GTX_LR then apply to the RETROFIT phase.
 #   GTX_B_SEED / GTX_B_DIST / GTX_B_SCALE — the DfaB feedback axes
 #
 # STDOUT (byte-gated): "step <N>: loss=<float>" per step, then
@@ -93,9 +102,17 @@ WARMUP_S    = ENV["GTX_WARMUP"] || ""
 B_SEED      = (ENV["GTX_B_SEED"] || "1234").to_i
 B_DIST_S    = ENV["GTX_B_DIST"]  || ""
 B_SCALE_S   = ENV["GTX_B_SCALE"] || ""
+RETROFIT    = (ENV["GTX_RETROFIT"] || "") == "1"
+PRE_STEPS   = (ENV["GTX_PRETRAIN_STEPS"] || "1500").to_i
+PRE_LR_S    = ENV["GTX_PRETRAIN_LR"] || ""
+AD_POLICY_S = ENV["GTX_ADAPTER_POLICY"] || ""
+AD_LAYERS   = (ENV["GTX_ADAPTER_LAYERS"] || "2").to_i
+AD_RANK     = (ENV["GTX_ADAPTER_RANK"] || "16").to_i
+FREEZE_BB   = (ENV["GTX_FREEZE_BACKBONE"] || "1") == "1"
 
 NOISE  = NOISE_S.length  > 0 ? NOISE_S.to_f  : 0.3
 LR     = LR_S.length     > 0 ? LR_S.to_f     : 0.003
+PRE_LR = PRE_LR_S.length > 0 ? PRE_LR_S.to_f : 0.003
 WARMUP = WARMUP_S.length > 0 ? WARMUP_S.to_i : 0
 
 # ---- fail loud on every out-of-range shape (never-mask). ----
@@ -145,6 +162,28 @@ if VAL_BATCHES < 1
   puts "toy-train-gtx: GTX_VAL_BATCHES must be >= 1, got " + VAL_BATCHES.to_s
   exit 1
 end
+if RETROFIT && PRE_STEPS < 1
+  puts "toy-train-gtx: GTX_PRETRAIN_STEPS must be >= 1 in retrofit mode" +
+       " (a retrofit of an UNTRAINED backbone measures nothing), got " + PRE_STEPS.to_s
+  exit 1
+end
+if RETROFIT && AD_LAYERS < 1
+  puts "toy-train-gtx: GTX_ADAPTER_LAYERS must be >= 1, got " + AD_LAYERS.to_s
+  exit 1
+end
+if RETROFIT && AD_RANK < 1
+  puts "toy-train-gtx: GTX_ADAPTER_RANK must be >= 1, got " + AD_RANK.to_s
+  exit 1
+end
+if AD_POLICY_S.length > 0 && AD_POLICY_S != "chain" && AD_POLICY_S != "dfa" && AD_POLICY_S != "frozen"
+  puts "toy-train-gtx: GTX_ADAPTER_POLICY " + AD_POLICY_S + " unsupported (chain|dfa|frozen)"
+  exit 1
+end
+if AD_POLICY_S.length > 0 && !RETROFIT
+  puts "toy-train-gtx: GTX_ADAPTER_POLICY is meaningless without GTX_RETROFIT=1" +
+       " — there are no adapters outside a retrofit, so the token would silently do nothing"
+  exit 1
+end
 if CUT_S.length > 0 && CUT_S != "layer" && CUT_S != "step"
   puts "toy-train-gtx: GTX_DFA_CUT " + CUT_S + " unsupported (layer|step)"
   exit 1
@@ -158,6 +197,15 @@ TASK_KIND = TASK_S == "local" ? GtxTask::KIND_LOCAL : GtxTask::KIND_RELATIONAL
 DFA_CUT   = CUT_S == "step" ? Toy::LLM::Engine::GtxEngine::CUT_STEP :
                               Toy::LLM::Engine::GtxEngine::CUT_LAYER
 N_CLASSES = N_TYPES * N_TYPES
+# The retrofit label is the MODULAR SUM, so it has TY classes, not TY*TY.
+# That is not a detail: a same-cardinality relabeling is a BIJECTION and a
+# retrained linear head absorbs it, which would leave the frozen control
+# unable to lose. See toy_gtx_task.rb.
+RETRO_CLASSES = N_TYPES
+AD_POLICY = AD_POLICY_S == "dfa" ? Toy::LLM::Engine::GtxEngine::POLICY_DFA :
+            (AD_POLICY_S == "frozen" ? Toy::LLM::Engine::GtxEngine::POLICY_FROZEN :
+                                       Toy::LLM::Engine::GtxEngine::POLICY_CHAIN)
+N_ADAPTERS = RETROFIT ? AD_LAYERS : 0
 # degree == TY is not a tunable: one attribute of EACH type per
 # neighbourhood is what makes mean-pooling provably uninformative, which
 # is what lets the frozen control lose. See toy_gtx_task.rb.
@@ -270,6 +318,67 @@ def hits_in(buf, labels, n, classes)
   hit
 end
 
+# One held-out pass over the materialised instances, at lr = 0.
+#
+# MIRROR RULE (toy#139/#146): "lr=0" must mean EVERY hp vector the graph
+# can reach. This lane has exactly ONE — if a per-block or per-adapter
+# vector is ever added it must be zeroed here too, or the val split
+# silently becomes training data.
+def val_pass!(recipe, val_x, va, vb, vy, x_flat, idx_a, idx_b, labels,
+              inc_flat, prev_a, prev_b, m_cur, val_hp, logit_buf,
+              n_out, n_batches, n_pairs, n_nodes, d_feat)
+  hits = 0
+  seen = 0
+  loss_sum = 0.0
+  vb2 = 0
+  while vb2 < n_batches
+    vsrc = vb2 * n_nodes * d_feat
+    vx = 0
+    while vx < n_nodes * d_feat
+      x_flat[vx] = val_x[vsrc + vx]
+      vx = vx + 1
+    end
+    recipe.upload_features!(x_flat)
+    vi = 0
+    while vi < n_pairs
+      idx_a[vi]  = va[vb2 * n_pairs + vi]
+      idx_b[vi]  = vb[vb2 * n_pairs + vi]
+      labels[vi] = vy[vb2 * n_pairs + vi]
+      vi = vi + 1
+    end
+    set_incidence!(inc_flat, prev_a, prev_b, idx_a, idx_b, n_pairs, n_nodes, false)
+    k2 = 0
+    while k2 < n_pairs * n_out
+      m_cur.flat[k2] = 0.0
+      k2 = k2 + 1
+    end
+    b2 = 0
+    while b2 < n_pairs
+      m_cur.flat[b2 * n_out + labels[b2]] = 1.0
+      b2 = b2 + 1
+    end
+    vloss = recipe.step!(idx_a, idx_b, inc_flat, m_cur, val_hp, false)
+    loss_sum = loss_sum + vloss
+    rc_v = TinyNN.tnn_download_to_f64_array(recipe.gr_cache.sess,
+             recipe.gr_cache.t_logits, logit_buf, n_pairs * n_out)
+    if rc_v != 0
+      puts "toy-train-gtx: val logits download failed: rc=" + rc_v.to_s
+      exit 1
+    end
+    hits = hits + hits_in(logit_buf, labels, n_pairs, n_out)
+    seen = seen + n_pairs
+    vb2 = vb2 + 1
+  end
+  # Two FLOATS, and nothing else: an array whose elements Spinel cannot
+  # type uniformly comes back as `unknown` and the first .to_i on it
+  # fails at runtime. The held-out count is n_batches * n_pairs by
+  # construction, so it does not need to ride back in here.
+  out = [0.0]
+  out[0] = hits.to_f / seen.to_f
+  out.push(loss_sum / n_batches.to_f)
+  out
+end
+
 POLICY = parse_gtx_policy(POLICY_S, N_BLOCKS)
 
 task = GtxTask.new(TASK_KIND, D_FEAT, N_ENTITIES, N_TYPES, DEGREE,
@@ -280,7 +389,7 @@ recipe = Toy::LLM::Recipes::GtxGraph.new
 recipe.realize!(D_FEAT, D_MODEL, N_HEADS, D_FF, N_BLOCKS, N_NODES,
                 N_PAIRS, N_CLASSES, SEED, 1.0, POLICY, DFA_CUT, B_SEED,
                 dist_code(B_DIST_S), scale_code(B_SCALE_S),
-                scale_sigma(B_SCALE_S))
+                scale_sigma(B_SCALE_S), RETRO_CLASSES, N_ADAPTERS, AD_RANK)
 ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe.gr_cache.sess)
 
 # ---- the TOPOLOGY is constant; the CONTENT is not. ----
@@ -300,6 +409,7 @@ idx_a  = Array.new(N_PAIRS, 0)
 idx_b  = Array.new(N_PAIRS, 0)
 labels = Array.new(N_PAIRS, 0)
 m_labels  = Mat.new(N_PAIRS, N_CLASSES)
+m_rlabels = Mat.new(N_PAIRS, RETRO_CLASSES)
 logit_buf = Array.new(N_PAIRS * N_CLASSES, 0.0)
 
 # The held-out set is MATERIALISED FIRST — whole instances, features
@@ -313,6 +423,7 @@ val_x  = Array.new(VAL_BATCHES * N_NODES * D_FEAT, 0.0)
 val_a  = Array.new(VAL_N, 0)
 val_b  = Array.new(VAL_N, 0)
 val_y  = Array.new(VAL_N, 0)
+val_r  = Array.new(VAL_N, 0)
 vfill = 0
 while vfill < VAL_BATCHES
   task.resample!
@@ -323,13 +434,21 @@ while vfill < VAL_BATCHES
     val_x[vbase + vi] = x_flat[vi]
     vi = vi + 1
   end
-  task.fill_pairs!(N_PAIRS, idx_a, idx_b, labels)
+  task.fill_pairs!(N_PAIRS, idx_a, idx_b, labels, GtxTask::LABEL_PAIR)
   vp = 0
   while vp < N_PAIRS
     val_a[vfill * N_PAIRS + vp] = idx_a[vp]
     val_b[vfill * N_PAIRS + vp] = idx_b[vp]
     val_y[vfill * N_PAIRS + vp] = labels[vp]
     vp = vp + 1
+  end
+  # The SAME held-out pairs under the retrofit label, so the two phases
+  # are scored on one set of instances rather than two.
+  task.relabel!(N_PAIRS, idx_a, idx_b, labels, GtxTask::LABEL_MODSUM)
+  vp2 = 0
+  while vp2 < N_PAIRS
+    val_r[vfill * N_PAIRS + vp2] = labels[vp2]
+    vp2 = vp2 + 1
   end
   vfill = vfill + 1
 end
@@ -359,6 +478,16 @@ prev_b = Array.new(N_PAIRS, 0)
 
 adamw = Toy::AdamW.for_from_scratch
 adamw.lr = LR
+
+val_hp = Mat.new(1, 7)
+val_hp.flat[0] = 0.0
+val_hp.flat[1] = adamw.beta1
+val_hp.flat[2] = adamw.beta2
+val_hp.flat[3] = adamw.eps
+val_hp.flat[4] = 0.0
+val_hp.flat[5] = adamw.beta1
+val_hp.flat[6] = adamw.beta2
+pre_acc = -1.0
 
 # ---- run_start (FILE only). ----
 if EVENTS.length > 0
@@ -431,45 +560,82 @@ if EVENTS.length > 0
 end
 
 # ---- training loop. ----
+#
+# In RETROFIT mode this loop runs BOTH phases: PRE_STEPS of BP on the
+# pretrain task, then a graph REBUILD (frozen+detached backbone, adapter
+# stack, fresh head), then STEPS on the retrofit task. One process, so
+# every arm's backbone is BIT-IDENTICAL by construction rather than by a
+# checkpoint round-trip that would have to be trusted.
+TOTAL_STEPS = RETROFIT ? PRE_STEPS + STEPS : STEPS
+bb_sig_pre  = 0.0
 final_loss = 0.0
 step = 0
-while step < STEPS
+while step < TOTAL_STEPS
   step_wall_start = TinyNN.tnn_events_now_seconds
-  if WARMUP > 0 && step < WARMUP
-    adamw.lr = LR * ((step + 1).to_f / WARMUP.to_f)
-  else
-    adamw.lr = LR
+  in_pretrain = RETROFIT && step < PRE_STEPS
+  if RETROFIT && step == PRE_STEPS
+    # THE HANDOVER. Record what the backbone weighs before the retrofit
+    # touches it (or does not), then rebuild the graph over the same
+    # persistent weights.
+    pre_r = val_pass!(recipe, val_x, val_a, val_b, val_y, x_flat, idx_a,
+                      idx_b, labels, inc_flat, prev_a, prev_b, m_labels,
+                      val_hp, logit_buf, N_CLASSES, VAL_BATCHES, N_PAIRS,
+                      N_NODES, D_FEAT)
+    pre_acc = pre_r[0]
+    bb_sig_pre = recipe.gr_cache.backbone_sig
+    puts "pretrain: acc=" + pre_acc.to_s + " bb_sig=" + bb_sig_pre.to_s
+    recipe.rebuild_retrofit!(POLICY, DFA_CUT, B_SEED, dist_code(B_DIST_S),
+                             scale_code(B_SCALE_S), scale_sigma(B_SCALE_S),
+                             AD_POLICY, FREEZE_BB ? 1 : 0)
+    adamw2 = Toy::AdamW.for_from_scratch
+    adamw = adamw2
   end
-  m_hp = adamw.hp(step)
+  phase_lr = in_pretrain ? PRE_LR : LR
+  phase_step = in_pretrain ? step : step - (RETROFIT ? PRE_STEPS : 0)
+  if WARMUP > 0 && phase_step < WARMUP
+    adamw.lr = phase_lr * ((phase_step + 1).to_f / WARMUP.to_f)
+  else
+    adamw.lr = phase_lr
+  end
+  m_hp = adamw.hp(phase_step)
 
   task.resample!
   task.fill_features!(x_flat)
   recipe.upload_features!(x_flat)
-  task.fill_pairs!(N_PAIRS, idx_a, idx_b, labels)
+  # The retrofit label applies ONLY in the retrofit phase. `in_pretrain`
+  # is false in a plain (non-retrofit) run too, so keying off it alone
+  # silently fed mod-sum labels to the 16-class head — caught by toy#160's
+  # byte fixture, invisible in every other signal.
+  in_retro_phase = RETROFIT && !in_pretrain
+  task.fill_pairs!(N_PAIRS, idx_a, idx_b, labels,
+                   in_retro_phase ? GtxTask::LABEL_MODSUM : GtxTask::LABEL_PAIR)
   set_incidence!(inc_flat, prev_a, prev_b, idx_a, idx_b, N_PAIRS, N_NODES, step == 0)
+  n_out = in_retro_phase ? RETRO_CLASSES : N_CLASSES
+  m_cur = in_retro_phase ? m_rlabels : m_labels
   k = 0
-  while k < N_PAIRS * N_CLASSES
-    m_labels.flat[k] = 0.0
+  while k < N_PAIRS * n_out
+    m_cur.flat[k] = 0.0
     k = k + 1
   end
   b = 0
   while b < N_PAIRS
-    m_labels.flat[b * N_CLASSES + labels[b]] = 1.0
+    m_cur.flat[b * n_out + labels[b]] = 1.0
     b = b + 1
   end
 
-  loss = recipe.step!(idx_a, idx_b, inc_flat, m_labels, m_hp, step == 0)
+  is_first = step == 0 || (RETROFIT && step == PRE_STEPS)
+  loss = recipe.step!(idx_a, idx_b, inc_flat, m_cur, m_hp, is_first)
   final_loss = loss
   puts "step " + (step + 1).to_s + ": loss=" + loss.to_s
 
   if EVENTS.length > 0
     rc_l = TinyNN.tnn_download_to_f64_array(recipe.gr_cache.sess,
-             recipe.gr_cache.t_logits, logit_buf, N_PAIRS * N_CLASSES)
+             recipe.gr_cache.t_logits, logit_buf, N_PAIRS * n_out)
     tr_acc = -1.0
     if rc_l != 0
       puts "logits download failed: step=" + (step + 1).to_s + " rc=" + rc_l.to_s
     else
-      tr_acc = hits_in(logit_buf, labels, N_PAIRS, N_CLASSES).to_f / N_PAIRS.to_f
+      tr_acc = hits_in(logit_buf, labels, N_PAIRS, n_out).to_f / N_PAIRS.to_f
     end
     step_wall_us = ((TinyNN.tnn_events_now_seconds - step_wall_start) * 1.0e6).to_i
     es = Toy::Json::Builder.new
@@ -488,63 +654,32 @@ while step < STEPS
 end
 
 # ---- held-out val. ----
-# MIRROR RULE (toy#139/#146): "lr=0" has to mean EVERY hp vector the
-# graph can reach. This lane has exactly ONE — if a per-block or
-# per-optimizer vector is ever added it must be zeroed here too, or the
-# val split silently becomes training data.
-val_hp = Mat.new(1, 7)
-val_hp.flat[0] = 0.0
-val_hp.flat[1] = adamw.beta1
-val_hp.flat[2] = adamw.beta2
-val_hp.flat[3] = adamw.eps
-val_hp.flat[4] = 0.0
-val_hp.flat[5] = adamw.beta1
-val_hp.flat[6] = adamw.beta2
-val_hits = 0
-val_seen = 0
-val_loss_sum = 0.0
-vb = 0
-while vb < VAL_BATCHES
-  vsrc = vb * N_NODES * D_FEAT
-  vx = 0
-  while vx < N_NODES * D_FEAT
-    x_flat[vx] = val_x[vsrc + vx]
-    vx = vx + 1
-  end
-  recipe.upload_features!(x_flat)
-  vi = 0
-  while vi < N_PAIRS
-    idx_a[vi]  = val_a[vb * N_PAIRS + vi]
-    idx_b[vi]  = val_b[vb * N_PAIRS + vi]
-    labels[vi] = val_y[vb * N_PAIRS + vi]
-    vi = vi + 1
-  end
-  set_incidence!(inc_flat, prev_a, prev_b, idx_a, idx_b, N_PAIRS, N_NODES, false)
-  k2 = 0
-  while k2 < N_PAIRS * N_CLASSES
-    m_labels.flat[k2] = 0.0
-    k2 = k2 + 1
-  end
-  b2 = 0
-  while b2 < N_PAIRS
-    m_labels.flat[b2 * N_CLASSES + labels[b2]] = 1.0
-    b2 = b2 + 1
-  end
-  vloss = recipe.step!(idx_a, idx_b, inc_flat, m_labels, val_hp, false)
-  val_loss_sum = val_loss_sum + vloss
-  rc_v = TinyNN.tnn_download_to_f64_array(recipe.gr_cache.sess,
-           recipe.gr_cache.t_logits, logit_buf, N_PAIRS * N_CLASSES)
-  if rc_v != 0
-    puts "toy-train-gtx: val logits download failed: rc=" + rc_v.to_s
-    exit 1
-  end
-  val_hits = val_hits + hits_in(logit_buf, labels, N_PAIRS, N_CLASSES)
-  val_seen = val_seen + N_PAIRS
-  vb = vb + 1
-end
-val_acc  = val_hits.to_f / val_seen.to_f
-val_loss = val_loss_sum / VAL_BATCHES.to_f
+FINAL_OUT = RETROFIT ? RETRO_CLASSES : N_CLASSES
+fin = val_pass!(recipe, val_x, val_a, val_b, RETROFIT ? val_r : val_y,
+                x_flat, idx_a, idx_b, labels, inc_flat, prev_a, prev_b,
+                RETROFIT ? m_rlabels : m_labels, val_hp, logit_buf,
+                FINAL_OUT, VAL_BATCHES, N_PAIRS, N_NODES, D_FEAT)
+val_acc  = fin[0]
+val_loss = fin[1]
+val_seen = VAL_BATCHES * N_PAIRS
 puts "val: acc=" + val_acc.to_s + " loss=" + val_loss.to_s + " n=" + val_seen.to_s
+if RETROFIT
+  # THE COST, ANALYTIC. What the FREEZE buys (identical for both credit
+  # rules), stated apart from what DFA buys, because conflating them is
+  # how this lane would overclaim.
+  puts "retrofit: adapters=" + AD_LAYERS.to_s +
+       " rank=" + AD_RANK.to_s +
+       " credit=" + (AD_POLICY_S.length > 0 ? AD_POLICY_S : "chain") +
+       " bb_grad_bytes_avoided=" +
+         (FREEZE_BB ? recipe.gr_cache.backbone_grad_bytes : 0).to_s +
+       " adapter_grad_bytes=" + recipe.gr_cache.adapter_grad_bytes.to_s
+  # THE FREEZE, PROVED. Under --freeze-backbone the two signatures must
+  # be BIT-IDENTICAL; a promise that nothing was stepped is not the same
+  # as a measurement that nothing moved.
+  puts "backbone: sig_pre=" + bb_sig_pre.to_s +
+       " sig_post=" + recipe.gr_cache.backbone_sig.to_s +
+       " frozen=" + (FREEZE_BB ? "1" : "0")
+end
 puts "graph: nodes=" + recipe.gr_cache.gx_graph_nodes.to_s +
      " bytes=" + recipe.gr_cache.gx_graph_bytes.to_s
 

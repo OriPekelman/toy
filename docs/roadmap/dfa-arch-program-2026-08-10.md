@@ -1181,6 +1181,75 @@ and LR scaling are not the same operation: clipping changes what `m` and
 `v` accumulate, an LR scale does not. A "clip" implemented on the hp
 vector would have been a different experiment wearing this one's name.
 
+## toy#161 (F12) — SHIPPED: DFA CAN retrofit a frozen BP-pretrained backbone
+
+`toy train gtx --retrofit`. Phase 1 BP-pretrains the toy#160 backbone on
+the 16-class relation task; phase 2 **freezes and detaches** it, adds a
+pair-site adapter stack plus a fresh 4-class head, and trains only the
+added capacity under `--adapter-policy chain|dfa|frozen`. Both phases
+run in ONE process, so every arm's backbone is bit-identical by
+construction rather than by a checkpoint round-trip that would have to
+be trusted.
+
+### The result: a POSITIVE, and the strongest one in the program
+
+1500 + 1500 steps, seeds 0/1/2, each arm at its own LR:
+
+| arm | lr | s0 | s1 | s2 | mean |
+|---|---|---|---|---|---|
+| bp-adapt (chain) | 0.003 | .990 | .987 | .979 | .985 |
+| **dfa-adapt** | 0.001 | .989 | .991 | .980 | **.987** |
+| frozen-adapt | 0.003 | .313 | .314 | .295 | .307 |
+
+**DFA-adapt matches BP-adapt — a hair above it — and beats the frozen
+control by .68.** This is the "DFA-LoRA" thesis: in the regime the
+output-dim law says DFA works (F22/toy#160), DFA can cheaply adapt a
+frozen pretrained backbone.
+
+And unlike every other lane, **DFA here is insensitive to the learning
+rate**: .985 / .987 / .985 across 0.0003 → 0.003, a 10x span. From
+scratch it needed ~3x less than BP; adapting a frozen backbone through a
+small adapter is an EASY regime for it.
+
+### The task had to be many-to-one, and that is provable
+
+The obvious retrofit shift — "new relation types" — does not work, and
+the reason is worth stating because it will recur. The pretrain label
+`ty_a*TY + ty_b` is a BIJECTION from pairs to classes, and so is any
+relabeling of it. A retrained LINEAR head absorbs any bijection: set
+`u_c[a] = 1{a = a*}` and `v_c[b] = 1{b = b*}` and the right class scores
+2 while every other scores ≤ 1. So a frozen backbone plus a fresh head
+solves it, the frozen control cannot lose, and the bar is vacuous.
+
+The **modular sum** `(ty_a + ty_b) mod TY` is many-to-one and cannot be
+absorbed: for TY=2 the four required inequalities sum to a contradiction,
+and the argument runs for any TY. It needs an INTERACTION between the two
+endpoint representations — which exists only where the pair is formed.
+**That is why the adapters sit at the pair site and not inside the
+backbone stack**, and it is a constraint on F12's design, not a
+convenience: node-level adapters could not express the retrofit task at
+all. Measured precondition: frozen-adapt .307 against chance .25.
+
+### The cost claim: it is the FREEZE that buys it, not the credit rule
+
+The ticket asks for the backbone-backward bytes avoided by dfa-adapt.
+Measured honestly, that framing needs correcting:
+
+- With `--freeze-backbone` the backbone output is **detached**, so
+  neither arm backpropagates through it. `bb_grad_bytes_avoided` is
+  therefore identical for chain and dfa (275 456 bytes at the lane
+  defaults). DFA's own additional saving is the backward through the
+  adapter stack only (32 768 bytes).
+- The figure is **analytic and has to be**: the realized-graph counters
+  exclude the backward extension, so a measured count cannot see an
+  absent backward — freezing even reads *+1 node*, the detach itself.
+  That is the mirror of tao#21: a measured graph cannot show a streaming
+  win, and it cannot show a missing backward either.
+
+So the cost win of a DFA retrofit at this site comes from freezing, and
+DFA's structural advantage would only appear with capacity placed BELOW
+the frozen stack's top. Worth knowing before F12 sells the cost half.
+
 ## Landmines that apply
 
 - New runner = own compilation unit (landmine #16).

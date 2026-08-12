@@ -20,12 +20,32 @@ module Toy; module LLM; module Recipes
 
     def realize!(d_in, d_model, heads, d_ff, n_blocks, n_nodes, n_pairs,
                  n_classes, seed, init_scale, policy, cut, b_seed,
-                 b_dist, b_scale, b_sigma)
+                 b_dist, b_scale, b_sigma, retro_classes, adapters,
+                 adapter_rank)
       @gr_cache.realize_for_random_init(d_in, d_model, heads, d_ff,
                                         n_blocks, n_nodes, n_pairs,
-                                        n_classes, seed, init_scale)
+                                        n_classes, seed, init_scale,
+                                        retro_classes, adapters,
+                                        adapter_rank)
       result = @gr_cache.build_training_step(policy, cut, b_seed, b_dist,
                                              b_scale, b_sigma)
+      @gr_t_loss   = result[0]
+      @gr_t_labels = result[1]
+      @gr_t_hp     = result[2]
+      nil
+    end
+
+    # toy#161 — REBUILD the graph for the retrofit phase. The weights are
+    # persistent tensors, so the pretrained backbone survives the rebuild
+    # untouched; only the graph over them changes (detached backbone,
+    # adapter stack, new head). Doing both phases in ONE process is what
+    # guarantees every retrofit arm starts from a BIT-IDENTICAL backbone
+    # — the comparison's whole premise.
+    def rebuild_retrofit!(policy, cut, b_seed, b_dist, b_scale, b_sigma,
+                          adapter_policy, freeze_backbone)
+      result = @gr_cache.build_retrofit_step(policy, cut, b_seed, b_dist,
+                                             b_scale, b_sigma,
+                                             adapter_policy, freeze_backbone)
       @gr_t_loss   = result[0]
       @gr_t_labels = result[1]
       @gr_t_hp     = result[2]

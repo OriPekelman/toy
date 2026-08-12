@@ -15,6 +15,7 @@
 #      LOSE, and `--task local` must be measurably degenerate.
 #   9. FAIL-LOUD.
 #  10. CLI.
+#  11. THE RETROFIT (toy#161): the precondition, the freeze, the bar.
 #
 # ── WHAT THIS LANE ANSWERS ──
 #
@@ -78,6 +79,8 @@ LR_CHAIN   = "0.003"
 LR_DFA     = "0.001"
 SEEDS      = %w[0 1 2].freeze
 CHANCE     = 1.0 / 16.0
+# The retrofit head is TY-wide (the modular sum), not TY*TY.
+CHANCE_RETRO = 1.0 / 4.0
 # Margins sit far under the measured effects: BP clears frozen by .87,
 # the layer cut clears it by .81 and sits .065 under BP.
 BP_PRECOND  = 0.50   # BP must beat frozen by this — the cell must discriminate
@@ -339,8 +342,98 @@ Dir.mktmpdir("gtx_gate_cli") do |dir|
 end
 puts failures.length == n0 ? "  ok: CLI reproduces the curve; lane-foreign flags and --device cuda are rejected" : "  FAIL: CLI"
 
+# ---- 11. THE RETROFIT LANE (toy#161) ----
+#
+# Phase 1 BP-pretrains the backbone on the 16-class pair task; phase 2
+# freezes AND DETACHES it, adds a pair-site adapter stack and a fresh
+# 4-class head, and trains only the added capacity under
+# --adapter-policy. Both phases run in ONE process, so every arm's
+# backbone is BIT-IDENTICAL by construction.
+#
+# Measured, 1500 + 1500 steps, seeds 0/1/2, each arm at its own LR:
+#
+#   bp-adapt   (chain, lr .003)   .990 / .987 / .979   mean .985
+#   dfa-adapt  (dfa,   lr .001)   .989 / .991 / .980   mean .987
+#   frozen-adapt        (.003)    .313 / .314 / .295   mean .307
+#
+# DFA-adapt MATCHES BP-adapt and beats the frozen control by .68. Note
+# also that DFA is insensitive to LR here (.985-.987 across 10x), unlike
+# the from-scratch lane where it needed 3x less than BP — retrofitting a
+# frozen backbone through a small adapter is an EASY regime for DFA,
+# which is the ticket's thesis.
+#
+# WHY THE RETROFIT LABEL IS A MODULAR SUM, and why that is not a detail:
+# the pretrain label is a BIJECTION from pairs to classes, and so is any
+# "new relation types" relabeling — a retrained LINEAR head absorbs it
+# (u_c[a]=1{a=a*}, v_c[b]=1{b=b*} scores the right class 2 and every
+# other <=1), the frozen control cannot lose, and the bar is vacuous.
+# The modular sum is MANY-TO-ONE and provably needs an INTERACTION
+# between the endpoints, which exists only where the pair is formed.
+n0 = failures.length
+RETRO = { "GTX_RETROFIT" => "1", "GTX_PRETRAIN_STEPS" => "1500",
+          "STEPS" => "1500", "GTX_PRETRAIN_LR" => "0.003" }.freeze
+rt = {}
+%w[chain dfa frozen].each do |ap|
+  lr = ap == "dfa" ? "0.001" : "0.003"
+  out = run_gtx(RETRO.merge("GTX_ADAPTER_POLICY" => ap, "GTX_LR" => lr,
+                            "SEED" => "0"), nil)
+  rt[ap] = val_acc(out)
+  if ap == "dfa"
+    bl = out.lines.find { |l| l.start_with?("backbone: ") }
+    if bl.nil?
+      failures << "retrofit: no backbone signature line"
+    else
+      pre = bl[/sig_pre=([0-9.eE+-]+)/, 1]
+      post = bl[/sig_post=([0-9.eE+-]+)/, 1]
+      # THE FREEZE, PROVED rather than promised: a skipped optimizer step
+      # is not the same fact as a weight that did not move.
+      failures << "retrofit: --freeze-backbone did NOT hold the backbone (#{pre} -> #{post})" unless pre == post
+    end
+    rl = out.lines.find { |l| l.start_with?("retrofit: ") }
+    failures << "retrofit: no cost line" if rl.nil?
+    failures << "retrofit: bb_grad_bytes_avoided is 0 under --freeze-backbone" if rl && rl.include?("bb_grad_bytes_avoided=0")
+  end
+end
+puts format("    retrofit: bp-adapt=%.4f dfa-adapt=%.4f frozen-adapt=%.4f (chance %.4f)",
+            rt["chain"], rt["dfa"], rt["frozen"], CHANCE_RETRO)
+# PRECONDITION first: without it nothing below discriminates.
+if rt["chain"] < rt["frozen"] + 0.40
+  failures << "RETROFIT PRECONDITION: bp-adapt #{rt['chain']} does not beat frozen-adapt #{rt['frozen']} by 0.40 — the retrofit task must be one the frozen backbone CANNOT solve, or the comparison is vacuous. If this fires, check the label is still MANY-TO-ONE: any bijective relabeling is absorbed by the retrained head (see toy_gtx_task.rb)"
+end
+if rt["frozen"] > CHANCE_RETRO + 0.25
+  failures << "RETROFIT CONTROL: frozen-adapt #{rt['frozen']} is far above chance #{CHANCE_RETRO} — the added capacity is supposed to be NECESSARY here"
+end
+if rt["dfa"] < 0.85
+  failures << "RETROFIT BAR: dfa-adapt #{rt['dfa']} is below 0.85 — the lane's headline is that DFA can adapt a frozen BP-pretrained backbone"
+end
+if rt["dfa"] < rt["chain"] - 0.10
+  failures << "RETROFIT BAR: dfa-adapt #{rt['dfa']} trails bp-adapt #{rt['chain']} by more than 0.10"
+end
+if rt["dfa"] < rt["frozen"] + 0.40
+  failures << "RETROFIT BAR (frozen control): dfa-adapt #{rt['dfa']} does not beat frozen-adapt #{rt['frozen']} by 0.40"
+end
+puts failures.length == n0 ?
+  "  ok: RETROFIT (toy#161) — DFA-adapt matches BP-adapt on a frozen BP-pretrained backbone and crushes a frozen-adapter control that provably cannot solve the task; the freeze is proved bit-identical" :
+  "  FAIL: retrofit"
+
+# ---- 11b. the retrofit's own fail-loud + byte-null ----
+n0 = failures.length
+plain = run_gtx({ "STEPS" => "5" }, nil)
+failures << "retrofit: a NON-retrofit run changed — the retrofit capacity must be inert when it is not asked for" unless curve(plain) == base_curve
+[
+  [{ "GTX_ADAPTER_POLICY" => "dfa" },                              "GTX_ADAPTER_POLICY without GTX_RETROFIT"],
+  [{ "GTX_RETROFIT" => "1", "GTX_ADAPTER_POLICY" => "bogus" },     "unknown adapter policy"],
+  [{ "GTX_RETROFIT" => "1", "GTX_PRETRAIN_STEPS" => "0" },         "retrofit of an UNTRAINED backbone"],
+  [{ "GTX_RETROFIT" => "1", "GTX_ADAPTER_LAYERS" => "0" },         "zero adapter layers"],
+  [{ "GTX_RETROFIT" => "1", "GTX_ADAPTER_RANK" => "0" },           "zero adapter rank"],
+].each do |env, label|
+  out, st = Open3.capture2e({ "STEPS" => "2" }.merge(env), RUNNER, chdir: ROOT)
+  failures << "fail-loud: #{label} exited 0 (silently did nothing)" if st.success?
+end
+puts failures.length == n0 ? "  ok: the retrofit is INERT when unasked, and 5 degenerate retrofit configs fail loud" : "  FAIL: retrofit guards"
+
 if failures.empty?
-  puts "GATE PASS [gtx]: graph transformer + per-block policy — byte fixture, the B seed, the small-head assertion, the MANDATORY success bar with each arm at ITS OWN best LR showing ATTENTION IS NOT DFA-HOSTILE (dfa .920 vs BP .985 vs frozen .111), the mixing-cut collapse, and a frozen control that provably CAN lose (toy#160)"
+  puts "GATE PASS [gtx]: graph transformer + RETROFIT + per-block policy — byte fixture, the B seed, the small-head assertion, the MANDATORY success bar with each arm at ITS OWN best LR showing ATTENTION IS NOT DFA-HOSTILE (dfa .920 vs BP .985 vs frozen .111), the mixing-cut collapse, and a frozen control that provably CAN lose (toy#160)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [gtx]: #{f}" }

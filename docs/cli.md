@@ -83,7 +83,7 @@ recipes are:
 | `gnn` | GCN-class node classification over a normalised adjacency, transductive semi-supervised (CPU-only). Runs on a seeded graph or on real Cora (`ruby prep/fetch_cora.rb`) | `--policy`, `--graph`, `--layers`, `--hidden`, `--classes`, `--features`, `--nodes`, `--degree`, `--homophily`, `--feat-signal`, `--train-per-class`, `--task`, `--feedback-route`, `--feedback-hops`, `--weight-decay` |
 | `ssm` | selective-scan / Mamba-lite sequence classifier — an UNROLLED input-dependent linear recurrence + conv branch + gating, last-step readout (CPU-only) | `--policy`, `--dfa-cut`, `--selection`, `--layers`, `--seq`, `--d-model`, `--d-inner`, `--conv-k`, `--classes`, `--task`, `--cue-span`, `--noise`, `--dt-init` |
 | `lstm` | gated recurrence: a stack of textbook LSTM cells UNROLLED over T, last-step readout, on the same task + cut axis as `ssm` (CPU-only) | `--policy`, `--dfa-cut`, `--layers`, `--hidden`, `--features`, `--seq`, `--classes`, `--task`, `--cue-span`, `--noise`, `--batch`, `--val-batches`, `--task-seed`, `--lr`, `--dfa-b-*` |
-| `gtx` | graph transformer — masked self-attention whose mask **is an adjacency**, small relation head (16 classes), inductive relational retrieval (CPU-only) | `--policy`, `--dfa-cut`, `--layers`, `--d-model`, `--heads`, `--d-ff`, `--entities`, `--types`, `--features`, `--task`, `--noise`, `--batch`, `--val-batches`, `--task-seed`, `--dfa-b-*` |
+| `gtx` | graph transformer — masked self-attention whose mask **is an adjacency**, small relation head (16 classes), inductive relational retrieval (CPU-only). `--retrofit` adds the DFA-adapter mode | `--policy`, `--dfa-cut`, `--layers`, `--d-model`, `--heads`, `--d-ff`, `--entities`, `--types`, `--features`, `--task`, `--noise`, `--batch`, `--val-batches`, `--task-seed`, `--dfa-b-*`, `--retrofit`, `--adapter-policy`, `--adapter-layers`, `--adapter-rank`, `--pretrain-steps`, `--pretrain-lr`, `--no-freeze-backbone` |
 | `diff` | latent diffusion denoiser — time-conditioned eps-prediction over a LOW-DIM latent, scored by a generative metric (CPU-only) | `--policy`, `--latent`, `--time-feat`, `--layers`, `--hidden`, `--task`, `--modes`, `--spread`, `--mode-scale`, `--diff-steps`, `--beta-lo`, `--beta-hi`, `--eval-n`, `--align-events` |
 
 An unknown recipe is rejected loud (`supported: 'from-scratch', 'lora',
@@ -235,6 +235,37 @@ rather than an inconvenience.** BP's cell is `--lr 0.003`; the DFA arms
 want ~3x less, and at BP's rate DFA reads chance. A single-LR matrix on
 this lane would report "attention is DFA-hostile" — the opposite of what
 it measures. Always state the LR with the arm.
+
+#### `gtx --retrofit` — adapting a frozen pretrained backbone (toy#161)
+
+One process, two phases: `--pretrain-steps` of BP on the 16-class
+relation task, then the backbone is **frozen and detached** and only
+added capacity trains on a *different* task — a 4-class **modular sum**
+over the same graph — under `--adapter-policy chain|dfa|frozen`.
+
+```
+toy train gtx --retrofit --pretrain-steps 1500 --steps 1500   --adapter-policy dfa --pretrain-lr 0.003 --lr 0.001
+```
+
+Three things about it are load-bearing:
+
+- **The retrofit label is many-to-one on purpose.** Any *bijective*
+  relabeling — including "new relation types" — is absorbed by a
+  retrained linear head, which would leave the frozen control unable to
+  lose. The modular sum provably needs an **interaction** between the
+  two endpoint representations, which is why the adapters sit at the
+  **pair site** rather than inside the backbone.
+- **Both phases run in one process**, so every arm's backbone is
+  bit-identical by construction. The runner prints `backbone: sig_pre=…
+  sig_post=…`; under a freeze the two are identical, which is a
+  measurement rather than a promise that nothing was stepped.
+- **The cost line is analytic, and it credits the freeze, not DFA.**
+  `retrofit: … bb_grad_bytes_avoided=…` is what *freezing* saves, and it
+  is the same for both credit rules at this adapter site; DFA's own
+  saving is the backward through the adapter stack only. The realized
+  graph counters cannot show this (they exclude the backward
+  extension — freezing even reads +1 node, the detach), which is the
+  mirror of tao#21's caveat.
 
 `diff` prints `gen: energy=…` — the ENERGY DISTANCE between generated
 and held-out real samples. It is the lane's headline metric and **lower

@@ -224,6 +224,15 @@ module Toy
           # off is byte-null — every cell toy#157 published was measured
           # without it.
           @clip_grad      = nil
+          # toy#161 (gtx retrofit): freeze a BP-pretrained backbone and
+          # train ADDED capacity by chain|dfa|frozen.
+          @retrofit        = false
+          @pretrain_steps  = nil
+          @pretrain_lr     = nil
+          @adapter_policy  = nil
+          @adapter_layers  = nil
+          @adapter_rank    = nil
+          @no_freeze_backbone = false
           @d_inner        = nil
           @conv_k         = nil
           @selection      = nil  # selective | lti
@@ -476,7 +485,14 @@ module Toy
                              "GTX_WARMUP"      => (@warmup || 0).to_s,
                              "GTX_B_SEED"      => (@dfa_b_seed || 1234).to_s,
                              "GTX_B_DIST"      => (@dfa_b_dist || ""),
-                             "GTX_B_SCALE"     => (@dfa_b_scale || ""))
+                             "GTX_B_SCALE"     => (@dfa_b_scale || ""),
+                             "GTX_RETROFIT"       => (@retrofit ? "1" : ""),
+                             "GTX_PRETRAIN_STEPS" => (@pretrain_steps || 1500).to_s,
+                             "GTX_PRETRAIN_LR"    => (@pretrain_lr || ""),
+                             "GTX_ADAPTER_POLICY" => (@adapter_policy || ""),
+                             "GTX_ADAPTER_LAYERS" => (@adapter_layers || 2).to_s,
+                             "GTX_ADAPTER_RANK"   => (@adapter_rank || 16).to_s,
+                             "GTX_FREEZE_BACKBONE" => (@no_freeze_backbone ? "0" : "1"))
           elsif @recipe == "lstm"
             # Lane-local LSTM_* namespace, same discipline as the others.
             # Defaults CHANGE NOTHING here, deliberately. This lane's
@@ -991,6 +1007,50 @@ module Toy
             # toy#162: a POSITIVE float. There is no "--clip-grad 0" —
             # omitting the flag is how you turn it off, so a 0 would be a
             # setting that silently means "unset".
+            when "--retrofit"
+              @retrofit = true
+            when "--no-freeze-backbone"
+              @no_freeze_backbone = true
+            when "--adapter-policy"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--adapter-policy requires a value") if val.nil?
+              return bad_arg("--adapter-policy must be chain, dfa or frozen, got #{val.inspect}") unless %w[chain dfa frozen].include?(val)
+              @adapter_policy = val
+            when /\A--adapter-policy=(.*)\z/
+              val = $1
+              return bad_arg("--adapter-policy must be chain, dfa or frozen, got #{val.inspect}") unless %w[chain dfa frozen].include?(val)
+              @adapter_policy = val
+            when "--pretrain-steps", "--adapter-layers", "--adapter-rank"
+              key = @argv[i]
+              i += 1
+              val = @argv[i]
+              return bad_arg("#{key} requires a value") if val.nil?
+              return bad_arg("#{key} must be an integer >= 1, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= 1
+              case key
+              when "--pretrain-steps" then @pretrain_steps = val.to_i
+              when "--adapter-layers" then @adapter_layers = val.to_i
+              else                         @adapter_rank   = val.to_i
+              end
+            when /\A--(pretrain-steps|adapter-layers|adapter-rank)=(.*)\z/
+              key = $1
+              val = $2
+              return bad_arg("--#{key} must be an integer >= 1, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= 1
+              case key
+              when "pretrain-steps" then @pretrain_steps = val.to_i
+              when "adapter-layers" then @adapter_layers = val.to_i
+              else                       @adapter_rank   = val.to_i
+              end
+            when "--pretrain-lr"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--pretrain-lr requires a value") if val.nil?
+              return bad_arg("--pretrain-lr must be a positive float, got #{val.inspect}") unless val =~ /\A\d*\.?\d+([eE][+-]?\d+)?\z/ && val.to_f > 0.0
+              @pretrain_lr = val.to_f
+            when /\A--pretrain-lr=(.*)\z/
+              val = $1
+              return bad_arg("--pretrain-lr must be a positive float, got #{val.inspect}") unless val =~ /\A\d*\.?\d+([eE][+-]?\d+)?\z/ && val.to_f > 0.0
+              @pretrain_lr = val.to_f
             when "--clip-grad"
               i += 1
               val = @argv[i]
@@ -1673,6 +1733,10 @@ when /\A--dfa-feedback-lr=(.*)\z/
             # toy#162: the FAIR BPTT control lives on the lane whose
             # stability claim needs it. Widening it is a follow-on, not
             # a default.
+            ["--retrofit/--adapter-*/--pretrain-*/--no-freeze-backbone", %w[gtx],
+             (@retrofit || !@adapter_policy.nil? || !@adapter_layers.nil? ||
+              !@adapter_rank.nil? || !@pretrain_steps.nil? || !@pretrain_lr.nil? ||
+              @no_freeze_backbone), " (toy#161)"],
             ["--clip-grad",     %w[lstm],                           !@clip_grad.nil?, " (toy#162)"],
             ["--noise",          %w[ssm lstm gtx],                   !@noise.nil?, " (toy#155/#157/#160)"],
             ["--dt-init",       %w[ssm],                            !@dt_init.nil?, " (toy#155)"],
@@ -1877,6 +1941,9 @@ when /\A--dfa-feedback-lr=(.*)\z/
           # measurement it exists for, and is not spent.
           if @recipe == "lstm" && @device != "cpu"
             return bad_arg("--device #{@device.inspect} is not supported for recipe 'lstm' (CPU-only by decision — tao#18/#21: a device twin changes throughput, not the materialised activation bytes this lane measures)")
+          end
+          if (@adapter_policy || @no_freeze_backbone) && !@retrofit
+            return bad_arg("--adapter-policy/--no-freeze-backbone need --retrofit (there are no adapters and no frozen backbone outside a retrofit, so the flag would silently do nothing)")
           end
           if @recipe == "gtx" && @device != "cpu"
             return bad_arg("--device #{@device.inspect} is not supported for recipe 'gtx' (CPU-only by decision — tao#18: the cross-architecture lanes are small by construction and get no CUDA twin)")

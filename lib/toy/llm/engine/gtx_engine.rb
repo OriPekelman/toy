@@ -92,7 +92,10 @@ class GtxEngine
                 :gx_b_handles, :gx_b_seeds, :gx_b_douts,
                 :gx_b_dist, :gx_b_scale, :gx_b_sigma,
                 :gx_dfa_wired, :gx_frozen_count, :gx_taps,
-                :gx_graph_nodes, :gx_graph_bytes
+                :gx_graph_nodes, :gx_graph_bytes,
+                :gx_retro_classes, :gx_adapters, :gx_adapter_rank,
+                :gx_retrofit, :gx_freeze_backbone, :gx_adapter_policy,
+                :gx_backbone_first, :gx_backbone_count, :gx_active_classes
 
   def initialize
     @sess       = TinyNN.tnn_null_ptr
@@ -133,10 +136,20 @@ class GtxEngine
     @gx_taps         = 0
     @gx_graph_nodes  = 0
     @gx_graph_bytes  = 0
+    @gx_retro_classes   = 0
+    @gx_adapters        = 0
+    @gx_adapter_rank    = 0
+    @gx_retrofit        = 0
+    @gx_freeze_backbone = 0
+    @gx_adapter_policy  = POLICY_CHAIN
+    @gx_backbone_first  = 0
+    @gx_backbone_count  = 0
+    @gx_active_classes  = 0
   end
 
   def realize_for_random_init(d_in, d_model, heads, d_ff, n_blocks,
-                              n_nodes, n_pairs, n_classes, seed, init_scale)
+                              n_nodes, n_pairs, n_classes, seed, init_scale,
+                              retro_classes, adapters, adapter_rank)
     @gx_d_in    = d_in
     @gx_d_model = d_model
     @gx_heads   = heads
@@ -146,6 +159,9 @@ class GtxEngine
     @gx_nodes   = n_nodes
     @gx_pairs   = n_pairs
     @gx_classes = n_classes
+    @gx_retro_classes = retro_classes
+    @gx_adapters      = adapters
+    @gx_adapter_rank  = adapter_rank
 
     @sess = TinyNN.tnn_session_new(0)
     cap = n_blocks * 400 + 262144
@@ -177,6 +193,36 @@ class GtxEngine
     # output dim is R and stays R however large the graph gets — the
     # property this whole lane is built to exploit.
     add_w(n_classes, 2 * d_model, "head", n_blocks)
+    # Everything allocated so far is the BACKBONE (+ its pretrain head):
+    # what a retrofit freezes and reuses. Recorded as a span so the
+    # freeze, the checkpoint and the "did it move" signature all agree on
+    # what the word means.
+    @gx_backbone_count = @ft_weights.length
+
+    # toy#161 — the RETROFIT capacity, allocated ALWAYS (persistent
+    # inputs must exist before finalize_weights, toy#133) and used only
+    # in retrofit mode. A pretrain run is byte-identical with them
+    # present because nothing consumes them.
+    #
+    # The adapter stack sits at the PAIR site, on concat(h_a, h_b), and
+    # that placement is forced: the retrofit label is a MODULAR SUM, so
+    # it needs an interaction between the two endpoints, and the pair is
+    # the only place that interaction exists. Node-level adapters inside
+    # the backbone could not express it at all (see toy_gtx_task.rb).
+    #
+    # Each layer is a residual bottleneck  z += W_up . silu(W_down . z),
+    # with W_up initialised to ZERO so the retrofit STARTS as exactly the
+    # pretrained function. That makes `--adapter-policy frozen` precisely
+    # "the frozen backbone plus a retrained head" — the control the bar
+    # is stated against.
+    @gx_backbone_first = @ft_weights.length
+    ai = 0
+    while ai < @gx_adapters
+      add_w(@gx_adapter_rank, 2 * d_model, "ad" + ai.to_s + ".down", n_blocks + 1)
+      add_w(2 * d_model, @gx_adapter_rank, "ad" + ai.to_s + ".up",   n_blocks + 1)
+      ai = ai + 1
+    end
+    add_w(@gx_retro_classes, 2 * d_model, "retro_head", n_blocks + 2)
 
     wi = 0
     while wi < @ft_weights.length
@@ -198,6 +244,21 @@ class GtxEngine
     TinyNN.tnn_finalize_weights(@sess)
     upload_random_init!(seed, init_scale)
     nil
+  end
+
+  # toy#161 — RETROFIT. Same backbone graph, then:
+  #   * the backbone output is DETACHED when frozen, so no gradient enters
+  #     it at all (freezing without detaching would still BUILD the
+  #     backward — the cost claim has to be structural, not bookkeeping);
+  #   * a residual bottleneck ADAPTER STACK on the pair representation;
+  #   * a fresh SMALL head for the retrofit label.
+  # `adapter_policy` is chain | dfa | frozen, exactly the lane vocabulary.
+  def build_retrofit_step(policy, cut, b_seed, b_dist, b_scale, b_sigma,
+                          adapter_policy, freeze_backbone)
+    @gx_retrofit        = 1
+    @gx_adapter_policy  = adapter_policy
+    @gx_freeze_backbone = freeze_backbone
+    build_training_step(policy, cut, b_seed, b_dist, b_scale, b_sigma)
   end
 
   def build_training_step(policy, cut, b_seed, b_dist, b_scale, b_sigma)
@@ -290,18 +351,63 @@ class GtxEngine
 
     # THE HEAD: gather the two endpoint columns and concat along ne0, so
     # the output dim is R whatever N is.
+    if @gx_retrofit == 1 && @gx_freeze_backbone == 1
+      # THE FREEZE IS A DETACH, not just a skipped optimizer step. Under
+      # a skipped step the backward through the whole backbone would
+      # still be BUILT and computed — so "no backward through the frozen
+      # backbone" would be a claim about bookkeeping rather than about
+      # the graph. Detaching makes it true of the graph, for BOTH arms,
+      # which is exactly what the measured node/byte counts then show.
+      t_h = TinyNN.tnn_detach(@sess, t_h)
+    end
     t_ha = TinyNN.tnn_get_rows(@sess, t_h, @t_idx_a)       # [d_model, P]
     t_hb = TinyNN.tnn_get_rows(@sess, t_h, @t_idx_b)
     t_pair = TinyNN.tnn_concat(@sess, t_ha, t_hb, 0)       # [2*d_model, P]
-    @t_logits = TinyNN.tnn_matmul(@sess,
-                  @ft_weights[@ft_weights.length - 1], t_pair)
+
+    n_out = @gx_classes
+    if @gx_retrofit == 1
+      n_out = @gx_retro_classes
+      ad_dfa = @gx_adapter_policy == POLICY_DFA
+      aj = 0
+      while aj < @gx_adapters
+        w_dn = @ft_weights[@gx_backbone_first + aj * 2]
+        w_up = @ft_weights[@gx_backbone_first + aj * 2 + 1]
+        a_in = t_pair
+        if ad_dfa
+          # A dfa adapter layer detaches its INPUT: its credit comes from
+          # the random projection of the output error, never from the
+          # layer above it.
+          a_in = TinyNN.tnn_detach(@sess, a_in)
+        end
+        t_pair = TinyNN.tnn_add(@sess, a_in,
+                   TinyNN.tnn_matmul(@sess, w_up,
+                     TinyNN.tnn_silu(@sess, TinyNN.tnn_matmul(@sess, w_dn, a_in))))
+        if ad_dfa
+          TinyNN.tnn_set_output(t_pair)
+          taps.push(t_pair); tapd.push(2 * @gx_d_model)
+          any_dfa = true
+        end
+        aj = aj + 1
+      end
+      @t_logits = TinyNN.tnn_matmul(@sess,
+                    @ft_weights[@ft_weights.length - 1], t_pair)
+    else
+      @t_logits = TinyNN.tnn_matmul(@sess,
+                    @ft_weights[@gx_backbone_count - 1], t_pair)
+    end
     TinyNN.tnn_set_output(@t_logits)
 
-    @t_labels = TinyNN.tnn_input_2d_f32(@sess, @gx_pairs, @gx_classes)
+    @t_labels = TinyNN.tnn_input_2d_f32(@sess, @gx_pairs, n_out)
     @t_hp     = TinyNN.tnn_input_1d_f32(@sess, 7)
     @t_loss   = TinyNN.tnn_cross_entropy_loss(@sess, @t_logits, @t_labels)
     TinyNN.tnn_set_output(@t_loss)
 
+    # The ACTIVE output dim: the retrofit head is TY-wide, not TY*TY.
+    # refresh_b! sizes its uploads from this — using @gx_classes there
+    # wrote a 16-wide B into a 4-wide tensor and ggml caught it as an
+    # out-of-bounds write.
+    active_classes = @gx_retrofit == 1 ? @gx_retro_classes : @gx_classes
+    @gx_active_classes = active_classes
     @gx_taps = taps.length
     if any_dfa && taps.length > 0
       t_p = TinyNN.tnn_softmax(@sess, @t_logits)
@@ -312,23 +418,35 @@ class GtxEngine
       # e^T is [P, R]; S is [P, N]; the product is [R, N].
       e_nodes = TinyNN.tnn_matmul(@sess,
                   TinyNN.tnn_cont_2d(@sess, TinyNN.tnn_transpose(@sess, e_det),
-                                     @gx_pairs, @gx_classes),
+                                     @gx_pairs, active_classes),
                   @t_inc)
       t_sur = TinyNN.tnn_null_ptr
       started = false
       ti = 0
       while ti < taps.length
         dout = tapd[ti]
-        t_b = TinyNN.tnn_input_2d_f32(@sess, dout, @gx_classes)   # ne=[C, dout]
+        on_pairs = dout == 2 * @gx_d_model && @gx_retrofit == 1
+        t_b = TinyNN.tnn_input_2d_f32(@sess, dout, active_classes)  # ne=[C, dout]
         TinyNN.tnn_set_output(t_b)
         @gx_b_handles.push(t_b)
         @gx_b_seeds.push(b_seed + 77 + ti)
         @gx_b_douts.push(dout)
-        t_delta = TinyNN.tnn_matmul(@sess, t_b, e_nodes)          # [dout, N]
-        t_term = TinyNN.tnn_sum_rows(@sess,
-                   TinyNN.tnn_reshape_2d(@sess,
-                     TinyNN.tnn_mul(@sess, taps[ti], t_delta),
-                     dout * @gx_nodes, 1))
+        # An ADAPTER tap lives on the PAIR axis, so its error needs no
+        # incidence routing at all — the error is already per-pair. Only
+        # the backbone's node-axis taps go through S.
+        if on_pairs
+          t_delta = TinyNN.tnn_matmul(@sess, t_b, e_det)           # [dout, P]
+          t_term = TinyNN.tnn_sum_rows(@sess,
+                     TinyNN.tnn_reshape_2d(@sess,
+                       TinyNN.tnn_mul(@sess, taps[ti], t_delta),
+                       dout * @gx_pairs, 1))
+        else
+          t_delta = TinyNN.tnn_matmul(@sess, t_b, e_nodes)         # [dout, N]
+          t_term = TinyNN.tnn_sum_rows(@sess,
+                     TinyNN.tnn_reshape_2d(@sess,
+                       TinyNN.tnn_mul(@sess, taps[ti], t_delta),
+                       dout * @gx_nodes, 1))
+        end
         if started
           t_sur = TinyNN.tnn_add(@sess, t_sur, t_term)
         else
@@ -356,9 +474,30 @@ class GtxEngine
       if lyr < @gx_blocks && lyr < policy.length
         mode = policy[lyr]
       end
-      if lyr < @gx_blocks && mode == POLICY_FROZEN
+      step_it = true
+      if @gx_retrofit == 1
+        # RETROFIT: what trains is the ADDED capacity plus the new head.
+        # The backbone (and its pretrain head) is out; the adapters obey
+        # --adapter-policy; the retrofit head ALWAYS trains, because it
+        # is the readout for a task the backbone has never seen, not
+        # "added capacity" whose credit rule is under test.
+        if wk < @gx_backbone_count
+          step_it = @gx_freeze_backbone == 0
+        elsif wk < @ft_weights.length - 1
+          step_it = @gx_adapter_policy != POLICY_FROZEN
+        else
+          step_it = true
+        end
+      elsif lyr < @gx_blocks && mode == POLICY_FROZEN
         # No optimizer step: the block stays at init.
-      else
+        step_it = false
+      elsif wk >= @gx_backbone_count
+        # Pretrain never touches the retrofit capacity — and it must not,
+        # or a "pretrained backbone" would quietly carry trained adapters
+        # into a run whose whole point is that they start at identity.
+        step_it = false
+      end
+      if step_it
         tg = TinyNN.tnn_tensor_grad(@sess, @ft_weights[wk])
         to = TinyNN.tnn_opt_step_adamw(@sess, @ft_weights[wk], tg,
                                         @ft_m[wk], @ft_v[wk], @t_hp)
@@ -368,7 +507,8 @@ class GtxEngine
     end
 
     @gx_dfa_wired = dfa_block_count(policy)
-    puts "gtx: blocks=" + @gx_blocks.to_s +
+    puts "gtx: " + (@gx_retrofit == 1 ? "retrofit " : "") +
+         "blocks=" + @gx_blocks.to_s +
          " nodes=" + @gx_nodes.to_s +
          " pairs=" + @gx_pairs.to_s +
          " classes=" + @gx_classes.to_s +
@@ -376,13 +516,72 @@ class GtxEngine
          " policy_len=" + policy.length.to_s +
          " dfa_wired=" + @gx_dfa_wired.to_s +
          " frozen=" + @gx_frozen_count.to_s +
-         " taps=" + @gx_taps.to_s
+         " taps=" + @gx_taps.to_s +
+         (@gx_retrofit == 1 ?
+           (" adapters=" + @gx_adapters.to_s +
+            " adapter_policy=" + (@gx_adapter_policy == POLICY_DFA ? "dfa" :
+                                  (@gx_adapter_policy == POLICY_FROZEN ? "frozen" : "chain")) +
+            " freeze_backbone=" + @gx_freeze_backbone.to_s +
+            " retro_classes=" + @gx_retro_classes.to_s) : "")
 
     TinyNN.tnn_pin_all_graph_b_nodes(@sess)
     TinyNN.tnn_realize_backward(@sess)
     measure_graph!
     refresh_b!
     [@t_loss, @t_labels, @t_hp]
+  end
+
+  # toy#161 — sum of squares over every BACKBONE weight. Emitted before
+  # and after a retrofit: --freeze-backbone must leave the two
+  # BIT-IDENTICAL, which is the gate's proof that nothing moved, rather
+  # than a promise that nothing was stepped.
+  # toy#161 — the gradient bytes a FROZEN backbone never materialises.
+  # Analytic, and it has to be: the realized-graph node/byte counters do
+  # not include the backward extension, so a measured count cannot see
+  # this (freezing actually reads +1 node, the detach itself). tao#21's
+  # caveat was that a measured graph cannot show a STREAMING win; the
+  # mirror caveat applies here — a measured graph cannot show an ABSENT
+  # backward either.
+  #
+  # Read it as what FREEZING buys, not what DFA buys: at this adapter
+  # site both arms detach the backbone, so the figure is identical for
+  # chain and dfa. DFA's own additional saving is the backward through
+  # the ADAPTER STACK only, which is two small matrices per layer.
+  def backbone_grad_bytes
+    n = 0
+    i = 0
+    while i < @gx_backbone_count
+      n = n + @ft_din[i] * @ft_dout[i]
+      i = i + 1
+    end
+    n * 4
+  end
+
+  def adapter_grad_bytes
+    n = 0
+    i = @gx_backbone_first
+    while i < @ft_weights.length - 1
+      n = n + @ft_din[i] * @ft_dout[i]
+      i = i + 1
+    end
+    n * 4
+  end
+
+  def backbone_sig
+    acc = 0.0
+    i = 0
+    while i < @gx_backbone_count
+      n = TinyNN.tnn_tensor_nelements(@ft_weights[i])
+      buf = Array.new(n, 0.0)
+      TinyNN.tnn_download_to_f64_array(@sess, @ft_weights[i], buf, n)
+      k = 0
+      while k < n
+        acc = acc + buf[k] * buf[k]
+        k = k + 1
+      end
+      i = i + 1
+    end
+    acc
   end
 
   def measure_graph!
@@ -413,8 +612,8 @@ class GtxEngine
     bi = 0
     while bi < @gx_b_handles.length
       dout = @gx_b_douts[bi]
-      nb   = dout * @gx_classes
-      sig  = Toy::Train::DfaB.sigma_for(@gx_b_scale, @gx_classes, dout, @gx_b_sigma)
+      nb   = dout * @gx_active_classes
+      sig  = Toy::Train::DfaB.sigma_for(@gx_b_scale, @gx_active_classes, dout, @gx_b_sigma)
       TinyNN.tnn_upload_from_float_array(@sess, @gx_b_handles[bi],
         Toy::Train::DfaB.fill(nb, @gx_b_seeds[bi], @gx_b_dist, sig), nb)
       bi = bi + 1
@@ -457,7 +656,20 @@ class GtxEngine
     while wi < @ft_weights.length
       n  = @ft_din[wi] * @ft_dout[wi]
       nm = @ft_names[wi]
-      if nm.length > 3 && (nm[nm.length - 3, 3] == "ln1" || nm[nm.length - 3, 3] == "ln2")
+      if nm.length > 3 && nm[0, 2] == "ad" && nm[nm.length - 3, 3] == ".up"
+        # toy#161: W_up starts at ZERO so the adapter is the identity and
+        # the retrofit begins at exactly the pretrained function. A
+        # non-zero start would make even the `frozen` control a different
+        # model from the backbone it is supposed to control for.
+        #
+        # The `nm[0,2] == "ad"` guard is NOT redundant: every block's FFN
+        # up-projection is named "b<i>.up" and also ends in ".up", so a
+        # suffix-only match zeroed the whole backbone's FFN. It was
+        # invisible in the retrofit numbers and caught only by toy#160's
+        # byte-gated fixture — which is precisely what that fixture is
+        # for.
+        upload_const(@ft_weights[wi], n, 0.0)
+      elsif nm.length > 3 && (nm[nm.length - 3, 3] == "ln1" || nm[nm.length - 3, 3] == "ln2")
         # RMSNorm gain starts at 1.0, or the first block scales its own
         # input to nothing and the residual stream never gets going.
         upload_const(@ft_weights[wi], n, 1.0)

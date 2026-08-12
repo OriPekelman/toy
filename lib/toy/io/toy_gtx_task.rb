@@ -92,6 +92,28 @@ class GtxTask
   KIND_RELATIONAL = 0
   KIND_LOCAL      = 1
 
+  # toy#161 — the RETROFIT label. Pretrain uses ty_a*TY + ty_b, which is a
+  # BIJECTION from pairs to classes; the retrofit label is the MODULAR SUM
+  # (ty_a + ty_b) mod TY, which is many-to-one.
+  #
+  # That difference is the whole lane, and it is provable rather than
+  # hoped-for. Any INJECTIVE relabeling — including "new relation types",
+  # which is the shift toy#161 originally proposed — is absorbed by a
+  # retrained LINEAR head: set u_c[a] = 1{a = a*}, v_c[b] = 1{b = b*} and
+  # the correct class scores 2 while every other scores <= 1. So a frozen
+  # backbone plus a fresh head solves it, the frozen-adapter control
+  # cannot lose, and the bar means nothing.
+  #
+  # The modular sum cannot be absorbed. For TY = 2 the four constraints
+  # d0+e0>0, d0+e1<0, d1+e0<0, d1+e1>0 (with d_a = u_0[a]-u_1[a],
+  # e_b = v_0[b]-v_1[b]) sum to a contradiction, and the same argument
+  # runs for any TY. It needs an INTERACTION between the two endpoint
+  # representations — which exists only where the pair is formed, i.e. in
+  # the added capacity. That is why this lane's adapters sit at the PAIR
+  # site and not inside the backbone stack.
+  LABEL_PAIR   = 0
+  LABEL_MODSUM = 1
+
   # Softmax-safe "closed" entry: exp(-30) is ~9e-14, dead in f32 without
   # being -inf, so a fully-masked row degrades to uniform, not to NaN.
   MASK_NEG = -30.0
@@ -282,7 +304,8 @@ class GtxTask
   #
   # Endpoints are drawn DISTINCT: a self-pair has label ty*TY+ty,
   # learnable from "the indices are equal" rather than from the graph.
-  def fill_pairs!(n_pairs, idx_a, idx_b, labels)
+  # `label_mode` is LABEL_PAIR (pretrain) or LABEL_MODSUM (retrofit).
+  def fill_pairs!(n_pairs, idx_a, idx_b, labels, label_mode)
     p = 0
     while p < n_pairs
       a = lcg_next(@gt_entities)
@@ -292,7 +315,30 @@ class GtxTask
       end
       idx_a[p] = a
       idx_b[p] = b
-      labels[p] = @gt_type_of[a] * @gt_types + @gt_type_of[b]
+      if label_mode == LABEL_MODSUM
+        labels[p] = (@gt_type_of[a] + @gt_type_of[b]) % @gt_types
+      else
+        labels[p] = @gt_type_of[a] * @gt_types + @gt_type_of[b]
+      end
+      p = p + 1
+    end
+    nil
+  end
+
+  # Relabel an EXISTING pair batch under a different label mode. The
+  # retrofit phase scores the same held-out instances as the pretrain
+  # phase, so the pairs must be the same draw — recomputing them would
+  # silently score a different set.
+  def relabel!(n_pairs, idx_a, idx_b, labels, label_mode)
+    p = 0
+    while p < n_pairs
+      a = idx_a[p]
+      b = idx_b[p]
+      if label_mode == LABEL_MODSUM
+        labels[p] = (@gt_type_of[a] + @gt_type_of[b]) % @gt_types
+      else
+        labels[p] = @gt_type_of[a] * @gt_types + @gt_type_of[b]
+      end
       p = p + 1
     end
     nil
