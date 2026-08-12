@@ -492,7 +492,9 @@ module Toy
                              "GTX_ADAPTER_POLICY" => (@adapter_policy || ""),
                              "GTX_ADAPTER_LAYERS" => (@adapter_layers || 2).to_s,
                              "GTX_ADAPTER_RANK"   => (@adapter_rank || 16).to_s,
-                             "GTX_FREEZE_BACKBONE" => (@no_freeze_backbone ? "0" : "1"))
+                             "GTX_FREEZE_BACKBONE" => (@no_freeze_backbone ? "0" : "1"),
+                             "GTX_CKPT_EVERY"     => (@ckpt_every || 0).to_s,
+                             "GTX_LOAD_CKPT"      => (@load_ckpt || ""))
           elsif @recipe == "lstm"
             # Lane-local LSTM_* namespace, same discipline as the others.
             # Defaults CHANGE NOTHING here, deliberately. This lane's
@@ -1792,8 +1794,8 @@ when /\A--dfa-feedback-lr=(.*)\z/
             ["--expert-act", %w[franken-moe],                        !@expert_act.nil?, " (K4b/M6)"],
             ["--lr-schedule/--lr-lo/--lr-hi", %w[franken-moe],       (!@lr_schedule.nil? || !@lr_lo.nil? || !@lr_hi.nil?), " (toy#146)"],
             ["--lr-control/--lr-control-*", %w[franken-moe],         (!@lr_control.nil? || !@lr_control_window.nil? || !@lr_control_patience.nil? || !@lr_control_factor.nil? || !@lr_control_recover.nil? || !@lr_control_floor.nil?), " (toy#148)"],
-            ["--ckpt-every",    %w[franken franken-moe],            !@ckpt_every.nil?, " (toy#129/#131)"],
-            ["--load-ckpt",     %w[franken-moe],                    !@load_ckpt.nil?, " (toy#131; eval-only — pass --steps 0 + --eval-corpus)"],
+            ["--ckpt-every",    %w[franken franken-moe gtx],        !@ckpt_every.nil?, " (toy#129/#131/#164)"],
+            ["--load-ckpt",     %w[franken-moe gtx],                !@load_ckpt.nil?, " (toy#131 franken-moe: eval-only, pass --steps 0 + --eval-corpus; toy#164 gtx: needs --retrofit)"],
             ["--eval-corpus/--eval-tokens/--eval-offset", %w[franken-moe], (!@eval_corpus.nil? || !@eval_tokens.nil? || !@eval_offset.nil?), " (toy#130; the llama lane evals checkpoints offline via `toy eval ce`)"],
             ["--shape",         %w[franken franken-moe],            !@shape.nil?, ""],
             ["--routing/--moe-policy/--moe-aux", %w[franken-moe],   (!@routing.nil? || !@moe_policy.nil? || !@moe_aux.nil?), ""],
@@ -1827,7 +1829,8 @@ when /\A--dfa-feedback-lr=(.*)\z/
             return bad_arg("--steps 0 is only meaningful with --load-ckpt (the eval-only reload, toy#131)")
           end
           if @load_ckpt && !File.file?(@load_ckpt)
-            return bad_arg("no such file: #{@load_ckpt} (--load-ckpt takes a toy-moe/v1 checkpoint from --ckpt-every)")
+            fmt = @recipe == "gtx" ? "toy-gtx/v1 backbone" : "toy-moe/v1"
+            return bad_arg("no such file: #{@load_ckpt} (--load-ckpt takes a #{fmt} checkpoint from --ckpt-every)")
           end
           # toy#158: radam lives on the dense franken lane only — the moe
           # runner's optimizer allow-list does not know it, and a flag
@@ -1941,6 +1944,9 @@ when /\A--dfa-feedback-lr=(.*)\z/
           # measurement it exists for, and is not spent.
           if @recipe == "lstm" && @device != "cpu"
             return bad_arg("--device #{@device.inspect} is not supported for recipe 'lstm' (CPU-only by decision — tao#18/#21: a device twin changes throughput, not the materialised activation bytes this lane measures)")
+          end
+          if @recipe == "gtx" && @load_ckpt && !@retrofit
+            return bad_arg("--load-ckpt needs --retrofit on recipe 'gtx' (toy#164: a loaded backbone on this lane exists to be retrofitted; a second meaning for it would make the flag ambiguous)")
           end
           if (@adapter_policy || @no_freeze_backbone) && !@retrofit
             return bad_arg("--adapter-policy/--no-freeze-backbone need --retrofit (there are no adapters and no frozen backbone outside a retrofit, so the flag would silently do nothing)")

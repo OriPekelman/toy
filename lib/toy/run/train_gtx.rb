@@ -51,6 +51,10 @@
 #   GTX_ADAPTER_RANK   — bottleneck width (default 16)
 #   GTX_FREEZE_BACKBONE— 1 (default) freezes AND DETACHES the backbone
 #   STEPS / GTX_LR then apply to the RETROFIT phase.
+#   GTX_CKPT_EVERY     — write the BACKBONE as GGUF every K steps and at
+#                        the final step, into TAO_RUN_DIR (toy#164)
+#   GTX_LOAD_CKPT      — load a backbone and SKIP the pretrain phase;
+#                        requires GTX_RETROFIT=1
 #   GTX_B_SEED / GTX_B_DIST / GTX_B_SCALE — the DfaB feedback axes
 #
 # STDOUT (byte-gated): "step <N>: loss=<float>" per step, then
@@ -109,6 +113,8 @@ AD_POLICY_S = ENV["GTX_ADAPTER_POLICY"] || ""
 AD_LAYERS   = (ENV["GTX_ADAPTER_LAYERS"] || "2").to_i
 AD_RANK     = (ENV["GTX_ADAPTER_RANK"] || "16").to_i
 FREEZE_BB   = (ENV["GTX_FREEZE_BACKBONE"] || "1") == "1"
+CKPT_EVERY  = (ENV["GTX_CKPT_EVERY"] || "0").to_i
+LOAD_CKPT   = ENV["GTX_LOAD_CKPT"] || ""
 
 NOISE  = NOISE_S.length  > 0 ? NOISE_S.to_f  : 0.3
 LR     = LR_S.length     > 0 ? LR_S.to_f     : 0.003
@@ -162,7 +168,22 @@ if VAL_BATCHES < 1
   puts "toy-train-gtx: GTX_VAL_BATCHES must be >= 1, got " + VAL_BATCHES.to_s
   exit 1
 end
-if RETROFIT && PRE_STEPS < 1
+if CKPT_EVERY > 0 && TAO_RUN_DIR.length == 0
+  puts "toy-train-gtx: GTX_CKPT_EVERY needs TAO_RUN_DIR — there is nowhere" +
+       " to write the checkpoint, and writing nowhere is not a silent no-op"
+  exit 1
+end
+if LOAD_CKPT.length > 0 && !RETROFIT
+  puts "toy-train-gtx: GTX_LOAD_CKPT requires GTX_RETROFIT=1 — a loaded" +
+       " backbone on this lane exists to be retrofitted, and inventing a" +
+       " second meaning for it would make the flag ambiguous"
+  exit 1
+end
+if LOAD_CKPT.length > 0 && !File.exist?(LOAD_CKPT)
+  puts "toy-train-gtx: no such checkpoint: " + LOAD_CKPT
+  exit 1
+end
+if RETROFIT && LOAD_CKPT.length == 0 && PRE_STEPS < 1
   puts "toy-train-gtx: GTX_PRETRAIN_STEPS must be >= 1 in retrofit mode" +
        " (a retrofit of an UNTRAINED backbone measures nothing), got " + PRE_STEPS.to_s
   exit 1
@@ -392,6 +413,17 @@ recipe.realize!(D_FEAT, D_MODEL, N_HEADS, D_FF, N_BLOCKS, N_NODES,
                 scale_sigma(B_SCALE_S), RETRO_CLASSES, N_ADAPTERS, AD_RANK)
 ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe.gr_cache.sess)
 
+# toy#164 — a loaded backbone REPLACES the pretrain phase. The weights
+# are persistent, so this overwrites the random init in place and the
+# retrofit graph is then built over exactly the checkpointed function.
+if LOAD_CKPT.length > 0
+  rc_ck = recipe.gr_cache.load_backbone_ckpt(LOAD_CKPT)
+  if rc_ck != 0
+    exit 1
+  end
+  puts "loaded: " + LOAD_CKPT + " bb_sig=" + recipe.gr_cache.backbone_sig.to_s
+end
+
 # ---- the TOPOLOGY is constant; the CONTENT is not. ----
 # The adjacency mask is uploaded once. Node features are redrawn every
 # step, because a fixed instance is memorisable and a memorised instance
@@ -566,24 +598,32 @@ end
 # stack, fresh head), then STEPS on the retrofit task. One process, so
 # every arm's backbone is BIT-IDENTICAL by construction rather than by a
 # checkpoint round-trip that would have to be trusted.
-TOTAL_STEPS = RETROFIT ? PRE_STEPS + STEPS : STEPS
+# A loaded checkpoint skips phase 1 outright — redoing it is the cost
+# this flag exists to remove.
+PRE_STEPS_EFF = (RETROFIT && LOAD_CKPT.length == 0) ? PRE_STEPS : 0
+TOTAL_STEPS = RETROFIT ? PRE_STEPS_EFF + STEPS : STEPS
 bb_sig_pre  = 0.0
 final_loss = 0.0
 step = 0
 while step < TOTAL_STEPS
   step_wall_start = TinyNN.tnn_events_now_seconds
-  in_pretrain = RETROFIT && step < PRE_STEPS
-  if RETROFIT && step == PRE_STEPS
+  in_pretrain = RETROFIT && step < PRE_STEPS_EFF
+  if RETROFIT && step == PRE_STEPS_EFF
     # THE HANDOVER. Record what the backbone weighs before the retrofit
     # touches it (or does not), then rebuild the graph over the same
     # persistent weights.
-    pre_r = val_pass!(recipe, val_x, val_a, val_b, val_y, x_flat, idx_a,
-                      idx_b, labels, inc_flat, prev_a, prev_b, m_labels,
-                      val_hp, logit_buf, N_CLASSES, VAL_BATCHES, N_PAIRS,
-                      N_NODES, D_FEAT)
-    pre_acc = pre_r[0]
+    if LOAD_CKPT.length == 0
+      pre_r = val_pass!(recipe, val_x, val_a, val_b, val_y, x_flat, idx_a,
+                        idx_b, labels, inc_flat, prev_a, prev_b, m_labels,
+                        val_hp, logit_buf, N_CLASSES, VAL_BATCHES, N_PAIRS,
+                        N_NODES, D_FEAT)
+      pre_acc = pre_r[0]
+    end
     bb_sig_pre = recipe.gr_cache.backbone_sig
-    puts "pretrain: acc=" + pre_acc.to_s + " bb_sig=" + bb_sig_pre.to_s
+    # A LOADED backbone was never scored here, so say so rather than
+    # printing a sentinel: "-1.0" reads like a measurement.
+    puts "pretrain: acc=" + (LOAD_CKPT.length > 0 ? "loaded" : pre_acc.to_s) +
+         " bb_sig=" + bb_sig_pre.to_s
     recipe.rebuild_retrofit!(POLICY, DFA_CUT, B_SEED, dist_code(B_DIST_S),
                              scale_code(B_SCALE_S), scale_sigma(B_SCALE_S),
                              AD_POLICY, FREEZE_BB ? 1 : 0)
@@ -623,7 +663,7 @@ while step < TOTAL_STEPS
     b = b + 1
   end
 
-  is_first = step == 0 || (RETROFIT && step == PRE_STEPS)
+  is_first = step == 0 || (RETROFIT && step == PRE_STEPS_EFF)
   loss = recipe.step!(idx_a, idx_b, inc_flat, m_cur, m_hp, is_first)
   final_loss = loss
   puts "step " + (step + 1).to_s + ": loss=" + loss.to_s
@@ -649,6 +689,23 @@ while step < TOTAL_STEPS
     es.add_num("samples", N_PAIRS)
     es.add_num("wall_us", step_wall_us)
     TinyNN.tnn_events_emit(es.dump)
+  end
+  # toy#164 — the BACKBONE checkpoint. Written only during the pretrain
+  # phase (or a plain run): a retrofit's backbone is frozen, so writing
+  # it again would just duplicate the file it was loaded from.
+  if CKPT_EVERY > 0 && (in_pretrain || !RETROFIT)
+    done = step + 1
+    if done % CKPT_EVERY == 0 || done == TOTAL_STEPS
+      ck_rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
+      rc_w = recipe.gr_cache.write_backbone_ckpt(
+               TAO_RUN_DIR + "/step_" + done.to_s + ".gguf", ck_rid, done)
+      if rc_w != 0
+        puts "toy-train-gtx: checkpoint write failed rc=" + rc_w.to_s
+        exit 1
+      end
+      puts "ckpt: step_" + done.to_s + ".gguf bb_sig=" +
+           recipe.gr_cache.backbone_sig.to_s
+    end
   end
   step = step + 1
 end

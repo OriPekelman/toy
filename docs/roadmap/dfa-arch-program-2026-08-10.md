@@ -1250,6 +1250,38 @@ So the cost win of a DFA retrofit at this site comes from freezing, and
 DFA's structural advantage would only appear with capacity placed BELOW
 the frozen stack's top. Worth knowing before F12 sells the cost half.
 
+## toy#164 — the gtx checkpoint surface
+
+`--ckpt-every K` writes the BACKBONE (the `@gx_backbone_count` span:
+everything through the pretrain head) as a `toy-gtx/v1` GGUF into the
+run dir; `--load-ckpt PATH` validates its shape metadata against the live
+instrument, overwrites every backbone tensor by name, and **skips the
+pretrain phase**. One pretrain, many retrofit arms — the workflow F12
+asked for, and a large saving on sweeps that were re-deriving the same
+backbone per arm.
+
+Three deliberate constraints:
+
+- **Only the backbone travels.** The retrofit capacity is never written.
+  An adapter arriving with a "pretrained backbone" would start a retrofit
+  somewhere other than the pretrained function, which is the one property
+  the comparison rests on.
+- **`--load-ckpt` requires `--retrofit`.** A loaded backbone on this lane
+  exists to be retrofitted; a second meaning would make the flag
+  ambiguous.
+- **A shape mismatch is refused, naming both sides.** A backbone loaded
+  under a different width or task shape produces confident garbage, and
+  nothing downstream would look wrong.
+
+The gate asserts the round trip is **bit-exact** — `bb_sig` compared as a
+STRING across the writing and loading runs, not to a tolerance, because a
+round trip that is merely close is one that lost bits.
+
+**The one-process form remains how the BAR is measured.** Bit-identical
+by construction beats a round trip that itself has to be gated; toy#164
+removes the cost of re-pretraining for sweeps that do not need that
+guarantee, and changes nothing about toy#161's result.
+
 ## Landmines that apply
 
 - New runner = own compilation unit (landmine #16).

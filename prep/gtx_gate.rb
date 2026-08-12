@@ -16,6 +16,7 @@
 #   9. FAIL-LOUD.
 #  10. CLI.
 #  11. THE RETROFIT (toy#161): the precondition, the freeze, the bar.
+#  11c. THE CHECKPOINT (toy#164): bit-exact round trip, refused mismatch.
 #
 # ── WHAT THIS LANE ANSWERS ──
 #
@@ -431,6 +432,54 @@ failures << "retrofit: a NON-retrofit run changed — the retrofit capacity must
   failures << "fail-loud: #{label} exited 0 (silently did nothing)" if st.success?
 end
 puts failures.length == n0 ? "  ok: the retrofit is INERT when unasked, and 5 degenerate retrofit configs fail loud" : "  FAIL: retrofit guards"
+
+# ---- 11c. the CHECKPOINT round trip (toy#164) ----
+# One pretrain, many retrofit arms. The property that has to hold is
+# BIT-EXACTNESS: the backbone a load produces must be the backbone the
+# write saw, or every arm sweeping off that checkpoint is measuring a
+# subtly different model and nothing downstream would show it.
+n0 = failures.length
+Dir.mktmpdir("gtx_ckpt") do |dir|
+  w = run_gtx({ "STEPS" => "200", "SEED" => "0", "GTX_CKPT_EVERY" => "200",
+                "TAO_RUN_DIR" => dir, "TOY_RUN_ID" => "gtx-ckpt" }, nil)
+  ck = File.join(dir, "step_200.gguf")
+  if !File.file?(ck)
+    failures << "ckpt: --ckpt-every wrote no step_200.gguf"
+  else
+    wl = w.lines.find { |l| l.start_with?("ckpt: ") }
+    wsig = wl ? wl[/bb_sig=([0-9.eE+-]+)/, 1] : nil
+    r = run_gtx({ "GTX_RETROFIT" => "1", "GTX_LOAD_CKPT" => ck,
+                  "STEPS" => "5", "SEED" => "0",
+                  "GTX_ADAPTER_POLICY" => "dfa", "GTX_LR" => "0.001" }, nil)
+    ll = r.lines.find { |l| l.start_with?("loaded: ") }
+    lsig = ll ? ll[/bb_sig=([0-9.eE+-]+)/, 1] : nil
+    if wsig.nil? || lsig.nil?
+      failures << "ckpt: no bb_sig on the write (#{wsig.inspect}) or the load (#{lsig.inspect})"
+    else
+      # STRING equality, not a tolerance: a round trip that is merely
+      # close is a round trip that lost bits.
+      failures << "ckpt: round trip is not bit-exact — wrote bb_sig=#{wsig}, loaded bb_sig=#{lsig}" unless wsig == lsig
+    end
+    failures << "ckpt: a loaded run still ran the pretrain phase (it must SKIP it — redoing it is the cost this flag removes)" unless r.include?("pretrain: acc=loaded")
+    # A checkpoint written at one shape must be REFUSED by another, and
+    # the refusal must name both sides.
+    mm, mst = Open3.capture2e({ "GTX_RETROFIT" => "1", "GTX_LOAD_CKPT" => ck,
+                                "GTX_TYPES" => "5", "STEPS" => "2" }, RUNNER, chdir: ROOT)
+    failures << "ckpt: a shape-MISMATCHED checkpoint loaded anyway (exit #{mst.exitstatus}) — a silently wrong backbone makes every downstream number look healthy" if mst.success?
+    failures << "ckpt: the mismatch message does not name both sides" unless mm.include?("vs instrument")
+  end
+end
+[
+  [{ "GTX_LOAD_CKPT" => "/nonexistent.gguf", "GTX_RETROFIT" => "1" }, "missing checkpoint file"],
+  [{ "GTX_LOAD_CKPT" => "/nonexistent.gguf" },                        "--load-ckpt without --retrofit"],
+  [{ "GTX_CKPT_EVERY" => "10" },                                      "--ckpt-every with no run dir"],
+].each do |env, label|
+  out, st = Open3.capture2e({ "STEPS" => "2" }.merge(env), RUNNER, chdir: ROOT)
+  failures << "fail-loud: #{label} exited 0 (silently did nothing)" if st.success?
+end
+puts failures.length == n0 ?
+  "  ok: CHECKPOINT (toy#164) — the backbone round-trips BIT-EXACT, a load skips the pretrain phase, a shape mismatch is refused naming both sides, and 3 degenerate configs fail loud" :
+  "  FAIL: checkpoint"
 
 if failures.empty?
   puts "GATE PASS [gtx]: graph transformer + RETROFIT + per-block policy — byte fixture, the B seed, the small-head assertion, the MANDATORY success bar with each arm at ITS OWN best LR showing ATTENTION IS NOT DFA-HOSTILE (dfa .920 vs BP .985 vs frozen .111), the mixing-cut collapse, and a frozen control that provably CAN lose (toy#160)"

@@ -567,6 +567,97 @@ class GtxEngine
     n * 4
   end
 
+  # toy#164 — write the BACKBONE (everything up to and including the
+  # pretrain head, i.e. the span toy#161 already calls
+  # @gx_backbone_count) as a GGUF, so one pretrain can serve many
+  # retrofit arms. The retrofit capacity is deliberately NOT written: an
+  # adapter that travelled with a "pretrained backbone" would silently
+  # start a retrofit somewhere other than the pretrained function, which
+  # is the one property the whole comparison rests on.
+  #
+  # The shape metadata is not decoration — load_backbone_ckpt refuses a
+  # mismatch on it. A backbone loaded under a different width or a
+  # different task shape would produce confident garbage.
+  def write_backbone_ckpt(path, run_id, step)
+    ctxw = TinyNN.tnn_gguf_w_init
+    if ctxw == nil || ctxw == TinyNN.tnn_null_ptr
+      return -1
+    end
+    TinyNN.tnn_gguf_w_set_str(ctxw, "general.architecture", "toy-gtx")
+    TinyNN.tnn_gguf_w_set_str(ctxw, "general.name", "gtx-backbone")
+    TinyNN.tnn_gguf_w_set_str(ctxw, "general.run_id", run_id)
+    TinyNN.tnn_gguf_w_set_u32(ctxw, "general.step", step)
+    TinyNN.tnn_gguf_w_set_str(ctxw, "toy.checkpoint_format", "toy-gtx/v1")
+    TinyNN.tnn_gguf_w_set_u32(ctxw, "toy.gtx.d_model", @gx_d_model)
+    TinyNN.tnn_gguf_w_set_u32(ctxw, "toy.gtx.heads",   @gx_heads)
+    TinyNN.tnn_gguf_w_set_u32(ctxw, "toy.gtx.d_ff",    @gx_d_ff)
+    TinyNN.tnn_gguf_w_set_u32(ctxw, "toy.gtx.blocks",  @gx_blocks)
+    TinyNN.tnn_gguf_w_set_u32(ctxw, "toy.gtx.d_in",    @gx_d_in)
+    TinyNN.tnn_gguf_w_set_u32(ctxw, "toy.gtx.nodes",   @gx_nodes)
+    TinyNN.tnn_gguf_w_set_u32(ctxw, "toy.gtx.classes", @gx_classes)
+    gi = 0
+    while gi < @gx_backbone_count
+      TinyNN.tnn_gguf_w_add_tensor(ctxw, @ft_weights[gi])
+      gi = gi + 1
+    end
+    rc = TinyNN.tnn_gguf_w_finalize(ctxw, path)
+    TinyNN.tnn_gguf_w_free(ctxw)
+    rc
+  end
+
+  # toy#164 — overwrite every backbone tensor BY NAME from a checkpoint.
+  # Returns 0 on success; on any mismatch it prints both sides and
+  # returns non-zero, because a silently-wrong backbone is the worst
+  # possible failure here: every downstream number would look healthy.
+  def load_backbone_ckpt(path)
+    gg = TinyNN.tnn_gguf_load(path)
+    if gg == nil || gg == TinyNN.tnn_null_ptr
+      puts "toy-train-gtx: cannot open checkpoint " + path
+      return 1
+    end
+    fmt = TinyNN.tnn_gguf_get_str(gg, "toy.checkpoint_format")
+    if fmt != "toy-gtx/v1"
+      puts "toy-train-gtx: " + path + " is not a toy-gtx/v1 checkpoint" +
+           " (toy.checkpoint_format=" + fmt.to_s + ")"
+      return 1
+    end
+    ck_dm = TinyNN.tnn_gguf_get_u32(gg, "toy.gtx.d_model")
+    ck_hd = TinyNN.tnn_gguf_get_u32(gg, "toy.gtx.heads")
+    ck_ff = TinyNN.tnn_gguf_get_u32(gg, "toy.gtx.d_ff")
+    ck_bl = TinyNN.tnn_gguf_get_u32(gg, "toy.gtx.blocks")
+    ck_di = TinyNN.tnn_gguf_get_u32(gg, "toy.gtx.d_in")
+    ck_nd = TinyNN.tnn_gguf_get_u32(gg, "toy.gtx.nodes")
+    ck_cl = TinyNN.tnn_gguf_get_u32(gg, "toy.gtx.classes")
+    if ck_dm != @gx_d_model || ck_hd != @gx_heads || ck_ff != @gx_d_ff ||
+       ck_bl != @gx_blocks || ck_di != @gx_d_in || ck_nd != @gx_nodes ||
+       ck_cl != @gx_classes
+      puts "toy-train-gtx: checkpoint shape mismatch — ckpt d_model=" + ck_dm.to_s +
+           " heads=" + ck_hd.to_s + " d_ff=" + ck_ff.to_s + " blocks=" + ck_bl.to_s +
+           " d_in=" + ck_di.to_s + " nodes=" + ck_nd.to_s + " classes=" + ck_cl.to_s +
+           " vs instrument d_model=" + @gx_d_model.to_s + " heads=" + @gx_heads.to_s +
+           " d_ff=" + @gx_d_ff.to_s + " blocks=" + @gx_blocks.to_s +
+           " d_in=" + @gx_d_in.to_s + " nodes=" + @gx_nodes.to_s +
+           " classes=" + @gx_classes.to_s +
+           " (pass the matching --d-model/--heads/--d-ff/--layers/--features/--entities/--types)"
+      return 1
+    end
+    gi = 0
+    while gi < @gx_backbone_count
+      nm = TinyNN.tnn_tensor_name(@ft_weights[gi])
+      idx = TinyNN.tnn_gguf_find_index(gg, nm)
+      if idx < 0
+        puts "toy-train-gtx: checkpoint missing tensor " + nm
+        return 1
+      end
+      nel = TinyNN.tnn_tensor_nelements(@ft_weights[gi])
+      buf = Array.new(nel, 0.0)
+      TinyNN.tnn_gguf_read_f32_to_doubles(gg, idx, buf, nel)
+      TinyNN.tnn_upload_from_float_array(@sess, @ft_weights[gi], buf, nel)
+      gi = gi + 1
+    end
+    0
+  end
+
   def backbone_sig
     acc = 0.0
     i = 0

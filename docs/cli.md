@@ -259,6 +259,28 @@ Three things about it are load-bearing:
   bit-identical by construction. The runner prints `backbone: sig_pre=…
   sig_post=…`; under a freeze the two are identical, which is a
   measurement rather than a promise that nothing was stepped.
+**The two-command workflow (toy#164).** `--ckpt-every K` writes the
+backbone as a `toy-gtx/v1` GGUF into the run dir, and `--load-ckpt PATH`
+loads it and **skips the pretrain phase**, so one pretrain can serve many
+retrofit arms:
+
+```
+toy train gtx --steps 1500 --ckpt-every 1500 --out $BB
+toy train gtx --retrofit --load-ckpt $BB/step_1500.gguf --adapter-policy dfa --lr 0.001
+toy train gtx --retrofit --load-ckpt $BB/step_1500.gguf --adapter-policy chain --lr 0.003
+```
+
+Only the BACKBONE is written — never the adapters, which must start at
+identity. A shape mismatch is refused naming both sides, and
+`--load-ckpt` requires `--retrofit` on this lane. The gate asserts the
+round trip is **bit-exact** (`bb_sig` string-equal across write and
+load), because a round trip that is merely close is one that lost bits
+and every arm sweeping off that checkpoint would inherit them.
+
+For the *bar*, prefer the one-process form (no `--load-ckpt`): it makes
+every arm's backbone bit-identical **by construction** rather than by a
+round trip that itself has to be trusted.
+
 - **The cost line is analytic, and it credits the freeze, not DFA.**
   `retrofit: … bb_grad_bytes_avoided=…` is what *freezing* saves, and it
   is the same for both credit rules at this adapter site; DFA's own
