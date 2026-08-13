@@ -860,6 +860,31 @@ toy-train-gtx: libexec/toy-train-gtx
 gate-gtx: libexec/toy-train-gtx
 	ruby prep/gtx_gate.rb
 
+# toy#165 (capstone P1a) — the PER-TOKEN LATENT AUTOENCODER. All BP: no
+# DFA and no diffusion in this lane. It asks whether a 4-8-dim per-token
+# latent can carry a text token DECODABLY UNDER NOISE, which is the
+# make-or-break the diffusion-text-LM capstone rests on. SEPARATE binary
+# (landmine #16), CPU-only.
+libexec/toy-train-ae: lib/toy/run/train_ae.rb lib/toy/dev/toy_describe_flow.rb \
+		lib/toy/io/json_builder.rb lib/toy/io/json.rb lib/toy/io/toy_events.rb \
+		vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
+		lib/toy/io/toy_ae_task.rb lib/toy/llm/engine/ae_engine.rb \
+		lib/toy/llm/recipes/ae_auto.rb lib/toy/llm/adamw.rb \
+		lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) $< -o $@
+toy-train-ae: libexec/toy-train-ae
+.PHONY: toy-train-ae
+
+# toy#165 gate: determinism, the mandatory CONTROL-CAN-LOSE precondition
+# (a SHUFFLED latent must fall to the unigram floor; the zeroed one is
+# reported but is an identity, not an assertion), the corpus/alphabet
+# provenance the margin curve is scoped by, and the probe's byte-null
+# property — identity/ones/zeros must reproduce clean reconstruction
+# exactly, or the measurement graph is not the training graph.
+.PHONY: gate-ae
+gate-ae: libexec/toy-train-ae
+	ruby prep/ae_gate.rb
+
 # toy#157 (DFA-arch T3) — the LSTM lane, the SSM rehearsal. SEPARATE
 # binary (landmine #16), CPU-only. Reuses toy#155's delayed-cue task
 # generator UNCHANGED so the two lanes are an architecture comparison

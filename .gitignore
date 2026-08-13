@@ -52,6 +52,12 @@ data/gnn_*.feat.f32
 data/gnn_*.edge.i32
 data/gnn_*.label.i32
 data/gnn_*.split.i32
+# toy#165 (ae): byte-level text packs from prep/fetch_text.rb. Fetched,
+# not authored, and pinned by SHA in that script — 27 MB of regenerable
+# token ids has no business in the history.
+data/ae_*.meta.i32
+data/ae_*.tok.i32
+data/ae_*.json
 prep/_hf_cache/
 # Scratch logs from `make hello` / progress wrappers
 prep/_convert.log

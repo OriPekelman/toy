@@ -85,12 +85,13 @@ recipes are:
 | `lstm` | gated recurrence: a stack of textbook LSTM cells UNROLLED over T, last-step readout, on the same task + cut axis as `ssm` (CPU-only) | `--policy`, `--dfa-cut`, `--layers`, `--hidden`, `--features`, `--seq`, `--classes`, `--task`, `--cue-span`, `--noise`, `--batch`, `--val-batches`, `--task-seed`, `--lr`, `--dfa-b-*` |
 | `gtx` | graph transformer — masked self-attention whose mask **is an adjacency**, small relation head (16 classes), inductive relational retrieval (CPU-only). `--retrofit` adds the DFA-adapter mode | `--policy`, `--dfa-cut`, `--layers`, `--d-model`, `--heads`, `--d-ff`, `--entities`, `--types`, `--features`, `--task`, `--noise`, `--batch`, `--val-batches`, `--task-seed`, `--dfa-b-*`, `--retrofit`, `--adapter-policy`, `--adapter-layers`, `--adapter-rank`, `--pretrain-steps`, `--pretrain-lr`, `--no-freeze-backbone` |
 | `diff` | latent diffusion denoiser — time-conditioned eps-prediction over a LOW-DIM latent, scored by a generative metric (CPU-only) | `--policy`, `--latent`, `--time-feat`, `--layers`, `--hidden`, `--task`, `--modes`, `--spread`, `--mode-scale`, `--diff-steps`, `--beta-lo`, `--beta-hi`, `--eval-n`, `--align-events` |
+| `ae` | per-token latent AUTOENCODER (capstone P1a) — bidirectional encoder -> **d-dim per-position bottleneck** -> **per-position** decode head back to the byte. **All BP: no `--policy`, no DFA, no diffusion.** Scored by the NOISE MARGIN, not clean reconstruction (CPU-only) | `--text`, `--latent`, `--context`, `--layers`, `--d-model`, `--heads`, `--d-ff`, `--noise-eval`, `--noise-seed`, `--val-batches`, `--val-frac-pct`, `--task-seed`, `--lr`, `--warmup` |
 
 An unknown recipe is rejected loud (`supported: 'from-scratch', 'lora',
-'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp', 'ctr', 'gnn', 'ssm', 'lstm', 'gtx', 'diff'`). `--arch gpt2`
+'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp', 'ctr', 'gnn', 'ssm', 'lstm', 'gtx', 'diff', 'ae'`). `--arch gpt2`
 trains the from-scratch GPT-2 arch (`from-scratch` only, CPU-only);
 `--device cuda|metal` selects the per-device runner (`metal` is macOS-only;
-GPT-2, ViT-Tiny, `mlp`, `ctr`, `gnn`, `ssm`, `lstm`, `gtx` and `diff` are CPU-only, and `franken`'s macro-DFA mode is
+GPT-2, ViT-Tiny, `mlp`, `ctr`, `gnn`, `ssm`, `lstm`, `gtx`, `diff` and `ae` are CPU-only, and `franken`'s macro-DFA mode is
 CPU-only by decision).
 Defaults: `--steps 5`, `--seed 0`, `--arch llama`, `--device cpu`, `--out runs/<id>`.
 Writes the run bundle (see [Run bundle layout](#run-bundle-layout)) and echoes
@@ -431,3 +432,67 @@ controlled env). Most relevant to `06_train_from_scratch.rb`:
 
 See [examples/README.md](../examples/README.md) for the full roster and
 invocations.
+
+### `ae` — the per-token latent autoencoder (toy#165, capstone P1a)
+
+The diffusion-text-LM capstone needs a per-token continuous latent of 4–8
+dims (F20/toy#156's DFA-favourable window). Whether **text** survives such
+a latent is unrun in the literature, and P1a is the cheapest decisive
+test. It is **all BP** — no `--policy`, no DFA, no diffusion; those are
+P1c and P1b.
+
+```
+ruby prep/fetch_text.rb --all          # once: three pinned byte corpora
+toy train ae --text data/ae_names --latent 8 --context 256 --steps 4000 \
+             --noise-eval 0,0.25,0.5,1,2 --seed 0
+```
+
+**Clean reconstruction is vacuous and is not the headline.** Packing a few
+dozen codepoints into 4 continuous dims is ample analog capacity, so clean
+accuracy sits at ~1.0 at *every* latent and cannot tell 4 from 32. The
+read is the **noise margin**: reconstruction accuracy as the latent is
+perturbed by Gaussian noise scaled to the latent's own per-dim std (so it
+is comparable across `d`), summarised by the **half-accuracy SNR** — the
+sigma at which accuracy crosses half of that cell's clean value. When the
+curve never crosses inside the grid it is reported as `>=<max sigma>`,
+never clamped.
+
+**The alphabet is the second axis** (tao#22). The margin is packing-limited,
+so a curve is unscoped without the number of symbols the head actually had
+to separate: at N=27 the `d=4` problem is about as hard as N=256 at `d=8`,
+and the alphabet alone can manufacture a `go`. Three pinned corpora ship:
+
+| pack | source | bytes | distinct |
+|---|---|---|---|
+| `data/ae_names` | makemore names list | 228 K | 27 |
+| `data/ae_shakespeare` | tinyshakespeare | 1.1 M | 65 |
+| `data/ae_udhr` | UDHR, 388 languages, UTF-8 | 5.7 M | 201 |
+
+Every run reports both the pack alphabet and the `val_alphabet` actually
+observed in the scored windows. **Preliminary** surface (seed 0, 800 steps,
+context 128, `d_model` 128 — Tao's cells are 4000 steps, so read these as
+shape, not as the result):
+
+| corpus (val alphabet) | d=4 | d=8 | d=32 |
+|---|---|---|---|
+| names (27) | 0.82 | 1.25 | ≥2.0 |
+| shakespeare (53) | 0.66 | 0.98 | 1.93 |
+| udhr (104) | 0.70 | 0.93 | 1.62 |
+
+There is **no `--vocab`** on this lane. `--vocab` already means an integer
+pack width on `franken`/`franken-moe`, and the `ae` head is byte-wide (256)
+on every corpus by construction — sizing it to the observed alphabet would
+confound the alphabet axis with head capacity. `--latent` is deliberately
+the **same flag** the `diff` lane uses: it is the same quantity, and the
+capstone compares those two numbers directly.
+
+`--context` is also the **batch** — the encoder attends within a window, so
+its T positions are the T reconstruction targets and there is no separate
+`--batch`.
+
+The controls: a **zeroed** latent leaves the head with only its bias, so it
+lands at the unigram floor by construction — reported, but not gated, since
+it is an identity. The **shuffled** latent (permuted across positions) is
+the one with teeth and the one `prep/ae_gate.rb` gates: each position
+decodes a real latent from the same distribution, just the wrong one, so it
+*can* score above the floor if the head learned a prior.

@@ -100,6 +100,9 @@ module Toy
         # ATTENTION from OUTPUT DIM on the program's one open negative.
         # Own binary, CPU-only.
         GTX_RUNNER_TARGET = "libexec/toy-train-gtx"
+        # toy#165 (capstone P1a) — the per-token latent autoencoder. All
+        # BP: no DFA and no diffusion on this lane. Own binary, CPU-only.
+        AE_RUNNER_TARGET = "libexec/toy-train-ae"
         FRANKEN_MOE_RUNNER_TARGET = "libexec/toy-train-franken-moe-cli"
         FRANKEN_MOE_CUDA_RUNNER_TARGET = "libexec/toy-train-franken-moe-cli-cuda"
         # GPT-2 GPU twins (--arch gpt2 --device cuda|metal). SEPARATE single-type
@@ -220,6 +223,28 @@ module Toy
           @d_ff           = nil
           @types          = nil
           @entities       = nil
+          # toy#165 (ae): the latent-autoencoder lane (capstone P1a).
+          #
+          # --text is NOT --corpus and there is NO --vocab here. --corpus
+          # names a TOYC pack on the LM lanes; --text names a byte pack
+          # from prep/fetch_text.rb, which is a different thing and so
+          # gets a different name (the tao#18 --policy-scope discipline).
+          # --vocab is worse: it already means an INTEGER >= 2 on
+          # franken/franken-moe, so honouring the spec's `--vocab byte`
+          # would make one flag mean an integer on one recipe and a
+          # string on another — the hp-slot-5/6 dual-meaning trap. This
+          # lane is byte-level and its head is 256-wide on every corpus,
+          # so a --vocab knob would have exactly one legal value anyway.
+          # --latent is REUSED from the diff lane rather than a net-new
+          # --latent-dim (which is what the P1a spec writes). It is the
+          # SAME quantity — F20/toy#156's "latent 4" and P1a's bottleneck
+          # 4 are the number the capstone compares directly — and two
+          # names for one concept is how that comparison gets
+          # mis-transcribed.
+          @text           = nil
+          @noise_eval     = nil
+          @noise_seed     = nil
+          @val_frac_pct   = nil
           # toy#162 (lstm): global-norm gradient clipping. nil = OFF, and
           # off is byte-null — every cell toy#157 published was measured
           # without it.
@@ -322,7 +347,9 @@ module Toy
           #     warm-start +cuda                  in train_cuda.rb source)
           #   metal (fs only)  -> toy-train-metal
           #   cpu fs/warm-start-> toy-train
-          target = if @recipe == "gtx"
+          target = if @recipe == "ae"
+                     AE_RUNNER_TARGET
+                   elsif @recipe == "gtx"
                      GTX_RUNNER_TARGET
                    elsif @recipe == "lstm"
                      LSTM_RUNNER_TARGET
@@ -459,6 +486,30 @@ module Toy
                              "DIFF_B_SCALE"    => (@dfa_b_scale || ""),
                              "DIFF_ALIGN"      => (@align_events ? "1" : ""),
                              "DIFF_ALIGN_EVERY" => (@align_every || 1).to_s)
+          elsif @recipe == "ae"
+            # Lane-local AE_* namespace, same discipline as the others.
+            # There is no synthetic default corpus: --text is REQUIRED and
+            # the runner refuses without it, because a low-entropy
+            # synthetic byte stream would inflate the noise margin at
+            # exactly the small latent where the verdict is decided
+            # (tao#22). `--context` is also the batch on this lane — the
+            # encoder attends within a window, so T positions ARE the T
+            # reconstruction targets and there is no separate --batch.
+            env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
+                             "AE_TEXT"         => (@text || ""),
+                             "AE_LATENT"       => (@latent || 8).to_s,
+                             "AE_CONTEXT"      => (@context || 256).to_s,
+                             "AE_BLOCKS"       => (@mlp_layers || 2).to_s,
+                             "AE_D_MODEL"      => (@d_model || 128).to_s,
+                             "AE_HEADS"        => (@heads || 4).to_s,
+                             "AE_D_FF"         => (@d_ff || 256).to_s,
+                             "AE_NOISE_EVAL"   => (@noise_eval || ""),
+                             "AE_NOISE_SEED"   => (@noise_seed || 4242).to_s,
+                             "AE_VAL_BATCHES"  => (@val_batches || 16).to_s,
+                             "AE_VAL_FRAC_PCT" => (@val_frac_pct || 10).to_s,
+                             "AE_TASK_SEED"    => (@task_seed || 7).to_s,
+                             "AE_LR"           => (@lr || ""),
+                             "AE_WARMUP"       => (@warmup || 0).to_s)
           elsif @recipe == "gtx"
             # Lane-local GTX_* namespace, same discipline as the others.
             # NOTE the LR default (0.003) is BP's, and the DFA arms want
@@ -708,7 +759,14 @@ module Toy
           # It has to reach the caller for the same reason "graph:" does:
           # a sweep over --seq reads the arms' scaling from stdout, and
           # this is the line the memory claim is actually stated in.
-          losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") || l.start_with?("val:") || l.start_with?("train:") || l.start_with?("graph:") || l.start_with?("stream:") || l.start_with?("gen:") }.map(&:chomp)
+          # toy#165 adds the ae lane's four: "corpus:" (which alphabet was
+          # actually separated — the margin curve is unscoped without it),
+          # "noise:" (the curve itself, which IS that lane's result),
+          # "half_snr:" (its one scalar per cell) and "control:" (the
+          # can-it-lose precondition). A sweep over --latent-dim reads all
+          # four off stdout, so filtering them here would leave the lane's
+          # actual finding reachable only by opening a bundle.
+          losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") || l.start_with?("val:") || l.start_with?("train:") || l.start_with?("graph:") || l.start_with?("stream:") || l.start_with?("gen:") || l.start_with?("corpus:") || l.start_with?("noise:") || l.start_with?("half_snr:") || l.start_with?("control:") || l.start_with?("latent_std:") }.map(&:chomp)
           emit(run_id, run_dir, losses)
         end
 
@@ -979,6 +1037,42 @@ module Toy
               when "types"    then @types    = val.to_i
               else                 @entities = val.to_i
               end
+            # ---- toy#165 (ae): the latent-autoencoder lane's own knobs ----
+            when "--text"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--text requires a value") if val.nil?
+              @text = val
+            when /\A--text=(.*)\z/
+              @text = $1
+            when "--noise-seed", "--val-frac-pct"
+              key = @argv[i]
+              i += 1
+              val = @argv[i]
+              return bad_arg("#{key} requires a value") if val.nil?
+              return bad_arg("#{key} must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i > 0
+              case key
+              when "--noise-seed" then @noise_seed   = val.to_i
+              else                     @val_frac_pct = val.to_i
+              end
+            when /\A--(noise-seed|val-frac-pct)=(.*)\z/
+              key = $1
+              val = $2
+              return bad_arg("--#{key} must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i > 0
+              case key
+              when "noise-seed" then @noise_seed   = val.to_i
+              else                   @val_frac_pct = val.to_i
+              end
+            when "--noise-eval"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--noise-eval requires a value") if val.nil?
+              return bad_arg("--noise-eval must be a comma list of non-negative floats, got #{val.inspect}") unless val =~ /\A\d*\.?\d+(,\d*\.?\d+)*\z/
+              @noise_eval = val
+            when /\A--noise-eval=(.*)\z/
+              val = $1
+              return bad_arg("--noise-eval must be a comma list of non-negative floats, got #{val.inspect}") unless val =~ /\A\d*\.?\d+(,\d*\.?\d+)*\z/
+              @noise_eval = val
             # ---- toy#155 (ssm): the sequence lane's own knobs ----
             when "--seq", "--d-model", "--d-inner", "--conv-k", "--cue-span"
               key = @argv[i]
@@ -1671,8 +1765,8 @@ when /\A--dfa-feedback-lr=(.*)\z/
             return bad_arg("unexpected extra arguments: #{rest[1..].join(' ')}")
           end
           @recipe = rest.first
-          unless %w[from-scratch lora warm-start vit-tiny franken franken-moe mlp ctr gnn ssm lstm gtx diff].include?(@recipe)
-            return bad_arg("unknown recipe #{@recipe.inspect}; supported: 'from-scratch', 'lora', 'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp', 'ctr', 'gnn', 'ssm', 'lstm', 'gtx', 'diff'")
+          unless %w[from-scratch lora warm-start vit-tiny franken franken-moe mlp ctr gnn ssm lstm gtx diff ae].include?(@recipe)
+            return bad_arg("unknown recipe #{@recipe.inspect}; supported: 'from-scratch', 'lora', 'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp', 'ctr', 'gnn', 'ssm', 'lstm', 'gtx', 'diff', 'ae'")
           end
           # ---- toy#132: the flag x recipe MATRIX ----
           # Four llama-first flags in a row tripped franken-moe at Tao
@@ -1721,7 +1815,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
             # --dt-init name parts an LSTM has no counterpart for), so
             # those rows stay ssm-only rather than widening.
             ["--seq",           %w[ssm lstm],                       !@seq.nil?, " (toy#155/#157)"],
-            ["--d-model",       %w[ssm gtx],                        !@d_model.nil?, " (toy#155/#160)"],
+            ["--d-model",       %w[ssm gtx ae],                     !@d_model.nil?, " (toy#155/#160/#165)"],
             ["--d-inner/--conv-k", %w[ssm],
              (!@d_inner.nil? || !@conv_k.nil?), " (toy#155)"],
             ["--selection",     %w[ssm],                            !@selection.nil?, " (toy#155)"],
@@ -1729,8 +1823,13 @@ when /\A--dfa-feedback-lr=(.*)\z/
             # the block output with BP intact inside it, `step` cuts the
             # gradient through the attention pattern itself.
             ["--dfa-cut",       %w[ssm lstm gtx],                   !@dfa_cut.nil?, " (toy#155/#157/#160)"],
-            ["--heads/--d-ff/--types/--entities", %w[gtx],
-             (!@heads.nil? || !@d_ff.nil? || !@types.nil? || !@entities.nil?), " (toy#160)"],
+            ["--heads/--d-ff", %w[gtx ae],
+             (!@heads.nil? || !@d_ff.nil?), " (toy#160/#165)"],
+            ["--types/--entities", %w[gtx],
+             (!@types.nil? || !@entities.nil?), " (toy#160)"],
+            ["--text/--noise-eval/--noise-seed/--val-frac-pct", %w[ae],
+             (!@text.nil? || !@noise_eval.nil? || !@noise_seed.nil? || !@val_frac_pct.nil?),
+             " (toy#165; --text names a byte pack from prep/fetch_text.rb, NOT a TOYC corpus)"],
             ["--cue-span",      %w[ssm lstm],                       !@cue_span.nil?, " (toy#155/#157)"],
             # toy#162: the FAIR BPTT control lives on the lane whose
             # stability claim needs it. Widening it is a follow-on, not
@@ -1745,8 +1844,8 @@ when /\A--dfa-feedback-lr=(.*)\z/
             # toy#156 (diff). --latent is the OUTPUT DIM under test and
             # gets a real name rather than riding --classes: this lane
             # regresses epsilon, it does not classify.
-            ["--latent/--time-feat", %w[diff],
-             (!@latent.nil? || !@time_feat.nil?), " (toy#156)"],
+            ["--latent",        %w[diff ae],                        !@latent.nil?, " (toy#156/#165 — the SAME quantity on both lanes)"],
+            ["--time-feat",     %w[diff],                           !@time_feat.nil?, " (toy#156)"],
             ["--modes/--spread/--mode-scale", %w[diff],
              (!@modes.nil? || !@spread.nil? || !@mode_scale.nil?), " (toy#156)"],
             ["--diff-steps/--beta-lo/--beta-hi", %w[diff],
@@ -1759,20 +1858,26 @@ when /\A--dfa-feedback-lr=(.*)\z/
             # (--policy-tensors), never an overload of this one.
             ["--policy-scope",  %w[franken],                        !@policy_scope.nil?, " (toy#151; NOT accepted on 'mlp' — tao#18)"],
             ["--align-every",   %w[franken franken-moe mlp gnn diff], !@align_every.nil?, ""],
-            ["--lr/--warmup",   %w[franken franken-moe mlp ctr gnn ssm lstm gtx diff], (!@lr.nil? || !@warmup.nil?), " (toy#126/#132)"],
+            ["--lr/--warmup",   %w[franken franken-moe mlp ctr gnn ssm lstm gtx diff ae], (!@lr.nil? || !@warmup.nil?), " (toy#126/#132)"],
             ["--classes",       %w[mlp gnn ssm lstm],               !@classes.nil?, " (toy#152/#153/#155/#157)"],
             ["--features",      %w[mlp gnn lstm gtx],               !@features.nil?, " (toy#152/#153/#157/#160)"],
             ["--hidden",        %w[mlp ctr gnn lstm diff],          !@hidden.nil?, " (toy#152/#154/#153/#157/#156)"],
-            ["--layers",        %w[mlp ctr gnn ssm lstm gtx diff],  !@mlp_layers.nil?, " (toy#152/#154/#153/#155/#157/#160/#156)"],
+            ["--layers",        %w[mlp ctr gnn ssm lstm gtx diff ae], !@mlp_layers.nil?, " (toy#152/#154/#153/#155/#157/#160/#156/#165)"],
             ["--task",          %w[mlp gnn ssm lstm gtx diff],      !@task.nil?, " (toy#152/#153/#155/#157/#160/#156)"],
             ["--teacher-dim",   %w[mlp gnn],                        !@teacher_dim.nil?, " (toy#152/#153)"],
-            ["--task-seed",     %w[mlp ctr gnn ssm lstm gtx diff],  !@task_seed.nil?, " (toy#152/#154/#153/#155/#157/#160/#156)"],
+            ["--task-seed",     %w[mlp ctr gnn ssm lstm gtx diff ae], !@task_seed.nil?, " (toy#152/#154/#153/#155/#157/#160/#156/#165)"],
             # --val-batches stays mlp/ctr: the gnn lane is TRANSDUCTIVE,
             # its held-out set is a node mask over the one graph, so
             # "how many val batches" has nothing to size.
-            ["--val-batches",   %w[mlp ctr ssm lstm gtx],           !@val_batches.nil?, " (toy#152/#154/#155/#157/#160)"],
+            ["--val-batches",   %w[mlp ctr ssm lstm gtx ae],        !@val_batches.nil?, " (toy#152/#154/#155/#157/#160/#165)"],
             ["--no-shadow",     %w[franken franken-moe],            @no_shadow, " (toy#129)"],
-            ["--context/--vocab", %w[franken franken-moe],          (!@context.nil? || !@vocab.nil?), " (toy#129)"],
+            # toy#165 SPLIT this row. `--context` now also means the ae lane's
+            # window (which is also its batch); `--vocab` deliberately did NOT
+            # come with it — it means an INTEGER pack width on the franken
+            # lanes, and letting `ae` take a string there would make one flag
+            # mean two different types depending on the recipe.
+            ["--context",       %w[franken franken-moe ae],        !@context.nil?, " (toy#129/#165)"],
+            ["--vocab",         %w[franken franken-moe],           !@vocab.nil?, " (toy#129; on the ae lane the head is byte-wide by construction, so there is no --vocab)"],
             ["--batch",         %w[franken franken-moe mlp ctr ssm lstm gtx diff], !@batch.nil?, " (toy#133; on gtx it is the labelled PAIRS per step)"],
             ["--act",           %w[franken],                        !@act.nil?, " (toy#136/K1; MoE experts get their GLU in K4)"],
             ["--rope",          %w[franken],                        !@rope.nil?, " (toy#136/K1)"],
@@ -1945,6 +2050,28 @@ when /\A--dfa-feedback-lr=(.*)\z/
           if @recipe == "lstm" && @device != "cpu"
             return bad_arg("--device #{@device.inspect} is not supported for recipe 'lstm' (CPU-only by decision — tao#18/#21: a device twin changes throughput, not the materialised activation bytes this lane measures)")
           end
+          # toy#165 (ae): there is NO synthetic fallback corpus, on
+          # purpose. A low-entropy synthetic byte stream would inflate the
+          # noise margin at exactly the small latent where the verdict is
+          # decided (tao#22), so a run without --text would produce a
+          # confident and wrong `go`. Refuse it here as well as in the
+          # runner, and check the pack exists rather than letting a typo
+          # surface as "could not read".
+          if @recipe == "ae"
+            if @text.nil?
+              return bad_arg("recipe 'ae' requires --text <pack-prefix> — this lane measures a REAL text corpus and has no synthetic fallback (tao#22). Run: ruby prep/fetch_text.rb --all, then --text data/ae_names (or ae_shakespeare / ae_udhr)")
+            end
+            missing = %w[.meta.i32 .tok.i32].reject { |sfx| File.file?(@text + sfx) }
+            unless missing.empty?
+              return bad_arg("--text #{@text.inspect} is not a byte pack: missing #{missing.join(', ')}. Packs are built by prep/fetch_text.rb, not by --corpus (a TOYC pack is a different format)")
+            end
+            if @device != "cpu"
+              return bad_arg("--device #{@device.inspect} is not supported for recipe 'ae' (CPU-only by decision — tao#18: the cross-architecture lanes are small by construction and get no CUDA twin)")
+            end
+            if @latent && @d_model && @latent >= @d_model
+              return bad_arg("--latent #{@latent} must be < --d-model #{@d_model} — a bottleneck at least as wide as the residual stream is not a bottleneck")
+            end
+          end
           if @recipe == "gtx" && @load_ckpt && !@retrofit
             return bad_arg("--load-ckpt needs --retrofit on recipe 'gtx' (toy#164: a loaded backbone on this lane exists to be retrofitted; a second meaning for it would make the flag ambiguous)")
           end
@@ -1981,6 +2108,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
           return "ssm"     if recipe == "ssm"
           return "lstm"    if recipe == "lstm"
           return "gtx"     if recipe == "gtx"
+          return "ae"      if recipe == "ae"
           return "diff"    if recipe == "diff"
           return "moe"     if recipe == "franken-moe"
           "llama"

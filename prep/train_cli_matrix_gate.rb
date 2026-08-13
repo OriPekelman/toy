@@ -160,7 +160,29 @@ REJECT = [
   [%w[gtx --cue-span 8],                   "--cue-span"],
   [%w[gtx --graph data/gnn_cora],          "--graph"],
   [%w[gtx --hidden 32],                    "--hidden"],
-  [%w[gtx --latent 8],                     "--latent/--time-feat"],
+  [%w[gtx --latent 8],                     "--latent"],
+  # toy#165 (ae). Two deliberate asymmetries in this block.
+  #
+  # --latent IS shared with diff, because it is the SAME quantity on both
+  # lanes: F20/toy#156's "latent 4" and P1a's bottleneck 4 are the number
+  # the capstone compares directly, and two names for one concept is how
+  # that comparison gets mis-transcribed. --time-feat is NOT shared, so
+  # the old joint row had to split.
+  #
+  # --vocab is NOT extended to ae even though the P1a spec writes
+  # `--vocab byte`. It already means an INTEGER >= 2 on the franken
+  # lanes, so honouring the spec would make one flag mean an integer on
+  # one recipe and a string on another — the hp-slot-5/6 dual-meaning
+  # trap. The ae head is byte-wide by construction, so the knob would
+  # have exactly one legal value anyway.
+  [%w[mlp --text data/ae_names],           "--text/--noise-eval/--noise-seed/--val-frac-pct"],
+  [%w[gtx --noise-eval 0,0.5],             "--text/--noise-eval/--noise-seed/--val-frac-pct"],
+  [%w[diff --val-frac-pct 10],             "--text/--noise-eval/--noise-seed/--val-frac-pct"],
+  [%w[lstm --noise-seed 99],               "--text/--noise-eval/--noise-seed/--val-frac-pct"],
+  [%w[ae --time-feat 8],                   "--time-feat"],
+  [%w[ae --vocab 256],                     "--vocab"],
+  [%w[ae --policy dfa],                    "--policy"],
+  [%w[ae --dfa-cut step],                  "--dfa-cut"],
   # toy#162: --clip-grad is the lstm lane's FAIR BPTT control, not a
   # general tuning knob — its effect is unmeasured on every other lane,
   # and a knob whose effect nobody measured is worse offered than absent.
