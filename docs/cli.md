@@ -85,7 +85,7 @@ recipes are:
 | `lstm` | gated recurrence: a stack of textbook LSTM cells UNROLLED over T, last-step readout, on the same task + cut axis as `ssm` (CPU-only) | `--policy`, `--dfa-cut`, `--layers`, `--hidden`, `--features`, `--seq`, `--classes`, `--task`, `--cue-span`, `--noise`, `--batch`, `--val-batches`, `--task-seed`, `--lr`, `--dfa-b-*` |
 | `gtx` | graph transformer — masked self-attention whose mask **is an adjacency**, small relation head (16 classes), inductive relational retrieval (CPU-only). `--retrofit` adds the DFA-adapter mode | `--policy`, `--dfa-cut`, `--layers`, `--d-model`, `--heads`, `--d-ff`, `--entities`, `--types`, `--features`, `--task`, `--noise`, `--batch`, `--val-batches`, `--task-seed`, `--dfa-b-*`, `--retrofit`, `--adapter-policy`, `--adapter-layers`, `--adapter-rank`, `--pretrain-steps`, `--pretrain-lr`, `--no-freeze-backbone` |
 | `diff` | latent diffusion denoiser — time-conditioned eps-prediction over a LOW-DIM latent, scored by a generative metric (CPU-only) | `--policy`, `--latent`, `--time-feat`, `--layers`, `--hidden`, `--task`, `--modes`, `--spread`, `--mode-scale`, `--diff-steps`, `--beta-lo`, `--beta-hi`, `--eval-n`, `--align-events` |
-| `ae` | per-token latent AUTOENCODER (capstone P1a) — bidirectional encoder -> **d-dim per-position bottleneck** -> **per-position** decode head back to the byte. **All BP: no `--policy`, no DFA, no diffusion.** Scored by the NOISE MARGIN, not clean reconstruction (CPU-only) | `--text`, `--latent`, `--context`, `--layers`, `--d-model`, `--heads`, `--d-ff`, `--noise-eval`, `--noise-seed`, `--val-batches`, `--val-frac-pct`, `--task-seed`, `--lr`, `--warmup` |
+| `ae` | per-token latent AUTOENCODER (capstone P1a) — bidirectional encoder -> **d-dim per-position bottleneck** -> **per-position** decode head back to the byte. **All BP: no `--policy`, no DFA, no diffusion.** Scored by the NOISE MARGIN, not clean reconstruction (CPU-only) | `--text`, `--latent`, `--context`, `--layers`, `--d-model`, `--heads`, `--d-ff`, `--noise-eval`, `--noise-seed`, `--val-batches`, `--val-frac-pct`, `--task-seed`, `--lr`, `--warmup`, `--target-ce`, `--eval-every`, `--probe-batches` |
 
 An unknown recipe is rejected loud (`supported: 'from-scratch', 'lora',
 'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp', 'ctr', 'gnn', 'ssm', 'lstm', 'gtx', 'diff', 'ae'`). `--arch gpt2`
@@ -496,3 +496,44 @@ it is an identity. The **shuffled** latent (permuted across positions) is
 the one with teeth and the one `prep/ae_gate.rb` gates: each position
 decodes a real latent from the same distribution, just the wrong one, so it
 *can* score above the floor if the head learned a prior.
+
+#### `--target-ce` — comparing cells at matched FIDELITY, not matched steps
+
+A noise margin is **not invariant to convergence**, and a sweep run at a
+fixed step budget measures both. Measured on this lane: with clean accuracy
+pinned at 1.000 throughout, names d=32 goes half-SNR **1.92 → 2.44** as CE
+falls 1.9e-3 → 1.5e-9 (cross-entropy keeps rewarding wider logit separations
+long after accuracy stops moving); and udhr d=4 goes **0.599 → 0.479** while
+accuracy *rises* 0.951 → 0.993 (newly-learned rare bytes have to be packed
+into the same `d` dims). Two opposite-signed biases, so the confound distorts
+the shape of a surface, not just its scale.
+
+The first 36-cell P1a surface was run at matched steps and its clean CE
+spanned **seven orders of magnitude**. Re-run at matched CE it spans a factor
+of 5.4, and the fitted law changes qualitatively.
+
+```
+toy train ae --text data/ae_udhr --latent 8 --context 256 \
+             --steps 12000 --target-ce 0.05 --eval-every 10
+```
+
+Each cell trains until held-out CE crosses the target, then reports
+`converged: target_ce=… achieved_ce=… steps=… matched=1`. A cell that never
+reaches it reports `matched=0 … NOT REACHED` — an unmatched cell must not
+join a matched surface silently.
+
+**The probe must not perturb training, and that is not free.** ggml's AdamW
+kernel is `m = m*b1 + g*(1-b1); v = v*b2 + g²*(1-b2); w = w*(1-lr*wd) - lr*mh/vh`,
+so the `lr=0` eval hp every lane uses freezes the **weights** but still lets
+the moments absorb the probe's gradients. Harmless at end-of-run; corrupting
+for a periodic probe. The probe hp sets `b1 = b2 = 1.0`, making both moment
+updates the identity. `prep/ae_gate.rb` asserts the consequence: a probed
+run's training curve is byte-identical to an unprobed one.
+
+`--probe-batches K` (default 4) runs the stopping check on a subset so the
+interval can be fine. A coarse interval lets fast cells overshoot the target
+by an order of magnitude — the exact mismatch the flag exists to remove. The
+full held-out CE on the `val:` line stays the authoritative matched quantity;
+both are printed.
+
+Off by default and byte-null when off.

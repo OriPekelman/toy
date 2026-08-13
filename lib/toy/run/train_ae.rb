@@ -90,9 +90,13 @@ NOISE_SEED  = (ENV["AE_NOISE_SEED"] || "4242").to_i
 VAL_BATCHES = (ENV["AE_VAL_BATCHES"] || "16").to_i
 VAL_FRAC_PCT = (ENV["AE_VAL_FRAC_PCT"] || "10").to_i
 TASK_SEED   = (ENV["AE_TASK_SEED"] || "7").to_i
+TARGET_CE_S = ENV["AE_TARGET_CE"] || ""
+EVAL_EVERY  = (ENV["AE_EVAL_EVERY"] || "0").to_i
+PROBE_BATCHES = (ENV["AE_PROBE_BATCHES"] || "4").to_i
 LR_S        = ENV["AE_LR"] || ""
 WARMUP_S    = ENV["AE_WARMUP"] || ""
 
+TARGET_CE = TARGET_CE_S.length > 0 ? TARGET_CE_S.to_f : 0.0
 LR     = LR_S.length     > 0 ? LR_S.to_f     : 0.001
 WARMUP = WARMUP_S.length > 0 ? WARMUP_S.to_i : 0
 VOCAB  = 256
@@ -142,6 +146,25 @@ if VAL_BATCHES < 1
 end
 if VAL_FRAC_PCT < 1 || VAL_FRAC_PCT > 50
   puts "toy-train-ae: AE_VAL_FRAC_PCT must be in 1..50, got " + VAL_FRAC_PCT.to_s
+  exit 1
+end
+if TARGET_CE > 0.0 && EVAL_EVERY < 1
+  puts "toy-train-ae: AE_TARGET_CE needs AE_EVAL_EVERY >= 1 — a stopping" +
+       " criterion that is never checked would silently run to STEPS and" +
+       " report a cell as matched when it is not"
+  exit 1
+end
+if EVAL_EVERY > 0 && TARGET_CE <= 0.0
+  puts "toy-train-ae: AE_EVAL_EVERY without AE_TARGET_CE would cost a" +
+       " held-out pass every " + EVAL_EVERY.to_s + " steps and change nothing"
+  exit 1
+end
+if TARGET_CE > 0.0 && PROBE_BATCHES < 1
+  puts "toy-train-ae: AE_PROBE_BATCHES must be >= 1, got " + PROBE_BATCHES.to_s
+  exit 1
+end
+if TARGET_CE < 0.0
+  puts "toy-train-ae: AE_TARGET_CE must be > 0, got " + TARGET_CE.to_s
   exit 1
 end
 if D_LATENT >= D_MODEL
@@ -321,6 +344,19 @@ m_labels  = Mat.new(CONTEXT, VOCAB)
 logit_buf = Array.new(CONTEXT * VOCAB, 0.0)
 lat_buf   = Array.new(PROBE_N, 0.0)
 
+# The stopping probe runs on a SUBSET of the held-out windows. It only
+# has to decide "have we crossed the CE target yet", and running it on
+# all of them would make a frequent check expensive enough to force a
+# coarse interval — which is worse, because a coarse interval lets the
+# EASY cells (which cross in tens of steps) overshoot the target by an
+# order of magnitude, and overshoot is exactly the mismatch this whole
+# mechanism exists to remove. Cheap probe, fine interval.
+#
+# The authoritative matched quantity is still the FULL held-out CE on
+# the `val:` line; the probe CE is reported next to it so any gap is
+# visible rather than assumed away.
+PROBE_N_BATCH = PROBE_BATCHES < VAL_BATCHES ? PROBE_BATCHES : VAL_BATCHES
+
 # ---- the held-out windows, materialised FIRST. ----
 task.reset_stream!(TASK_SEED + 1)
 val_tok = Array.new(VAL_BATCHES * CONTEXT, 0)
@@ -383,6 +419,28 @@ val_hp.flat[4] = 0.0
 val_hp.flat[5] = adamw.beta1
 val_hp.flat[6] = adamw.beta2
 
+# THE MID-TRAINING PROBE'S hp, and it is NOT val_hp.
+#
+# ggml's adamw kernel is  m = m*b1 + g*(1-b1);  v = v*b2 + g*g*(1-b2);
+#                         w = w*(1 - lr*wd) - lr*mh/vh
+# so lr=0 freezes the WEIGHTS but the MOMENTS still absorb the probe's
+# gradients. That is harmless for a val pass at the END of a run — every
+# lane in this program does exactly that — but a probe DURING training
+# would quietly corrupt Adam's state and the matched-CE surface would be
+# measuring a differently-optimised model.
+#
+# b1 = b2 = 1.0 makes both moment updates the identity, so this hp is a
+# complete no-op on optimizer state. The gate asserts the consequence:
+# a probed run's training curve is BYTE-IDENTICAL to an unprobed one.
+probe_hp = Mat.new(1, 7)
+probe_hp.flat[0] = 0.0
+probe_hp.flat[1] = 1.0
+probe_hp.flat[2] = 1.0
+probe_hp.flat[3] = adamw.eps
+probe_hp.flat[4] = 0.0
+probe_hp.flat[5] = 1.0
+probe_hp.flat[6] = 1.0
+
 # ---- run_start (FILE only). ----
 if EVENTS.length > 0
   rc = TinyNN.tnn_events_open(EVENTS)
@@ -427,6 +485,8 @@ if EVENTS.length > 0
     config.add_num("val_batches", VAL_BATCHES)
     config.add_num("val_frac_pct", VAL_FRAC_PCT)
     config.add_num("noise_seed",  NOISE_SEED)
+    config.add_raw("target_ce",   TARGET_CE.to_s)
+    config.add_num("eval_every",  EVAL_EVERY)
     config.add_raw("lr",          LR.to_s)
     config.add_num("warmup",      WARMUP)
     rs.add_obj("config", config)
@@ -447,62 +507,6 @@ if EVENTS.length > 0
   else
     puts "events_open failed: rc=" + rc.to_s + " (path=" + EVENTS + ")"
   end
-end
-
-# ---- training loop. ----
-final_loss = 0.0
-step = 0
-while step < STEPS
-  step_wall_start = TinyNN.tnn_events_now_seconds
-  if WARMUP > 0 && step < WARMUP
-    adamw.lr = LR * ((step + 1).to_f / WARMUP.to_f)
-  else
-    adamw.lr = LR
-  end
-  m_hp = adamw.hp(step)
-
-  ts = task.next_start_in(0, TRAIN_HI)
-  task.fill_window!(tokens, ts)
-  k = 0
-  while k < CONTEXT * VOCAB
-    m_labels.flat[k] = 0.0
-    k = k + 1
-  end
-  b = 0
-  while b < CONTEXT
-    # RECONSTRUCTION, not prediction: the target at position i is the
-    # token AT position i. No shift anywhere in this lane.
-    m_labels.flat[b * VOCAB + tokens[b]] = 1.0
-    b = b + 1
-  end
-
-  loss = recipe.step!(tokens, m_labels, m_hp, step == 0)
-  final_loss = loss
-  puts "step " + (step + 1).to_s + ": loss=" + loss.to_s
-
-  if EVENTS.length > 0
-    rc_l = TinyNN.tnn_download_to_f64_array(recipe.ae_cache.sess,
-             recipe.ae_cache.t_logits, logit_buf, CONTEXT * VOCAB)
-    tr_acc = -1.0
-    if rc_l != 0
-      puts "logits download failed: step=" + (step + 1).to_s + " rc=" + rc_l.to_s
-    else
-      tr_acc = hits_in(logit_buf, tokens, CONTEXT, VOCAB).to_f / CONTEXT.to_f
-    end
-    step_wall_us = ((TinyNN.tnn_events_now_seconds - step_wall_start) * 1.0e6).to_i
-    es = Toy::Json::Builder.new
-    es.add_str("kind",  "step")
-    es.add_str("phase", "train")
-    es.add_num("t",       TinyNN.tnn_events_now_seconds)
-    es.add_num("step",    step + 1)
-    es.add_raw("loss",    num_or_null(loss))
-    es.add_raw("train_acc", tr_acc >= 0.0 ? num_or_null(tr_acc) : "null")
-    es.add_raw("lr",      adamw.lr.to_s)
-    es.add_num("samples", CONTEXT)
-    es.add_num("wall_us", step_wall_us)
-    TinyNN.tnn_events_emit(es.dump)
-  end
-  step = step + 1
 end
 
 # ---- ONE held-out pass, parameterised by the probe. ----
@@ -583,6 +587,94 @@ lat_sq  = Array.new(D_LATENT, 0.0)
 stds    = Array.new(D_LATENT, 0.0)
 dummy_state = noise_state(NOISE_SEED)
 
+# ---- training loop. ----
+final_loss = 0.0
+# toy#165 follow-up — MATCHED-CE stopping.
+#
+# The published P1a surface compares cells at matched STEPS, and their
+# clean CE then spans SEVEN ORDERS OF MAGNITUDE: the easy corpora sit on
+# the CE floor while the hard ones are still descending. A noise MARGIN
+# is not invariant to that — it keeps growing after accuracy saturates
+# (CE still rewards wider logit separations) and it SHRINKS while
+# accuracy is still improving (newly-learned rare codepoints have to be
+# packed into the same d dims). Two opposite-signed biases, so the
+# confound distorts the SHAPE of the surface, not just its scale.
+#
+# Stopping at a matched clean CE makes the cells comparable: the read
+# becomes "at equal reconstruction fidelity, what margin does this
+# (d, N) deliver?", which is also the question the capstone actually
+# asks of a decoder.
+ce_steps = 0
+ce_final = -1.0
+step = 0
+while step < STEPS
+  step_wall_start = TinyNN.tnn_events_now_seconds
+  if WARMUP > 0 && step < WARMUP
+    adamw.lr = LR * ((step + 1).to_f / WARMUP.to_f)
+  else
+    adamw.lr = LR
+  end
+  m_hp = adamw.hp(step)
+
+  ts = task.next_start_in(0, TRAIN_HI)
+  task.fill_window!(tokens, ts)
+  k = 0
+  while k < CONTEXT * VOCAB
+    m_labels.flat[k] = 0.0
+    k = k + 1
+  end
+  b = 0
+  while b < CONTEXT
+    # RECONSTRUCTION, not prediction: the target at position i is the
+    # token AT position i. No shift anywhere in this lane.
+    m_labels.flat[b * VOCAB + tokens[b]] = 1.0
+    b = b + 1
+  end
+
+  loss = recipe.step!(tokens, m_labels, m_hp, step == 0)
+  final_loss = loss
+  puts "step " + (step + 1).to_s + ": loss=" + loss.to_s
+
+  if EVENTS.length > 0
+    rc_l = TinyNN.tnn_download_to_f64_array(recipe.ae_cache.sess,
+             recipe.ae_cache.t_logits, logit_buf, CONTEXT * VOCAB)
+    tr_acc = -1.0
+    if rc_l != 0
+      puts "logits download failed: step=" + (step + 1).to_s + " rc=" + rc_l.to_s
+    else
+      tr_acc = hits_in(logit_buf, tokens, CONTEXT, VOCAB).to_f / CONTEXT.to_f
+    end
+    step_wall_us = ((TinyNN.tnn_events_now_seconds - step_wall_start) * 1.0e6).to_i
+    es = Toy::Json::Builder.new
+    es.add_str("kind",  "step")
+    es.add_str("phase", "train")
+    es.add_num("t",       TinyNN.tnn_events_now_seconds)
+    es.add_num("step",    step + 1)
+    es.add_raw("loss",    num_or_null(loss))
+    es.add_raw("train_acc", tr_acc >= 0.0 ? num_or_null(tr_acc) : "null")
+    es.add_raw("lr",      adamw.lr.to_s)
+    es.add_num("samples", CONTEXT)
+    es.add_num("wall_us", step_wall_us)
+    TinyNN.tnn_events_emit(es.dump)
+  end
+  step = step + 1
+
+  # THE CE PROBE. Cheap relative to the step it follows, and byte-null on
+  # the training curve (see probe_hp).
+  if TARGET_CE > 0.0 && step % EVAL_EVERY == 0
+    pr = probe_pass!(recipe, val_tok, tokens, m_labels, probe_hp, logit_buf,
+                     lat_buf, PROBE_N_BATCH, CONTEXT, VOCAB, D_LATENT,
+                     perm_id, gain_one, noise_zero, false, 0.0, stds,
+                     dummy_state, lat_sum, lat_sq, false)
+    ce_final = pr[1]
+    ce_steps = step
+    if ce_final <= TARGET_CE
+      step = STEPS
+    end
+  end
+end
+
+
 # 1. CLEAN — and the calibration pass that measures the latent's own
 #    per-dim spread, which every sigma below is expressed in units of.
 clean = probe_pass!(recipe, val_tok, tokens, m_labels, val_hp, logit_buf,
@@ -603,6 +695,25 @@ while sj < D_LATENT
   sj = sj + 1
 end
 
+# THE STOP, stated. A cell that never reached the target is NOT a
+# matched cell, and saying so is the whole point: a surface that
+# silently mixes matched and unmatched cells is exactly the confound
+# this flag exists to remove.
+if TARGET_CE > 0.0
+  if ce_final >= 0.0 && ce_final <= TARGET_CE
+    puts "converged: target_ce=" + TARGET_CE.to_s +
+         " achieved_ce=" + ce_final.to_s +
+         " steps=" + ce_steps.to_s +
+         " max_steps=" + STEPS.to_s +
+         " probe_batches=" + PROBE_N_BATCH.to_s + " matched=1"
+  else
+    puts "converged: target_ce=" + TARGET_CE.to_s +
+         " achieved_ce=" + ce_final.to_s +
+         " steps=" + ce_steps.to_s +
+         " max_steps=" + STEPS.to_s + " matched=0" +
+         " NOT REACHED — this cell is not comparable to the matched ones"
+  end
+end
 puts "corpus: pack=" + TEXT + " n_tokens=" + N_TOKENS.to_s +
      " alphabet=" + task.at_alphabet.to_s +
      " val_alphabet=" + val_distinct.to_s +
@@ -747,7 +858,9 @@ if EVENTS.length > 0 && TinyNN.tnn_events_active == 1
   re.add_num("t",          TinyNN.tnn_events_now_seconds)
   re.add_str("ended_at",   TinyNN.tnn_events_iso8601_now)
   re.add_str("reason",     "completed")
-  re.add_num("final_step", STEPS)
+  re.add_num("final_step", TARGET_CE > 0.0 && ce_steps > 0 ? ce_steps : STEPS)
+  re.add_raw("achieved_ce", TARGET_CE > 0.0 ? num_or_null(ce_final) : "null")
+  re.add_raw("ce_matched",  TARGET_CE > 0.0 ? ((ce_final >= 0.0 && ce_final <= TARGET_CE) ? "1" : "0") : "null")
   re.add_raw("final_loss", num_or_null(final_loss))
   re.add_raw("val_acc",    num_or_null(clean_acc))
   re.add_str("checkpoint", "none")

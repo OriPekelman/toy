@@ -183,6 +183,12 @@ REJECT = [
   [%w[ae --vocab 256],                     "--vocab"],
   [%w[ae --policy dfa],                    "--policy"],
   [%w[ae --dfa-cut step],                  "--dfa-cut"],
+  # toy#165 follow-up: matched-CE stopping. --target-ce/--eval-every are
+  # the ae lane's alone — every other lane's cells are compared at matched
+  # steps and nothing has measured what changing that does to them.
+  [%w[mlp --target-ce 0.05],               "--target-ce"],
+  [%w[diff --eval-every 10],               "--eval-every"],
+  [%w[gtx --probe-batches 4],              "--probe-batches"],
   # toy#162: --clip-grad is the lstm lane's FAIR BPTT control, not a
   # general tuning knob — its effect is unmeasured on every other lane,
   # and a knob whose effect nobody measured is worse offered than absent.

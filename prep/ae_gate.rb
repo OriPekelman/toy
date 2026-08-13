@@ -10,8 +10,9 @@
 #   4. CONTROL-CAN-LOSE — the MANDATORY precondition (tao#19).
 #   5. THE MARGIN IS THE READ, AND CLEAN ACCURACY IS NOT.
 #   6. THE ALPHABET IS AN AXIS (tao#22) — provenance, and it moves.
-#   7. FAIL-LOUD.
-#   8. CLI.
+#   7. MATCHED-CE STOPPING is byte-null on the training curve.
+#   8. FAIL-LOUD.
+#   9. CLI.
 #
 # ── WHAT THIS LANE ANSWERS ──
 #
@@ -277,7 +278,50 @@ puts failures.length == n0 ?
   "  ok: the corpus and its EFFECTIVE alphabet ride stdout and the bundle, and the alphabet axis moves between corpora (tao#22)" :
   "  FAIL: alphabet axis / bundle"
 
-# ---- 7. fail-loud ----
+# ---- 7. matched-CE stopping (toy#165 follow-up) ----
+#
+# The published surface compared cells at matched STEPS and their clean CE
+# then spanned SEVEN ORDERS OF MAGNITUDE, which a noise MARGIN is not
+# invariant to (it inflates once accuracy saturates and shrinks while
+# accuracy is still improving). --target-ce makes the cells comparable.
+#
+# The load-bearing property is that the probe COSTS NOTHING in numerics:
+# ggml's adamw kernel updates m and v even at lr=0, so a mid-training val
+# pass on the ordinary eval hp would quietly corrupt Adam's state. The
+# probe hp uses beta1=beta2=1.0, making both moment updates the identity.
+# Asserted, not asserted-about: a probed run's curve must be BYTE-IDENTICAL.
+n0 = failures.length
+unprobed = run_ae({ "STEPS" => "120", "AE_LATENT" => "8" })
+probed   = run_ae({ "STEPS" => "120", "AE_LATENT" => "8",
+                    "AE_TARGET_CE" => "0.0000000001", "AE_EVAL_EVERY" => "10" })
+failures << "target-ce byte-null: probing every 10 steps CHANGED the training curve — the probe is perturbing optimizer state (ggml's adamw updates m/v even at lr=0; the probe hp must use beta1=beta2=1.0)" unless curve(probed) == curve(unprobed)
+# ... and an unreachable target must run to STEPS and say so, rather than
+# reporting an unmatched cell as matched.
+cline = probed.lines.find { |l| l.start_with?("converged:") }.to_s
+failures << "target-ce: an unreachable target did not report matched=0 (#{cline.strip})" unless cline.include?("matched=0")
+failures << "target-ce: an unreachable target did not say NOT REACHED (#{cline.strip})" unless cline.include?("NOT REACHED")
+# A reachable target must stop EARLY and land at or under it.
+hit = run_ae({ "STEPS" => "4000", "AE_LATENT" => "8",
+               "AE_TARGET_CE" => "0.05", "AE_EVAL_EVERY" => "25" })
+hline = hit.lines.find { |l| l.start_with?("converged:") }.to_s
+if hline.include?("matched=1")
+  steps_used = hline[/steps=(\d+)/, 1].to_i
+  achieved   = hline[/achieved_ce=([0-9.eE+-]+)/, 1].to_f
+  failures << "target-ce: stopped at step #{steps_used} of 4000 — no early stop happened" unless steps_used < 4000
+  failures << "target-ce: achieved_ce #{achieved} exceeds the target it claims to have matched" if achieved > 0.05
+  # The full-set CE is the authoritative matched quantity; the probe runs
+  # on a subset, so the two must at least agree in magnitude or the
+  # stopping criterion is measuring something else.
+  full = field(hit, "val: ", "loss").to_f
+  failures << "target-ce: probe CE #{achieved} and full held-out CE #{full} differ by more than 3x — the subset probe is not tracking the quantity the surface is matched on" if full > 3.0 * achieved || achieved > 3.0 * full
+else
+  failures << "target-ce: a reachable target (0.05) was not matched (#{hline.strip})"
+end
+puts failures.length == n0 ?
+  "  ok: --target-ce stops early and lands under target, an unreachable one reports matched=0 LOUDLY, and probing is BYTE-NULL on the training curve (beta1=beta2=1 makes the adamw moment update the identity)" :
+  "  FAIL: matched-CE stopping"
+
+# ---- 8. fail-loud ----
 n0 = failures.length
 [
   [{ "AE_TEXT" => "" },                                     "no corpus (there is no synthetic fallback, by design)"],
@@ -288,6 +332,9 @@ n0 = failures.length
   [{ "AE_VAL_FRAC_PCT" => "90" },                           "val fraction 90 (train span starved)"],
   [{ "AE_CONTEXT" => "1" },                                 "context 1"],
   [{ "AE_NOISE_EVAL" => "-1" },                             "negative sigma"],
+  [{ "AE_TARGET_CE" => "0.05" },                            "--target-ce with no --eval-every (never checked)"],
+  [{ "AE_EVAL_EVERY" => "10" },                             "--eval-every with no --target-ce (cost, no effect)"],
+  [{ "AE_TARGET_CE" => "0.05", "AE_EVAL_EVERY" => "10", "AE_PROBE_BATCHES" => "0" }, "probe batches 0"],
 ].each do |env, label|
   out, st = Open3.capture2e({ "STEPS" => "2" }.merge(CELL).merge(env), RUNNER, chdir: ROOT)
   failures << "fail-loud: #{label} exited 0 (silently did something else)" if st.success?
@@ -303,10 +350,10 @@ Dir.mktmpdir("ae_gate_bad") do |dir|
   failures << "fail-loud: the alphabet-mismatch message does not name both counts" unless out.include?("99") && out.include?("7 distinct")
 end
 puts failures.length == n0 ?
-  "  ok: 9 degenerate configs fail loud, including a pack whose declared alphabet disagrees with its tokens" :
+  "  ok: 12 degenerate configs fail loud, including a pack whose declared alphabet disagrees with its tokens" :
   "  FAIL: fail-loud"
 
-# ---- 8. CLI ----
+# ---- 9. CLI ----
 n0 = failures.length
 cli_out, cli_st = Open3.capture2e({ "SPINEL_DIR" => ENV["SPINEL_DIR"].to_s },
   TOY, "train", "ae", "--text", PACK, "--latent", "8", "--context", "64",

@@ -245,6 +245,16 @@ module Toy
           @noise_eval     = nil
           @noise_seed     = nil
           @val_frac_pct   = nil
+          # toy#165 follow-up: MATCHED-CE stopping. The published P1a
+          # surface compared cells at matched STEPS and their clean CE
+          # spanned seven orders of magnitude; a noise MARGIN is not
+          # invariant to that, so the surface was partly a convergence
+          # surface. --target-ce stops each cell at equal reconstruction
+          # fidelity instead, which is also the question a decoder is
+          # actually asked. OFF by default and byte-null when off.
+          @target_ce      = nil
+          @eval_every     = nil
+          @probe_batches  = nil
           # toy#162 (lstm): global-norm gradient clipping. nil = OFF, and
           # off is byte-null — every cell toy#157 published was measured
           # without it.
@@ -508,6 +518,9 @@ module Toy
                              "AE_VAL_BATCHES"  => (@val_batches || 16).to_s,
                              "AE_VAL_FRAC_PCT" => (@val_frac_pct || 10).to_s,
                              "AE_TASK_SEED"    => (@task_seed || 7).to_s,
+                             "AE_TARGET_CE"    => (@target_ce || ""),
+                             "AE_EVAL_EVERY"   => (@eval_every || 0).to_s,
+                             "AE_PROBE_BATCHES" => (@probe_batches || 4).to_s,
                              "AE_LR"           => (@lr || ""),
                              "AE_WARMUP"       => (@warmup || 0).to_s)
           elsif @recipe == "gtx"
@@ -766,7 +779,7 @@ module Toy
           # can-it-lose precondition). A sweep over --latent-dim reads all
           # four off stdout, so filtering them here would leave the lane's
           # actual finding reachable only by opening a bundle.
-          losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") || l.start_with?("val:") || l.start_with?("train:") || l.start_with?("graph:") || l.start_with?("stream:") || l.start_with?("gen:") || l.start_with?("corpus:") || l.start_with?("noise:") || l.start_with?("half_snr:") || l.start_with?("control:") || l.start_with?("latent_std:") }.map(&:chomp)
+          losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") || l.start_with?("val:") || l.start_with?("train:") || l.start_with?("graph:") || l.start_with?("stream:") || l.start_with?("gen:") || l.start_with?("corpus:") || l.start_with?("noise:") || l.start_with?("half_snr:") || l.start_with?("control:") || l.start_with?("latent_std:") || l.start_with?("converged:") }.map(&:chomp)
           emit(run_id, run_dir, losses)
         end
 
@@ -1045,6 +1058,28 @@ module Toy
               @text = val
             when /\A--text=(.*)\z/
               @text = $1
+            when "--target-ce"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--target-ce requires a value") if val.nil?
+              return bad_arg("--target-ce must be a positive float, got #{val.inspect}") unless val =~ /\A\d*\.?\d+([eE][+-]?\d+)?\z/ && val.to_f > 0.0
+              @target_ce = val
+            when /\A--target-ce=(.*)\z/
+              val = $1
+              return bad_arg("--target-ce must be a positive float, got #{val.inspect}") unless val =~ /\A\d*\.?\d+([eE][+-]?\d+)?\z/ && val.to_f > 0.0
+              @target_ce = val
+            when "--eval-every", "--probe-batches"
+              key = @argv[i]
+              i += 1
+              val = @argv[i]
+              return bad_arg("#{key} requires a value") if val.nil?
+              return bad_arg("#{key} must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i > 0
+              if key == "--eval-every" then @eval_every = val.to_i else @probe_batches = val.to_i end
+            when /\A--(eval-every|probe-batches)=(.*)\z/
+              key = $1
+              val = $2
+              return bad_arg("--#{key} must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i > 0
+              if key == "eval-every" then @eval_every = val.to_i else @probe_batches = val.to_i end
             when "--noise-seed", "--val-frac-pct"
               key = @argv[i]
               i += 1
@@ -1827,8 +1862,9 @@ when /\A--dfa-feedback-lr=(.*)\z/
              (!@heads.nil? || !@d_ff.nil?), " (toy#160/#165)"],
             ["--types/--entities", %w[gtx],
              (!@types.nil? || !@entities.nil?), " (toy#160)"],
-            ["--text/--noise-eval/--noise-seed/--val-frac-pct", %w[ae],
-             (!@text.nil? || !@noise_eval.nil? || !@noise_seed.nil? || !@val_frac_pct.nil?),
+            ["--text/--noise-eval/--noise-seed/--val-frac-pct/--target-ce/--eval-every/--probe-batches", %w[ae],
+             (!@text.nil? || !@noise_eval.nil? || !@noise_seed.nil? || !@val_frac_pct.nil? ||
+              !@target_ce.nil? || !@eval_every.nil? || !@probe_batches.nil?),
              " (toy#165; --text names a byte pack from prep/fetch_text.rb, NOT a TOYC corpus)"],
             ["--cue-span",      %w[ssm lstm],                       !@cue_span.nil?, " (toy#155/#157)"],
             # toy#162: the FAIR BPTT control lives on the lane whose
@@ -2067,6 +2103,12 @@ when /\A--dfa-feedback-lr=(.*)\z/
             end
             if @device != "cpu"
               return bad_arg("--device #{@device.inspect} is not supported for recipe 'ae' (CPU-only by decision — tao#18: the cross-architecture lanes are small by construction and get no CUDA twin)")
+            end
+            if @target_ce && @eval_every.nil?
+              return bad_arg("--target-ce needs --eval-every N — a stopping criterion that is never checked would silently run to --steps and report an unmatched cell as matched")
+            end
+            if @eval_every && @target_ce.nil?
+              return bad_arg("--eval-every without --target-ce costs a held-out pass every N steps and changes nothing")
             end
             if @latent && @d_model && @latent >= @d_model
               return bad_arg("--latent #{@latent} must be < --d-model #{@d_model} — a bottleneck at least as wide as the residual stream is not a bottleneck")
