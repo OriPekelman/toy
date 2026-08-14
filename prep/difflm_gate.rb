@@ -11,6 +11,8 @@
 #   5. THE JUDGE IS NOT AN ARM (different seed) and it discriminates.
 #   6. CONTROL-CAN-LOSE — prior-floor must lose decisively (tao#19).
 #   7. THE RESIDUAL INSTRUMENT reports in latent-std units and grows with t.
+#  7b. THE eps-SKILL PROBE reports against a TRIVIAL baseline, and an arm
+#      with no denoiser survives a run dir.
 #   8. FAIL-LOUD.
 #   9. CLI.
 #
@@ -198,6 +200,37 @@ puts failures.length == n0 ?
   "  ok: the sampler residual is reported in LATENT-STD units at 3 chain lengths and grows with t (#{vals.inspect}) — P1a's margin axis, measured" :
   "  FAIL: residual instrument"
 
+# ---- 7b. the eps-SKILL probe, and it must survive EVERY arm ----
+#
+# The probe only FILLS on the diffusion arms, but the events block reads
+# its arrays for every arm. Declaring them where they were filled left
+# prior-floor referencing unassigned locals, and the runner SEGV'd only
+# on the path that ALSO had a run dir — i.e. only under `toy train`,
+# never under a direct runner call. So this leg exercises a run dir on
+# the arm that does NOT fill the probe.
+n0 = failures.length
+Dir.mktmpdir("difflm_probe") do |dir|
+  fl2 = run_dl({ "DL_ARM" => "prior-floor" }, dir)
+  failures << "eps probe: prior-floor emitted epsmse lines, which it has no denoiser for" if fl2.lines.any? { |l| l.start_with?("epsmse:") }
+end
+eps = a1.lines.select { |l| l.start_with?("epsmse:") }
+failures << "eps probe: no epsmse lines on a diffusion arm" if eps.empty?
+if eps.length >= 3
+  sk = eps.map { |l| l[/skill=([0-9.eE+-]+)/, 1].to_f }
+  ab = eps.map { |l| l[/abar=([0-9.eE+-]+)/, 1].to_f }
+  failures << "eps probe: abar is not decreasing across the reported t grid — the schedule or the grid is wrong" unless ab.each_cons(2).all? { |x, y| y <= x }
+  # The probe's WHOLE point is that raw eps-MSE is inverted at high t
+  # (the trivial predictor eps_hat = x_t scores ~0 as abar -> 0), so the
+  # baseline must be reported and must shrink with abar. Without that the
+  # skill number is not interpretable.
+  tv = eps.map { |l| l[/trivial=([0-9.eE+-]+)/, 1].to_f }
+  failures << "eps probe: the trivial baseline is not reported shrinking with abar — skill is uninterpretable without it" unless tv.last < tv.first
+  failures << "eps probe: skill is identical at every t (#{sk.uniq.length} distinct) — the probe is not varying with t" if sk.uniq.length < 3
+end
+puts failures.length == n0 ?
+  "  ok: the eps-skill probe reports model vs the TRIVIAL baseline across a decreasing-abar grid, and an arm with no denoiser survives a run dir (the SEGV that only appeared under `toy train`)" :
+  "  FAIL: eps probe"
+
 # ---- 8. fail-loud ----
 n0 = failures.length
 [
@@ -248,7 +281,7 @@ puts failures.length == n0 ?
   "  FAIL: cli"
 
 if failures.empty?
-  puts "GATE PASS [difflm]: latent-diffusion byte-LM (capstone P1b, all BP) — three models built SEQUENTIALLY because two live sessions silently corrupt each other, a latent standardised to N(0,I) and ASSERTED so the sampler cannot start off-manifold, toy#156's abar_T guard carried, a judge that is never an arm, a prior-floor control that provably CAN lose, and a sampler residual measured in P1a's own latent-std units (toy#166)"
+  puts "GATE PASS [difflm]: latent-diffusion byte-LM (capstone P1b, all BP) — three models built SEQUENTIALLY because two live sessions silently corrupt each other, a latent standardised to N(0,I) and ASSERTED so the sampler cannot start off-manifold, toy#156's abar_T guard carried, a judge that is never an arm, a prior-floor control that provably CAN lose, and a sampler residual measured in P1a's own latent-std units (toy#166) + the eps-SKILL probe scored against a trivial baseline, because raw eps-MSE is INVERTED at high t (toy#167)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [difflm]: #{f}" }

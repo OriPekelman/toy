@@ -115,6 +115,7 @@ LR_S        = ENV["DL_LR"] || ""
 WARMUP_S    = ENV["DL_WARMUP"] || ""
 TASK_SEED   = (ENV["DL_TASK_SEED"] || "7").to_i
 NOISE_SEED  = (ENV["DL_NOISE_SEED"] || "4242").to_i
+VAL_WINDOWS = (ENV["DL_VAL_WINDOWS"] || "16").to_i
 
 LR      = LR_S.length > 0 ? LR_S.to_f : 0.001
 WARMUP  = WARMUP_S.length > 0 ? WARMUP_S.to_i : 0
@@ -340,6 +341,16 @@ ae_params = 0
 arm_params = 0
 resid_t = [0]; resid_t.pop
 resid_v = [0.0]; resid_v.pop
+# Declared at TOP LEVEL, not inside the diff-arm branch, because the
+# events block below reads them for EVERY arm. Declaring them where they
+# are filled left prior-floor referencing unassigned locals and the
+# runner SEGV'd only on the path that also had TAO_RUN_DIR set — i.e.
+# only under `toy train`, not under a direct runner call. resid_t/resid_v
+# are up here for exactly this reason; the probe should have followed.
+eps_t = [0]; eps_t.pop
+eps_m = [0.0]; eps_m.pop
+eps_b = [0.0]; eps_b.pop
+eps_k = [0.0]; eps_k.pop
 std_mean_max = 0.0
 std_sd_err   = 0.0
 final_loss = 0.0
@@ -420,6 +431,38 @@ if ARM_C != ARM_AR
     pj = pj + 1
   end
 
+  # HELD-OUT latents, for the eps-skill probe. Same encoder, windows drawn
+  # from the VAL span, standardised with the TRAIN statistics (using val
+  # statistics would leak the held-out set into its own normalisation).
+  vpool = Array.new(VAL_WINDOWS * CONTEXT * D_LATENT, 0.0)
+  vj = 0
+  while vj < VAL_WINDOWS
+    vstart = SPLIT_AT + vj * CONTEXT
+    if vstart > VAL_HI
+      vstart = VAL_HI
+    end
+    task.fill_window!(toks, vstart)
+    vk = 0
+    while vk < CONTEXT * VOCAB
+      m_lab.flat[vk] = 0.0
+      vk = vk + 1
+    end
+    vb = 0
+    while vb < CONTEXT
+      m_lab.flat[vb * VOCAB + toks[vb]] = 1.0
+      vb = vb + 1
+    end
+    ae.step!(toks, m_lab, noop_hp, false)
+    TinyNN.tnn_download_to_f64_array(ae.ae_cache.sess, ae.ae_cache.t_latent,
+                                     lat_buf, CONTEXT * D_LATENT)
+    vz = 0
+    while vz < CONTEXT * D_LATENT
+      vpool[vj * CONTEXT * D_LATENT + vz] = lat_buf[vz]
+      vz = vz + 1
+    end
+    vj = vj + 1
+  end
+
   # STANDARDISE (the LDM scaling trick). Deterministic, no new loss term,
   # and the moments are asserted below rather than assumed.
   npos = POOL_N * CONTEXT
@@ -452,6 +495,16 @@ if ARM_C != ARM_AR
     end
     pz = pz + 1
   end
+  vq = 0
+  while vq < VAL_WINDOWS * CONTEXT
+    vd = 0
+    while vd < D_LATENT
+      vpool[vq * D_LATENT + vd] = (vpool[vq * D_LATENT + vd] - lat_mu[vd]) / lat_sd[vd]
+      vd = vd + 1
+    end
+    vq = vq + 1
+  end
+
   # ASSERT the standardisation actually landed. If the aggregate is not
   # ~N(0, I) the sampler starts off-manifold and every downstream number
   # is about a normalisation bug rather than about d.
@@ -840,6 +893,83 @@ else
     gi = gi + 1
   end
 
+  # ---- THE eps-SKILL PROBE (toy#167) ----
+  #
+  # WHY NOT RAW eps-MSE. As abar_t -> 0, x_t -> eps, so the TRIVIAL
+  # predictor eps_hat = x_t scores near-zero error at high t: at t=99 its
+  # MSE is 0.0000. A denoiser whose score is worthless far from the data
+  # manifold would therefore look BEST exactly where generation starts.
+  # Raw eps-MSE vs t is not just uninformative there, it is inverted.
+  #
+  # So the probe reports the model against the two trivial baselines on
+  # the same axis and scores SKILL:
+  #
+  #     skill(t) = 1 - mse_model(t) / min( mse[eps_hat = x_t], 1.0 )
+  #
+  # skill > 0 means the denoiser carries information the trivial
+  # predictors do not. skill ~ 0 at high t is the diagnosis toy#167 is
+  # after: the score is uninformative where the reverse chain begins, and
+  # no sampler can rescue that.
+  #
+  # Measured on HELD-OUT latents, and it is forward-only (noop hp), so it
+  # perturbs neither the weights nor Adam's moments.
+  pstate = lcg_state(NOISE_SEED + 555)
+  gi3 = 0
+  while gi3 < 10
+    tp = (gi3 * TSTEPS) / 10
+    if tp > TSTEPS - 1
+      tp = TSTEPS - 1
+    end
+    sap = Math.sqrt(abar[tp])
+    sbp = Math.sqrt(1.0 - abar[tp])
+    acc_m = 0.0
+    acc_b = 0.0
+    nseen = 0
+    vw = 0
+    while vw < VAL_WINDOWS
+      q8 = 0
+      while q8 < CONTEXT * D_LATENT
+        zt2 = vpool[vw * CONTEXT * D_LATENT + q8]
+        ev = lcg_gauss(pstate)
+        xtv = sap * zt2 + sbp * ev
+        xin[(q8 / D_LATENT) * 2 * D_LATENT + (q8 % D_LATENT)] = xtv
+        xin[(q8 / D_LATENT) * 2 * D_LATENT + D_LATENT + (q8 % D_LATENT)] = 0.0
+        m_eps.flat[q8] = ev
+        acc_b = acc_b + (xtv - ev) * (xtv - ev)
+        q8 = q8 + 1
+      end
+      fill_temb!(temb, tp, TSTEPS, D_MODEL, CONTEXT)
+      dn_forward!(dn, xin, temb, m_eps, noop_hp, CONTEXT, D_LATENT, D_MODEL,
+                  pred, false)
+      q9 = 0
+      while q9 < CONTEXT * D_LATENT
+        d9 = pred[q9] - m_eps.flat[q9]
+        acc_m = acc_m + d9 * d9
+        q9 = q9 + 1
+      end
+      nseen = nseen + CONTEXT * D_LATENT
+      vw = vw + 1
+    end
+    mm2 = acc_m / nseen.to_f
+    bb2 = acc_b / nseen.to_f
+    best = bb2 < 1.0 ? bb2 : 1.0
+    sk = best > 0.0 ? (1.0 - mm2 / best) : 0.0
+    eps_t.push(tp)
+    eps_m.push(mm2)
+    eps_b.push(best)
+    eps_k.push(sk)
+    gi3 = gi3 + 1
+  end
+  ei = 0
+  while ei < eps_t.length
+    puts "epsmse: t=" + eps_t[ei].to_s +
+         " abar=" + abar[eps_t[ei]].to_s +
+         " model=" + eps_m[ei].to_s +
+         " trivial=" + eps_b[ei].to_s +
+         " skill=" + eps_k[ei].to_s
+    ei = ei + 1
+  end
+
   # ---- THE SAMPLER-RESIDUAL INSTRUMENT ----
   #
   # P1a's margin is denominated in latent-std units (d=8 holds ~.87 at
@@ -1147,6 +1277,9 @@ if EVENTS.length > 0
     ev.add_num("gen_bytes", GEN_BYTES)
     ev.add_raw("bpb_gen", num_or_null(bpb_gen))
     ev.add_raw("bpb_real", num_or_null(bpb_real))
+    ev.add_raw("eps_t",     Toy::Json.from_int_array(eps_t))
+    ev.add_raw("eps_model", float_array_json(eps_m))
+    ev.add_raw("eps_skill", float_array_json(eps_k))
     ev.add_raw("resid_t", Toy::Json.from_int_array(resid_t))
     ev.add_raw("resid_rmse", float_array_json(resid_v))
     TinyNN.tnn_events_emit(ev.dump)
