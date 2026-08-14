@@ -103,6 +103,10 @@ module Toy
         # toy#165 (capstone P1a) — the per-token latent autoencoder. All
         # BP: no DFA and no diffusion on this lane. Own binary, CPU-only.
         AE_RUNNER_TARGET = "libexec/toy-train-ae"
+        # toy#166 (capstone P1b) — the latent-diffusion byte-LM. Three
+        # models per run, built SEQUENTIALLY (two live sessions corrupt
+        # each other). Own binary, CPU-only, all BP.
+        DIFFLM_RUNNER_TARGET = "libexec/toy-train-difflm"
         FRANKEN_MOE_RUNNER_TARGET = "libexec/toy-train-franken-moe-cli"
         FRANKEN_MOE_CUDA_RUNNER_TARGET = "libexec/toy-train-franken-moe-cli-cuda"
         # GPT-2 GPU twins (--arch gpt2 --device cuda|metal). SEPARATE single-type
@@ -252,6 +256,12 @@ module Toy
           # surface. --target-ce stops each cell at equal reconstruction
           # fidelity instead, which is also the question a decoder is
           # actually asked. OFF by default and byte-null when off.
+          # toy#166 (difflm): the P1b arms and their knobs.
+          @arm            = nil
+          @ae_steps       = nil
+          @tsteps         = nil
+          @gen_bytes      = nil
+          @judge_steps    = nil
           @target_ce      = nil
           @eval_every     = nil
           @probe_batches  = nil
@@ -357,7 +367,30 @@ module Toy
           #     warm-start +cuda                  in train_cuda.rb source)
           #   metal (fs only)  -> toy-train-metal
           #   cpu fs/warm-start-> toy-train
-          target = if @recipe == "ae"
+          target = if @recipe == "difflm"
+                     DIFFLM_RUNNER_TARGET
+                   elsif @recipe == "difflm"
+            # Lane-local DL_* namespace. --latent defaults to 8: P1a's
+            # PINNED operating point (matched-CE surface, tao cf308d3),
+            # not a guess.
+            env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
+                             "DL_ARM"         => (@arm || "diff-selfcond"),
+                             "DL_TEXT"        => (@text || ""),
+                             "DL_LATENT"      => (@latent || 8).to_s,
+                             "DL_CONTEXT"     => (@context || 256).to_s,
+                             "DL_AE_STEPS"    => (@ae_steps || 2000).to_s,
+                             "DL_D_MODEL"     => (@d_model || 128).to_s,
+                             "DL_BLOCKS"      => (@mlp_layers || 2).to_s,
+                             "DL_HEADS"       => (@heads || 4).to_s,
+                             "DL_D_FF"        => (@d_ff || 256).to_s,
+                             "DL_TSTEPS"      => (@tsteps || 100).to_s,
+                             "DL_GEN_BYTES"   => (@gen_bytes || 16384).to_s,
+                             "DL_JUDGE_STEPS" => (@judge_steps || 3000).to_s,
+                             "DL_LR"          => (@lr || ""),
+                             "DL_WARMUP"      => (@warmup || 0).to_s,
+                             "DL_TASK_SEED"   => (@task_seed || 7).to_s,
+                             "DL_NOISE_SEED"  => (@noise_seed || 4242).to_s)
+          elsif @recipe == "ae"
                      AE_RUNNER_TARGET
                    elsif @recipe == "gtx"
                      GTX_RUNNER_TARGET
@@ -496,6 +529,27 @@ module Toy
                              "DIFF_B_SCALE"    => (@dfa_b_scale || ""),
                              "DIFF_ALIGN"      => (@align_events ? "1" : ""),
                              "DIFF_ALIGN_EVERY" => (@align_every || 1).to_s)
+          elsif @recipe == "difflm"
+            # Lane-local DL_* namespace. --latent defaults to 8: P1a's
+            # PINNED operating point (matched-CE surface, tao cf308d3),
+            # not a guess.
+            env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
+                             "DL_ARM"         => (@arm || "diff-selfcond"),
+                             "DL_TEXT"        => (@text || ""),
+                             "DL_LATENT"      => (@latent || 8).to_s,
+                             "DL_CONTEXT"     => (@context || 256).to_s,
+                             "DL_AE_STEPS"    => (@ae_steps || 2000).to_s,
+                             "DL_D_MODEL"     => (@d_model || 128).to_s,
+                             "DL_BLOCKS"      => (@mlp_layers || 2).to_s,
+                             "DL_HEADS"       => (@heads || 4).to_s,
+                             "DL_D_FF"        => (@d_ff || 256).to_s,
+                             "DL_TSTEPS"      => (@tsteps || 100).to_s,
+                             "DL_GEN_BYTES"   => (@gen_bytes || 16384).to_s,
+                             "DL_JUDGE_STEPS" => (@judge_steps || 3000).to_s,
+                             "DL_LR"          => (@lr || ""),
+                             "DL_WARMUP"      => (@warmup || 0).to_s,
+                             "DL_TASK_SEED"   => (@task_seed || 7).to_s,
+                             "DL_NOISE_SEED"  => (@noise_seed || 4242).to_s)
           elsif @recipe == "ae"
             # Lane-local AE_* namespace, same discipline as the others.
             # There is no synthetic default corpus: --text is REQUIRED and
@@ -779,7 +833,7 @@ module Toy
           # can-it-lose precondition). A sweep over --latent-dim reads all
           # four off stdout, so filtering them here would leave the lane's
           # actual finding reachable only by opening a bundle.
-          losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") || l.start_with?("val:") || l.start_with?("train:") || l.start_with?("graph:") || l.start_with?("stream:") || l.start_with?("gen:") || l.start_with?("corpus:") || l.start_with?("noise:") || l.start_with?("half_snr:") || l.start_with?("control:") || l.start_with?("latent_std:") || l.start_with?("converged:") }.map(&:chomp)
+          losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") || l.start_with?("val:") || l.start_with?("train:") || l.start_with?("graph:") || l.start_with?("stream:") || l.start_with?("gen:") || l.start_with?("corpus:") || l.start_with?("noise:") || l.start_with?("half_snr:") || l.start_with?("control:") || l.start_with?("latent_std:") || l.start_with?("converged:") || l.start_with?("stage1:") || l.start_with?("arm:") || l.start_with?("resid:") || l.start_with?("judge:") }.map(&:chomp)
           emit(run_id, run_dir, losses)
         end
 
@@ -1058,6 +1112,42 @@ module Toy
               @text = val
             when /\A--text=(.*)\z/
               @text = $1
+            when "--arm"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--arm requires a value") if val.nil?
+              unless %w[ar-baseline diff-selfcond diff-plain prior-floor].include?(val)
+                return bad_arg("--arm #{val.inspect} unsupported (ar-baseline|diff-selfcond|diff-plain|prior-floor)")
+              end
+              @arm = val
+            when /\A--arm=(.*)\z/
+              val = $1
+              unless %w[ar-baseline diff-selfcond diff-plain prior-floor].include?(val)
+                return bad_arg("--arm #{val.inspect} unsupported (ar-baseline|diff-selfcond|diff-plain|prior-floor)")
+              end
+              @arm = val
+            when "--ae-steps", "--tsteps", "--gen-bytes", "--judge-steps"
+              key = @argv[i]
+              i += 1
+              val = @argv[i]
+              return bad_arg("#{key} requires a value") if val.nil?
+              return bad_arg("#{key} must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i > 0
+              case key
+              when "--ae-steps"    then @ae_steps    = val.to_i
+              when "--tsteps"      then @tsteps      = val.to_i
+              when "--gen-bytes"   then @gen_bytes   = val.to_i
+              else                      @judge_steps = val.to_i
+              end
+            when /\A--(ae-steps|tsteps|gen-bytes|judge-steps)=(.*)\z/
+              key = $1
+              val = $2
+              return bad_arg("--#{key} must be a positive integer, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i > 0
+              case key
+              when "ae-steps"    then @ae_steps    = val.to_i
+              when "tsteps"      then @tsteps      = val.to_i
+              when "gen-bytes"   then @gen_bytes   = val.to_i
+              else                    @judge_steps = val.to_i
+              end
             when "--target-ce"
               i += 1
               val = @argv[i]
@@ -1800,8 +1890,8 @@ when /\A--dfa-feedback-lr=(.*)\z/
             return bad_arg("unexpected extra arguments: #{rest[1..].join(' ')}")
           end
           @recipe = rest.first
-          unless %w[from-scratch lora warm-start vit-tiny franken franken-moe mlp ctr gnn ssm lstm gtx diff ae].include?(@recipe)
-            return bad_arg("unknown recipe #{@recipe.inspect}; supported: 'from-scratch', 'lora', 'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp', 'ctr', 'gnn', 'ssm', 'lstm', 'gtx', 'diff', 'ae'")
+          unless %w[from-scratch lora warm-start vit-tiny franken franken-moe mlp ctr gnn ssm lstm gtx diff ae difflm].include?(@recipe)
+            return bad_arg("unknown recipe #{@recipe.inspect}; supported: 'from-scratch', 'lora', 'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp', 'ctr', 'gnn', 'ssm', 'lstm', 'gtx', 'diff', 'ae', 'difflm'")
           end
           # ---- toy#132: the flag x recipe MATRIX ----
           # Four llama-first flags in a row tripped franken-moe at Tao
@@ -1850,7 +1940,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
             # --dt-init name parts an LSTM has no counterpart for), so
             # those rows stay ssm-only rather than widening.
             ["--seq",           %w[ssm lstm],                       !@seq.nil?, " (toy#155/#157)"],
-            ["--d-model",       %w[ssm gtx ae],                     !@d_model.nil?, " (toy#155/#160/#165)"],
+            ["--d-model",       %w[ssm gtx ae difflm],                     !@d_model.nil?, " (toy#155/#160/#165)"],
             ["--d-inner/--conv-k", %w[ssm],
              (!@d_inner.nil? || !@conv_k.nil?), " (toy#155)"],
             ["--selection",     %w[ssm],                            !@selection.nil?, " (toy#155)"],
@@ -1858,11 +1948,14 @@ when /\A--dfa-feedback-lr=(.*)\z/
             # the block output with BP intact inside it, `step` cuts the
             # gradient through the attention pattern itself.
             ["--dfa-cut",       %w[ssm lstm gtx],                   !@dfa_cut.nil?, " (toy#155/#157/#160)"],
-            ["--heads/--d-ff", %w[gtx ae],
+            ["--heads/--d-ff", %w[gtx ae difflm],
              (!@heads.nil? || !@d_ff.nil?), " (toy#160/#165)"],
             ["--types/--entities", %w[gtx],
              (!@types.nil? || !@entities.nil?), " (toy#160)"],
-            ["--text/--noise-eval/--noise-seed/--val-frac-pct/--target-ce/--eval-every/--probe-batches", %w[ae],
+            ["--arm/--ae-steps/--tsteps/--gen-bytes/--judge-steps", %w[difflm],
+             (!@arm.nil? || !@ae_steps.nil? || !@tsteps.nil? || !@gen_bytes.nil? || !@judge_steps.nil?),
+             " (toy#166)"],
+            ["--text/--noise-eval/--noise-seed/--val-frac-pct/--target-ce/--eval-every/--probe-batches", %w[ae difflm],
              (!@text.nil? || !@noise_eval.nil? || !@noise_seed.nil? || !@val_frac_pct.nil? ||
               !@target_ce.nil? || !@eval_every.nil? || !@probe_batches.nil?),
              " (toy#165; --text names a byte pack from prep/fetch_text.rb, NOT a TOYC corpus)"],
@@ -1880,7 +1973,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
             # toy#156 (diff). --latent is the OUTPUT DIM under test and
             # gets a real name rather than riding --classes: this lane
             # regresses epsilon, it does not classify.
-            ["--latent",        %w[diff ae],                        !@latent.nil?, " (toy#156/#165 — the SAME quantity on both lanes)"],
+            ["--latent",        %w[diff ae difflm],                        !@latent.nil?, " (toy#156/#165 — the SAME quantity on both lanes)"],
             ["--time-feat",     %w[diff],                           !@time_feat.nil?, " (toy#156)"],
             ["--modes/--spread/--mode-scale", %w[diff],
              (!@modes.nil? || !@spread.nil? || !@mode_scale.nil?), " (toy#156)"],
@@ -1894,14 +1987,14 @@ when /\A--dfa-feedback-lr=(.*)\z/
             # (--policy-tensors), never an overload of this one.
             ["--policy-scope",  %w[franken],                        !@policy_scope.nil?, " (toy#151; NOT accepted on 'mlp' — tao#18)"],
             ["--align-every",   %w[franken franken-moe mlp gnn diff], !@align_every.nil?, ""],
-            ["--lr/--warmup",   %w[franken franken-moe mlp ctr gnn ssm lstm gtx diff ae], (!@lr.nil? || !@warmup.nil?), " (toy#126/#132)"],
+            ["--lr/--warmup",   %w[franken franken-moe mlp ctr gnn ssm lstm gtx diff ae difflm], (!@lr.nil? || !@warmup.nil?), " (toy#126/#132)"],
             ["--classes",       %w[mlp gnn ssm lstm],               !@classes.nil?, " (toy#152/#153/#155/#157)"],
             ["--features",      %w[mlp gnn lstm gtx],               !@features.nil?, " (toy#152/#153/#157/#160)"],
             ["--hidden",        %w[mlp ctr gnn lstm diff],          !@hidden.nil?, " (toy#152/#154/#153/#157/#156)"],
-            ["--layers",        %w[mlp ctr gnn ssm lstm gtx diff ae], !@mlp_layers.nil?, " (toy#152/#154/#153/#155/#157/#160/#156/#165)"],
+            ["--layers",        %w[mlp ctr gnn ssm lstm gtx diff ae difflm], !@mlp_layers.nil?, " (toy#152/#154/#153/#155/#157/#160/#156/#165)"],
             ["--task",          %w[mlp gnn ssm lstm gtx diff],      !@task.nil?, " (toy#152/#153/#155/#157/#160/#156)"],
             ["--teacher-dim",   %w[mlp gnn],                        !@teacher_dim.nil?, " (toy#152/#153)"],
-            ["--task-seed",     %w[mlp ctr gnn ssm lstm gtx diff ae], !@task_seed.nil?, " (toy#152/#154/#153/#155/#157/#160/#156/#165)"],
+            ["--task-seed",     %w[mlp ctr gnn ssm lstm gtx diff ae difflm], !@task_seed.nil?, " (toy#152/#154/#153/#155/#157/#160/#156/#165)"],
             # --val-batches stays mlp/ctr: the gnn lane is TRANSDUCTIVE,
             # its held-out set is a node mask over the one graph, so
             # "how many val batches" has nothing to size.
@@ -1912,7 +2005,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
             # come with it — it means an INTEGER pack width on the franken
             # lanes, and letting `ae` take a string there would make one flag
             # mean two different types depending on the recipe.
-            ["--context",       %w[franken franken-moe ae],        !@context.nil?, " (toy#129/#165)"],
+            ["--context",       %w[franken franken-moe ae difflm], !@context.nil?, " (toy#129/#165/#166)"],
             ["--vocab",         %w[franken franken-moe],           !@vocab.nil?, " (toy#129; on the ae lane the head is byte-wide by construction, so there is no --vocab)"],
             ["--batch",         %w[franken franken-moe mlp ctr ssm lstm gtx diff], !@batch.nil?, " (toy#133; on gtx it is the labelled PAIRS per step)"],
             ["--act",           %w[franken],                        !@act.nil?, " (toy#136/K1; MoE experts get their GLU in K4)"],
@@ -2093,6 +2186,21 @@ when /\A--dfa-feedback-lr=(.*)\z/
           # confident and wrong `go`. Refuse it here as well as in the
           # runner, and check the pack exists rather than letting a typo
           # surface as "could not read".
+          if @recipe == "difflm"
+            if @text.nil?
+              return bad_arg("recipe 'difflm' requires --text <pack-prefix> (prep/fetch_text.rb)")
+            end
+            missing = %w[.meta.i32 .tok.i32].reject { |sfx| File.file?(@text + sfx) }
+            unless missing.empty?
+              return bad_arg("--text #{@text.inspect} is not a byte pack: missing #{missing.join(', ')}")
+            end
+            if @device != "cpu"
+              return bad_arg("--device #{@device.inspect} is not supported for recipe 'difflm' (CPU-only by decision — tao#18)")
+            end
+            if @policy
+              return bad_arg("--policy is not valid on recipe 'difflm' — P1b is ALL BP by design; DFA arrives in P1c and attaches to the DENOISER (output dim = the latent), never to the 256-way decode head")
+            end
+          end
           if @recipe == "ae"
             if @text.nil?
               return bad_arg("recipe 'ae' requires --text <pack-prefix> — this lane measures a REAL text corpus and has no synthetic fallback (tao#22). Run: ruby prep/fetch_text.rb --all, then --text data/ae_names (or ae_shakespeare / ae_udhr)")
@@ -2151,6 +2259,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
           return "lstm"    if recipe == "lstm"
           return "gtx"     if recipe == "gtx"
           return "ae"      if recipe == "ae"
+          return "difflm"  if recipe == "difflm"
           return "diff"    if recipe == "diff"
           return "moe"     if recipe == "franken-moe"
           "llama"

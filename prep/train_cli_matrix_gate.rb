@@ -189,6 +189,15 @@ REJECT = [
   [%w[mlp --target-ce 0.05],               "--target-ce"],
   [%w[diff --eval-every 10],               "--eval-every"],
   [%w[gtx --probe-batches 4],              "--probe-batches"],
+  # toy#166 (difflm). The P1b arms are this lane's alone. --policy is
+  # refused here by a LATER rule, not the matrix: P1b is all-BP by
+  # design and DFA arrives in P1c on the denoiser, so "no --policy" is a
+  # statement about the experiment rather than about flag ownership.
+  [%w[ae --arm diff-selfcond],             "--arm"],
+  [%w[diff --ae-steps 100],                "--ae-steps"],
+  [%w[mlp --tsteps 100],                   "--tsteps"],
+  [%w[gtx --gen-bytes 1024],               "--gen-bytes"],
+  [%w[lstm --judge-steps 100],             "--judge-steps"],
   # toy#162: --clip-grad is the lstm lane's FAIR BPTT control, not a
   # general tuning knob — its effect is unmeasured on every other lane,
   # and a knob whose effect nobody measured is worse offered than absent.

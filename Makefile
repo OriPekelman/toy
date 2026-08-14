@@ -875,6 +875,33 @@ libexec/toy-train-ae: lib/toy/run/train_ae.rb lib/toy/dev/toy_describe_flow.rb \
 toy-train-ae: libexec/toy-train-ae
 .PHONY: toy-train-ae
 
+# toy#166 (capstone P1b) — the LATENT-DIFFUSION BYTE-LM. Three models in
+# ONE run (autoencoder, denoiser/AR arm, judge) but built SEQUENTIALLY:
+# tnn_session_new resets the backend's SHARED scheduler, so two live
+# sessions silently corrupt each other (prep/smokes/smoke_two_sessions.rb).
+# SEPARATE binary (landmine #16), CPU-only, all BP.
+libexec/toy-train-difflm: lib/toy/run/train_difflm.rb lib/toy/dev/toy_describe_flow.rb \
+		lib/toy/io/json_builder.rb lib/toy/io/json.rb lib/toy/io/toy_events.rb \
+		vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
+		lib/toy/io/toy_ae_task.rb lib/toy/llm/engine/ae_engine.rb \
+		lib/toy/llm/engine/ar_engine.rb lib/toy/llm/engine/difflm_engine.rb \
+		lib/toy/llm/recipes/ae_auto.rb lib/toy/llm/adamw.rb \
+		lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) $< -o $@
+toy-train-difflm: libexec/toy-train-difflm
+.PHONY: toy-train-difflm
+
+.PHONY: gate-difflm
+gate-difflm: libexec/toy-train-difflm
+	ruby prep/difflm_gate.rb
+
+# toy#166: the two-session probe. Its answer decides the difflm runner's
+# whole shape, so it is a gate rather than a one-off.
+prep/smokes/smoke_two_sessions: prep/smokes/smoke_two_sessions.rb \
+		lib/toy/llm/engine/ae_engine.rb lib/toy/llm/adamw.rb \
+		lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
+	$(SPINEL) $< -o $@
+
 # toy#165 gate: determinism, the mandatory CONTROL-CAN-LOSE precondition
 # (a SHUFFLED latent must fall to the unigram floor; the zeroed one is
 # reported but is an identity, not an assertion), the corpus/alphabet
