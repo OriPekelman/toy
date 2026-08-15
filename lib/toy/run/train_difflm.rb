@@ -120,12 +120,27 @@ LOSS_W_S    = ENV["DL_LOSS_WEIGHT"] || ""
 KL_BETA     = (ENV["DL_STAGE1_KL"] || "0.0").to_f
 KL_SIGMA    = (ENV["DL_STAGE1_SIGMA"] || "0.1").to_f
 KL_LEARNED  = (ENV["DL_STAGE1_KL_LEARNED"] || "") == "1"
+# toy#168 followup — the DENOISER's own shape. These default to the
+# shared encoder values, so unset is byte-null. They exist separately
+# because scaling DL_D_MODEL/DL_BLOCKS would resize the stage-1 ENCODER
+# too, which changes the latents — and then a capacity arm would be
+# compared against a different stage 1 and measure two things at once.
+# Split, the latent pool is bit-identical across the sweep and the
+# denoiser is the only thing that moves.
+DN_D_MODEL_S = ENV["DL_DN_D_MODEL"] || ""
+DN_BLOCKS_S  = ENV["DL_DN_BLOCKS"]  || ""
+DN_D_FF_S    = ENV["DL_DN_D_FF"]    || ""
+DN_HEADS_S   = ENV["DL_DN_HEADS"]   || ""
 MINSNR_G    = (ENV["DL_MINSNR_GAMMA"] || "5.0").to_f
 
 LR      = LR_S.length > 0 ? LR_S.to_f : 0.001
 WARMUP  = WARMUP_S.length > 0 ? WARMUP_S.to_i : 0
 BETA_LO = BETA_LO_S.length > 0 ? BETA_LO_S.to_f : 0.001
 BETA_HI = BETA_HI_S.length > 0 ? BETA_HI_S.to_f : 0.20
+DN_D_MODEL = DN_D_MODEL_S.length > 0 ? DN_D_MODEL_S.to_i : D_MODEL
+DN_BLOCKS  = DN_BLOCKS_S.length  > 0 ? DN_BLOCKS_S.to_i  : N_BLOCKS
+DN_D_FF    = DN_D_FF_S.length    > 0 ? DN_D_FF_S.to_i    : D_FF
+DN_HEADS   = DN_HEADS_S.length   > 0 ? DN_HEADS_S.to_i   : N_HEADS
 VOCAB   = 256
 VAL_FRAC_PCT = 10
 
@@ -245,6 +260,20 @@ if CONTEXT < 8
 end
 if D_MODEL % N_HEADS != 0 || AR_D_MODEL % N_HEADS != 0
   puts "toy-train-difflm: d_model must be a multiple of DL_HEADS"
+  exit 1
+end
+if DN_D_MODEL < 1 || DN_BLOCKS < 1 || DN_D_FF < 1 || DN_HEADS < 1
+  puts "toy-train-difflm: the DL_DN_* denoiser shape must be all >= 1"
+  exit 1
+end
+if DN_D_MODEL % DN_HEADS != 0
+  puts "toy-train-difflm: DL_DN_D_MODEL (" + DN_D_MODEL.to_s + ") must be a" +
+       " multiple of DL_DN_HEADS (" + DN_HEADS.to_s + ")"
+  exit 1
+end
+if D_LATENT >= DN_D_MODEL
+  puts "toy-train-difflm: DL_LATENT must be < the denoiser width, got " +
+       D_LATENT.to_s + " with DL_DN_D_MODEL " + DN_D_MODEL.to_s
   exit 1
 end
 if TSTEPS < 2
@@ -1113,7 +1142,7 @@ elsif ARM_C == ARM_FLOOR
 else
   # ---- stage 2: the denoiser ----
   dn = Toy::LLM::Engine::DifflmEngine.new
-  dn.realize_for_random_init(D_MODEL, N_HEADS, D_FF, N_BLOCKS, CONTEXT,
+  dn.realize_for_random_init(DN_D_MODEL, DN_HEADS, DN_D_FF, DN_BLOCKS, CONTEXT,
                              D_LATENT, TSTEPS, SEED, 1.0)
   rd = dn.build_training_step
   dn_loss = rd[0]; dn_eps = rd[1]; dn_hp = rd[2]
@@ -1121,7 +1150,7 @@ else
   SELFCOND = ARM_C == ARM_SELF
 
   xin  = Array.new(CONTEXT * 2 * D_LATENT, 0.0)
-  temb = Array.new(CONTEXT * D_MODEL, 0.0)
+  temb = Array.new(CONTEXT * DN_D_MODEL, 0.0)
   m_eps = Mat.new(CONTEXT, D_LATENT)
   pred = Array.new(CONTEXT * D_LATENT, 0.0)
   z0   = Array.new(CONTEXT * D_LATENT, 0.0)
@@ -1202,8 +1231,8 @@ else
       sc = sc + 1
     end
     if SELFCOND && lcg_u01(dn_st) < 0.5
-      fill_temb!(temb, t, TSTEPS, D_MODEL, CONTEXT)
-      dn_forward!(dn, xin, temb, m_eps, noop_hp, CONTEXT, D_LATENT, D_MODEL,
+      fill_temb!(temb, t, TSTEPS, DN_D_MODEL, CONTEXT)
+      dn_forward!(dn, xin, temb, m_eps, noop_hp, CONTEXT, D_LATENT, DN_D_MODEL,
                   pred, s3 == 0)
       p2 = 0
       while p2 < CONTEXT * D_LATENT
@@ -1213,9 +1242,9 @@ else
         p2 = p2 + 1
       end
     end
-    fill_temb!(temb, t, TSTEPS, D_MODEL, CONTEXT)
+    fill_temb!(temb, t, TSTEPS, DN_D_MODEL, CONTEXT)
     l3 = dn_forward!(dn, xin, temb, m_eps, adamw.hp(s3), CONTEXT, D_LATENT,
-                     D_MODEL, pred, s3 == 0)
+                     DN_D_MODEL, pred, s3 == 0)
     final_loss = l3
     puts "step " + (s3 + 1).to_s + ": loss=" + l3.to_s
     s3 = s3 + 1
@@ -1245,8 +1274,8 @@ else
         m_eps.flat[q3] = 0.0
         q3 = q3 + 1
       end
-      fill_temb!(temb, tt, TSTEPS, D_MODEL, CONTEXT)
-      dn_forward!(dn, xin, temb, m_eps, noop_hp, CONTEXT, D_LATENT, D_MODEL,
+      fill_temb!(temb, tt, TSTEPS, DN_D_MODEL, CONTEXT)
+      dn_forward!(dn, xin, temb, m_eps, noop_hp, CONTEXT, D_LATENT, DN_D_MODEL,
                   pred, false)
       q4 = 0
       while q4 < CONTEXT * D_LATENT
@@ -1347,8 +1376,8 @@ else
         acc_b = acc_b + (xtv - ev) * (xtv - ev)
         q8 = q8 + 1
       end
-      fill_temb!(temb, tp, TSTEPS, D_MODEL, CONTEXT)
-      dn_forward!(dn, xin, temb, m_eps, noop_hp, CONTEXT, D_LATENT, D_MODEL,
+      fill_temb!(temb, tp, TSTEPS, DN_D_MODEL, CONTEXT)
+      dn_forward!(dn, xin, temb, m_eps, noop_hp, CONTEXT, D_LATENT, DN_D_MODEL,
                   pred, false)
       q9 = 0
       while q9 < CONTEXT * D_LATENT
@@ -1453,8 +1482,8 @@ else
           m_eps.flat[q5] = 0.0
           q5 = q5 + 1
         end
-        fill_temb!(temb, t2, TSTEPS, D_MODEL, CONTEXT)
-        dn_forward!(dn, xin, temb, m_eps, noop_hp, CONTEXT, D_LATENT, D_MODEL,
+        fill_temb!(temb, t2, TSTEPS, DN_D_MODEL, CONTEXT)
+        dn_forward!(dn, xin, temb, m_eps, noop_hp, CONTEXT, D_LATENT, DN_D_MODEL,
                     pred, false)
         q6 = 0
         while q6 < CONTEXT * D_LATENT
@@ -1493,7 +1522,8 @@ if ARM_C != ARM_AR
        (LOSS_W == LW_MINSNR ? (" gamma=" + MINSNR_G.to_s) : "")
   puts "arm: " + ARM + " denoiser_params=" + arm_params.to_s +
        " ae_params=" + ae_params.to_s +
-       " decode_head_params=" + (VOCAB * D_LATENT + VOCAB).to_s
+       " decode_head_params=" + (VOCAB * D_LATENT + VOCAB).to_s +
+       " dn_shape=" + DN_BLOCKS.to_s + "x" + DN_D_MODEL.to_s + "/" + DN_D_FF.to_s
 else
   puts "arm: " + ARM + " ar_params=" + arm_params.to_s
 end

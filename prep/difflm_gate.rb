@@ -17,6 +17,8 @@
 #      eps-uniform byte-null, v-param scored on the eps axis.
 #  7d. THE GAUSSIANITY PROBE — reported against a same-n N(0,I) reference
 #      that itself sits at the noise floor.
+#  7g. THE DENOISER SHAPE AXIS — byte-null at the shared values, and a
+#      denoiser resize leaves STAGE 1 bit-identical.
 #  7f. THE JOINT PROBE reports its shuffled floor (kept as a NEGATIVE
 #      result: linear correlation is the wrong lens for a categorical code).
 #  7e. THE STAGE-1 KL ARMS — beta=0 byte-null, learned sigma distinct from
@@ -369,6 +371,30 @@ puts failures.length == n0 ?
   "  ok: the joint probe reports its position-shuffled FLOOR (the part that makes its own lack of dynamic range legible), and only on arms that have latents" :
   "  FAIL: joint probe"
 
+# ---- 7g. the DENOISER SHAPE axis ----
+#
+# DL_DN_* sizes the DENOISER only. It is separate from DL_D_MODEL /
+# DL_BLOCKS on purpose: those size the stage-1 ENCODER too, so scaling
+# them would change the latents and a capacity arm would be comparing
+# against a different stage 1. Split, the latent pool is bit-identical
+# across a capacity sweep and the denoiser is the only thing that moves —
+# which is the property this leg asserts.
+n0 = failures.length
+dn_def = run_dl({ "DL_ARM" => "diff-plain", "DL_DN_D_MODEL" => "64",
+                  "DL_DN_BLOCKS" => "1", "DL_DN_D_FF" => "128", "DL_DN_HEADS" => "4" })
+failures << "denoiser shape: explicit DN_* at the shared values is NOT byte-null — unset must mean exactly the old behaviour" unless curve(dn_def) == curve(plain)
+dn_big = run_dl({ "DL_ARM" => "diff-plain", "DL_DN_D_MODEL" => "128",
+                  "DL_DN_BLOCKS" => "2", "DL_DN_D_FF" => "256" })
+failures << "denoiser shape: a bigger denoiser did not change the curve" if curve(dn_big) == curve(plain)
+# The point of the split: stage 1 must be UNTOUCHED by a denoiser resize.
+failures << "denoiser shape: resizing the denoiser moved STAGE 1 (#{line(dn_big, 'latent: ').strip[0, 60]}) — the latent pool must be bit-identical across a capacity sweep or the arm measures two things" unless line(dn_big, "latent: ") == line(plain, "latent: ")
+failures << "denoiser shape: stage1 line differs under a denoiser resize" unless line(dn_big, "stage1: ") == line(plain, "stage1: ")
+al = line(dn_big, "arm: ")
+failures << "denoiser shape: the arm line does not report dn_shape (#{al.strip})" unless al.include?("dn_shape=2x128/256")
+puts failures.length == n0 ?
+  "  ok: DL_DN_* is byte-null at the shared values, moves the denoiser when raised, and leaves STAGE 1 bit-identical (the split that makes a capacity arm mean anything)" :
+  "  FAIL: denoiser shape"
+
 # ---- 8. fail-loud ----
 n0 = failures.length
 [
@@ -383,11 +409,13 @@ n0 = failures.length
   [{ "DL_MINSNR_GAMMA" => "0" },              "min-snr gamma 0"],
   [{ "DL_STAGE1_KL" => "-1" },                "negative KL beta"],
   [{ "DL_STAGE1_KL_LEARNED" => "1" },         "learned sigma with no KL term"],
+  [{ "DL_DN_D_MODEL" => "65", "DL_DN_HEADS" => "4" }, "denoiser width not a multiple of heads"],
+  [{ "DL_DN_D_MODEL" => "4" },                "denoiser width <= latent"],
 ].each do |env, label|
   _o, st = Open3.capture2e({ "STEPS" => "2" }.merge(CELL).merge(env), RUNNER, chdir: ROOT)
   failures << "fail-loud: #{label} exited 0" if st.success?
 end
-puts failures.length == n0 ? "  ok: 11 degenerate configs fail loud" : "  FAIL: fail-loud"
+puts failures.length == n0 ? "  ok: 13 degenerate configs fail loud" : "  FAIL: fail-loud"
 
 # ---- 9. CLI ----
 n0 = failures.length
