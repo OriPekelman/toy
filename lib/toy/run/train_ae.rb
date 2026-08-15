@@ -318,8 +318,10 @@ if TRAIN_HI < 0 || VAL_HI < SPLIT_AT
 end
 
 recipe = Toy::LLM::Recipes::AeAuto.new
+# kl_beta 0.0 — the P1a lane is unregularised by construction, and 0.0
+# builds no extra graph nodes, so every toy#165 number reproduces exactly.
 recipe.realize!(D_MODEL, N_HEADS, D_FF, N_BLOCKS, CONTEXT, D_LATENT,
-                SEED, 1.0)
+                SEED, 1.0, 0.0, 0)
 ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe.ae_cache.sess)
 
 # ---- the probe buffers. ----

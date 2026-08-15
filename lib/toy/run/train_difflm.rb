@@ -116,6 +116,11 @@ WARMUP_S    = ENV["DL_WARMUP"] || ""
 TASK_SEED   = (ENV["DL_TASK_SEED"] || "7").to_i
 NOISE_SEED  = (ENV["DL_NOISE_SEED"] || "4242").to_i
 VAL_WINDOWS = (ENV["DL_VAL_WINDOWS"] || "16").to_i
+LOSS_W_S    = ENV["DL_LOSS_WEIGHT"] || ""
+KL_BETA     = (ENV["DL_STAGE1_KL"] || "0.0").to_f
+KL_SIGMA    = (ENV["DL_STAGE1_SIGMA"] || "0.1").to_f
+KL_LEARNED  = (ENV["DL_STAGE1_KL_LEARNED"] || "") == "1"
+MINSNR_G    = (ENV["DL_MINSNR_GAMMA"] || "5.0").to_f
 
 LR      = LR_S.length > 0 ? LR_S.to_f : 0.001
 WARMUP  = WARMUP_S.length > 0 ? WARMUP_S.to_i : 0
@@ -145,6 +150,76 @@ def arm_code(s)
   -1
 end
 ARM_C = arm_code(ARM)
+
+# toy#168 (P1b3) — the stage-2 objective axis.
+#
+#   LW_EPS      eps target, t ~ Uniform          (the failing baseline)
+#   LW_MINSNR   eps target, t ~ min-SNR-gamma    (Hang et al. 2303.09556)
+#   LW_VPARAM   v   target, t ~ Uniform          (Salimans & Ho 2202.00512)
+#   LW_NONUNIF  eps target, t ~ linear ramp      (the crude ablation)
+#
+# ── WHY THE WEIGHTS ARE A SAMPLING DISTRIBUTION AND NOT A LOSS MULTIPLIER ──
+#
+# min-SNR is normally written as a per-t multiplier on the loss. That
+# does NOT work here and would have produced a silent null result. This
+# lane draws ONE t per step, and Adam is scale-invariant per parameter —
+# multiplying a step's loss by a constant leaves the update essentially
+# unchanged. It is toy#152's "B-scale is inert under Adam" in a new
+# place.
+#
+# Applying the same weights as an IMPORTANCE DISTRIBUTION over t is
+# equivalent in expectation and is NOT inert: it changes which timesteps
+# Adam's moments ever accumulate, which is the whole mechanism the fix
+# depends on.
+LW_EPS     = 0
+LW_MINSNR  = 1
+LW_VPARAM  = 2
+LW_NONUNIF = 3
+
+def lw_code(s)
+  if s == "min-snr-gamma"
+    return 1
+  end
+  if s == "v-param"
+    return 2
+  end
+  if s == "nonuniform-t"
+    return 3
+  end
+  if s == "eps-uniform" || s.length == 0
+    return 0
+  end
+  -1
+end
+LOSS_W = lw_code(LOSS_W_S)
+IS_V   = LOSS_W == LW_VPARAM
+
+if LOSS_W < 0
+  puts "toy-train-difflm: DL_LOSS_WEIGHT " + LOSS_W_S +
+       " unsupported (eps-uniform|min-snr-gamma|v-param|nonuniform-t)"
+  exit 1
+end
+if KL_BETA < 0.0
+  puts "toy-train-difflm: DL_STAGE1_KL must be >= 0, got " + KL_BETA.to_s
+  exit 1
+end
+if KL_LEARNED && KL_BETA <= 0.0
+  puts "toy-train-difflm: DL_STAGE1_KL_LEARNED=1 needs DL_STAGE1_KL > 0 —" +
+       " a learned posterior scale with no KL term is an unconstrained" +
+       " extra head, not a VAE"
+  exit 1
+end
+if KL_BETA > 0.0 && !KL_LEARNED && KL_SIGMA <= 0.0
+  puts "toy-train-difflm: DL_STAGE1_SIGMA must be > 0 when DL_STAGE1_KL is" +
+       " set — sigma 0 removes the reparameterisation noise and leaves a" +
+       " bare L2 penalty, which is a DIFFERENT regulariser wearing the" +
+       " same flag"
+  exit 1
+end
+if MINSNR_G <= 0.0
+  puts "toy-train-difflm: DL_MINSNR_GAMMA must be > 0, got " + MINSNR_G.to_s
+  exit 1
+end
 
 if ARM_C < 0
   puts "toy-train-difflm: DL_ARM " + ARM +
@@ -212,6 +287,133 @@ def float_array_json(a)
   out + "]"
 end
 
+# ---- THE GAUSSIANITY PROBE (toy#168 followup) ----
+#
+# Standardisation makes the aggregate latent zero-mean and unit-variance
+# PER DIM. It does not make it GAUSSIAN, and it does not make the dims
+# UNCORRELATED. A diffusion sampler starts at N(0, I) and its reverse
+# process is trained to end at whatever the aggregate actually is — so if
+# that aggregate is badly non-Gaussian or correlated, the prior and the
+# data disagree at the one point the chain is anchored, and the samples
+# come out marginally plausible and jointly incoherent. Which is what
+# P1b/P1b3 measure.
+#
+# I chose standardisation over the KL term P1b's spec offered. This is
+# the measurement that says whether that call holds.
+#
+# Returns 6 numbers: [skew_max, kurt_max, corr_max, corr_mean, r2_mean, r2_var].
+# Central moments computed in-sample, so the SYNTHETIC reference below is
+# treated identically and the two are comparable digit for digit — a raw
+# kurtosis of 0.05 means nothing without knowing what N(0, I) gives at
+# the same n.
+def gauss_stats(pool, n, d, synth, st, out)
+  m1 = Array.new(d, 0.0)
+  m2 = Array.new(d, 0.0)
+  m3 = Array.new(d, 0.0)
+  m4 = Array.new(d, 0.0)
+  npair = d * (d - 1) / 2
+  sij = Array.new(npair > 0 ? npair : 1, 0.0)
+  r2s = 0.0
+  r4s = 0.0
+  v = Array.new(d, 0.0)
+  i = 0
+  while i < n
+    j = 0
+    while j < d
+      if synth == 1
+        v[j] = lcg_gauss(st)
+      else
+        v[j] = pool[i * d + j]
+      end
+      j = j + 1
+    end
+    r2 = 0.0
+    j2 = 0
+    while j2 < d
+      x = v[j2]
+      m1[j2] = m1[j2] + x
+      m2[j2] = m2[j2] + x * x
+      m3[j2] = m3[j2] + x * x * x
+      m4[j2] = m4[j2] + x * x * x * x
+      r2 = r2 + x * x
+      j2 = j2 + 1
+    end
+    r2s = r2s + r2
+    r4s = r4s + r2 * r2
+    pi2 = 0
+    ja = 0
+    while ja < d
+      jb = ja + 1
+      while jb < d
+        sij[pi2] = sij[pi2] + v[ja] * v[jb]
+        pi2 = pi2 + 1
+        jb = jb + 1
+      end
+      ja = ja + 1
+    end
+    i = i + 1
+  end
+  nf = n.to_f
+  mu = Array.new(d, 0.0)
+  sd = Array.new(d, 0.0)
+  sk_max = 0.0
+  ku_max = 0.0
+  k = 0
+  while k < d
+    mu[k] = m1[k] / nf
+    var = m2[k] / nf - mu[k] * mu[k]
+    if var < 1.0e-12
+      var = 1.0e-12
+    end
+    sd[k] = Math.sqrt(var)
+    c3 = m3[k] / nf - 3.0 * mu[k] * (m2[k] / nf) + 2.0 * mu[k] * mu[k] * mu[k]
+    c4 = m4[k] / nf - 4.0 * mu[k] * (m3[k] / nf) +
+         6.0 * mu[k] * mu[k] * (m2[k] / nf) - 3.0 * mu[k] * mu[k] * mu[k] * mu[k]
+    sk = c3 / (sd[k] * sd[k] * sd[k])
+    ku = c4 / (var * var) - 3.0
+    if sk < 0.0
+      sk = -sk
+    end
+    if ku < 0.0
+      ku = -ku
+    end
+    if sk > sk_max
+      sk_max = sk
+    end
+    if ku > ku_max
+      ku_max = ku
+    end
+    k = k + 1
+  end
+  cmax = 0.0
+  csum = 0.0
+  pc = 0
+  ka = 0
+  while ka < d
+    kb = ka + 1
+    while kb < d
+      cv = (sij[pc] / nf - mu[ka] * mu[kb]) / (sd[ka] * sd[kb])
+      if cv < 0.0
+        cv = -cv
+      end
+      csum = csum + cv
+      if cv > cmax
+        cmax = cv
+      end
+      pc = pc + 1
+      kb = kb + 1
+    end
+    ka = ka + 1
+  end
+  out[0] = sk_max
+  out[1] = ku_max
+  out[2] = cmax
+  out[3] = npair > 0 ? csum / npair.to_f : 0.0
+  out[4] = r2s / nf
+  out[5] = r4s / nf - (r2s / nf) * (r2s / nf)
+  nil
+end
+
 def lcg_state(seed)
   s = ((seed + 104729) * 2654435761) % 2147483647
   if s <= 0
@@ -230,6 +432,101 @@ def lcg_u01(st)
   s = (s * 1103515245 + 12345) & 0x7FFFFFFF
   st[0] = s
   (s.to_f + 1.0) / 2147483648.0
+end
+
+# THE PARAMETERISATION IS INTERPRETED IN EXACTLY TWO PLACES. Everything
+# downstream — the sampler, the residual instrument and the eps-SKILL
+# probe — goes through these, so a v-param run is measured on the SAME
+# eps axis as every other arm and the curves compare straight across.
+# ---- THE JOINT-STRUCTURE PROBE (toy#168 followup) ----
+#
+# Every other instrument on this lane is MARGINAL or PER-POSITION:
+# eps-skill is per-element MSE, the residual is per-element RMSE, the
+# Gaussianity read pools over positions. None of them can see whether the
+# denoiser reproduces the structure ACROSS positions — and generation
+# quality is almost entirely that. A denoiser can be per-position
+# excellent, land in a prior-matched aggregate, and still emit latent
+# SEQUENCES whose position-to-position structure is wrong; decoded
+# per-position that is exactly "every byte plausible, the sequence not
+# text", which is what every sample has looked like since P1b.
+#
+# So: mean over dims of |corr(z_t, z_{t+lag})|, computed WITHIN windows
+# (never across a window boundary, which would be a splice artifact),
+# for the REAL pool and for GENERATED latents. `lag < 0` pairs each
+# position with a random OTHER position in the same window — the
+# zero-structure floor, so a correlation of 0.08 is interpretable.
+def lag_corr(buf, nwin, ctx, d, lag, st)
+  sx = Array.new(d, 0.0)
+  sy = Array.new(d, 0.0)
+  sxx = Array.new(d, 0.0)
+  syy = Array.new(d, 0.0)
+  sxy = Array.new(d, 0.0)
+  n = 0
+  w = 0
+  while w < nwin
+    t = 0
+    while t < ctx
+      t2 = t + lag
+      if lag < 0
+        t2 = (lcg_u01(st) * ctx.to_f).to_i % ctx
+      end
+      if t2 >= 0 && t2 < ctx && t2 != t
+        j = 0
+        while j < d
+          x = buf[(w * ctx + t) * d + j]
+          y = buf[(w * ctx + t2) * d + j]
+          sx[j] = sx[j] + x
+          sy[j] = sy[j] + y
+          sxx[j] = sxx[j] + x * x
+          syy[j] = syy[j] + y * y
+          sxy[j] = sxy[j] + x * y
+          j = j + 1
+        end
+        n = n + 1
+      end
+      t = t + 1
+    end
+    w = w + 1
+  end
+  if n < 2
+    return -1.0
+  end
+  nf = n.to_f
+  acc = 0.0
+  k = 0
+  while k < d
+    mx = sx[k] / nf
+    my = sy[k] / nf
+    vx = sxx[k] / nf - mx * mx
+    vy = syy[k] / nf - my * my
+    if vx < 1.0e-12
+      vx = 1.0e-12
+    end
+    if vy < 1.0e-12
+      vy = 1.0e-12
+    end
+    c = (sxy[k] / nf - mx * my) / Math.sqrt(vx * vy)
+    if c < 0.0
+      c = -c
+    end
+    acc = acc + c
+    k = k + 1
+  end
+  acc / d.to_f
+end
+
+def to_eps(pv, xt, sa, sb, is_v)
+  if is_v
+    return sb * xt + sa * pv
+  end
+  pv
+end
+
+def to_x0(pv, xt, sa, sb, is_v)
+  if is_v
+    return sa * xt - sb * pv
+  end
+  (xt - sb * pv) / sa
 end
 
 def lcg_gauss(st)
@@ -360,7 +657,8 @@ final_loss = 0.0
 # ============================================================
 if ARM_C != ARM_AR
   ae = Toy::LLM::Recipes::AeAuto.new
-  ae.realize!(D_MODEL, N_HEADS, D_FF, N_BLOCKS, CONTEXT, D_LATENT, SEED, 1.0)
+  ae.realize!(D_MODEL, N_HEADS, D_FF, N_BLOCKS, CONTEXT, D_LATENT, SEED, 1.0,
+              KL_BETA, KL_LEARNED ? 1 : 0)
   ae_params = ae.ae_cache.param_count
   perm_id = Array.new(CONTEXT, 0)
   pi = 0
@@ -370,6 +668,8 @@ if ARM_C != ARM_AR
   end
   gain_one  = Array.new(CONTEXT * D_LATENT, 1.0)
   noise_zero = Array.new(CONTEXT * D_LATENT, 0.0)
+  kl_noise   = Array.new(CONTEXT * D_LATENT, 0.0)
+  kl_st      = lcg_state(TASK_SEED + 77)
   ae.upload_probe!(perm_id, gain_one, noise_zero)
 
   toks   = Array.new(CONTEXT, 0)
@@ -394,6 +694,20 @@ if ARM_C != ARM_AR
       m_lab.flat[b * VOCAB + toks[b]] = 1.0
       b = b + 1
     end
+    # THE REPARAMETERISATION. z = mu + sigma * eps, injected through the
+    # probe tensor that already sits between the latent and the head — so
+    # a fixed-sigma VAE costs no new graph. At beta 0 this stays zeros and
+    # the lane is byte-identical to the unregularised run.
+    if KL_BETA > 0.0
+      kn = 0
+      while kn < CONTEXT * D_LATENT
+        # UNIT gaussian when sigma is learned — the graph applies
+        # exp(logvar/2). Scaling here as well would apply sigma twice.
+        kl_noise[kn] = KL_LEARNED ? lcg_gauss(kl_st) : (KL_SIGMA * lcg_gauss(kl_st))
+        kn = kn + 1
+      end
+      ae.upload_probe!(perm_id, gain_one, kl_noise)
+    end
     l = ae.step!(toks, m_lab, adamw.hp(s1), s1 == 0)
     if (s1 + 1) % 200 == 0 || s1 == AE_STEPS - 1
       puts "stage1 step " + (s1 + 1).to_s + ": loss=" + l.to_s
@@ -405,6 +719,12 @@ if ARM_C != ARM_AR
   # and encoded once. Precomputing is not an optimisation here — the
   # encoder's session cannot coexist with the denoiser's, so the latents
   # have to leave as plain arrays before session B exists.
+  # Encoding reads the posterior MEAN, not a sample: the denoiser is
+  # trained on mu, and a sampled pool would fold the reparameterisation
+  # noise into the "data" the diffusion prior is asked to match.
+  if KL_BETA > 0.0
+    ae.upload_probe!(perm_id, gain_one, noise_zero)
+  end
   pool = Array.new(POOL_N * CONTEXT * D_LATENT, 0.0)
   lat_buf = Array.new(CONTEXT * D_LATENT, 0.0)
   pj = 0
@@ -545,18 +865,45 @@ if ARM_C != ARM_AR
     exit 1
   end
 
+  # THE GAUSSIANITY READ, on the standardised aggregate the sampler must
+  # actually land in. The synthetic reference is the SAME statistic on
+  # the same number of true N(0, I) draws, so every number below has its
+  # own sampling-noise floor printed next to it.
+  gs = Array.new(6, 0.0)
+  gr = Array.new(6, 0.0)
+  npos_g = POOL_N * CONTEXT
+  gauss_stats(pool, npos_g, D_LATENT, 0, lcg_state(1), gs)
+  gstate = lcg_state(NOISE_SEED + 909)
+  gauss_stats(pool, npos_g, D_LATENT, 1, gstate, gr)
+  puts "gauss: n=" + npos_g.to_s + " d=" + D_LATENT.to_s +
+       " skew_max=" + gs[0].to_s + " kurt_max=" + gs[1].to_s +
+       " corr_max=" + gs[2].to_s + " corr_mean=" + gs[3].to_s
+  puts "gauss_ref: skew_max=" + gr[0].to_s + " kurt_max=" + gr[1].to_s +
+       " corr_max=" + gr[2].to_s + " corr_mean=" + gr[3].to_s +
+       " (true N(0,I), same n — the sampling-noise floor)"
+  # ||z||^2 is chi-square_d under N(0, I): mean d, variance 2d. A heavy
+  # or light radial tail is what a sampler starting at N(0, I) meets
+  # first, before any per-dim shape matters.
+  puts "gauss_radial: r2_mean=" + gs[4].to_s + " r2_var=" + gs[5].to_s +
+       " expect_mean=" + D_LATENT.to_s + " expect_var=" + (2 * D_LATENT).to_s +
+       " ref_mean=" + gr[4].to_s + " ref_var=" + gr[5].to_s
+
   # THE DECODE HEAD LEAVES THE SESSION. One [VOCAB, d] matmul plus a bias
   # per position — no graph needed, and it has to be Ruby-side anyway
   # because session A stops being valid the moment session B is created.
-  nw = ae.ae_cache.ft_weights.length
+  # By NAMED index, not nw-2 / nw-1: the learned-sigma arm appends a
+  # weight, and offset arithmetic would have silently downloaded the
+  # wrong matrix while still being the right shape.
   head_w = Array.new(VOCAB * D_LATENT, 0.0)
   head_b = Array.new(VOCAB, 0.0)
   TinyNN.tnn_download_to_f64_array(ae.ae_cache.sess,
-    ae.ae_cache.ft_weights[nw - 2], head_w, VOCAB * D_LATENT)
+    ae.ae_cache.ft_weights[ae.ae_cache.ix_head], head_w, VOCAB * D_LATENT)
   TinyNN.tnn_download_to_f64_array(ae.ae_cache.sess,
-    ae.ae_cache.ft_weights[nw - 1], head_b, VOCAB)
+    ae.ae_cache.ft_weights[ae.ae_cache.ix_bias], head_b, VOCAB)
 
   puts "stage1: ae_steps=" + AE_STEPS.to_s +
+       " kl_beta=" + KL_BETA.to_s +
+       " kl_sigma=" + (KL_BETA > 0.0 ? (KL_LEARNED ? "learned" : KL_SIGMA.to_s) : "0.0") +
        " pool_windows=" + POOL_N.to_s +
        " params=" + ae_params.to_s
   lstr = ""
@@ -589,6 +936,48 @@ while bi2 < TSTEPS
   end
   bi2 = bi2 + 1
 end
+# THE t-SAMPLING DISTRIBUTION (toy#168). Uniform for eps-uniform and
+# v-param; min-SNR-gamma and nonuniform-t bias toward high t, which is
+# where toy#167 measured the denoiser to be worse than trivial.
+tw = Array.new(TSTEPS, 1.0)
+tcdf = Array.new(TSTEPS, 0.0)
+twi = 0
+while twi < TSTEPS
+  if LOSS_W == LW_MINSNR
+    snr = abar[twi] / (1.0 - abar[twi])
+    g = MINSNR_G
+    tw[twi] = (snr < g ? snr : g) / snr
+  elsif LOSS_W == LW_NONUNIF
+    tw[twi] = (twi + 1).to_f
+  else
+    tw[twi] = 1.0
+  end
+  twi = twi + 1
+end
+tsum = 0.0
+ts1 = 0
+while ts1 < TSTEPS
+  tsum = tsum + tw[ts1]
+  tcdf[ts1] = tsum
+  ts1 = ts1 + 1
+end
+ts2 = 0
+while ts2 < TSTEPS
+  tcdf[ts2] = tcdf[ts2] / tsum
+  ts2 = ts2 + 1
+end
+
+def draw_t(tcdf, n, u)
+  i = 0
+  while i < n
+    if u <= tcdf[i]
+      return i
+    end
+    i = i + 1
+  end
+  n - 1
+end
+
 # toy#156's guard, carried verbatim in intent: if the forward process
 # never reaches pure noise, the ancestral sampler starts OUT OF
 # DISTRIBUTION and the generative metric scores that mismatch instead of
@@ -787,14 +1176,21 @@ else
       adamw.lr = LR
     end
     w = (lcg_u01(dn_st) * POOL_N.to_f).to_i % POOL_N
-    t = (lcg_u01(dn_st) * TSTEPS.to_f).to_i % TSTEPS
+    t = draw_t(tcdf, TSTEPS, lcg_u01(dn_st))
     sa = Math.sqrt(abar[t])
     sb = Math.sqrt(1.0 - abar[t])
     zi2 = 0
     while zi2 < CONTEXT * D_LATENT
       z0[zi2] = pool[w * CONTEXT * D_LATENT + zi2]
       e = lcg_gauss(dn_st)
-      m_eps.flat[zi2] = e
+      # v = sqrt(abar) eps - sqrt(1-abar) z0 (Salimans & Ho). The target
+      # is the ONLY thing that changes; the head stays d-wide, so P1c can
+      # still attach DFA here unchanged.
+      if IS_V
+        m_eps.flat[zi2] = sa * e - sb * z0[zi2]
+      else
+        m_eps.flat[zi2] = e
+      end
       xin[(zi2 / D_LATENT) * 2 * D_LATENT + (zi2 % D_LATENT)] = sa * z0[zi2] + sb * e
       zi2 = zi2 + 1
     end
@@ -812,7 +1208,7 @@ else
       p2 = 0
       while p2 < CONTEXT * D_LATENT
         xt = xin[(p2 / D_LATENT) * 2 * D_LATENT + (p2 % D_LATENT)]
-        x0h = (xt - sb * pred[p2]) / sa
+        x0h = to_x0(pred[p2], xt, sa, sb, IS_V)
         xin[(p2 / D_LATENT) * 2 * D_LATENT + D_LATENT + (p2 % D_LATENT)] = x0h
         p2 = p2 + 1
       end
@@ -827,6 +1223,7 @@ else
 
   # ---- sample: full reverse chain, decode via the Ruby-side head ----
   nwin = GEN_BYTES / CONTEXT
+  gen_lat = Array.new(nwin * CONTEXT * D_LATENT, 0.0)
   gi = 0
   while gi < nwin
     xcur = Array.new(CONTEXT * D_LATENT, 0.0)
@@ -853,10 +1250,11 @@ else
                   pred, false)
       q4 = 0
       while q4 < CONTEXT * D_LATENT
-        x0h = (xcur[q4] - sb2 * pred[q4]) / sa2
+        eh4 = to_eps(pred[q4], xcur[q4], sa2, sb2, IS_V)
+        x0h = to_x0(pred[q4], xcur[q4], sa2, sb2, IS_V)
         x0p[q4] = x0h
         if tt > 0
-          mean = (xcur[q4] - (betas[tt] / sb2) * pred[q4]) / Math.sqrt(alphas[tt])
+          mean = (xcur[q4] - (betas[tt] / sb2) * eh4) / Math.sqrt(alphas[tt])
           xcur[q4] = mean + Math.sqrt(betas[tt]) * lcg_gauss(gen_st)
         else
           xcur[q4] = x0h
@@ -864,6 +1262,11 @@ else
         q4 = q4 + 1
       end
       tt = tt - 1
+    end
+    gl = 0
+    while gl < CONTEXT * D_LATENT
+      gen_lat[gi * CONTEXT * D_LATENT + gl] = xcur[gl]
+      gl = gl + 1
     end
     # unstandardise, then decode
     pp = 0
@@ -914,6 +1317,8 @@ else
   # Measured on HELD-OUT latents, and it is forward-only (noop hp), so it
   # perturbs neither the weights nor Adam's moments.
   pstate = lcg_state(NOISE_SEED + 555)
+  probe_xt = Array.new(CONTEXT * D_LATENT, 0.0)
+  probe_ev = Array.new(CONTEXT * D_LATENT, 0.0)
   gi3 = 0
   while gi3 < 10
     tp = (gi3 * TSTEPS) / 10
@@ -934,6 +1339,10 @@ else
         xtv = sap * zt2 + sbp * ev
         xin[(q8 / D_LATENT) * 2 * D_LATENT + (q8 % D_LATENT)] = xtv
         xin[(q8 / D_LATENT) * 2 * D_LATENT + D_LATENT + (q8 % D_LATENT)] = 0.0
+        # kept so the probe can convert a v-param prediction back onto
+        # the eps axis; m_eps here is only the (unused) loss target.
+        probe_xt[q8] = xtv
+        probe_ev[q8] = ev
         m_eps.flat[q8] = ev
         acc_b = acc_b + (xtv - ev) * (xtv - ev)
         q8 = q8 + 1
@@ -943,7 +1352,10 @@ else
                   pred, false)
       q9 = 0
       while q9 < CONTEXT * D_LATENT
-        d9 = pred[q9] - m_eps.flat[q9]
+        # EVERY arm is scored on the eps axis, v-param included — the
+        # curves are only comparable if the parameterisation is undone
+        # before the metric, not after.
+        d9 = to_eps(pred[q9], probe_xt[q9], sap, sbp, IS_V) - probe_ev[q9]
         acc_m = acc_m + d9 * d9
         q9 = q9 + 1
       end
@@ -969,6 +1381,27 @@ else
          " skill=" + eps_k[ei].to_s
     ei = ei + 1
   end
+
+  # THE JOINT READ. Real pool vs generated, at the same lags, with the
+  # position-shuffled floor alongside.
+  jst = lcg_state(NOISE_SEED + 313)
+  jl = [0]; jl.pop
+  jl.push(1)
+  jl.push(2)
+  jl.push(4)
+  jl.push(8)
+  ji = 0
+  while ji < jl.length
+    lg = jl[ji]
+    jr = lag_corr(pool, POOL_N, CONTEXT, D_LATENT, lg, jst)
+    jg = lag_corr(gen_lat, nwin, CONTEXT, D_LATENT, lg, jst)
+    puts "joint: lag=" + lg.to_s + " real=" + jr.to_s + " gen=" + jg.to_s
+    ji = ji + 1
+  end
+  jrs = lag_corr(pool, POOL_N, CONTEXT, D_LATENT, -1, jst)
+  jgs = lag_corr(gen_lat, nwin, CONTEXT, D_LATENT, -1, jst)
+  puts "joint_floor: shuffled real=" + jrs.to_s + " gen=" + jgs.to_s +
+       " (random position pairs — the zero-structure floor)"
 
   # ---- THE SAMPLER-RESIDUAL INSTRUMENT ----
   #
@@ -1025,10 +1458,11 @@ else
                     pred, false)
         q6 = 0
         while q6 < CONTEXT * D_LATENT
-          x0h2 = (zt[q6] - sb4 * pred[q6]) / sa4
+          eh6 = to_eps(pred[q6], zt[q6], sa4, sb4, IS_V)
+          x0h2 = to_x0(pred[q6], zt[q6], sa4, sb4, IS_V)
           x0p2[q6] = x0h2
           if t2 > 0
-            mn = (zt[q6] - (betas[t2] / sb4) * pred[q6]) / Math.sqrt(alphas[t2])
+            mn = (zt[q6] - (betas[t2] / sb4) * eh6) / Math.sqrt(alphas[t2])
             zt[q6] = mn + Math.sqrt(betas[t2]) * lcg_gauss(gen_st)
           else
             zt[q6] = x0h2
@@ -1052,6 +1486,11 @@ else
 end
 
 if ARM_C != ARM_AR
+  puts "objective: " + (LOSS_W_S.length > 0 ? LOSS_W_S : "eps-uniform") +
+       " target=" + (IS_V ? "v" : "eps") +
+       " t_dist=" + (LOSS_W == LW_MINSNR ? "min-snr-gamma" :
+                     (LOSS_W == LW_NONUNIF ? "ramp" : "uniform")) +
+       (LOSS_W == LW_MINSNR ? (" gamma=" + MINSNR_G.to_s) : "")
   puts "arm: " + ARM + " denoiser_params=" + arm_params.to_s +
        " ae_params=" + ae_params.to_s +
        " decode_head_params=" + (VOCAB * D_LATENT + VOCAB).to_s
@@ -1257,6 +1696,7 @@ if EVENTS.length > 0
     model.add_num("latent_dim", D_LATENT)
     model.add_num("context", CONTEXT)
     model.add_num("tsteps", TSTEPS)
+    model.add_str("objective", LOSS_W_S.length > 0 ? LOSS_W_S : "eps-uniform")
     model.add_num("ae_params", ae_params)
     model.add_num("arm_params", arm_params)
     model.add_num("judge_params", judge.param_count)

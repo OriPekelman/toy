@@ -13,6 +13,14 @@
 #   7. THE RESIDUAL INSTRUMENT reports in latent-std units and grows with t.
 #  7b. THE eps-SKILL PROBE reports against a TRIVIAL baseline, and an arm
 #      with no denoiser survives a run dir.
+#  7c. THE OBJECTIVE AXIS (toy#168) — four objectives, all distinct,
+#      eps-uniform byte-null, v-param scored on the eps axis.
+#  7d. THE GAUSSIANITY PROBE — reported against a same-n N(0,I) reference
+#      that itself sits at the noise floor.
+#  7f. THE JOINT PROBE reports its shuffled floor (kept as a NEGATIVE
+#      result: linear correlation is the wrong lens for a categorical code).
+#  7e. THE STAGE-1 KL ARMS — beta=0 byte-null, learned sigma distinct from
+#      fixed, and the decode head survives a weight being appended.
 #   8. FAIL-LOUD.
 #   9. CLI.
 #
@@ -231,6 +239,136 @@ puts failures.length == n0 ?
   "  ok: the eps-skill probe reports model vs the TRIVIAL baseline across a decreasing-abar grid, and an arm with no denoiser survives a run dir (the SEGV that only appeared under `toy train`)" :
   "  FAIL: eps probe"
 
+# ---- 7c. the OBJECTIVE axis (toy#168) ----
+#
+# The weights are applied as a t-SAMPLING distribution, never as a loss
+# multiplier: this lane draws ONE t per step and Adam is scale-invariant
+# per parameter, so a multiplier would be inert and the arm would report
+# a silent null (toy#152's B-scale landmine in a new place). The legs
+# below assert the axis is real and that eps-uniform is byte-null.
+n0 = failures.length
+epsu = run_dl({ "DL_ARM" => "diff-plain", "DL_LOSS_WEIGHT" => "eps-uniform" })
+failures << "objective: an explicit eps-uniform is NOT byte-null against the default — the baseline arm must be exactly the pre-toy#168 behaviour or nothing compares across the axis" unless curve(epsu) == curve(plain)
+vp  = run_dl({ "DL_ARM" => "diff-plain", "DL_LOSS_WEIGHT" => "v-param" })
+ms  = run_dl({ "DL_ARM" => "diff-plain", "DL_LOSS_WEIGHT" => "min-snr-gamma" })
+nu  = run_dl({ "DL_ARM" => "diff-plain", "DL_LOSS_WEIGHT" => "nonuniform-t" })
+failures << "objective: v-param did not move the curve — the target is still eps" if curve(vp) == curve(plain)
+failures << "objective: min-snr-gamma did not move the curve — the weight is not reaching the t draw (a LOSS multiplier here would be inert under Adam; it must be a sampling distribution)" if curve(ms) == curve(plain)
+failures << "objective: nonuniform-t did not move the curve" if curve(nu) == curve(plain)
+failures << "objective: min-snr-gamma and nonuniform-t are identical — two different t distributions produced one curve" if curve(ms) == curve(nu)
+[[epsu, "eps-uniform", "uniform", "eps"], [vp, "v-param", "uniform", "v"],
+ [ms, "min-snr-gamma", "min-snr-gamma", "eps"], [nu, "nonuniform-t", "ramp", "eps"]].each do |out, name, dist, tgt|
+  ol = line(out, "objective: ")
+  failures << "objective: #{name} does not report its t distribution (#{ol.strip})" unless ol.include?("t_dist=" + dist)
+  failures << "objective: #{name} does not report target=#{tgt} (#{ol.strip})" unless ol.include?("target=" + tgt)
+end
+# v-param's prediction is v, not eps — the probe must undo the
+# parameterisation BEFORE the metric or the arms are not on one axis.
+vk = vp.lines.select { |l| l.start_with?("epsmse:") }
+failures << "objective: v-param emits no epsmse lines — every arm must be scored on the eps axis" if vk.empty?
+if !vk.empty?
+  tv = vk.map { |l| l[/trivial=([0-9.eE+-]+)/, 1].to_f }
+  ek = vk.map { |l| l[/skill=([0-9.eE+-]+)/, 1].to_f }
+  failures << "objective: v-param's trivial baseline differs from the eps arms' — the baseline is a property of the SCHEDULE, so a differing one means the probe is scoring v against an eps baseline" unless (tv.last - epsu.lines.select { |l| l.start_with?("epsmse:") }.map { |l| l[/trivial=([0-9.eE+-]+)/, 1].to_f }.last).abs < 1e-9
+  failures << "objective: v-param skill is constant across t (#{ek.uniq.length} distinct)" if ek.uniq.length < 3
+end
+puts failures.length == n0 ?
+  "  ok: all four objectives move the curve and are distinct, eps-uniform is BYTE-NULL against the default, and v-param is scored on the eps axis against the same schedule-derived baseline" :
+  "  FAIL: objective axis"
+
+# ---- 7d. the GAUSSIANITY probe (toy#168 followup) ----
+#
+# Standardisation makes the aggregate zero-mean/unit-variance PER DIM. It
+# does NOT make it Gaussian and does NOT make the dims uncorrelated —
+# measured here at max|corr| 0.44-0.63 and Var||z||^2 ~4x below 2d, i.e.
+# a correlated thin shell where the sampler starts from an isotropic
+# ball. Asserting the standardisation moments (leg 3) was asserting the
+# wrong property; this leg records the RIGHT one so the gap stays visible
+# rather than being re-forgotten.
+#
+# It does NOT gate on the aggregate BEING Gaussian — it is not, and
+# failing the battery on a known open finding would be noise. It gates
+# that the number is REPORTED against a same-n reference, because a bare
+# kurtosis is uninterpretable without its sampling-noise floor.
+n0 = failures.length
+g  = line(a1, "gauss: ")
+gr = line(a1, "gauss_ref: ")
+grad = line(a1, "gauss_radial: ")
+%w[skew_max kurt_max corr_max corr_mean].each do |k|
+  failures << "gaussianity: the measured line lacks #{k}" unless g.include?(k + "=")
+  failures << "gaussianity: the REFERENCE line lacks #{k} — a bare statistic has no interpretable scale without the same-n N(0,I) floor" unless gr.include?(k + "=")
+end
+%w[r2_mean r2_var expect_var ref_var].each do |k|
+  failures << "gaussianity: the radial line lacks #{k}" unless grad.include?(k + "=")
+end
+ref_k = gr[/kurt_max=([0-9.eE+-]+)/, 1].to_f
+ref_c = gr[/corr_max=([0-9.eE+-]+)/, 1].to_f
+failures << "gaussianity: the N(0,I) reference itself reports kurt_max=#{ref_k} — the reference should sit at the sampling-noise floor, so a large value means the reference draw is not standard normal and every comparison against it is void" if ref_k > 0.2
+failures << "gaussianity: the N(0,I) reference reports corr_max=#{ref_c} — same problem" if ref_c > 0.2
+rm = grad[/ref_mean=([0-9.eE+-]+)/, 1].to_f
+rv = grad[/ref_var=([0-9.eE+-]+)/, 1].to_f
+d_lat = 8
+failures << "gaussianity: the reference radial mean #{rm} is not ~d (#{d_lat}) — the chi-square identity the radial read rests on does not hold for the reference" if (rm - d_lat).abs > 0.5
+failures << "gaussianity: the reference radial variance #{rv} is not ~2d (#{2 * d_lat}) — same" if (rv - 2 * d_lat).abs > 1.5
+puts failures.length == n0 ?
+  "  ok: the Gaussianity read is reported against a same-n N(0,I) reference, and that reference sits at its own noise floor (kurt #{ref_k}, radial mean #{rm} ~ d, var #{rv} ~ 2d)" :
+  "  FAIL: gaussianity probe"
+
+# ---- 7e. the STAGE-1 KL arms (toy#168 followup) ----
+#
+# beta 0 must build NO extra graph — the whole comparison against every
+# pre-KL number depends on it. And the learned-sigma arm appends a weight
+# to the engine, which is why the decode head is fetched by NAMED index
+# now: `nw - 2` would still have been a matrix of the right shape while
+# being the wrong matrix (toy#160's suffix-matched-init class of bug).
+n0 = failures.length
+kl0 = run_dl({ "DL_ARM" => "diff-plain", "DL_STAGE1_KL" => "0.0" })
+failures << "stage1 kl: an explicit beta=0 is NOT byte-null against the default — every pre-KL number stops comparing" unless curve(kl0) == curve(plain)
+klf = run_dl({ "DL_ARM" => "diff-plain", "DL_STAGE1_KL" => "0.05" })
+kll = run_dl({ "DL_ARM" => "diff-plain", "DL_STAGE1_KL" => "0.05", "DL_STAGE1_KL_LEARNED" => "1" })
+failures << "stage1 kl: beta>0 did not change stage 1 (the latent line is identical)" if line(klf, "latent: ") == line(plain, "latent: ")
+failures << "stage1 kl: learned sigma is identical to fixed sigma at the same beta — the logvar head is not reaching the objective" if line(kll, "latent: ") == line(klf, "latent: ")
+failures << "stage1 kl: the fixed arm does not report kl_sigma as a number" unless line(klf, "stage1: ").include?("kl_sigma=0.1") || line(klf, "stage1: ") =~ /kl_sigma=[0-9]/
+failures << "stage1 kl: the learned arm does not report kl_sigma=learned" unless line(kll, "stage1: ").include?("kl_sigma=learned")
+# The decode head must still be the DECODE head once a weight is appended.
+# If it were not, prior-floor (which decodes the prior through that head)
+# would stop landing near the unigram floor.
+fl3 = run_dl({ "DL_ARM" => "prior-floor", "DL_STAGE1_KL" => "0.05", "DL_STAGE1_KL_LEARNED" => "1" })
+bfl = field(fl3, "gen: ", "bpb_gen").to_f
+brl = field(fl3, "gen: ", "bpb_real").to_f
+failures << "stage1 kl: with the learned-sigma head appended, prior-floor scores #{bfl} against real #{brl} — the decode head fetched by named index is not the decode head" unless bfl > brl + 0.5
+puts failures.length == n0 ?
+  "  ok: beta=0 is BYTE-NULL, beta>0 moves stage 1, learned sigma differs from fixed at the same beta, and the decode head survives a weight being appended (named indices, not nw-N)" :
+  "  FAIL: stage-1 KL"
+
+# ---- 7f. the JOINT probe, and its FLOOR ----
+#
+# This probe was a MISS in its chosen lens and the gate says so rather
+# than quietly keeping a number nobody should read: the real pool's
+# lag-1 correlation is ~0.035 against a shuffled floor of ~0.002, i.e.
+# the latent sequence carries almost no LINEAR position-to-position
+# structure, because the code is CATEGORICAL (the codes for `q` and `u`
+# are arbitrary points, so their covariance says nothing about `qu`).
+#
+# It is kept because the FLOOR is the useful part — it is what makes the
+# absence of dynamic range visible instead of inviting someone to read a
+# 5x ratio between two numbers that are both nearly zero. So the gate
+# asserts the floor is REPORTED and is genuinely near zero; it does not
+# assert anything about the ratio.
+n0 = failures.length
+jl = a1.lines.select { |l| l.start_with?("joint: ") }
+jf = a1.lines.find { |l| l.start_with?("joint_floor:") }
+failures << "joint: no joint lines on a diffusion arm" if jl.empty?
+failures << "joint: no joint_floor line — without the shuffled floor the correlations have no scale and a ratio between two near-zero numbers reads as signal" if jf.nil?
+if jf
+  fr = jf[/real=([0-9.eE+-]+)/, 1].to_f
+  failures << "joint: the shuffled REAL floor is #{fr}, not near zero — pairing random positions must destroy the structure, or the floor is not a floor" if fr > 0.02
+end
+failures << "joint: the ar-baseline arm emits joint lines, which it has no latents for" if ar.lines.any? { |l| l.start_with?("joint: ") }
+puts failures.length == n0 ?
+  "  ok: the joint probe reports its position-shuffled FLOOR (the part that makes its own lack of dynamic range legible), and only on arms that have latents" :
+  "  FAIL: joint probe"
+
 # ---- 8. fail-loud ----
 n0 = failures.length
 [
@@ -241,11 +379,15 @@ n0 = failures.length
   [{ "DL_TSTEPS" => "1" },                    "tsteps 1"],
   [{ "DL_GEN_BYTES" => "8" },                 "gen-bytes < context"],
   [{ "DL_JUDGE_STEPS" => "0" },               "judge steps 0 (every arm scored by an untrained judge)"],
+  [{ "DL_LOSS_WEIGHT" => "nope" },            "unknown loss weight"],
+  [{ "DL_MINSNR_GAMMA" => "0" },              "min-snr gamma 0"],
+  [{ "DL_STAGE1_KL" => "-1" },                "negative KL beta"],
+  [{ "DL_STAGE1_KL_LEARNED" => "1" },         "learned sigma with no KL term"],
 ].each do |env, label|
   _o, st = Open3.capture2e({ "STEPS" => "2" }.merge(CELL).merge(env), RUNNER, chdir: ROOT)
   failures << "fail-loud: #{label} exited 0" if st.success?
 end
-puts failures.length == n0 ? "  ok: 7 degenerate configs fail loud" : "  FAIL: fail-loud"
+puts failures.length == n0 ? "  ok: 11 degenerate configs fail loud" : "  FAIL: fail-loud"
 
 # ---- 9. CLI ----
 n0 = failures.length

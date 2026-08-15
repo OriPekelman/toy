@@ -198,6 +198,9 @@ REJECT = [
   [%w[mlp --tsteps 100],                   "--tsteps"],
   [%w[gtx --gen-bytes 1024],               "--gen-bytes"],
   [%w[lstm --judge-steps 100],             "--judge-steps"],
+  # toy#168: the stage-2 objective axis is difflm's alone.
+  [%w[diff --loss-weight v-param],         "--loss-weight"],
+  [%w[ae --minsnr-gamma 5.0],              "--minsnr-gamma"],
   # toy#162: --clip-grad is the lstm lane's FAIR BPTT control, not a
   # general tuning knob — its effect is unmeasured on every other lane,
   # and a knob whose effect nobody measured is worse offered than absent.

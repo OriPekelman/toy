@@ -18,9 +18,10 @@ module Toy; module LLM; module Recipes
     end
 
     def realize!(d_model, heads, d_ff, n_blocks, context, latent, seed,
-                 init_scale)
+                 init_scale, kl_beta, kl_learned)
       @ae_cache.realize_for_random_init(d_model, heads, d_ff, n_blocks,
-                                        context, latent, seed, init_scale)
+                                        context, latent, seed, init_scale,
+                                        kl_beta, kl_learned)
       result = @ae_cache.build_training_step
       @ae_t_loss   = result[0]
       @ae_t_labels = result[1]

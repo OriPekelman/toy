@@ -262,6 +262,12 @@ module Toy
           @tsteps         = nil
           @gen_bytes      = nil
           @judge_steps    = nil
+          # toy#168 (P1b3): the stage-2 objective axis. Weights are applied
+          # as a t-SAMPLING distribution, not a loss multiplier — this lane
+          # draws one t per step and Adam is scale-invariant, so a
+          # multiplier would be inert (toy#152's B-scale landmine).
+          @loss_weight    = nil
+          @minsnr_gamma   = nil
           @target_ce      = nil
           @eval_every     = nil
           @probe_batches  = nil
@@ -389,7 +395,9 @@ module Toy
                              "DL_LR"          => (@lr || ""),
                              "DL_WARMUP"      => (@warmup || 0).to_s,
                              "DL_TASK_SEED"   => (@task_seed || 7).to_s,
-                             "DL_NOISE_SEED"  => (@noise_seed || 4242).to_s)
+                             "DL_NOISE_SEED"  => (@noise_seed || 4242).to_s,
+                             "DL_LOSS_WEIGHT" => (@loss_weight || ""),
+                             "DL_MINSNR_GAMMA" => (@minsnr_gamma || "5.0"))
           elsif @recipe == "ae"
                      AE_RUNNER_TARGET
                    elsif @recipe == "gtx"
@@ -549,7 +557,9 @@ module Toy
                              "DL_LR"          => (@lr || ""),
                              "DL_WARMUP"      => (@warmup || 0).to_s,
                              "DL_TASK_SEED"   => (@task_seed || 7).to_s,
-                             "DL_NOISE_SEED"  => (@noise_seed || 4242).to_s)
+                             "DL_NOISE_SEED"  => (@noise_seed || 4242).to_s,
+                             "DL_LOSS_WEIGHT" => (@loss_weight || ""),
+                             "DL_MINSNR_GAMMA" => (@minsnr_gamma || "5.0"))
           elsif @recipe == "ae"
             # Lane-local AE_* namespace, same discipline as the others.
             # There is no synthetic default corpus: --text is REQUIRED and
@@ -833,7 +843,7 @@ module Toy
           # can-it-lose precondition). A sweep over --latent-dim reads all
           # four off stdout, so filtering them here would leave the lane's
           # actual finding reachable only by opening a bundle.
-          losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") || l.start_with?("val:") || l.start_with?("train:") || l.start_with?("graph:") || l.start_with?("stream:") || l.start_with?("gen:") || l.start_with?("corpus:") || l.start_with?("noise:") || l.start_with?("half_snr:") || l.start_with?("control:") || l.start_with?("latent_std:") || l.start_with?("converged:") || l.start_with?("stage1:") || l.start_with?("arm:") || l.start_with?("resid:") || l.start_with?("judge:") }.map(&:chomp)
+          losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") || l.start_with?("val:") || l.start_with?("train:") || l.start_with?("graph:") || l.start_with?("stream:") || l.start_with?("gen:") || l.start_with?("corpus:") || l.start_with?("noise:") || l.start_with?("half_snr:") || l.start_with?("control:") || l.start_with?("latent_std:") || l.start_with?("converged:") || l.start_with?("stage1:") || l.start_with?("arm:") || l.start_with?("resid:") || l.start_with?("judge:") || l.start_with?("objective:") || l.start_with?("epsmse:") }.map(&:chomp)
           emit(run_id, run_dir, losses)
         end
 
@@ -1126,6 +1136,30 @@ module Toy
                 return bad_arg("--arm #{val.inspect} unsupported (ar-baseline|diff-selfcond|diff-plain|prior-floor)")
               end
               @arm = val
+            when "--loss-weight"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--loss-weight requires a value") if val.nil?
+              unless %w[eps-uniform min-snr-gamma v-param nonuniform-t].include?(val)
+                return bad_arg("--loss-weight #{val.inspect} unsupported (eps-uniform|min-snr-gamma|v-param|nonuniform-t)")
+              end
+              @loss_weight = val
+            when /\A--loss-weight=(.*)\z/
+              val = $1
+              unless %w[eps-uniform min-snr-gamma v-param nonuniform-t].include?(val)
+                return bad_arg("--loss-weight #{val.inspect} unsupported (eps-uniform|min-snr-gamma|v-param|nonuniform-t)")
+              end
+              @loss_weight = val
+            when "--minsnr-gamma"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--minsnr-gamma requires a value") if val.nil?
+              return bad_arg("--minsnr-gamma must be a positive float, got #{val.inspect}") unless val =~ /\A\d*\.?\d+\z/ && val.to_f > 0.0
+              @minsnr_gamma = val
+            when /\A--minsnr-gamma=(.*)\z/
+              val = $1
+              return bad_arg("--minsnr-gamma must be a positive float, got #{val.inspect}") unless val =~ /\A\d*\.?\d+\z/ && val.to_f > 0.0
+              @minsnr_gamma = val
             when "--ae-steps", "--tsteps", "--gen-bytes", "--judge-steps"
               key = @argv[i]
               i += 1
@@ -1952,8 +1986,9 @@ when /\A--dfa-feedback-lr=(.*)\z/
              (!@heads.nil? || !@d_ff.nil?), " (toy#160/#165)"],
             ["--types/--entities", %w[gtx],
              (!@types.nil? || !@entities.nil?), " (toy#160)"],
-            ["--arm/--ae-steps/--tsteps/--gen-bytes/--judge-steps", %w[difflm],
-             (!@arm.nil? || !@ae_steps.nil? || !@tsteps.nil? || !@gen_bytes.nil? || !@judge_steps.nil?),
+            ["--arm/--ae-steps/--tsteps/--gen-bytes/--judge-steps/--loss-weight/--minsnr-gamma", %w[difflm],
+             (!@arm.nil? || !@ae_steps.nil? || !@tsteps.nil? || !@gen_bytes.nil? || !@judge_steps.nil? ||
+              !@loss_weight.nil? || !@minsnr_gamma.nil?),
              " (toy#166)"],
             ["--text/--noise-eval/--noise-seed/--val-frac-pct/--target-ce/--eval-every/--probe-batches", %w[ae difflm],
              (!@text.nil? || !@noise_eval.nil? || !@noise_seed.nil? || !@val_frac_pct.nil? ||
