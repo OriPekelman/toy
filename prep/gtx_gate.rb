@@ -17,6 +17,8 @@
 #  10. CLI.
 #  11. THE RETROFIT (toy#161): the precondition, the freeze, the bar.
 #  11c. THE CHECKPOINT (toy#164): bit-exact round trip, refused mismatch.
+#  12. THE BYTE-LM TASK (toy#170 / capstone P3): the embedding tap, the
+#      two cuts as distinct wirings, and PER-ARM EFFECT.
 #
 # ── WHAT THIS LANE ANSWERS ──
 #
@@ -480,6 +482,117 @@ end
 puts failures.length == n0 ?
   "  ok: CHECKPOINT (toy#164) — the backbone round-trips BIT-EXACT, a load skips the pretrain phase, a shape mismatch is refused naming both sides, and 3 degenerate configs fail loud" :
   "  FAIL: checkpoint"
+
+# ── LEG 12: THE BYTE-LM TASK (toy#170 / capstone P3) ──
+#
+# The gtx lane now has a second task: `--task bytelm`, a causal
+# byte-level LM with a per-position readout. It shares the engine with
+# the relational task, which is exactly why leg 1 above still asserts
+# the toy#160 byte fixture — the P3 build must be forward-null on the
+# path it did not touch, and leg 1 proves it.
+#
+# What this leg asserts is the wiring the ARMS depend on, because every
+# P3 number is meaningless if any of it is wrong. Two of these fired
+# during the build:
+#
+#   * The EMBEDDING TAP. Under DFA the byte embedding sits BELOW the
+#     layer-0 detach, so without its own tap it never trains and the
+#     "DFA" arm is really "DFA with a frozen embedding". This is the
+#     same bug as toy#169's, and it is asserted here rather than
+#     trusted, because the failure is silent — the run trains, the loss
+#     falls, and only the gap is wrong.
+#   * PER-ARM EFFECT. Each arm must move its OWN curve away from the
+#     frozen control. An arm whose knob is a no-op looks like a clean
+#     negative, which is the most expensive way to be wrong in this
+#     program (toy#141, and toy#169's audit).
+n0 = failures.length
+BL = { "GTX_TASK" => "bytelm", "GTX_TEXT" => "data/ae_shakespeare",
+       "GTX_CONTEXT" => "64", "GTX_D_MODEL" => "64", "GTX_HEADS" => "4",
+       "GTX_D_FF" => "128", "GTX_BLOCKS" => "2", "GTX_VAL_BATCHES" => "2" }
+if !File.file?(File.join(ROOT, "data", "ae_shakespeare.tok.i32"))
+  puts "  skip: BYTE-LM (toy#170) — data/ae_shakespeare pack absent (run prep/fetch_text.rb)"
+else
+  def bl_run(extra)
+    run_gtx(BL.merge({ "STEPS" => "40", "GTX_LR" => "0.003" }).merge(extra), nil)
+  end
+  def bpb(out)
+    l = out.lines.find { |x| x.start_with?("bytelm: ") }
+    l ? l[/bpb=([0-9.eE+-]+)/, 1].to_f : nil
+  end
+  def wiring(out)
+    out.lines.find { |x| x.start_with?("gtx: bytelm ") } || ""
+  end
+
+  arms = {}
+  [["chain,chain", "layer"], ["dfa,dfa", "layer"], ["dfa,dfa", "step"],
+   ["frozen,frozen", "layer"]].each do |pol, cut|
+    o = bl_run("GTX_POLICY" => pol, "GTX_DFA_CUT" => cut)
+    arms["#{pol.split(",").first}/#{cut}"] = [bpb(o), wiring(o)]
+  end
+
+  # 12a. Every arm produced a number, and the readout is the one we think.
+  arms.each do |k, (b, w)|
+    failures << "bytelm: arm #{k} emitted no bpb= line" if b.nil?
+    failures << "bytelm: arm #{k} did not report the per-position causal readout" unless
+      w.include?("attn=causal") && w.include?("readout=per_position") && w.include?("vocab=256")
+  end
+
+  # 12b. THE EMBEDDING TAP. Under DFA the embedding must be tapped; under
+  # chain and frozen it must NOT be (chain reaches it through the chain,
+  # and a frozen body has nothing to feed back).
+  failures << "bytelm: the DFA arm did NOT tap the byte embedding — it sits below the layer-0 detach, so it would never train and the arm would silently be 'DFA with a frozen embedding' (toy#169's bug)" unless
+    arms["dfa/layer"][1].include?("emb_tapped=1")
+  failures << "bytelm: the chain arm tapped the embedding — BP reaches it through the chain, so a tap there is a second, unaccounted path" if
+    arms["chain/layer"][1].include?("emb_tapped=1")
+
+  # 12c. The cut is wired, and the two cuts are DIFFERENT wirings.
+  lt = arms["dfa/layer"][1][/taps=(\d+)/, 1].to_i
+  st = arms["dfa/step"][1][/taps=(\d+)/, 1].to_i
+  failures << "bytelm: --dfa-cut layer wired #{lt} taps (expected one per block)" unless lt > 0
+  failures << "bytelm: --dfa-cut step wired #{st} taps, not more than layer's #{lt} — the per-step cut must tap per POSITION, so if these match the flag is a no-op and 'the cuts agree' would be an artifact" unless st > lt
+  failures << "bytelm: the chain arm wired #{arms["chain/layer"][1][/taps=(\d+)/, 1]} DFA taps (must be 0)" unless
+    arms["chain/layer"][1].include?("taps=0")
+
+  # 12d. PER-ARM EFFECT — each arm's CURVE must differ from the frozen
+  # control's. Deliberately NOT "each arm must win": at gate scale (40
+  # steps) the frozen control is still training its head and the body
+  # arms have not paid off yet, so a win assertion would be measuring
+  # noise and would make the gate the experiment. What the gate owes P3
+  # is that no arm's knob is INERT — an inert arm reports as a clean
+  # negative, which is the most expensive way to be wrong here (toy#141,
+  # toy#169's audit). Whether DFA beats frozen is the FINDING, and it is
+  # allowed to come back negative.
+  fzc = curve(bl_run("GTX_POLICY" => "frozen,frozen", "GTX_DFA_CUT" => "layer"))
+  [["chain,chain", "layer"], ["dfa,dfa", "layer"], ["dfa,dfa", "step"]].each do |pol, cut|
+    c = curve(bl_run("GTX_POLICY" => pol, "GTX_DFA_CUT" => cut))
+    failures << "bytelm: arm #{pol.split(",").first}/#{cut} produced a curve BYTE-IDENTICAL to the frozen control — its knob is inert, and an inert arm reports as a clean negative" if c == fzc
+  end
+  # The one arm we DO require to win, because if BP cannot beat a frozen
+  # body on this task then the task itself is degenerate and no negative
+  # measured on it would mean anything (the control-can-lose rule, but
+  # pointed the other way — here it is the CONTROL that must not win).
+  if arms["chain/layer"][0] && arms["frozen/layer"][0]
+    failures << "bytelm: BP (#{arms["chain/layer"][0].round(3)}) did not beat the frozen body (#{arms["frozen/layer"][0].round(3)}) — if the task is solvable by the head alone, every credit-assignment number measured on it is uninterpretable" unless
+      arms["chain/layer"][0] < arms["frozen/layer"][0] - 0.01
+  end
+
+  # 12e. Determinism on the new task — same seed, same bytes.
+  a = bl_run("GTX_POLICY" => "dfa,dfa", "GTX_DFA_CUT" => "layer")
+  failures << "bytelm: the DFA arm is not deterministic across runs at a fixed seed" unless
+    curve(a) == curve(bl_run("GTX_POLICY" => "dfa,dfa", "GTX_DFA_CUT" => "layer"))
+
+  # 12f. FAIL-LOUD on the task's own degenerate configs.
+  [[{ "GTX_TASK" => "bytelm" },                                  "--task bytelm with no --text"],
+   [{ "GTX_TASK" => "bytelm", "GTX_TEXT" => "data/nope" },        "--text naming a pack that is not there"],
+   [{ "GTX_TASK" => "nonsense" },                                 "an unknown --task"]].each do |env, label|
+    out, st2 = Open3.capture2e({ "STEPS" => "2" }.merge(env), RUNNER, chdir: ROOT)
+    failures << "bytelm fail-loud: #{label} exited 0 (silently did nothing)" if st2.success?
+  end
+
+  puts failures.length == n0 ?
+    "  ok: BYTE-LM (toy#170) — 4 arms score, the readout is per-position causal at vocab 256, the DFA arm TAPS THE EMBEDDING (chain does not), the two cuts are distinct wirings, no arm's knob is inert (curve differs from frozen's) and BP beats the frozen body so the task is not head-solvable, deterministic, 3 degenerate configs fail loud" :
+    "  FAIL: bytelm"
+end
 
 if failures.empty?
   puts "GATE PASS [gtx]: graph transformer + RETROFIT + per-block policy — byte fixture, the B seed, the small-head assertion, the MANDATORY success bar with each arm at ITS OWN best LR showing ATTENTION IS NOT DFA-HOSTILE (dfa .920 vs BP .985 vs frozen .111), the mixing-cut collapse, and a frozen control that provably CAN lose (toy#160)"

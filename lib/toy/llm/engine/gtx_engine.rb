@@ -94,6 +94,7 @@ class GtxEngine
                 :gx_dfa_wired, :gx_frozen_count, :gx_taps,
                 :gx_graph_nodes, :gx_graph_bytes,
                 :gx_retro_classes, :gx_adapters, :gx_adapter_rank,
+                :gx_bytelm, :t_tokens, :ix_emb, :ix_lmhead, :gx_gnorm, :t_gnorm, :gx_gnorm_built,
                 :gx_retrofit, :gx_freeze_backbone, :gx_adapter_policy,
                 :gx_backbone_first, :gx_backbone_count, :gx_active_classes
 
@@ -137,6 +138,13 @@ class GtxEngine
     @gx_graph_nodes  = 0
     @gx_graph_bytes  = 0
     @gx_retro_classes   = 0
+    @gx_bytelm  = 0
+    @gx_gnorm   = 0
+    @t_gnorm    = TinyNN.tnn_null_ptr
+    @gx_gnorm_built = 0
+    @t_tokens   = TinyNN.tnn_null_ptr
+    @ix_emb     = -1
+    @ix_lmhead  = -1
     @gx_adapters        = 0
     @gx_adapter_rank    = 0
     @gx_retrofit        = 0
@@ -149,7 +157,8 @@ class GtxEngine
 
   def realize_for_random_init(d_in, d_model, heads, d_ff, n_blocks,
                               n_nodes, n_pairs, n_classes, seed, init_scale,
-                              retro_classes, adapters, adapter_rank)
+                              retro_classes, adapters, adapter_rank, bytelm,
+                              gnorm)
     @gx_d_in    = d_in
     @gx_d_model = d_model
     @gx_heads   = heads
@@ -159,6 +168,9 @@ class GtxEngine
     @gx_nodes   = n_nodes
     @gx_pairs   = n_pairs
     @gx_classes = n_classes
+    @gx_bytelm = bytelm
+    # Threaded but INERT on this lane — see the note in train_gtx.rb.
+    @gx_gnorm  = gnorm
     @gx_retro_classes = retro_classes
     @gx_adapters      = adapters
     @gx_adapter_rank  = adapter_rank
@@ -193,6 +205,16 @@ class GtxEngine
     # output dim is R and stays R however large the graph gets — the
     # property this whole lane is built to exploit.
     add_w(n_classes, 2 * d_model, "head", n_blocks)
+    # toy#170 (P3) — the byte-LM surface. The embedding replaces the
+    # continuous node features; the LM head is [256, d_model] because
+    # there is no pair concat to widen it. Both are built ONLY under
+    # bytelm, so the toy#160 relational path keeps its exact graph.
+    if @gx_bytelm == 1
+      @ix_emb = @ft_weights.length
+      add_w(256, d_model, "emb", 0)
+      @ix_lmhead = @ft_weights.length
+      add_w(256, d_model, "lm_head", n_blocks)
+    end
     # Everything allocated so far is the BACKBONE (+ its pretrain head):
     # what a retrofit freezes and reuses. Recorded as a span so the
     # freeze, the checkpoint and the "did it move" signature all agree on
@@ -238,6 +260,10 @@ class GtxEngine
     TinyNN.tnn_tensor_set_name(@t_mask, "adj_mask")
     @t_inc  = TinyNN.tnn_input_2d_f32_persistent(@sess, n_nodes, n_pairs)
     TinyNN.tnn_tensor_set_name(@t_inc, "pair_incidence")
+    if @gx_bytelm == 1
+      @t_tokens = TinyNN.tnn_input_1d_i32_persistent(@sess, n_nodes)
+      TinyNN.tnn_tensor_set_name(@t_tokens, "tokens")
+    end
     @t_idx_a = TinyNN.tnn_input_1d_i32_persistent(@sess, n_pairs)
     @t_idx_b = TinyNN.tnn_input_1d_i32_persistent(@sess, n_pairs)
 
@@ -277,7 +303,15 @@ class GtxEngine
     tapd  = [0]; tapd.pop
     any_dfa = false
 
+    # bytelm feeds EMBEDDED BYTES; the relational path keeps the feature
+    # projection. Note the embedding lands BELOW block 0's detach under a
+    # dfa policy — the toy#169 trap — so it gets its own tap below.
     t_h = TinyNN.tnn_matmul(@sess, @ft_weights[0], @t_x)   # [d_model, N]
+    t_emb_out = TinyNN.tnn_null_ptr
+    if @gx_bytelm == 1
+      t_h = TinyNN.tnn_get_rows(@sess, @ft_weights[@ix_emb], @t_tokens)
+      t_emb_out = t_h
+    end
 
     scale = 1.0 / Math.sqrt(@gx_d_head.to_f)
     bj = 0
@@ -359,6 +393,19 @@ class GtxEngine
       # the graph. Detaching makes it true of the graph, for BOTH arms,
       # which is exactly what the measured node/byte counts then show.
       t_h = TinyNN.tnn_detach(@sess, t_h)
+    end
+    if @gx_bytelm == 1
+      # PER-POSITION readout: position i predicts byte i+1. No pair
+      # gather, so the head is [256, d_model] and the error is already
+      # per position — the incidence routing below becomes the identity.
+      @t_logits = TinyNN.tnn_matmul(@sess, @ft_weights[@ix_lmhead], t_h)
+      TinyNN.tnn_set_output(@t_logits)
+      @t_labels = TinyNN.tnn_input_2d_f32(@sess, @gx_nodes, 256)
+      @t_hp     = TinyNN.tnn_input_1d_f32(@sess, 7)
+      @t_loss   = TinyNN.tnn_cross_entropy_loss(@sess, @t_logits, @t_labels)
+      TinyNN.tnn_set_output(@t_loss)
+      return build_bytelm_tail!(policy, taps, tapd, any_dfa, t_emb_out,
+                                b_seed, b_dist, b_scale, b_sigma)
     end
     t_ha = TinyNN.tnn_get_rows(@sess, t_h, @t_idx_a)       # [d_model, P]
     t_hb = TinyNN.tnn_get_rows(@sess, t_h, @t_idx_b)
@@ -523,6 +570,112 @@ class GtxEngine
                                   (@gx_adapter_policy == POLICY_FROZEN ? "frozen" : "chain")) +
             " freeze_backbone=" + @gx_freeze_backbone.to_s +
             " retro_classes=" + @gx_retro_classes.to_s) : "")
+
+    TinyNN.tnn_pin_all_graph_b_nodes(@sess)
+    TinyNN.tnn_realize_backward(@sess)
+    measure_graph!
+    refresh_b!
+    [@t_loss, @t_labels, @t_hp]
+  end
+
+  # toy#170 (P3) — the bytelm tail. Split out because it differs from the
+  # relational path in exactly two ways, and both are simplifications:
+  #
+  #  * THE INCIDENCE ROUTING DROPS OUT. The relational lane routes a
+  #    PAIR error onto nodes through the constant S (e_nodes = e^T . S).
+  #    Under bytelm the error is ALREADY per position, so that step is
+  #    the identity and the pair machinery is not built at all.
+  #  * THE TAPS NEED NO FOLDING. gtx taps [d_model, N] per block, and
+  #    with N = positions a tap is already aligned column-for-column
+  #    with the per-position error. This is the piece that cost toy#169
+  #    a fold and an ordering hazard; on attention it is free.
+  #
+  # THE EMBEDDING TAP is built here from the start rather than
+  # discovered later: `emb` sits BELOW block 0's `detach`, so under a
+  # dfa policy the chain path gives it nothing. toy#169 paid two rounds
+  # and two retractions for that. Its output is [d_model, N] — already
+  # the tap family's shape and column order — so it just joins the list.
+  def build_bytelm_tail!(policy, taps, tapd, any_dfa, t_emb_out,
+                         b_seed, b_dist, b_scale, b_sigma)
+    @gx_active_classes = 256
+    if any_dfa && policy.length > 0 && policy[0] == POLICY_DFA &&
+       t_emb_out != TinyNN.tnn_null_ptr
+      TinyNN.tnn_set_output(t_emb_out)
+      taps.push(t_emb_out)
+      tapd.push(@gx_d_model)
+    end
+    @gx_taps = taps.length
+    if any_dfa && taps.length > 0
+      t_p = TinyNN.tnn_softmax(@sess, @t_logits)
+      e_det = TinyNN.tnn_detach(@sess,
+                TinyNN.tnn_scale(@sess,
+                  TinyNN.tnn_sub(@sess, t_p, @t_labels), 1.0 / @gx_nodes.to_f))
+      t_sur = TinyNN.tnn_null_ptr
+      started = false
+      ti = 0
+      while ti < taps.length
+        dout = tapd[ti]
+        t_b = TinyNN.tnn_input_2d_f32(@sess, dout, 256)
+        TinyNN.tnn_set_output(t_b)
+        @gx_b_handles.push(t_b)
+        @gx_b_seeds.push(b_seed + 77 + ti)
+        @gx_b_douts.push(dout)
+        t_delta = TinyNN.tnn_matmul(@sess, t_b, e_det)          # [dout, N]
+        t_term = TinyNN.tnn_sum_rows(@sess,
+                   TinyNN.tnn_reshape_2d(@sess,
+                     TinyNN.tnn_mul(@sess, taps[ti], t_delta),
+                     dout * @gx_nodes, 1))
+        if started
+          t_sur = TinyNN.tnn_add(@sess, t_sur, t_term)
+        else
+          t_sur = t_term
+          started = true
+        end
+        ti = ti + 1
+      end
+      TinyNN.tnn_set_output(t_sur)
+      TinyNN.tnn_set_loss(@t_loss)
+      TinyNN.tnn_set_loss(t_sur)
+      TinyNN.tnn_add_to_graph(@sess, @t_loss)
+      TinyNN.tnn_build_forward_only(@sess, t_sur)
+    else
+      TinyNN.tnn_set_loss(@t_loss)
+      TinyNN.tnn_build_forward_only(@sess, @t_loss)
+    end
+    TinyNN.tnn_build_backward(@sess)
+
+    wk = 0
+    while wk < @ft_weights.length
+      lyr = @ft_layer[wk]
+      mode = POLICY_CHAIN
+      if lyr < @gx_blocks && lyr < policy.length
+        mode = policy[lyr]
+      end
+      step_it = true
+      if lyr < @gx_blocks && mode == POLICY_FROZEN
+        step_it = false
+      elsif wk >= @gx_backbone_count && wk != @ix_emb && wk != @ix_lmhead
+        # retrofit capacity is never touched by a bytelm run
+        step_it = false
+      end
+      if step_it
+        tg = TinyNN.tnn_tensor_grad(@sess, @ft_weights[wk])
+        to = TinyNN.tnn_opt_step_adamw(@sess, @ft_weights[wk], tg,
+                                        @ft_m[wk], @ft_v[wk], @t_hp)
+        TinyNN.tnn_extend_backward_graph(@sess, to)
+      end
+      wk = wk + 1
+    end
+
+    puts "gtx: bytelm blocks=" + @gx_blocks.to_s +
+         " nodes=" + @gx_nodes.to_s +
+         " vocab=256 attn=causal readout=per_position" +
+         " routing=position_t" +
+         " cut=" + (@gx_cut == CUT_STEP ? "step" : "layer") +
+         " dfa_wired=" + dfa_block_count(policy).to_s +
+         " frozen=" + @gx_frozen_count.to_s +
+         " taps=" + @gx_taps.to_s +
+         " emb_tapped=" + ((any_dfa && policy.length > 0 && policy[0] == POLICY_DFA) ? "1" : "0")
 
     TinyNN.tnn_pin_all_graph_b_nodes(@sess)
     TinyNN.tnn_realize_backward(@sess)

@@ -21,12 +21,12 @@ module Toy; module LLM; module Recipes
     def realize!(d_in, d_model, heads, d_ff, n_blocks, n_nodes, n_pairs,
                  n_classes, seed, init_scale, policy, cut, b_seed,
                  b_dist, b_scale, b_sigma, retro_classes, adapters,
-                 adapter_rank)
+                 adapter_rank, bytelm, gnorm)
       @gr_cache.realize_for_random_init(d_in, d_model, heads, d_ff,
                                         n_blocks, n_nodes, n_pairs,
                                         n_classes, seed, init_scale,
                                         retro_classes, adapters,
-                                        adapter_rank)
+                                        adapter_rank, bytelm, gnorm)
       result = @gr_cache.build_training_step(policy, cut, b_seed, b_dist,
                                              b_scale, b_sigma)
       @gr_t_loss   = result[0]
@@ -67,6 +67,28 @@ module Toy; module LLM; module Recipes
       TinyNN.tnn_upload_from_float_array(@gr_cache.sess, @gr_cache.t_x,
         x_flat, @gr_cache.gx_nodes * @gr_cache.gx_d_in)
       nil
+    end
+
+    # toy#170 — ONE bytelm step. Uploads ONLY the tensors the bytelm
+    # graph actually consumes: tokens, labels, hp. NOT t_x / t_idx_a /
+    # t_idx_b / t_inc — under bytelm those are allocated but unreferenced,
+    # and an input tensor nothing in the graph consumes has NO BACKEND
+    # BUFFER, so the upload aborts inside ggml_backend_tensor_set
+    # (toy#154's landmine, same shape as the empty-tap-family guard).
+    def step_bytelm!(tokens, m_labels, m_hp, is_first)
+      s = @gr_cache.sess
+      if is_first
+        TinyNN.tnn_graph_reset(s)
+      else
+        TinyNN.tnn_graph_reset_grads_only(s)
+      end
+      TinyNN.tnn_upload_from_int_array(s, @gr_cache.t_tokens, tokens,
+                                       @gr_cache.gx_nodes)
+      TinyNN.upload_row_major(s, @gr_t_labels, m_labels)
+      TinyNN.upload_row_major(s, @gr_t_hp,     m_hp)
+      TinyNN.tnn_compute_backward(s)
+      loss_mat = TinyNN.download_row_major(s, @gr_t_loss, 1, 1)
+      loss_mat.flat[0]
     end
 
     # ONE step over a batch of labelled pairs. `inc_flat` is the

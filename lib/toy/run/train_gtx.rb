@@ -75,6 +75,7 @@ require_relative "../io/json_builder"
 require_relative "../io/json"
 require_relative "../io/toy_events"
 require_relative "../io/toy_gtx_task"
+require_relative "../io/toy_ae_task"
 require_relative "../llm/engine/gtx_engine"
 require_relative "../llm/recipes/gtx_graph"
 require_relative "../llm/adamw"
@@ -98,9 +99,19 @@ N_TYPES     = (ENV["GTX_TYPES"]    || "4").to_i
 D_FEAT      = (ENV["GTX_FEATURES"] || "16").to_i
 NOISE_S     = ENV["GTX_NOISE"] || ""
 TASK_S      = ENV["GTX_TASK"] || ""
+# toy#170 (P3) — the AR byte-LM task on a CAUSAL attention body.
+TEXT        = ENV["GTX_TEXT"] || ""
+CONTEXT     = (ENV["GTX_CONTEXT"] || "128").to_i
+# NOTE: no ||g|| instrument on this lane. The ssm-lane version (toy#169)
+# works; the gtx port built the node and realized it as ZEROS, and a
+# metric that silently reads 0.0 is worse than no metric — it is the
+# exact failure class this arc has been chasing. Deferred rather than
+# shipped broken; P3's expected failure mode is not instability anyway
+# (attention has no recurrence), so it is not on the critical path.
 N_PAIRS     = (ENV["GTX_PAIRS"]     || "128").to_i
 VAL_BATCHES = (ENV["GTX_VAL_BATCHES"] || "8").to_i
 TASK_SEED   = (ENV["GTX_TASK_SEED"] || "7").to_i
+GTX_TASK_SEED_BL = TASK_SEED + 1
 LR_S        = ENV["GTX_LR"] || ""
 WARMUP_S    = ENV["GTX_WARMUP"] || ""
 B_SEED      = (ENV["GTX_B_SEED"] || "1234").to_i
@@ -209,15 +220,22 @@ if CUT_S.length > 0 && CUT_S != "layer" && CUT_S != "step"
   puts "toy-train-gtx: GTX_DFA_CUT " + CUT_S + " unsupported (layer|step)"
   exit 1
 end
-if TASK_S.length > 0 && TASK_S != "relational" && TASK_S != "local"
-  puts "toy-train-gtx: GTX_TASK " + TASK_S + " unsupported (relational|local)"
+if TASK_S == "bytelm" && TEXT.length == 0
+  puts "toy-train-gtx: GTX_TASK bytelm needs GTX_TEXT <pack-prefix> —" +
+       " autoregressive next-byte over REAL text, no synthetic fallback" +
+       " (prep/fetch_text.rb)"
+  exit 1
+end
+if TASK_S.length > 0 && TASK_S != "relational" && TASK_S != "local" && TASK_S != "bytelm"
+  puts "toy-train-gtx: GTX_TASK " + TASK_S + " unsupported (relational|local|bytelm)"
   exit 1
 end
 
 TASK_KIND = TASK_S == "local" ? GtxTask::KIND_LOCAL : GtxTask::KIND_RELATIONAL
 DFA_CUT   = CUT_S == "step" ? Toy::LLM::Engine::GtxEngine::CUT_STEP :
                               Toy::LLM::Engine::GtxEngine::CUT_LAYER
-N_CLASSES = N_TYPES * N_TYPES
+IS_BYTELM = TASK_S == "bytelm"
+N_CLASSES = IS_BYTELM ? 256 : (N_TYPES * N_TYPES)
 # The retrofit label is the MODULAR SUM, so it has TY classes, not TY*TY.
 # That is not a detail: a same-cardinality relabeling is a BIJECTION and a
 # retrained linear head absorbs it, which would leave the frozen control
@@ -316,6 +334,58 @@ def num_or_null(x)
   end
 end
 
+# One window of CONTEXT bytes; position i predicts byte i+1, so the
+# window reads CONTEXT + 1 bytes.
+def bl_fill!(bl_task, tokens, m_labels, start, ctx, classes)
+  k = 0
+  while k < ctx * classes
+    m_labels.flat[k] = 0.0
+    k = k + 1
+  end
+  t = 0
+  while t < ctx
+    tokens[t] = bl_task.at_tokens[start + t]
+    m_labels.flat[t * classes + bl_task.at_tokens[start + t + 1]] = 1.0
+    t = t + 1
+  end
+  nil
+end
+
+# EXACT held-out bits/byte from the logits. An AR LM scores itself — no
+# judge model, no sampler.
+def bl_bpb(buf, m_labels, n_pos, classes)
+  nll = 0.0
+  i = 0
+  while i < n_pos
+    base = i * classes
+    mx = buf[base]
+    c = 1
+    while c < classes
+      if buf[base + c] > mx
+        mx = buf[base + c]
+      end
+      c = c + 1
+    end
+    tot = 0.0
+    c2 = 0
+    while c2 < classes
+      tot = tot + Math.exp(buf[base + c2] - mx)
+      c2 = c2 + 1
+    end
+    tgt = 0
+    c3 = 0
+    while c3 < classes
+      if m_labels.flat[base + c3] > 0.5
+        tgt = c3
+      end
+      c3 = c3 + 1
+    end
+    nll = nll - ((buf[base + tgt] - mx) - Math.log(tot))
+    i = i + 1
+  end
+  nll / (n_pos.to_f * Math.log(2.0))
+end
+
 def hits_in(buf, labels, n, classes)
   hit = 0
   i = 0
@@ -404,13 +474,14 @@ POLICY = parse_gtx_policy(POLICY_S, N_BLOCKS)
 
 task = GtxTask.new(TASK_KIND, D_FEAT, N_ENTITIES, N_TYPES, DEGREE,
                    TASK_SEED, NOISE)
-N_NODES = task.gt_nodes
+N_NODES = IS_BYTELM ? CONTEXT : task.gt_nodes
 
 recipe = Toy::LLM::Recipes::GtxGraph.new
 recipe.realize!(D_FEAT, D_MODEL, N_HEADS, D_FF, N_BLOCKS, N_NODES,
                 N_PAIRS, N_CLASSES, SEED, 1.0, POLICY, DFA_CUT, B_SEED,
                 dist_code(B_DIST_S), scale_code(B_SCALE_S),
-                scale_sigma(B_SCALE_S), RETRO_CLASSES, N_ADAPTERS, AD_RANK)
+                scale_sigma(B_SCALE_S), RETRO_CLASSES, N_ADAPTERS, AD_RANK,
+                IS_BYTELM ? 1 : 0, 0)
 ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe.gr_cache.sess)
 
 # toy#164 — a loaded backbone REPLACES the pretrain phase. The weights
@@ -430,7 +501,43 @@ end
 # does not need the retrieval this lane exists to measure.
 x_flat = Array.new(N_NODES * D_FEAT, 0.0)
 mask_flat = Array.new(N_NODES * N_NODES, 0.0)
-task.fill_mask!(mask_flat)
+
+# toy#170 — the byte corpus, and a CAUSAL mask. Causality is a DATA
+# change here, not a graph change: gtx's mask is a persistent [N, N]
+# additive input applied pre-softmax, so the relational and causal arms
+# share one realized graph. -30 rather than -inf for the same reason the
+# adjacency uses it (a fully-masked softmax row would go NaN).
+bl_task = AeTask.new(CONTEXT + 1, GTX_TASK_SEED_BL)
+BL_SPLIT = 0
+BL_TRAIN_HI = 0
+BL_VAL_HI = 0
+if IS_BYTELM
+  if bl_task.load_pack!(TEXT) != 0
+    exit 1
+  end
+  ntok = bl_task.at_n_tokens
+  BL_SPLIT = ntok - ntok / 10
+  BL_TRAIN_HI = BL_SPLIT - CONTEXT - 1
+  BL_VAL_HI = ntok - CONTEXT - 1
+  if BL_TRAIN_HI < 1 || BL_VAL_HI < BL_SPLIT
+    puts "toy-train-gtx: corpus too short for GTX_CONTEXT " + CONTEXT.to_s
+    exit 1
+  end
+  qi = 0
+  while qi < CONTEXT
+    kj = 0
+    while kj < CONTEXT
+      mask_flat[qi * CONTEXT + kj] = kj <= qi ? 0.0 : GtxTask::MASK_NEG
+      kj = kj + 1
+    end
+    qi = qi + 1
+  end
+  puts "corpus: pack=" + TEXT + " n_tokens=" + ntok.to_s +
+       " alphabet=" + bl_task.at_alphabet.to_s +
+       " context=" + CONTEXT.to_s + " split_at=" + BL_SPLIT.to_s
+else
+  task.fill_mask!(mask_flat)
+end
 recipe.upload_mask!(mask_flat)
 
 # The pair stream. Val pairs are materialised FIRST and training
@@ -440,9 +547,12 @@ recipe.upload_mask!(mask_flat)
 idx_a  = Array.new(N_PAIRS, 0)
 idx_b  = Array.new(N_PAIRS, 0)
 labels = Array.new(N_PAIRS, 0)
-m_labels  = Mat.new(N_PAIRS, N_CLASSES)
+LAB_ROWS  = IS_BYTELM ? N_NODES : N_PAIRS
+m_labels  = Mat.new(LAB_ROWS, N_CLASSES)
+bl_tokens = Array.new(N_NODES, 0)
+bl_starts = Array.new(VAL_BATCHES, 0)
 m_rlabels = Mat.new(N_PAIRS, RETRO_CLASSES)
-logit_buf = Array.new(N_PAIRS * N_CLASSES, 0.0)
+logit_buf = Array.new(LAB_ROWS * N_CLASSES, 0.0)
 
 # The held-out set is MATERIALISED FIRST — whole instances, features
 # included — and training then continues from where val stopped. Same
@@ -450,6 +560,14 @@ logit_buf = Array.new(N_PAIRS * N_CLASSES, 0.0)
 # into one LCG cycle, so a val stream can land inside the span training
 # later walks.
 task.reset_stream!(TASK_SEED + 1)
+if IS_BYTELM
+  bl_task.reset_stream!(TASK_SEED + 1)
+  bs = 0
+  while bs < VAL_BATCHES
+    bl_starts[bs] = bl_task.next_start_in(BL_SPLIT, BL_VAL_HI)
+    bs = bs + 1
+  end
+end
 VAL_N  = VAL_BATCHES * N_PAIRS
 val_x  = Array.new(VAL_BATCHES * N_NODES * D_FEAT, 0.0)
 val_a  = Array.new(VAL_N, 0)
@@ -639,32 +757,41 @@ while step < TOTAL_STEPS
   end
   m_hp = adamw.hp(phase_step)
 
+  if IS_BYTELM
+    bl_fill!(bl_task, bl_tokens, m_labels,
+             bl_task.next_start_in(0, BL_TRAIN_HI), N_NODES, N_CLASSES)
+  else
   task.resample!
   task.fill_features!(x_flat)
   recipe.upload_features!(x_flat)
+  end
   # The retrofit label applies ONLY in the retrofit phase. `in_pretrain`
   # is false in a plain (non-retrofit) run too, so keying off it alone
   # silently fed mod-sum labels to the 16-class head — caught by toy#160's
   # byte fixture, invisible in every other signal.
   in_retro_phase = RETROFIT && !in_pretrain
+  n_out = IS_BYTELM ? N_CLASSES : (in_retro_phase ? RETRO_CLASSES : N_CLASSES)
+  m_cur = in_retro_phase ? m_rlabels : m_labels
+  if !IS_BYTELM
   task.fill_pairs!(N_PAIRS, idx_a, idx_b, labels,
                    in_retro_phase ? GtxTask::LABEL_MODSUM : GtxTask::LABEL_PAIR)
   set_incidence!(inc_flat, prev_a, prev_b, idx_a, idx_b, N_PAIRS, N_NODES, step == 0)
-  n_out = in_retro_phase ? RETRO_CLASSES : N_CLASSES
-  m_cur = in_retro_phase ? m_rlabels : m_labels
   k = 0
   while k < N_PAIRS * n_out
     m_cur.flat[k] = 0.0
     k = k + 1
   end
+  end
   b = 0
-  while b < N_PAIRS
+  while b < N_PAIRS && !IS_BYTELM
     m_cur.flat[b * n_out + labels[b]] = 1.0
     b = b + 1
   end
 
   is_first = step == 0 || (RETROFIT && step == PRE_STEPS_EFF)
-  loss = recipe.step!(idx_a, idx_b, inc_flat, m_cur, m_hp, is_first)
+  loss = IS_BYTELM ?
+           recipe.step_bytelm!(bl_tokens, m_labels, m_hp, is_first) :
+           recipe.step!(idx_a, idx_b, inc_flat, m_cur, m_hp, is_first)
   final_loss = loss
   puts "step " + (step + 1).to_s + ": loss=" + loss.to_s
 
@@ -712,6 +839,28 @@ end
 
 # ---- held-out val. ----
 FINAL_OUT = RETROFIT ? RETRO_CLASSES : N_CLASSES
+if IS_BYTELM
+  bpb_sum = 0.0
+  vb = 0
+  while vb < VAL_BATCHES
+    bl_fill!(bl_task, bl_tokens, m_labels, bl_starts[vb], N_NODES, N_CLASSES)
+    recipe.step_bytelm!(bl_tokens, m_labels, val_hp, false)
+    rcb = TinyNN.tnn_download_to_f64_array(recipe.gr_cache.sess,
+            recipe.gr_cache.t_logits, logit_buf, N_NODES * N_CLASSES)
+    if rcb != 0
+      puts "toy-train-gtx: bytelm logits download failed: rc=" + rcb.to_s
+      exit 1
+    end
+    bpb_sum = bpb_sum + bl_bpb(logit_buf, m_labels, N_NODES, N_CLASSES)
+    vb = vb + 1
+  end
+  puts "bytelm: bpb=" + (bpb_sum / VAL_BATCHES.to_f).to_s +
+       " n=" + (VAL_BATCHES * N_NODES).to_s +
+       " routing=position_t head=bp vocab=256 attn=causal"
+  puts "graph: nodes=" + recipe.gr_cache.gx_graph_nodes.to_s +
+       " bytes=" + recipe.gr_cache.gx_graph_bytes.to_s
+  exit 0
+end
 fin = val_pass!(recipe, val_x, val_a, val_b, RETROFIT ? val_r : val_y,
                 x_flat, idx_a, idx_b, labels, inc_flat, prev_a, prev_b,
                 RETROFIT ? m_rlabels : m_labels, val_hp, logit_buf,
