@@ -67,6 +67,7 @@ require_relative "../io/json_builder"
 require_relative "../io/json"
 require_relative "../io/toy_events"
 require_relative "../io/toy_ssm_task"
+require_relative "../io/toy_ae_task"
 require_relative "../llm/engine/ssm_engine"
 require_relative "../llm/recipes/ssm_seq"
 require_relative "../llm/adamw"
@@ -89,6 +90,14 @@ SEQ_T       = (ENV["SSM_SEQ"]     || "64").to_i
 CONV_K      = (ENV["SSM_CONV_K"]  || "4").to_i
 N_CLASSES   = (ENV["SSM_CLASSES"] || "4").to_i
 TASK_S      = ENV["SSM_TASK"] || ""
+# toy#169 (P2) — the AR byte-LM task. Real text from a byte pack
+# (prep/fetch_text.rb), next-byte target at EVERY position.
+TEXT        = ENV["SSM_TEXT"] || ""
+# toy#169 — the FAIR stability control (toy#162's form). 0 = off, and
+# off builds no clip nodes at all, so every prior ssm cell is byte-null.
+CLIP_S      = ENV["SSM_CLIP_GRAD"] || ""
+CLIP        = CLIP_S.length > 0 ? CLIP_S.to_f : 0.0
+GNORM       = (ENV["SSM_GRAD_NORM"] || "") == "1"
 CUE_SPAN_S  = ENV["SSM_CUE_SPAN"] || ""
 NOISE_S     = ENV["SSM_NOISE"] || ""
 TASK_SEED   = (ENV["SSM_TASK_SEED"] || "7").to_i
@@ -154,11 +163,24 @@ if CUT_S.length > 0 && CUT_S != "layer" && CUT_S != "step"
   puts "toy-train-ssm: SSM_DFA_CUT " + CUT_S + " unsupported (layer|step)"
   exit 1
 end
-if TASK_S.length > 0 && TASK_S != "cue" && TASK_S != "mean"
-  puts "toy-train-ssm: SSM_TASK " + TASK_S + " unsupported (cue|mean)"
+if CLIP < 0.0
+  puts "toy-train-ssm: SSM_CLIP_GRAD must be > 0 (or unset), got " + CLIP.to_s
+  exit 1
+end
+if TASK_S == "bytelm" && TEXT.length == 0
+  puts "toy-train-ssm: SSM_TASK bytelm needs SSM_TEXT <pack-prefix> —" +
+       " this task is autoregressive next-byte prediction over REAL text" +
+       " and has no synthetic fallback (prep/fetch_text.rb)"
+  exit 1
+end
+if TASK_S.length > 0 && TASK_S != "cue" && TASK_S != "mean" && TASK_S != "bytelm"
+  puts "toy-train-ssm: SSM_TASK " + TASK_S + " unsupported (cue|mean|bytelm)"
   exit 1
 end
 
+IS_BYTELM = TASK_S == "bytelm"
+# The byte-LM head is 256-way; the classification head keeps SSM_CLASSES.
+EFF_CLASSES = IS_BYTELM ? 256 : N_CLASSES
 TASK_KIND = TASK_S == "mean" ? SsmTask::KIND_MEAN : SsmTask::KIND_CUE
 SELECTION = SELECT_S == "lti" ? Toy::LLM::Engine::SsmEngine::SELECT_LTI :
                                 Toy::LLM::Engine::SsmEngine::SELECT_SELECTIVE
@@ -288,10 +310,11 @@ end
 POLICY = parse_ssm_policy(POLICY_S, N_LAYERS)
 
 recipe = Toy::LLM::Recipes::SsmSeq.new
-recipe.realize!(D_MODEL, D_INNER, SEQ_T, BATCH, N_CLASSES, N_LAYERS,
+recipe.realize!(D_MODEL, D_INNER, SEQ_T, BATCH, EFF_CLASSES, N_LAYERS,
                 CONV_K, SELECTION, SEED, 1.0, DT_INIT,
                 POLICY, DFA_CUT, B_SEED, dist_code(B_DIST_S),
-                scale_code(B_SCALE_S), scale_sigma(B_SCALE_S))
+                scale_code(B_SCALE_S), scale_sigma(B_SCALE_S),
+                IS_BYTELM ? 1 : 0, CLIP, GNORM ? 1 : 0)
 # tao#flow-json-emit (#25): self-describing run bundle.
 ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe.sq_cache.sess)
 
@@ -301,9 +324,93 @@ task.reset_stream!(TASK_SEED + 1)
 
 SEQ_FLOATS = SEQ_T * BATCH * D_MODEL
 x_flat = Array.new(SEQ_FLOATS, 0.0)
-m_labels = Mat.new(BATCH, N_CLASSES)
+# bytelm's readout is PER POSITION, so the label matrix and the logit
+# buffer are T*B tall, not B.
+LAB_ROWS = IS_BYTELM ? (SEQ_T * BATCH) : BATCH
+m_labels = Mat.new(LAB_ROWS, EFF_CLASSES)
 labels = Array.new(BATCH, 0)
-logit_buf = Array.new(BATCH * N_CLASSES, 0.0)
+logit_buf = Array.new(LAB_ROWS * EFF_CLASSES, 0.0)
+tokens = Array.new(SEQ_T * BATCH, 0)
+
+# ---- toy#169: the byte corpus, and a train/val split by SPAN ----
+bl_task = AeTask.new(SEQ_T + 1, TASK_SEED)
+BL_SPLIT = 0
+BL_TRAIN_HI = 0
+BL_VAL_HI = 0
+if IS_BYTELM
+  if bl_task.load_pack!(TEXT) != 0
+    exit 1
+  end
+  n_tok = bl_task.at_n_tokens
+  BL_SPLIT = n_tok - n_tok / 10
+  BL_TRAIN_HI = BL_SPLIT - SEQ_T - 1
+  BL_VAL_HI = n_tok - SEQ_T - 1
+  if BL_TRAIN_HI < 1 || BL_VAL_HI < BL_SPLIT
+    puts "toy-train-ssm: corpus too short for SSM_SEQ " + SEQ_T.to_s
+    exit 1
+  end
+  puts "corpus: pack=" + TEXT + " n_tokens=" + n_tok.to_s +
+       " alphabet=" + bl_task.at_alphabet.to_s +
+       " split_at=" + BL_SPLIT.to_s
+end
+
+# Fill one batch of windows: tokens step-major (t * batch + b), labels
+# the NEXT byte at each position. Position t predicts byte t+1, so a
+# window reads SEQ_T + 1 bytes.
+def bl_fill!(bl_task, tokens, m_labels, starts, batch, t_len, classes)
+  k = 0
+  while k < t_len * batch * classes
+    m_labels.flat[k] = 0.0
+    k = k + 1
+  end
+  b = 0
+  while b < batch
+    t = 0
+    while t < t_len
+      tokens[t * batch + b] = bl_task.at_tokens[starts[b] + t]
+      m_labels.flat[(t * batch + b) * classes + bl_task.at_tokens[starts[b] + t + 1]] = 1.0
+      t = t + 1
+    end
+    b = b + 1
+  end
+  nil
+end
+
+# Exact held-out bits/byte from the logits — an AR LM scores itself, so
+# there is no judge model and no sampler here (the whole class of P1b
+# problems does not arise).
+def bl_bpb(buf, m_labels, n_pos, classes)
+  nll = 0.0
+  i = 0
+  while i < n_pos
+    base = i * classes
+    mx = buf[base]
+    c = 1
+    while c < classes
+      if buf[base + c] > mx
+        mx = buf[base + c]
+      end
+      c = c + 1
+    end
+    tot = 0.0
+    c2 = 0
+    while c2 < classes
+      tot = tot + Math.exp(buf[base + c2] - mx)
+      c2 = c2 + 1
+    end
+    tgt = 0
+    c3 = 0
+    while c3 < classes
+      if m_labels.flat[base + c3] > 0.5
+        tgt = c3
+      end
+      c3 = c3 + 1
+    end
+    nll = nll - ((buf[base + tgt] - mx) - Math.log(tot))
+    i = i + 1
+  end
+  nll / (n_pos.to_f * Math.log(2.0))
+end
 
 adamw = Toy::AdamW.for_from_scratch
 adamw.lr = LR
@@ -317,8 +424,22 @@ adamw.lr = LR
 VAL_N = VAL_BATCHES * BATCH
 val_x = Array.new(VAL_BATCHES * SEQ_FLOATS, 0.0)
 val_y = Array.new(VAL_N, 0)
+# bytelm: the held-out windows are STARTS in the val span, drawn first
+# and stored, exactly the same disjointness discipline.
+bl_starts = Array.new(BATCH, 0)
+bl_val_starts = Array.new(VAL_BATCHES * BATCH, 0)
+if IS_BYTELM
+  bl_task.reset_stream!(TASK_SEED + 1)
+  vs = 0
+  while vs < VAL_BATCHES * BATCH
+    bl_val_starts[vs] = bl_task.next_start_in(BL_SPLIT, BL_VAL_HI)
+    vs = vs + 1
+  end
+end
 vfill = 0
-while vfill < VAL_BATCHES
+# bytelm materialises its held-out set as window STARTS above, so this
+# feature-path fill is skipped wholesale rather than branched inside.
+while vfill < VAL_BATCHES && !IS_BYTELM
   task.fill_batch!(BATCH, x_flat, labels)
   vb0 = vfill * SEQ_FLOATS
   vi = 0
@@ -422,21 +543,39 @@ while step < STEPS
   end
   m_hp = adamw.hp(step)
 
+  if IS_BYTELM
+    bs = 0
+    while bs < BATCH
+      bl_starts[bs] = bl_task.next_start_in(0, BL_TRAIN_HI)
+      bs = bs + 1
+    end
+    bl_fill!(bl_task, tokens, m_labels, bl_starts, BATCH, SEQ_T, EFF_CLASSES)
+  end
   task.fill_batch!(BATCH, x_flat, labels)
   k = 0
-  while k < BATCH * N_CLASSES
+  while k < BATCH * N_CLASSES && !IS_BYTELM
     m_labels.flat[k] = 0.0
     k = k + 1
   end
   b = 0
-  while b < BATCH
+  while b < BATCH && !IS_BYTELM
     m_labels.flat[b * N_CLASSES + labels[b]] = 1.0
     b = b + 1
   end
 
-  loss = recipe.step!(x_flat, m_labels, m_hp, step == 0)
+  if IS_BYTELM
+    loss = recipe.step_tokens!(tokens, m_labels, m_hp, step == 0)
+  else
+    loss = recipe.step!(x_flat, m_labels, m_hp, step == 0)
+  end
   final_loss = loss
-  puts "step " + (step + 1).to_s + ": loss=" + loss.to_s
+  gn_s = ""
+  if GNORM && recipe.sq_cache.t_gnorm != TinyNN.tnn_null_ptr
+    gnm = TinyNN.download_row_major(recipe.sq_cache.sess,
+            recipe.sq_cache.t_gnorm, 1, 1)
+    gn_s = " gnorm=" + gnm.flat[0].to_s
+  end
+  puts "step " + (step + 1).to_s + ": loss=" + loss.to_s + gn_s
 
   if EVENTS.length > 0
     rc_l = TinyNN.tnn_download_to_f64_array(recipe.sq_cache.sess,
@@ -482,6 +621,7 @@ val_hp.flat[6] = adamw.beta2
 val_hits = 0
 val_seen = 0
 val_loss_sum = 0.0
+bpb_sum = 0.0
 vb = 0
 while vb < VAL_BATCHES
   src0 = vb * SEQ_FLOATS
@@ -495,30 +635,54 @@ while vb < VAL_BATCHES
     labels[vr] = val_y[vb * BATCH + vr]
     vr = vr + 1
   end
+  if IS_BYTELM
+    bv = 0
+    while bv < BATCH
+      bl_starts[bv] = bl_val_starts[vb * BATCH + bv]
+      bv = bv + 1
+    end
+    bl_fill!(bl_task, tokens, m_labels, bl_starts, BATCH, SEQ_T, EFF_CLASSES)
+  end
   k2 = 0
-  while k2 < BATCH * N_CLASSES
+  while k2 < BATCH * N_CLASSES && !IS_BYTELM
     m_labels.flat[k2] = 0.0
     k2 = k2 + 1
   end
   b2 = 0
-  while b2 < BATCH
+  while b2 < BATCH && !IS_BYTELM
     m_labels.flat[b2 * N_CLASSES + labels[b2]] = 1.0
     b2 = b2 + 1
   end
-  vloss = recipe.step!(x_flat, m_labels, val_hp, false)
+  vloss = IS_BYTELM ?
+            recipe.step_tokens!(tokens, m_labels, val_hp, false) :
+            recipe.step!(x_flat, m_labels, val_hp, false)
   val_loss_sum = val_loss_sum + vloss
   rc_v = TinyNN.tnn_download_to_f64_array(recipe.sq_cache.sess,
-           recipe.sq_cache.t_logits, logit_buf, BATCH * N_CLASSES)
+           recipe.sq_cache.t_logits, logit_buf, LAB_ROWS * EFF_CLASSES)
   if rc_v != 0
     puts "toy-train-ssm: val logits download failed: rc=" + rc_v.to_s
     exit 1
   end
-  val_hits = val_hits + hits_in(logit_buf, labels, BATCH, N_CLASSES)
-  val_seen = val_seen + BATCH
+  if IS_BYTELM
+    # EXACT held-out bits/byte: an AR LM scores itself, so there is no
+    # judge model and no sampler — the whole class of P1b measurement
+    # problems does not arise here.
+    bpb_sum = bpb_sum + bl_bpb(logit_buf, m_labels, LAB_ROWS, EFF_CLASSES)
+    val_seen = val_seen + LAB_ROWS
+  else
+    val_hits = val_hits + hits_in(logit_buf, labels, BATCH, N_CLASSES)
+    val_seen = val_seen + BATCH
+  end
   vb = vb + 1
 end
-val_acc  = val_hits.to_f / val_seen.to_f
+val_acc  = IS_BYTELM ? 0.0 : (val_hits.to_f / val_seen.to_f)
 val_loss = val_loss_sum / VAL_BATCHES.to_f
+if IS_BYTELM
+  puts "bytelm: bpb=" + (bpb_sum / VAL_BATCHES.to_f).to_s +
+       " n=" + val_seen.to_s +
+       " routing=position_t" +
+       " head=bp vocab=" + EFF_CLASSES.to_s
+end
 puts "val: acc=" + val_acc.to_s + " loss=" + val_loss.to_s + " n=" + val_seen.to_s
 # The graph size rides stdout so a sweep over SSM_SEQ can read the
 # arms' scaling without opening a bundle. Read the caveat on

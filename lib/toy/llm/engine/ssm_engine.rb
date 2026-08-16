@@ -152,6 +152,8 @@ class SsmEngine
   attr_accessor :sess,
                 :ssm_d_model, :ssm_d_inner, :ssm_t, :ssm_batch,
                 :ssm_classes, :ssm_layers, :ssm_conv_k, :ssm_selection,
+                :ssm_bytelm, :t_tokens, :ix_emb, :ssm_clip,
+                :ssm_gnorm, :t_gnorm,
                 :ssm_cut,
                 :ft_weights, :ft_m, :ft_v, :ft_din, :ft_dout, :ft_names,
                 :ft_layer, :ft_role,
@@ -180,6 +182,12 @@ class SsmEngine
     @ssm_t        = 0
     @ssm_batch    = 0
     @ssm_classes  = 0
+    @ssm_bytelm   = 0
+    @ssm_clip     = 0.0
+    @ssm_gnorm    = 0
+    @t_gnorm      = TinyNN.tnn_null_ptr
+    @t_tokens     = TinyNN.tnn_null_ptr
+    @ix_emb       = -1
     @ssm_layers   = 0
     @ssm_conv_k   = 0
     @ssm_selection = SELECT_SELECTIVE
@@ -220,7 +228,7 @@ class SsmEngine
   # so an lti run cannot silently keep a nonlinear path alive.
   def realize_for_random_init(d_model, d_inner, t_len, batch, n_classes,
                               n_layers, conv_k, selection, seed,
-                              init_scale, dt_init)
+                              init_scale, dt_init, bytelm)
     @ssm_d_model = d_model
     @ssm_d_inner = d_inner
     @ssm_t       = t_len
@@ -230,6 +238,7 @@ class SsmEngine
     @ssm_conv_k  = conv_k
     @ssm_selection = selection
     @ssm_dt_init = dt_init
+    @ssm_bytelm  = bytelm
 
     @sess = TinyNN.tnn_session_new(0)
     cap = t_len * n_layers * 200 + 262144
@@ -252,6 +261,14 @@ class SsmEngine
       li = li + 1
     end
     add_w(n_classes, d_model, "head", n_layers, ROLE_HEAD)
+    # toy#169 (P2) — the byte-LM path. An embedding table replaces the
+    # task's continuous features; everything else in the block is
+    # unchanged, so `--task bytelm` is the same body under a different
+    # input and a different readout.
+    if @ssm_bytelm == 1
+      @ix_emb = @ft_weights.length
+      add_w(n_classes, d_model, "emb", 0, ROLE_HEAD)
+    end
 
     wi = 0
     while wi < @ft_weights.length
@@ -264,6 +281,10 @@ class SsmEngine
     # the per-step views below slice and what the task generator writes.
     @t_x = TinyNN.tnn_input_2d_f32_persistent(@sess, t_len * batch, d_model)
     TinyNN.tnn_tensor_set_name(@t_x, "x")
+    if @ssm_bytelm == 1
+      @t_tokens = TinyNN.tnn_input_1d_i32_persistent(@sess, t_len * batch)
+      TinyNN.tnn_tensor_set_name(@t_tokens, "tokens")
+    end
 
     TinyNN.tnn_finalize_weights(@sess)
     upload_random_init!(seed, init_scale)
@@ -272,7 +293,9 @@ class SsmEngine
 
   # Build forward + CE + backward + the per-layer update rules.
   # Returns [t_loss, t_labels, t_hp].
-  def build_training_step(policy, cut, b_seed, b_dist, b_scale, b_sigma)
+  def build_training_step(policy, cut, b_seed, b_dist, b_scale, b_sigma, clip, gnorm)
+    @ssm_clip    = clip
+    @ssm_gnorm   = gnorm
     @ssm_cut     = cut
     @ssm_b_dist  = b_dist
     @ssm_b_scale = b_scale
@@ -286,10 +309,16 @@ class SsmEngine
 
     # The residual stream, one handle per timestep. Layer 0 reads views
     # into the persistent input; each layer replaces them.
+    # bytelm feeds EMBEDDED TOKENS through the same per-step views the
+    # feature path uses, so the recurrence below is untouched.
+    t_src = @t_x
+    if @ssm_bytelm == 1
+      t_src = TinyNN.tnn_get_rows(@sess, @ft_weights[@ix_emb], @t_tokens)
+    end
     xs = [TinyNN.tnn_null_ptr]; xs.pop
     ti = 0
     while ti < @ssm_t
-      xs.push(TinyNN.tnn_view_2d(@sess, @t_x, d, bt, d * 4, ti * bt * d * 4))
+      xs.push(TinyNN.tnn_view_2d(@sess, t_src, d, bt, d * 4, ti * bt * d * 4))
       ti = ti + 1
     end
 
@@ -407,12 +436,18 @@ class SsmEngine
             # no functional path to the prediction, and injecting the
             # global error into a tap that cannot change the prediction
             # leaves a linear surrogate with nothing to balance it.
-            if lj < @ssm_layers - 1 || tk == @ssm_t - 1
+            #
+            # toy#169: under `--task bytelm` this guard is RETIRED, not
+            # merely unused. The readout is PER POSITION, so every o_t
+            # determines its own prediction and the premise above is
+            # simply false there — the condition would now exclude taps
+            # that DO reach a readout.
+            if @ssm_bytelm == 1 || lj < @ssm_layers - 1 || tk == @ssm_t - 1
               TinyNN.tnn_set_output(t_o)
               taps_o.push(t_o)
             end
             taps_count = taps_count + 1
-          elsif tk == @ssm_t - 1
+          elsif @ssm_bytelm == 1 || tk == @ssm_t - 1
             # CUT_LAYER: ONE tap per layer, at the readout step. BPTT
             # inside the layer then carries that single injection back
             # through the whole recurrence, so every step's weights get
@@ -434,12 +469,26 @@ class SsmEngine
       lj = lj + 1
     end
 
-    # Readout at the LAST timestep (never a pool — toy_ssm_task.rb).
+    # Readout. Classification reads the LAST timestep (never a pool —
+    # toy_ssm_task.rb). bytelm reads EVERY position: the per-step outputs
+    # are concatenated in t order into [d, T*B] and the head applied
+    # once, so position t predicts byte t+1.
+    n_out = bt
+    t_read = xs[@ssm_t - 1]
+    if @ssm_bytelm == 1
+      t_read = xs[0]
+      ci = 1
+      while ci < @ssm_t
+        t_read = TinyNN.tnn_concat(@sess, t_read, xs[ci], 1)
+        ci = ci + 1
+      end
+      n_out = @ssm_t * bt
+    end
     @t_logits = TinyNN.tnn_matmul(@sess,
-                  weight_of(@ssm_layers, ROLE_HEAD), xs[@ssm_t - 1])
+                  weight_of(@ssm_layers, ROLE_HEAD), t_read)
     TinyNN.tnn_set_output(@t_logits)
 
-    @t_labels = TinyNN.tnn_input_2d_f32(@sess, bt, @ssm_classes)
+    @t_labels = TinyNN.tnn_input_2d_f32(@sess, n_out, @ssm_classes)
     @t_hp     = TinyNN.tnn_input_1d_f32(@sess, 7)
     @t_loss   = TinyNN.tnn_cross_entropy_loss(@sess, @t_logits, @t_labels)
     TinyNN.tnn_set_output(@t_loss)
@@ -451,7 +500,7 @@ class SsmEngine
       t_p = TinyNN.tnn_softmax(@sess, @t_logits)
       e_det = TinyNN.tnn_detach(@sess,
                 TinyNN.tnn_scale(@sess,
-                  TinyNN.tnn_sub(@sess, t_p, @t_labels), 1.0 / bt.to_f))
+                  TinyNN.tnn_sub(@sess, t_p, @t_labels), 1.0 / n_out.to_f))
       t_sur = TinyNN.tnn_null_ptr
       sur_started = false
       # ONE feedback matrix per tap family, shared across layers and
@@ -484,11 +533,39 @@ class SsmEngine
         @ssm_b_douts.push(d)
         t_po = TinyNN.tnn_matmul(@sess, t_bo, e_det)             # [d, B]
       end
+      # THE ROUTING, and it is the decision toy#169 turns on. In bytelm
+      # the per-step taps of a layer are concatenated in the SAME t order
+      # as the readout, so the tap at step t multiplies the error at
+      # POSITION t and nothing else. That is design (a) — local-in-time
+      # credit, no temporal path — which is what keeps the kill-BPTT
+      # claim (F19/F21) intact and makes `layer` vs `step` mean here what
+      # they mean on the classification task. Routing aggregated future
+      # errors into the tap would be more BP-like and would dissolve the
+      # distinction being measured.
+      if @ssm_bytelm == 1
+        taps_h = fold_by_layer(taps_h, @ssm_t)
+        taps_o = fold_by_layer(taps_o, @ssm_t)
+        # THE EMBEDDING TAP. `emb` sits BELOW layer 0's input detach, so
+        # under a dfa policy no gradient reaches it and it would sit at
+        # init forever — the DFA arm learning on a frozen random
+        # embedding while BP trains one. That is an unfairness, not a
+        # credit rule, so the embedding gets direct feedback like every
+        # other tapped quantity.
+        #
+        # Added AFTER the fold on purpose: t_src is ALREADY [d_model,
+        # T*B] with the same t*B+b column order as the readout, so
+        # folding it would mis-group. Its width is d_model, so it joins
+        # the taps_o family and shares that family's B matrix.
+        if policy.length > 0 && policy[0] == POLICY_DFA
+          TinyNN.tnn_set_output(t_src)
+          taps_o.push(t_src)
+        end
+      end
       hi = 0
       while hi < taps_h.length
         t_term = TinyNN.tnn_sum_rows(@sess,
                    TinyNN.tnn_reshape_2d(@sess,
-                     TinyNN.tnn_mul(@sess, taps_h[hi], t_ph), dn * bt, 1))
+                     TinyNN.tnn_mul(@sess, taps_h[hi], t_ph), dn * n_out, 1))
         if sur_started
           t_sur = TinyNN.tnn_add(@sess, t_sur, t_term)
         else
@@ -501,7 +578,7 @@ class SsmEngine
       while oi < taps_o.length
         t_term = TinyNN.tnn_sum_rows(@sess,
                    TinyNN.tnn_reshape_2d(@sess,
-                     TinyNN.tnn_mul(@sess, taps_o[oi], t_po), d * bt, 1))
+                     TinyNN.tnn_mul(@sess, taps_o[oi], t_po), d * n_out, 1))
         if sur_started
           t_sur = TinyNN.tnn_add(@sess, t_sur, t_term)
         else
@@ -522,6 +599,42 @@ class SsmEngine
     # toy#150: every extend_backward_graph below MUST come after this.
     TinyNN.tnn_build_backward(@sess)
 
+    # toy#169 — the FAIR STABILITY CONTROL, carried over from toy#162's
+    # lstm lane unchanged in form. DFA on this body needs ~100x lower LR
+    # than BP to stay finite (measured: every LR >= 1e-4 diverges through
+    # Inf to NaN while BP is stable at 3e-3), so "DFA trails BP" would
+    # otherwise be reporting a stability difference as a credit-rule
+    # result. toy#157 met the mirror of this with BP as the fragile arm,
+    # and toy#162 is the control that settled it there.
+    #
+    # ONE factor over every parameter that will be STEPPED, applied to
+    # the gradient BEFORE the AdamW moments. It cannot be done on the LR:
+    # under Adam, clipping changes what m and v ACCUMULATE and an LR
+    # scale does not, so a "clip" on the hp vector would be a different
+    # experiment wearing this one's name.
+    t_clip = TinyNN.tnn_null_ptr
+    if @ssm_clip > 0.0
+      t_clip = clip_scale!(policy)
+    end
+
+    # toy#169 — ||g|| AS A NUMBER. The surrogate's magnitude was an
+    # ARGUMENT when this lane was built ("error scaled 1/(T*B) against
+    # T*B times more terms, so comparable to the classification case")
+    # and arguments are what keep being wrong here. This makes it
+    # measurable: the same global norm clip_scale! computes, exposed so
+    # chain and dfa can be compared on the same body.
+    #
+    # Forced into the graph with extend_backward_graph because nothing
+    # consumes it — a set_output alone would leave it unrealized.
+    if @ssm_gnorm == 1
+      @t_gnorm = grad_norm!(policy)
+      if @t_gnorm != TinyNN.tnn_null_ptr
+        TinyNN.tnn_set_output(@t_gnorm)
+        TinyNN.tnn_extend_backward_graph(@sess, @t_gnorm)
+      end
+    end
+
+
     wk = 0
     while wk < @ft_weights.length
       lyr = @ft_layer[wk]
@@ -529,11 +642,23 @@ class SsmEngine
       if lyr < @ssm_layers && lyr < policy.length
         mode = policy[lyr]
       end
+      # toy#169 — the byte EMBEDDING sits BELOW layer 0's input detach,
+      # so under `dfa` the chain path gives it nothing. It is not
+      # excluded from the step: it now has its OWN DFA tap (see the
+      # taps_o fold above), so it trains by direct feedback like every
+      # other tapped quantity. An exclusion guard lived here briefly
+      # during the toy#169 audit, as a diagnostic for a hypothesis that
+      # was then refuted — and left in, it silently CANCELLED the tap:
+      # the gradient was computed and then never applied, which is
+      # exactly what made the tap look inert.
       # The head (layer index == n_layers) always trains by BP.
       if lyr < @ssm_layers && mode == POLICY_FROZEN
         # No optimizer step: the layer stays at init.
       else
         tg = TinyNN.tnn_tensor_grad(@sess, @ft_weights[wk])
+        if @ssm_clip > 0.0 && t_clip != TinyNN.tnn_null_ptr
+          tg = TinyNN.tnn_mul(@sess, tg, t_clip)
+        end
         to = TinyNN.tnn_opt_step_adamw(@sess, @ft_weights[wk], tg,
                                         @ft_m[wk], @ft_v[wk], @t_hp)
         TinyNN.tnn_extend_backward_graph(@sess, to)
@@ -614,6 +739,111 @@ class SsmEngine
       bi = bi + 1
     end
     nil
+  end
+
+  # scale = clip / max(clip, ||g||) — the standard global-norm clip
+  # (Pascanu et al. 2013), built IN THE GRAPH as a [1,1] tensor. ggml has
+  # no max/abs, so max(c, n) is (n + c + |n - c|)/2 with |x| = sqrt(x*x),
+  # exact for the scalars involved and using only ops that already exist
+  # (no new shim, hence no CUDA/Metal mirror obligation).
+  #
+  # A FROZEN layer contributes nothing to the norm: clipping a gradient
+  # nobody applies would change the scale the other layers see for no
+  # reason.
+  # ||g|| over every parameter that will be STEPPED — the same set and
+  # the same sum clip_scale! uses, split out so it can be observed
+  # without clipping anything.
+  def grad_norm!(policy)
+    t_sum = TinyNN.tnn_null_ptr
+    started = false
+    ci = 0
+    while ci < @ft_weights.length
+      lyr = @ft_layer[ci]
+      mode = POLICY_CHAIN
+      if lyr < @ssm_layers && lyr < policy.length
+        mode = policy[lyr]
+      end
+      if lyr < @ssm_layers && mode == POLICY_FROZEN
+        # not stepped: out of the norm
+      else
+        g = TinyNN.tnn_tensor_grad(@sess, @ft_weights[ci])
+        n = @ft_din[ci] * @ft_dout[ci]
+        sq = TinyNN.tnn_sum_rows(@sess,
+               TinyNN.tnn_reshape_2d(@sess, TinyNN.tnn_mul(@sess, g, g), n, 1))
+        if started
+          t_sum = TinyNN.tnn_add(@sess, t_sum, sq)
+        else
+          t_sum = sq
+          started = true
+        end
+      end
+      ci = ci + 1
+    end
+    if !started
+      return TinyNN.tnn_null_ptr
+    end
+    TinyNN.tnn_sqrt(@sess, t_sum)
+  end
+
+  def clip_scale!(policy)
+    t_sum = TinyNN.tnn_null_ptr
+    started = false
+    ci = 0
+    while ci < @ft_weights.length
+      lyr = @ft_layer[ci]
+      mode = POLICY_CHAIN
+      if lyr < @ssm_layers && lyr < policy.length
+        mode = policy[lyr]
+      end
+      if lyr < @ssm_layers && mode == POLICY_FROZEN
+        # not stepped: out of the norm
+      else
+        g = TinyNN.tnn_tensor_grad(@sess, @ft_weights[ci])
+        n = @ft_din[ci] * @ft_dout[ci]
+        sq = TinyNN.tnn_sum_rows(@sess,
+               TinyNN.tnn_reshape_2d(@sess, TinyNN.tnn_mul(@sess, g, g), n, 1))
+        if started
+          t_sum = TinyNN.tnn_add(@sess, t_sum, sq)
+        else
+          t_sum = sq
+          started = true
+        end
+      end
+      ci = ci + 1
+    end
+    if !started
+      return TinyNN.tnn_null_ptr
+    end
+    t_norm = TinyNN.tnn_sqrt(@sess, t_sum)
+    t_d    = TinyNN.tnn_scale_bias(@sess, t_norm, 1.0, -@ssm_clip)
+    t_abs  = TinyNN.tnn_sqrt(@sess, TinyNN.tnn_mul(@sess, t_d, t_d))
+    t_max  = TinyNN.tnn_scale(@sess,
+               TinyNN.tnn_add(@sess,
+                 TinyNN.tnn_scale_bias(@sess, t_norm, 1.0, @ssm_clip), t_abs),
+               0.5)
+    t_ones = TinyNN.tnn_scale_bias(@sess, t_max, 0.0, 1.0)
+    TinyNN.tnn_scale(@sess, TinyNN.tnn_div(@sess, t_ones, t_max), @ssm_clip)
+  end
+
+  # toy#169 — concatenate consecutive runs of `t` per-step taps into one
+  # [dout, T*B] tensor each, preserving t order so the tap columns line
+  # up with the concatenated per-position readout. That alignment IS the
+  # routing decision: the tap at step t multiplies the error at position
+  # t and nothing else (design (a), local-in-time credit).
+  def fold_by_layer(taps, t)
+    out = [TinyNN.tnn_null_ptr]; out.pop
+    i = 0
+    while i + t <= taps.length
+      acc = taps[i]
+      k = 1
+      while k < t
+        acc = TinyNN.tnn_concat(@sess, acc, taps[i + k], 1)
+        k = k + 1
+      end
+      out.push(acc)
+      i = i + t
+    end
+    out
   end
 
   def param_count

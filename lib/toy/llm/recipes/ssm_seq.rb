@@ -22,13 +22,13 @@ module Toy; module LLM; module Recipes
 
     def realize!(d_model, d_inner, t_len, batch, n_classes, n_layers,
                  conv_k, selection, seed, init_scale, dt_init,
-                 policy, cut, b_seed, b_dist, b_scale, b_sigma)
+                 policy, cut, b_seed, b_dist, b_scale, b_sigma, bytelm, clip, gnorm)
       @sq_cache.realize_for_random_init(d_model, d_inner, t_len, batch,
                                         n_classes, n_layers, conv_k,
                                         selection, seed, init_scale,
-                                        dt_init)
+                                        dt_init, bytelm)
       result = @sq_cache.build_training_step(policy, cut, b_seed,
-                                              b_dist, b_scale, b_sigma)
+                                              b_dist, b_scale, b_sigma, clip, gnorm)
       @sq_t_loss   = result[0]
       @sq_t_labels = result[1]
       @sq_t_hp     = result[2]
@@ -39,6 +39,9 @@ module Toy; module LLM; module Recipes
     # step-major ((t * batch + b) * d_model + j) — the column order the
     # engine's per-step views slice. `m_labels` is the [batch, classes]
     # one-hot the CE reads.
+    # toy#169: under bytelm the input is TOKEN IDS in the same
+    # step-major order (t * batch + b), embedded in-graph. `x_flat` is
+    # then unused and `tokens` carries the batch.
     def step!(x_flat, m_labels, m_hp, is_first)
       s = @sq_cache.sess
       if is_first
@@ -48,6 +51,22 @@ module Toy; module LLM; module Recipes
       end
       n = @sq_cache.ssm_t * @sq_cache.ssm_batch * @sq_cache.ssm_d_model
       TinyNN.tnn_upload_from_float_array(s, @sq_cache.t_x, x_flat, n)
+      TinyNN.upload_row_major(s, @sq_t_labels, m_labels)
+      TinyNN.upload_row_major(s, @sq_t_hp,     m_hp)
+      TinyNN.tnn_compute_backward(s)
+      loss_mat = TinyNN.download_row_major(s, @sq_t_loss, 1, 1)
+      loss_mat.flat[0]
+    end
+
+    def step_tokens!(tokens, m_labels, m_hp, is_first)
+      s = @sq_cache.sess
+      if is_first
+        TinyNN.tnn_graph_reset(s)
+      else
+        TinyNN.tnn_graph_reset_grads_only(s)
+      end
+      TinyNN.tnn_upload_from_int_array(s, @sq_cache.t_tokens, tokens,
+                                       @sq_cache.ssm_t * @sq_cache.ssm_batch)
       TinyNN.upload_row_major(s, @sq_t_labels, m_labels)
       TinyNN.upload_row_major(s, @sq_t_hp,     m_hp)
       TinyNN.tnn_compute_backward(s)
