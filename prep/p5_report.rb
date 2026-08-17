@@ -22,17 +22,25 @@ ARMS = ["bp-body", "frozen-body", "dfa-layer", "dfa-step"]
 # MODE=width    — the head-width sweep: B moves, effective rank pinned.
 # The two together are what decompose the output-dim law; neither does it
 # alone, which is why one script reads both and prints the same statistic.
+# MODE=rank     — the P6 ladder: ARITHMETIC rank moves at a PINNED head,
+#                 so B's width is constant and only the number of active
+#                 (mostly-noise) classes changes.
 MODE = ENV["MODE"] || "alphabet"
+HEAD = ENV["HEAD"] || "4096"
 DIRS = if !ARGV.empty?
          ARGV
        elsif MODE == "width"
          ["/srv/data/scratch/p5hw"]
+       elsif MODE == "rank"
+         ["/srv/data/scratch/p6"]
        else
          ["/srv/data/scratch/p5", "/srv/data/scratch/p4"]
        end
 # The x-axis value is read from each run's OWN provenance line, never
 # from the filename and never assumed.
-SERIES = MODE == "width" ?
+SERIES = MODE == "rank" ?
+  (ENV["RUNGS"] || "ae_shak_a65 ae_shak_a192 ae_shak_a380").split.map { |r| "#{r}_v#{HEAD}" } :
+  MODE == "width" ?
   ["v65", "v128", "v256", "v512", "v1024"] :
   # ae_shak_a65 and ae_shakespeare are the SAME TASK on the same text,
   # differing only in whether the ids are dense — so they are the control
@@ -59,6 +67,13 @@ def cells_for(arm, key)
         # measures the opposite axis and still produces plausible bpb.
         bad << "head width" unless body.include?("vocab=#{w} ")
         bad << "B width" unless body.include?("b_dim=#{w} ")
+      elsif MODE == "rank"
+        pack = key.sub(/_v\d+\z/, "")
+        # The rank ladder's whole claim is that ONLY the rank moved, so
+        # the pinned head is asserted on every cell alongside the pack.
+        bad << "corpus" unless body.include?("pack=data/#{pack} ")
+        bad << "head width" unless body.include?("vocab=#{HEAD} ")
+        bad << "B width" unless body.include?("b_dim=#{HEAD} ")
       else
         bad << "corpus" unless body.include?("pack=data/#{key} ")
       end
@@ -198,7 +213,7 @@ keys.combination(2).each do |a, b|
         mean(summary[a][:abs]) - mean(summary[b][:abs]), ta.abs, tf.abs]
 end
 puts
-if MODE != "width"
+if MODE == "alphabet"
 puts "== the inflation control's own check =="
 puts "  On ae_shak_a129 / a192 the added entropy is log2(m) on EVERY arm, so"
 puts "  `body worth` (frozen-bp) should be UNCHANGED from ae_shakespeare in"
@@ -212,7 +227,88 @@ end
 
 end
 
-dest = MODE == "width" ? "/tmp/p5hw_summary.json" : "/tmp/p5_summary.json"
+# ── the P6 pre-check: is the noise growth LINEAR in bits added? ──
+#
+# This gates the rest of the ladder. sd of absolute bits recovered was
+# 0.053 / 0.064 / 0.104 at b = 0 / 1 / 1.585 in P5 (head 256), i.e. about
+# `0.053 + 0.032*b` against a signal theory holds at ~0.2. Those were
+# measured at a DIFFERENT head, so they are not comparable to these and
+# are quoted only as the prior. What matters here is the slope at a
+# PINNED head, where rank is the only thing moving.
+#
+# If it is superlinear the ladder shortens, because the top rungs would
+# need seed counts nobody wants to pay: n scales as sd^2 for a fixed
+# effect.
+if MODE == "rank"
+  puts "== NOISE LINEARITY (the P6 pre-check) =="
+  base_ent = nil
+  pts = []
+  SERIES.each do |key|
+    next unless summary[key]
+    pack = key.sub(/_v\d+\z/, "")
+    jf = File.join("data", pack + ".json")
+    next unless File.file?(jf)
+    ent = JSON.parse(File.read(jf))["entropy"]
+    base_ent ||= ent
+    ns = summary[key][:seeds].size
+    # An sd from one or two seeds is not an sd. Including such a rung
+    # gave a NEGATIVE fitted slope and negative projected sd on partial
+    # data — which would have read as "noise SHRINKS with rank", the most
+    # convenient possible result and complete nonsense. Rungs below the
+    # minimum are listed and excluded, never silently dropped.
+    pts << [ent - base_ent, sd(summary[key][:abs]), summary[key][:alpha], key, ns]
+  end
+  MIN_SEEDS_FOR_SD = 5
+  usable, thin = pts.partition { |p| p[4] >= MIN_SEEDS_FOR_SD }
+  thin.each do |b, s, a, k, ns|
+    puts "  EXCLUDED %-16s rank %5d  n=%d seed(s) — an sd needs >= %d" %
+         [k.sub("_v#{HEAD}", ""), a, ns, MIN_SEEDS_FOR_SD]
+  end
+  pts = usable
+  if pts.size < 2
+    puts "  not enough usable rungs yet (#{pts.size} with n>=#{MIN_SEEDS_FOR_SD}) — the pre-check is not answerable"
+  else
+    puts "  rung            rank    bits added b   sd(abs)"
+    pts.each { |b, s, a, k, _n| puts "  %-14s %5d   %10.3f   %7.3f" % [k.sub("_v#{HEAD}", ""), a, b, s] }
+    # Least squares through the measured points. Two points give a slope
+    # with no residual, so it is reported as an increment, not a fit —
+    # calling a two-point line "linear" is exactly the over-reading this
+    # arc keeps catching.
+    n = pts.size
+    sx = pts.sum { |p| p[0] }; sy = pts.sum { |p| p[1] }
+    sxx = pts.sum { |p| p[0]**2 }; sxy = pts.sum { |p| p[0] * p[1] }
+    slope = (n * sxy - sx * sy) / (n * sxx - sx**2)
+    inter = (sy - slope * sx) / n
+    puts
+    puts "  fit: sd ~ %.4f + %.4f*b   (P5 prior at head 256: 0.053 + 0.032*b)" % [inter, slope]
+    if n >= 3
+      resid = pts.map { |b, s, _, _, _| s - (inter + slope * b) }
+      puts "  residuals: " + resid.map { |r| "%+.4f" % r }.join(" ")
+      worst = resid.map(&:abs).max
+      puts "  max |residual| = %.4f  -> %s" %
+           [worst, worst < 0.015 ? "LINEAR within noise; the full ladder is affordable" :
+                                   "NOT clean — shorten the ladder to where n=8 still resolves a 0.1-bit decay"]
+    else
+      puts "  (#{n} points — an increment, not a fit; a third rung is what makes this a linearity test)"
+    end
+    # What the slope costs at the top of the ladder.
+    puts
+    puts "  projected seeds to resolve a 0.1-bit DECAY vs the b=0 rung, at |t|=2:"
+    [3.0, 4.0, 5.32].each do |b|
+      sdb = inter + slope * b
+      if sdb <= 0
+        puts "    b=%.2f: fit projects sd=%.3f <= 0 — REFUSED, the fit does not extrapolate here" % [b, sdb]
+        next
+      end
+      nn = (4.0 * (pts.first[1]**2 + sdb**2) / 0.01).ceil
+      puts "    b=%.2f (rank ~%d): sd~%.3f -> n~%d" % [b, (65 * (2**b)).round, sdb, nn]
+    end
+  end
+  puts
+end
+
+dest = MODE == "rank" ? "/tmp/p6_summary.json" :
+       MODE == "width" ? "/tmp/p5hw_summary.json" : "/tmp/p5_summary.json"
 File.write(dest, JSON.pretty_generate(summary))
 puts
 puts "raw summary -> #{dest}"

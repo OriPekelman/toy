@@ -284,15 +284,65 @@ puts failures.length == n0 ? "  ok: bundle structure, the lane's own name, graph
 
 # ---- 6. the MANDATORY success bar, at BP's OWN BEST CELL, three seeds ----
 n0 = failures.length
+# These 12 cells (3 seeds x 4 arms) at 4000 steps ARE this gate's cost —
+# they made it the whole battery's critical path at ~15 min, against ~29
+# min of total work across all 55 legs, so no amount of `make -j` could
+# get under it.
+#
+# They are also completely independent: separate processes, each with its
+# own SEED and policy, aggregated only afterwards. So they run in a
+# bounded worker pool. Ruby threads are the right tool DESPITE the GVL
+# because every one of them is blocked in Open3 waiting on a subprocess,
+# which releases it.
+#
+# WHAT DOES NOT CHANGE: every assertion below reads `rows`, keyed by seed
+# and arm, exactly as before. Nothing is sampled, dropped or reordered —
+# the 12 cells are the same 12 cells. The per-seed line is printed after
+# the join, in SEEDS order, so the gate's output stays deterministic even
+# though completion order is not.
+require "etc"
+LSTM_GATE_JOBS = Integer(ENV["LSTM_GATE_JOBS"] || "4")
+cells = SEEDS.flat_map do |s|
+  [["chain",  s, CELL.merge("SEED" => s, "LSTM_POLICY" => "chain")],
+   ["dfa",    s, CELL.merge("SEED" => s, "LSTM_POLICY" => "dfa", "LSTM_DFA_CUT" => "layer")],
+   ["step",   s, CELL.merge("SEED" => s, "LSTM_POLICY" => "dfa", "LSTM_DFA_CUT" => "step")],
+   ["frozen", s, CELL.merge("SEED" => s, "LSTM_POLICY" => "frozen")]]
+end
+queue = Queue.new
+cells.each { |c| queue << c }
+results = {}
+mutex = Mutex.new
+# run_lstm aborts on a non-zero runner exit. Inside a worker thread Ruby
+# would SWALLOW that — the thread dies, the gate carries on, and the cell
+# comes back missing instead of loud. This restores the serial behaviour:
+# any worker failure takes the process down, the way it did before.
+Thread.abort_on_exception = true
+workers = Array.new([LSTM_GATE_JOBS, cells.size].min) do
+  Thread.new do
+    loop do
+      arm, s, env = begin
+                      queue.pop(true)
+                    rescue ThreadError
+                      break
+                    end
+      acc = val_acc(run_lstm(env, nil))
+      mutex.synchronize { (results[s] ||= {})[arm] = acc }
+    end
+  end
+end
+workers.each(&:join)
+# Belt and braces: even with abort_on_exception, a cell that never landed
+# must not be read as a nil accuracy further down. The bar is 12 cells or
+# it is not the bar.
+missing = cells.reject { |arm, s, _| results.dig(s, arm) }
+unless missing.empty?
+  abort "lstm_gate: #{missing.size} of #{cells.size} success-bar cells did not " \
+        "complete (#{missing.map { |a, s, _| "seed #{s}/#{a}" }.join(', ')}) — " \
+        "the bar is all 12 cells or it is not the bar"
+end
 rows = {}
 SEEDS.each do |s|
-  r = {}
-  r["chain"]  = val_acc(run_lstm(CELL.merge("SEED" => s, "LSTM_POLICY" => "chain"), nil))
-  r["dfa"]    = val_acc(run_lstm(CELL.merge("SEED" => s, "LSTM_POLICY" => "dfa",
-                                            "LSTM_DFA_CUT" => "layer"), nil))
-  r["step"]   = val_acc(run_lstm(CELL.merge("SEED" => s, "LSTM_POLICY" => "dfa",
-                                            "LSTM_DFA_CUT" => "step"), nil))
-  r["frozen"] = val_acc(run_lstm(CELL.merge("SEED" => s, "LSTM_POLICY" => "frozen"), nil))
+  r = results[s]
   rows[s] = r
   puts format("    seed %s  chain=%.4f dfa(layer)=%.4f dfa(step)=%.4f frozen=%.4f",
               s, r["chain"], r["dfa"], r["step"], r["frozen"])
