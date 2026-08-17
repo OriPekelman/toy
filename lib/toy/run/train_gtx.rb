@@ -32,7 +32,15 @@
 #   GTX_TYPES       — latent types TY; classes = TY*TY (default 4 -> 16)
 #   GTX_FEATURES    — node feature dim, half key / half value (default 16)
 #   GTX_NOISE       — feature noise scale (default 0.3)
-#   GTX_TASK        — relational (default) | local  [toy_gtx_task.rb]
+#   GTX_TASK        — relational (default) | local | bytelm
+#   GTX_TEXT        — byte-LM pack prefix (bytelm only)
+#   GTX_VOCAB       — NOMINAL head width under bytelm (default 256). Sets
+#                     the lm_head, the byte embedding AND the DFA
+#                     feedback matrix B together — B is what the
+#                     output-dim law is a claim about, and it was pinned
+#                     at 256 on every byte-LM cell before toy#170/P5.
+#                     Requires a DENSELY coded pack (prep/remap_alphabet.rb);
+#                     refused loudly against the pack's max token id.
 #   GTX_PAIRS       — labelled pairs per step (default 128)
 #   GTX_VAL_BATCHES — held-out INSTANCES evaluated at the end (default 8).
 #                     The graph TOPOLOGY is fixed but its CONTENT is
@@ -102,6 +110,22 @@ TASK_S      = ENV["GTX_TASK"] || ""
 # toy#170 (P3) — the AR byte-LM task on a CAUSAL attention body.
 TEXT        = ENV["GTX_TEXT"] || ""
 CONTEXT     = (ENV["GTX_CONTEXT"] || "128").to_i
+# toy#170 (P5) — the NOMINAL head width, and it is a different axis from
+# the corpus alphabet.
+#
+# P4 and P5's remap both vary how many symbols the text ACTUALLY uses
+# while this stays 256. But the output-dim law is a claim about the
+# FEEDBACK MATRIX: B is [d_model, vocab], its inv_sqrt_fan scale is
+# 1/sqrt(vocab), and both were pinned at 256 on every byte-LM cell ever
+# run on this lane. So an alphabet sweep at a fixed head measures the
+# effective rank of the error, not the width of B — the two are the same
+# number only when the head is sized to the corpus, which is what this
+# knob makes possible.
+#
+# Defaults to 256, which is what every existing byte-LM config already
+# gets, so no run changes meaning (see the durable rule: a knob that
+# reinterprets existing configs defaults to the OLD behaviour).
+VOCAB       = (ENV["GTX_VOCAB"] || "256").to_i
 # NOTE: no ||g|| instrument on this lane. The ssm-lane version (toy#169)
 # works; the gtx port built the node and realized it as ZEROS, and a
 # metric that silently reads 0.0 is worse than no metric — it is the
@@ -235,7 +259,7 @@ TASK_KIND = TASK_S == "local" ? GtxTask::KIND_LOCAL : GtxTask::KIND_RELATIONAL
 DFA_CUT   = CUT_S == "step" ? Toy::LLM::Engine::GtxEngine::CUT_STEP :
                               Toy::LLM::Engine::GtxEngine::CUT_LAYER
 IS_BYTELM = TASK_S == "bytelm"
-N_CLASSES = IS_BYTELM ? 256 : (N_TYPES * N_TYPES)
+N_CLASSES = IS_BYTELM ? VOCAB : (N_TYPES * N_TYPES)
 # The retrofit label is the MODULAR SUM, so it has TY classes, not TY*TY.
 # That is not a detail: a same-cardinality relabeling is a BIJECTION and a
 # retrained linear head absorbs it, which would leave the frozen control
@@ -476,6 +500,43 @@ task = GtxTask.new(TASK_KIND, D_FEAT, N_ENTITIES, N_TYPES, DEGREE,
                    TASK_SEED, NOISE)
 N_NODES = IS_BYTELM ? CONTEXT : task.gt_nodes
 
+# The corpus is loaded BEFORE the graph is realized, and that ordering is
+# load-bearing rather than tidy. Realizing the graph sizes the lm_head
+# and the label tensor from N_CLASSES; if the pack's ids do not fit, ggml
+# aborts inside cross_entropy_loss during the build and the process dies
+# at exit 134 with a backtrace, which is not a usable refusal and would
+# preempt any check placed after. Checking first is the only way the
+# runner gets to say what is actually wrong.
+bl_task = AeTask.new(CONTEXT + 1, GTX_TASK_SEED_BL)
+if IS_BYTELM
+  if bl_task.load_pack!(TEXT) != 0
+    exit 1
+  end
+  # toy#170 (P5) — a token id at or above the head width has NO ROW in
+  # the one-hot label or the lm_head, so it cannot be represented at all.
+  #
+  # Gate on the MAX ID, not the alphabet: shakespeare has 65 symbols
+  # carried on byte ids up to 122, so `--vocab 65` on the raw pack is a
+  # size error, not a narrower head. Use prep/remap_alphabet.rb's dense
+  # packs for that.
+  #
+  # What this does NOT refuse, deliberately: ids that fit but leave GAPS
+  # below the head width. Those are dead classes — never a label, but the
+  # softmax still puts mass on them and the feedback matrix still routes
+  # through them. That configuration is the default byte-LM setup (a
+  # 65-symbol corpus under a 256-wide head) and it is what the head-width
+  # sweep varies on purpose, so refusing it would refuse the experiment.
+  # It is a real limit on what a wide head measures, and it belongs in
+  # the write-up rather than in an exit code.
+  if bl_task.at_max_id >= N_CLASSES
+    puts "toy-train-gtx: GTX_VOCAB " + N_CLASSES.to_s + " is too small for " +
+         TEXT + ": max token id " + bl_task.at_max_id.to_s +
+         " (alphabet " + bl_task.at_alphabet.to_s + ")." +
+         " The pack must be DENSELY coded 0..vocab-1 — see prep/remap_alphabet.rb"
+    exit 1
+  end
+end
+
 recipe = Toy::LLM::Recipes::GtxGraph.new
 recipe.realize!(D_FEAT, D_MODEL, N_HEADS, D_FF, N_BLOCKS, N_NODES,
                 N_PAIRS, N_CLASSES, SEED, 1.0, POLICY, DFA_CUT, B_SEED,
@@ -507,14 +568,12 @@ mask_flat = Array.new(N_NODES * N_NODES, 0.0)
 # additive input applied pre-softmax, so the relational and causal arms
 # share one realized graph. -30 rather than -inf for the same reason the
 # adjacency uses it (a fully-masked softmax row would go NaN).
-bl_task = AeTask.new(CONTEXT + 1, GTX_TASK_SEED_BL)
 BL_SPLIT = 0
 BL_TRAIN_HI = 0
 BL_VAL_HI = 0
 if IS_BYTELM
-  if bl_task.load_pack!(TEXT) != 0
-    exit 1
-  end
+  # The pack is already loaded and its ids already gated, above the
+  # realize! call — see the comment there.
   ntok = bl_task.at_n_tokens
   BL_SPLIT = ntok - ntok / 10
   BL_TRAIN_HI = BL_SPLIT - CONTEXT - 1
@@ -856,7 +915,7 @@ if IS_BYTELM
   end
   puts "bytelm: bpb=" + (bpb_sum / VAL_BATCHES.to_f).to_s +
        " n=" + (VAL_BATCHES * N_NODES).to_s +
-       " routing=position_t head=bp vocab=256 attn=causal"
+       " routing=position_t head=bp vocab=" + N_CLASSES.to_s + " attn=causal"
   puts "graph: nodes=" + recipe.gr_cache.gx_graph_nodes.to_s +
        " bytes=" + recipe.gr_cache.gx_graph_bytes.to_s
   exit 0

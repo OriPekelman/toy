@@ -594,6 +594,81 @@ else
     "  FAIL: bytelm"
 end
 
+# ── LEG 13: THE NOMINAL HEAD WIDTH (toy#170 / spec P5) ──
+#
+# `--vocab k` narrows the byte-LM head, the byte embedding AND the DFA
+# feedback matrix B together. That last one is the reason the knob
+# exists: the output-dim law is a claim about B, whose width and whose
+# 1/sqrt(fan) scale were both pinned at 256 on every byte-LM cell run on
+# this lane. An alphabet sweep at a fixed head measures the EFFECTIVE
+# rank of the error; this measures the width of B. They are the same
+# number only when the head is sized to the corpus.
+#
+# What this leg owes P5 is that the knob is neither inert nor silently
+# reinterpreting old configs, and that it refuses the one input that
+# would corrupt a result without crashing.
+n0 = failures.length
+# Self-contained rather than reusing leg 12's BL/wiring: those are bound
+# inside leg 12's else branch, so a skipped leg 12 would take this one
+# down with a NameError instead of a skip.
+HW = { "GTX_TASK" => "bytelm", "GTX_CONTEXT" => "64", "GTX_D_MODEL" => "64",
+       "GTX_HEADS" => "4", "GTX_D_FF" => "128", "GTX_BLOCKS" => "2",
+       "GTX_VAL_BATCHES" => "2" }
+def hw_wiring(out)
+  out.lines.find { |x| x.start_with?("gtx: bytelm ") } || ""
+end
+if !File.file?(File.join(ROOT, "data", "ae_shak_a65.tok.i32")) ||
+   !File.file?(File.join(ROOT, "data", "ae_shakespeare.tok.i32"))
+  puts "  skip: HEAD WIDTH (toy#170/P5) — data/ae_shak_a65 or data/ae_shakespeare absent (run prep/fetch_text.rb then prep/remap_alphabet.rb)"
+else
+  def hw_run(extra)
+    run_gtx(HW.merge({ "STEPS" => "40", "GTX_LR" => "0.003",
+                       "GTX_TEXT" => "data/ae_shak_a65",
+                       "GTX_POLICY" => "dfa,dfa", "GTX_DFA_CUT" => "layer" })
+              .merge(extra), nil)
+  end
+
+  # 13a. THE DEFAULT CHANGES NOTHING. Not "vocab 256 works" — that the
+  # knob left unset and the knob set to its default are BYTE-IDENTICAL
+  # runs. This lane's flag strings are experiment identity: every cell
+  # measured before P5 was run without GTX_VOCAB, and they stay
+  # comparable only if unset really is 256.
+  base = hw_run({})
+  failures << "head width: GTX_VOCAB unset is not byte-identical to GTX_VOCAB=256 — every byte-LM cell measured before P5 was run without the flag, so a default that changes anything silently re-bases the whole arc" unless
+    curve(base) == curve(hw_run("GTX_VOCAB" => "256"))
+  failures << "head width: the default run does not report vocab=256 b_dim=256" unless
+    hw_wiring(base).include?("vocab=256") && hw_wiring(base).include?("b_dim=256")
+
+  # 13b. The knob MOVES, and it moves B with it. A head that narrows
+  # while B stays 256 wide would measure the opposite of what P5 claims
+  # to measure, and would do it while producing entirely plausible
+  # numbers — which is why b_dim is asserted separately from vocab.
+  narrow = hw_run("GTX_VOCAB" => "65")
+  failures << "head width: --vocab 65 did not report vocab=65" unless
+    hw_wiring(narrow).include?("vocab=65")
+  failures << "head width: --vocab 65 left the DFA feedback matrix at b_dim=256 — B is the thing the output-dim law is about, so a head that narrows without B is measuring the wrong axis and would still produce plausible numbers" unless
+    hw_wiring(narrow).include?("b_dim=65")
+  failures << "head width: --vocab 65 produced a curve byte-identical to --vocab 256 — the knob is inert" if
+    curve(narrow) == curve(base)
+
+  # 13c. FAIL LOUD on a pack the head cannot cover. ae_shakespeare has 65
+  # symbols carried on byte ids up to 122, so `--vocab 65` there is a
+  # size error, not a narrower head. Unguarded it would score tokens
+  # against rows past the end of the label — silent, and biased toward
+  # the null, because a class nothing can predict costs every arm the
+  # same amount and that reads exactly like "the axis is flat".
+  out13, st13 = Open3.capture2e(
+    HW.merge({ "STEPS" => "2", "GTX_TEXT" => "data/ae_shakespeare",
+               "GTX_VOCAB" => "65" }), RUNNER, chdir: ROOT)
+  failures << "head width fail-loud: --vocab 65 on a pack with token ids up to 122 exited 0 — the out-of-range ids would be scored against rows that do not exist, silently and toward the null" if st13.success?
+  failures << "head width fail-loud: the refusal does not name the max token id, so it cannot be acted on" unless
+    out13.include?("max token id")
+
+  puts failures.length == n0 ?
+    "  ok: HEAD WIDTH (toy#170/P5) — GTX_VOCAB unset is byte-identical to 256 (old cells stay comparable), --vocab 65 narrows the head AND the DFA feedback matrix together (b_dim asserted separately from vocab) and is not inert, and a pack whose ids overflow the head is REFUSED by max id with the number named" :
+    "  FAIL: head width"
+end
+
 if failures.empty?
   puts "GATE PASS [gtx]: graph transformer + RETROFIT + per-block policy — byte fixture, the B seed, the small-head assertion, the MANDATORY success bar with each arm at ITS OWN best LR showing ATTENTION IS NOT DFA-HOSTILE (dfa .920 vs BP .985 vs frozen .111), the mixing-cut collapse, and a frozen control that provably CAN lose (toy#160)"
   exit 0

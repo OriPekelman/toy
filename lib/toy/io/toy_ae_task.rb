@@ -55,12 +55,14 @@ class AeTask
   VOCAB = 256
 
   attr_accessor :at_context, :at_n_tokens, :at_alphabet, :at_tokens,
-                :at_counts, :at_floor_p, :at_floor_id, :at_entropy, :at_s
+                :at_counts, :at_floor_p, :at_floor_id, :at_entropy, :at_s,
+                :at_max_id
 
   def initialize(context, task_seed)
     @at_context  = context
     @at_n_tokens = 0
     @at_alphabet = 0
+    @at_max_id   = 0
     @at_tokens   = [0]; @at_tokens.pop
     @at_counts   = [0]; @at_counts.pop
     @at_floor_p  = 0.0
@@ -145,6 +147,19 @@ class AeTask
            " distinct values — regenerate with prep/fetch_text.rb"
       return 1
     end
+    # The LARGEST id present, which is NOT distinct-1 unless the pack is
+    # densely coded. A byte pack of English is not: shakespeare has 65
+    # distinct symbols with ids up to 122. Anything that narrows a head
+    # to k must gate on this, not on the alphabet.
+    hi = 0
+    c = 0
+    while c < VOCAB
+      if @at_counts[c] > 0
+        hi = c
+      end
+      c = c + 1
+    end
+    @at_max_id   = hi
     @at_alphabet = distinct
     @at_floor_id = best_id
     @at_floor_p  = best_c.to_f / n.to_f

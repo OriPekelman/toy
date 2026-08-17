@@ -206,14 +206,21 @@ class GtxEngine
     # property this whole lane is built to exploit.
     add_w(n_classes, 2 * d_model, "head", n_blocks)
     # toy#170 (P3) — the byte-LM surface. The embedding replaces the
-    # continuous node features; the LM head is [256, d_model] because
-    # there is no pair concat to widen it. Both are built ONLY under
-    # bytelm, so the toy#160 relational path keeps its exact graph.
+    # continuous node features; the LM head is [n_classes, d_model]
+    # because there is no pair concat to widen it. Both are built ONLY
+    # under bytelm, so the toy#160 relational path keeps its exact graph.
+    #
+    # toy#170 (P5) — this width was literally 256 until the nominal-head
+    # axis needed it. n_classes IS 256 under the byte-LM default, so the
+    # change is byte-null there; `--vocab k` is what moves it, and it
+    # moves the embedding, the head AND the DFA feedback matrix B
+    # together, because the whole point of the output-dim law is that
+    # those three widths are the same number.
     if @gx_bytelm == 1
       @ix_emb = @ft_weights.length
-      add_w(256, d_model, "emb", 0)
+      add_w(n_classes, d_model, "emb", 0)
       @ix_lmhead = @ft_weights.length
-      add_w(256, d_model, "lm_head", n_blocks)
+      add_w(n_classes, d_model, "lm_head", n_blocks)
     end
     # Everything allocated so far is the BACKBONE (+ its pretrain head):
     # what a retrofit freezes and reuses. Recorded as a span so the
@@ -396,11 +403,16 @@ class GtxEngine
     end
     if @gx_bytelm == 1
       # PER-POSITION readout: position i predicts byte i+1. No pair
-      # gather, so the head is [256, d_model] and the error is already
-      # per position — the incidence routing below becomes the identity.
+      # gather, so the head is [n_classes, d_model] and the error is
+      # already per position — the incidence routing below becomes the
+      # identity.
       @t_logits = TinyNN.tnn_matmul(@sess, @ft_weights[@ix_lmhead], t_h)
       TinyNN.tnn_set_output(@t_logits)
-      @t_labels = TinyNN.tnn_input_2d_f32(@sess, @gx_nodes, 256)
+      # Must match the lm_head's output dim: cross_entropy_loss asserts
+      # same-shape, so a literal here is an ABORT under --vocab k rather
+      # than a wrong number — but only because ggml checks. Nothing in
+      # this file would have caught it.
+      @t_labels = TinyNN.tnn_input_2d_f32(@sess, @gx_nodes, @gx_classes)
       @t_hp     = TinyNN.tnn_input_1d_f32(@sess, 7)
       @t_loss   = TinyNN.tnn_cross_entropy_loss(@sess, @t_logits, @t_labels)
       TinyNN.tnn_set_output(@t_loss)
@@ -597,7 +609,10 @@ class GtxEngine
   # the tap family's shape and column order — so it just joins the list.
   def build_bytelm_tail!(policy, taps, tapd, any_dfa, t_emb_out,
                          b_seed, b_dist, b_scale, b_sigma)
-    @gx_active_classes = 256
+    # The error dim the feedback matrices are sized and scaled from. Under
+    # bytelm there is no retrofit head, so it is just the class count —
+    # which is 256 by default and `--vocab k` otherwise.
+    @gx_active_classes = @gx_classes
     if any_dfa && policy.length > 0 && policy[0] == POLICY_DFA &&
        t_emb_out != TinyNN.tnn_null_ptr
       TinyNN.tnn_set_output(t_emb_out)
@@ -615,7 +630,10 @@ class GtxEngine
       ti = 0
       while ti < taps.length
         dout = tapd[ti]
-        t_b = TinyNN.tnn_input_2d_f32(@sess, dout, 256)
+        # B is [dout, error_dim]. refresh_b! sizes and scales its uploads
+        # from @gx_active_classes, so this MUST be that same number — a
+        # literal here would upload a differently-shaped B in silence.
+        t_b = TinyNN.tnn_input_2d_f32(@sess, dout, @gx_active_classes)
         TinyNN.tnn_set_output(t_b)
         @gx_b_handles.push(t_b)
         @gx_b_seeds.push(b_seed + 77 + ti)
@@ -667,9 +685,16 @@ class GtxEngine
       wk = wk + 1
     end
 
+    # b_dim is the width of the DFA feedback matrix B, and it is printed
+    # SEPARATELY from vocab even though they are the same number today.
+    # The output-dim law is a claim about B; if a later change ever lets
+    # the head and B disagree, this line is where it shows up instead of
+    # being absorbed into a plausible-looking result.
     puts "gtx: bytelm blocks=" + @gx_blocks.to_s +
          " nodes=" + @gx_nodes.to_s +
-         " vocab=256 attn=causal readout=per_position" +
+         " vocab=" + @gx_classes.to_s +
+         " b_dim=" + @gx_active_classes.to_s +
+         " attn=causal readout=per_position" +
          " routing=position_t" +
          " cut=" + (@gx_cut == CUT_STEP ? "step" : "layer") +
          " dfa_wired=" + dfa_block_count(policy).to_s +

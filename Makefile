@@ -845,6 +845,7 @@ libexec/toy-train-gtx: lib/toy/run/train_gtx.rb lib/toy/dev/toy_describe_flow.rb
 		lib/toy/io/toy_gtx_task.rb lib/toy/llm/engine/gtx_engine.rb \
 		lib/toy/llm/recipes/gtx_graph.rb lib/toy/llm/adamw.rb \
 		lib/toy/train/dfa_b.rb \
+		lib/toy/io/toy_ae_task.rb \
 		lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
 	$(SPINEL) $< -o $@
 toy-train-gtx: libexec/toy-train-gtx
