@@ -140,9 +140,14 @@ if report.empty?
   abort "p5_report: no complete corpora found under #{DIRS.join(', ')}"
 end
 
-puts MODE == "width" ?
-  "P5 — NOMINAL HEAD WIDTH (one corpus: ae_shak_a65, effective rank fixed at 65), depth 4" :
-  "P5 — controlled alphabet remap (one corpus: shakespeare), depth 4, nominal head 256"
+puts case MODE
+     when "width"
+       "P5 — NOMINAL HEAD WIDTH (one corpus: ae_shak_a65, effective rank fixed at 65), depth 4"
+     when "rank"
+       "P6 — ARITHMETIC RANK at a PINNED head #{HEAD} (learnable structure fixed at 65-way), depth 4"
+     else
+       "P5 — controlled alphabet remap (one corpus: shakespeare), depth 4, nominal head 256"
+     end
 puts "dirs: #{DIRS.join(', ')}"
 puts
 
