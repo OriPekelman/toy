@@ -372,7 +372,12 @@ end
   [%w[ae --text data/nope],                                "--text naming a nonexistent pack"],
   [%w[ae --text data/ae_names --vocab 256],                "--vocab on the ae lane (it means an integer pack width on franken)"],
   [%w[ae --text data/ae_names --latent 64 --d-model 64], "--latent >= --d-model"],
-  [%w[gtx --text data/ae_names],                           "--text on a non-ae recipe"],
+  # toy#169/#170 widened --text to the byte-LM lanes, so the rule is no
+  # longer "ae/difflm only" — it is that the flag must reach a task that
+  # READS it. gtx/ssm consume it only under --task bytelm; without that
+  # the runner ignores it, which is the silent no-op this leg guards.
+  [%w[gtx --text data/ae_names],                           "--text on gtx WITHOUT --task bytelm (the runner would ignore it)"],
+  [%w[mlp --text data/ae_names],                           "--text on a lane that has no text task at all"],
   [%w[ae --text data/ae_names --noise-eval abc],           "--noise-eval that is not a float list"],
 ].each do |args, label|
   out, st = Open3.capture2e(TOY, "train", *args, "--steps", "2", chdir: ROOT)

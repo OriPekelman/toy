@@ -324,14 +324,16 @@ help:
 # NOT in MIRRORABLE (see prep/gen_cuda_mirror.rb).
 libexec:
 	mkdir -p libexec
-libexec/toy-infer: lib/toy/run/infer.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+libexec/toy-infer: lib/toy/run/infer.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) \
+		lib/toy.rb lib/toy/dev/toy_card.rb lib/toy/dev/toy_logprobs.rb lib/toy/io/gguf_kv.rb lib/toy/models/toy_smollm2.rb lib/toy/train/sampler.rb lib/toy/version.rb | libexec
 	$(SPINEL) $< -o $@
 toy-infer: libexec/toy-infer
 
 # Diagnostic sibling of toy-infer: enables the cache trace and dumps per-tap
 # min/max/|mean|/nan for every layer (used to localize ggml#1506 — the K-quant
 # MoE attention head_nbytes collapse). See docs/notes/mul_mat_id_quants.md.
-libexec/toy-infer-trace: lib/toy/run/infer_trace.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+libexec/toy-infer-trace: lib/toy/run/infer_trace.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) \
+		lib/toy.rb lib/toy/dev/toy_card.rb lib/toy/dev/toy_logprobs.rb lib/toy/models/toy_smollm2.rb lib/toy/train/sampler.rb lib/toy/version.rb | libexec
 	$(SPINEL) $< -o $@
 toy-infer-trace: libexec/toy-infer-trace
 
@@ -341,7 +343,8 @@ toy-infer-trace: libexec/toy-infer-trace
 # locates it. Deps = infer's deps + lib/toy/dev/toy_logprobs.rb (a transitive require
 # of transformer_lm; listed explicitly so a touch of it rebuilds the runner).
 # CPU-only; NOT in MIRRORABLE (see prep/gen_cuda_mirror.rb).
-libexec/toy-eval: lib/toy/run/eval.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/io/tokenizer.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+libexec/toy-eval: lib/toy/run/eval.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/io/tokenizer.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) \
+		lib/toy.rb lib/toy/dev/toy_card.rb lib/toy/models/toy_smollm2.rb lib/toy/train/sampler.rb lib/toy/version.rb | libexec
 	$(SPINEL) $< -o $@
 toy-eval: libexec/toy-eval
 
@@ -352,13 +355,15 @@ toy-eval: libexec/toy-eval
 # Deps mirror example_lmc (Makefile:479) NOT toy-eval; order-only | libexec (no
 # $(SPINEL_DEPS)) like the CPU toy-eval runner. CPU-only; NOT in MIRRORABLE (see
 # prep/gen_cuda_mirror.rb); a cuda LMC twin is a later slice.
-libexec/toy-eval-lmc: lib/toy/run/eval_lmc.rb lib/toy/llm/adamw.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy.rb lib/toy/models/transformer.rb lib/toy/train/toy_drift_grad.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+libexec/toy-eval-lmc: lib/toy/run/eval_lmc.rb lib/toy/llm/adamw.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy.rb lib/toy/models/transformer.rb lib/toy/train/toy_drift_grad.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) \
+		lib/toy/dev/toy_card.rb lib/toy/io/json_builder.rb lib/toy/llm/archs/layer_spec.rb lib/toy/llm/archs/llama_arch.rb lib/toy/llm/blocks/gdn_block.rb lib/toy/llm/blocks/kda_block.rb lib/toy/llm/blocks/mla_block.rb lib/toy/llm/blocks/transformer_block.rb lib/toy/llm/primitives/gdn.rb lib/toy/llm/primitives/gqa.rb lib/toy/llm/primitives/kda.rb lib/toy/llm/primitives/mla.rb lib/toy/llm/primitives/muon.rb lib/toy/llm/primitives/rms_norm.rb lib/toy/llm/primitives/rope.rb lib/toy/llm/primitives/situ_glu.rb lib/toy/llm/primitives/swiglu.rb lib/toy/train/dfa_b.rb lib/toy/version.rb | libexec
 	$(SPINEL) $< -o $@
 toy-eval-lmc: libexec/toy-eval-lmc
 
 # toy#130 — CE-over-pack evaluator (the consuming half of the toy#129
 # item-3 eval seam). Own unit (landmine #16); CPU-only like eval/lmc.
-libexec/toy-eval-ce: lib/toy/run/eval_ce.rb lib/toy/llm/adamw.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb lib/toy/io/toy_corpus_loader.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy.rb lib/toy/models/transformer.rb lib/toy/train/toy_drift_grad.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+libexec/toy-eval-ce: lib/toy/run/eval_ce.rb lib/toy/llm/adamw.rb vendor/spinel/spinel_kit/lib/spinel_kit/json_builder.rb lib/toy/io/toy_events.rb lib/toy/io/toy_corpus_loader.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb lib/toy/llm/engine/llama_seq_engine.rb lib/toy/models/toy_smollm2.rb lib/toy.rb lib/toy/models/transformer.rb lib/toy/train/toy_drift_grad.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) \
+		lib/toy/dev/toy_card.rb lib/toy/io/json_builder.rb lib/toy/llm/archs/layer_spec.rb lib/toy/llm/archs/llama_arch.rb lib/toy/llm/blocks/gdn_block.rb lib/toy/llm/blocks/kda_block.rb lib/toy/llm/blocks/mla_block.rb lib/toy/llm/blocks/transformer_block.rb lib/toy/llm/primitives/gdn.rb lib/toy/llm/primitives/gqa.rb lib/toy/llm/primitives/kda.rb lib/toy/llm/primitives/mla.rb lib/toy/llm/primitives/muon.rb lib/toy/llm/primitives/rms_norm.rb lib/toy/llm/primitives/rope.rb lib/toy/llm/primitives/situ_glu.rb lib/toy/llm/primitives/swiglu.rb lib/toy/train/dfa_b.rb lib/toy/version.rb | libexec
 	$(SPINEL) $< -o $@
 .PHONY: toy-eval-ce
 toy-eval-ce: libexec/toy-eval-ce
@@ -421,11 +426,13 @@ gate-kda: prep/smokes/smoke_kda_recurrence
 # hand-written lib/toy/run/{infer,eval}_cuda.rb (ToyLMCuda ctor arity 1 →
 # NOT mechanically mirrorable → ABSENT from MIRRORABLE, like the CPU runners).
 # Force-link recipe matches every other cuda target (-Wl,-u,tnn_cuda_force_link).
-libexec/toy-infer-cuda: lib/toy/run/infer_cuda.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm_cuda.rb lib/toy/llm/engine/llama_kv_engine_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_cuda.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) | libexec
+libexec/toy-infer-cuda: lib/toy/run/infer_cuda.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm_cuda.rb lib/toy/llm/engine/llama_kv_engine_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_cuda.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) \
+		lib/toy.rb lib/toy/dev/toy_card.rb lib/toy/ffi/tinynn.rb lib/toy/io/gguf_kv.rb lib/toy/models/toy_smollm2.rb lib/toy/train/sampler.rb lib/toy/version.rb | libexec
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 toy-infer-cuda: libexec/toy-infer-cuda
 
-libexec/toy-eval-cuda: lib/toy/run/eval_cuda.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm_cuda.rb lib/toy/llm/engine/llama_kv_engine_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_cuda.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) | libexec
+libexec/toy-eval-cuda: lib/toy/run/eval_cuda.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm_cuda.rb lib/toy/llm/engine/llama_kv_engine_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_cuda.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) \
+		lib/toy.rb lib/toy/dev/toy_card.rb lib/toy/ffi/tinynn.rb lib/toy/models/toy_smollm2.rb lib/toy/train/sampler.rb lib/toy/version.rb | libexec
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 toy-eval-cuda: libexec/toy-eval-cuda
 
@@ -438,14 +445,16 @@ toy-eval-cuda: libexec/toy-eval-cuda
 # with the leading-underscore force-link symbol (_tnn_metal_force_link, macOS
 # symbol convention) vs cuda's tnn_cuda_force_link. libtinynn_ggml.a (CPU
 # archive) stays in deps for the base ggml symbols. gx10 RUNTIME-UNVERIFIED.
-libexec/toy-infer-metal: lib/toy/run/infer_metal.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm_metal.rb lib/toy/llm/engine/llama_kv_engine_metal.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_metal.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_metal.a $(SPINEL_DEPS) | libexec
+libexec/toy-infer-metal: lib/toy/run/infer_metal.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm_metal.rb lib/toy/llm/engine/llama_kv_engine_metal.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_metal.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_metal.a $(SPINEL_DEPS) \
+		lib/toy.rb lib/toy/dev/toy_card.rb lib/toy/ffi/tinynn.rb lib/toy/io/gguf_kv.rb lib/toy/models/toy_smollm2.rb lib/toy/train/sampler.rb lib/toy/version.rb | libexec
 ifneq ($(UNAME_S),Darwin)
 	@echo "toy-infer-metal: macOS-only"; exit 1
 endif
 	$(SPINEL) --cc='cc -Wl,-u,_tnn_metal_force_link -framework Foundation -framework Metal -framework MetalKit' $< -o $@
 toy-infer-metal: libexec/toy-infer-metal
 
-libexec/toy-eval-metal: lib/toy/run/eval_metal.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm_metal.rb lib/toy/llm/engine/llama_kv_engine_metal.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_metal.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_metal.a $(SPINEL_DEPS) | libexec
+libexec/toy-eval-metal: lib/toy/run/eval_metal.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm_metal.rb lib/toy/llm/engine/llama_kv_engine_metal.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn_metal.rb lib/toy/dev/toy_logprobs.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_metal.a $(SPINEL_DEPS) \
+		lib/toy.rb lib/toy/dev/toy_card.rb lib/toy/ffi/tinynn.rb lib/toy/models/toy_smollm2.rb lib/toy/train/sampler.rb lib/toy/version.rb | libexec
 ifneq ($(UNAME_S),Darwin)
 	@echo "toy-eval-metal: macOS-only"; exit 1
 endif
@@ -726,7 +735,8 @@ libexec/toy-train: lib/toy/run/train.rb lib/toy/dev/toy_describe_flow.rb lib/toy
 		lib/toy/llm/primitives/swiglu.rb lib/toy/llm/primitives/gqa.rb \
 		lib/toy/llm/blocks/transformer_block.rb lib/toy/llm/primitives/gdn.rb lib/toy/llm/blocks/gdn_block.rb \
 		lib/toy/llm/archs/layer_spec.rb lib/toy/llm/archs/llama_arch.rb \
-		lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+		lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) \
+		lib/toy/dev/toy_card.rb lib/toy/io/json_builder.rb lib/toy/llm/blocks/kda_block.rb lib/toy/llm/blocks/mla_block.rb lib/toy/llm/primitives/kda.rb lib/toy/llm/primitives/mla.rb lib/toy/llm/primitives/muon.rb lib/toy/llm/primitives/situ_glu.rb lib/toy/train/dfa_b.rb lib/toy/train/toy_gguf_fuse.rb lib/toy/version.rb | libexec
 	$(SPINEL) $< -o $@
 toy-train: libexec/toy-train
 
@@ -742,7 +752,8 @@ libexec/toy-train-lora: lib/toy/run/train_lora.rb lib/toy/dev/toy_describe_flow.
 		lib/toy/llm/primitives/swiglu.rb lib/toy/llm/primitives/gqa.rb \
 		lib/toy/llm/blocks/transformer_block.rb lib/toy/llm/primitives/gdn.rb lib/toy/llm/blocks/gdn_block.rb \
 		lib/toy/llm/archs/layer_spec.rb lib/toy/llm/archs/llama_arch.rb \
-		lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+		lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) \
+		lib/toy/dev/toy_card.rb lib/toy/io/json_builder.rb lib/toy/llm/blocks/kda_block.rb lib/toy/llm/blocks/mla_block.rb lib/toy/llm/primitives/kda.rb lib/toy/llm/primitives/mla.rb lib/toy/llm/primitives/muon.rb lib/toy/llm/primitives/situ_glu.rb lib/toy/train/dfa_b.rb lib/toy/version.rb | libexec
 	$(SPINEL) $< -o $@
 toy-train-lora: libexec/toy-train-lora
 
@@ -752,7 +763,8 @@ toy-train-lora: libexec/toy-train-lora
 # primitives dep), so it also can't churn the llama gates. CPU-only this slice.
 libexec/toy-train-gpt2: lib/toy/run/train_gpt2.rb lib/toy.rb \
 		lib/toy/llm/engine/gpt2_seq_engine.rb lib/toy/llm/labels.rb lib/toy/llm/adamw.rb \
-		lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+		lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) \
+		lib/toy/dev/toy_card.rb lib/toy/version.rb | libexec
 	$(SPINEL) $< -o $@
 toy-train-gpt2: libexec/toy-train-gpt2
 .PHONY: toy-train-gpt2
@@ -764,7 +776,8 @@ toy-train-gpt2: libexec/toy-train-gpt2
 # CPU-TinyNN seam). NOT in MIRRORABLE (the engine mirror IS; the runner is hand-written).
 libexec/toy-train-gpt2-cuda: lib/toy/run/train_gpt2_cuda.rb lib/toy.rb \
 		lib/toy/llm/engine/gpt2_seq_engine_cuda.rb lib/toy/models/transformer.rb \
-		lib/toy/ffi/tinynn_cuda.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) | libexec
+		lib/toy/ffi/tinynn_cuda.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) \
+		lib/toy/dev/toy_card.rb lib/toy/version.rb | libexec
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 toy-train-gpt2-cuda: libexec/toy-train-gpt2-cuda
 .PHONY: toy-train-gpt2-cuda
@@ -774,7 +787,8 @@ toy-train-gpt2-cuda: libexec/toy-train-gpt2-cuda
 # gx10 RUNTIME-UNVERIFIED (codegen + structural parity here; runtime-gate on Mac).
 libexec/toy-train-gpt2-metal: lib/toy/run/train_gpt2_metal.rb lib/toy.rb \
 		lib/toy/llm/engine/gpt2_seq_engine_metal.rb lib/toy/models/transformer.rb \
-		lib/toy/ffi/tinynn_metal.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_metal.a $(SPINEL_DEPS) | libexec
+		lib/toy/ffi/tinynn_metal.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_metal.a $(SPINEL_DEPS) \
+		lib/toy/dev/toy_card.rb lib/toy/version.rb | libexec
 ifneq ($(UNAME_S),Darwin)
 	@echo "toy-train-gpt2-metal: macOS-only"; exit 1
 endif
@@ -793,7 +807,8 @@ libexec/toy-train-vit: lib/toy/run/train_vit.rb lib/toy/dev/toy_describe_flow.rb
 		lib/toy/llm/engine/vit_tiny_engine.rb lib/toy/models/toy_vit.rb lib/toy/models/toy_smollm2.rb \
 		lib/toy/io/toy_image_loader.rb lib/toy/train/toy_lr_schedule.rb lib/toy/train/toy_drift_grad.rb \
 		lib/toy/llm/adamw.rb \
-		lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+		lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) \
+		lib/toy.rb lib/toy/dev/toy_card.rb lib/toy/io/json_builder.rb lib/toy/version.rb | libexec
 	$(SPINEL) $< -o $@
 toy-train-vit: libexec/toy-train-vit
 
@@ -860,6 +875,18 @@ toy-train-gtx: libexec/toy-train-gtx
 .PHONY: gate-gtx
 gate-gtx: libexec/toy-train-gtx
 	ruby prep/gtx_gate.rb
+
+# toy#171 — the prerequisite lists are hand-maintained and duplicate the
+# runners' require_relative graphs, so they drift. Silently: a change to
+# an undeclared file rebuilds NOTHING, `make` says "up to date", and the
+# lane's own gate then passes against a stale binary. Found twice in two
+# days on toy#170 (gtx and ssm, both missing toy_ae_task.rb), then across
+# 26 of 36 targets — including toy-train-franken missing dfa_b.rb, i.e.
+# the DFA program's dense lane not rebuilding when the feedback matrix
+# changes. Needs no runner, so it costs nothing and runs first.
+.PHONY: gate-prereq
+gate-prereq:
+	ruby prep/prereq_audit.rb
 
 # toy#165 (capstone P1a) — the PER-TOKEN LATENT AUTOENCODER. All BP: no
 # DFA and no diffusion in this lane. It asks whether a 4-8-dim per-token
@@ -1053,7 +1080,8 @@ libexec/toy-train-cuda: lib/toy/run/train_cuda.rb lib/toy/dev/toy_describe_flow.
 		lib/toy/llm/primitives/rms_norm_cuda.rb lib/toy/llm/primitives/rope_cuda.rb \
 		lib/toy/llm/primitives/swiglu_cuda.rb lib/toy/llm/primitives/gqa_cuda.rb \
 		lib/toy/llm/blocks/transformer_block_cuda.rb lib/toy/llm/archs/llama_arch_cuda.rb \
-		lib/toy/ffi/tinynn_cuda.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) | libexec
+		lib/toy/ffi/tinynn_cuda.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) \
+		lib/toy/dev/toy_card.rb lib/toy/io/json_builder.rb lib/toy/llm/archs/layer_spec.rb lib/toy/llm/blocks/gdn_block.rb lib/toy/llm/blocks/kda_block.rb lib/toy/llm/blocks/mla_block.rb lib/toy/llm/primitives/gdn.rb lib/toy/llm/primitives/kda.rb lib/toy/llm/primitives/mla.rb lib/toy/llm/primitives/muon.rb lib/toy/llm/primitives/situ_glu_cuda.rb lib/toy/train/dfa_b.rb lib/toy/version.rb | libexec
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 toy-train-cuda: libexec/toy-train-cuda
 
@@ -1074,7 +1102,8 @@ libexec/toy-train-lora-cuda: lib/toy/run/train_lora_cuda.rb lib/toy/dev/toy_desc
 		lib/toy/llm/primitives/rms_norm_cuda.rb lib/toy/llm/primitives/rope_cuda.rb \
 		lib/toy/llm/primitives/swiglu_cuda.rb lib/toy/llm/primitives/gqa_cuda.rb \
 		lib/toy/llm/blocks/transformer_block_cuda.rb lib/toy/llm/archs/llama_arch_cuda.rb \
-		lib/toy/ffi/tinynn_cuda.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) | libexec
+		lib/toy/ffi/tinynn_cuda.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) \
+		lib/toy/dev/toy_card.rb lib/toy/io/json_builder.rb lib/toy/llm/archs/layer_spec.rb lib/toy/llm/blocks/gdn_block.rb lib/toy/llm/blocks/kda_block.rb lib/toy/llm/blocks/mla_block.rb lib/toy/llm/primitives/gdn.rb lib/toy/llm/primitives/kda.rb lib/toy/llm/primitives/mla.rb lib/toy/llm/primitives/muon.rb lib/toy/llm/primitives/situ_glu_cuda.rb lib/toy/train/dfa_b.rb lib/toy/version.rb | libexec
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 toy-train-lora-cuda: libexec/toy-train-lora-cuda
 
@@ -1095,7 +1124,8 @@ libexec/toy-train-metal: lib/toy/run/train_metal.rb lib/toy/dev/toy_describe_flo
 		lib/toy/llm/primitives/rms_norm_metal.rb lib/toy/llm/primitives/rope_metal.rb \
 		lib/toy/llm/primitives/swiglu_metal.rb lib/toy/llm/primitives/gqa_metal.rb \
 		lib/toy/llm/blocks/transformer_block_metal.rb lib/toy/llm/archs/llama_arch_metal.rb \
-		lib/toy/ffi/tinynn_metal.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_metal.a $(SPINEL_DEPS) | libexec
+		lib/toy/ffi/tinynn_metal.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_metal.a $(SPINEL_DEPS) \
+		lib/toy/dev/toy_card.rb lib/toy/io/json_builder.rb lib/toy/llm/archs/layer_spec.rb lib/toy/llm/blocks/gdn_block.rb lib/toy/llm/blocks/kda_block.rb lib/toy/llm/blocks/mla_block.rb lib/toy/llm/primitives/gdn.rb lib/toy/llm/primitives/kda.rb lib/toy/llm/primitives/mla.rb lib/toy/llm/primitives/muon.rb lib/toy/llm/primitives/situ_glu_metal.rb lib/toy/train/dfa_b.rb lib/toy/version.rb | libexec
 ifneq ($(UNAME_S),Darwin)
 	@echo "toy-train-metal: macOS-only"; exit 1
 endif
@@ -1118,7 +1148,8 @@ libexec/toy-serve: lib/toy/run/serve.rb lib/toy/io/json_builder.rb lib/toy/io/js
 		lib/toy/serve/openai/handlers.rb lib/toy/serve/openai/toy_backend.rb \
 		vendor/spinel/tep/lib/tep.rb \
 		lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb \
-		tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+		tinynn/libtinynn_ggml.a $(SPINEL_DEPS) \
+		lib/toy.rb lib/toy/dev/toy_card.rb lib/toy/ffi/tinynn.rb lib/toy/io/gguf_load.rb lib/toy/models/gpt2.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/version.rb | libexec
 	$(SPINEL) $< -o $@
 toy-serve: libexec/toy-serve
 
@@ -1260,7 +1291,8 @@ gate-gdn-hybrid: libexec/toy-train-hybrid
 libexec/toy-train-hybrid: lib/toy/run/train_hybrid.rb lib/toy.rb lib/toy/ffi/tinynn.rb \
 		lib/toy/llm/primitives/rms_norm.rb lib/toy/llm/primitives/gdn.rb \
 		lib/toy/llm/blocks/gdn_block.rb lib/toy/llm/archs/layer_spec.rb \
-		tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+		tinynn/libtinynn_ggml.a $(SPINEL_DEPS) \
+		lib/toy/dev/toy_card.rb lib/toy/models/transformer.rb lib/toy/version.rb | libexec
 	$(SPINEL) $< -o $@
 .PHONY: toy-train-hybrid
 toy-train-hybrid: libexec/toy-train-hybrid
@@ -2596,7 +2628,8 @@ bench-vs-pytorch-heavy-report: demos/seq_train_bench_cuda demos/qwen25_bench_cud
 # telemetry. Own compilation unit (hybrid precedent).
 libexec/toy-train-franken: lib/toy/run/train_franken.rb lib/toy.rb lib/toy/ffi/tinynn.rb \
 		lib/toy/llm/primitives/rms_norm.rb \
-		tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+		tinynn/libtinynn_ggml.a $(SPINEL_DEPS) \
+		lib/toy/dev/toy_card.rb lib/toy/models/transformer.rb lib/toy/train/dfa_b.rb lib/toy/version.rb | libexec
 	$(SPINEL) $< -o $@
 .PHONY: toy-train-franken
 toy-train-franken: libexec/toy-train-franken
@@ -2625,7 +2658,8 @@ gate-franken-parity: prep/smokes/smoke_franken_parity
 # BP-router + DFA-experts twin lanes.
 libexec/toy-train-franken-moe: lib/toy/run/train_franken_moe.rb lib/toy/run/franken_moe_parts.rb lib/toy.rb lib/toy/ffi/tinynn.rb \
 		lib/toy/llm/primitives/rms_norm.rb lib/toy/train/dfa_b.rb \
-		tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+		tinynn/libtinynn_ggml.a $(SPINEL_DEPS) \
+		lib/toy/dev/toy_card.rb lib/toy/llm/primitives/muon.rb lib/toy/llm/primitives/situ_glu.rb lib/toy/models/transformer.rb lib/toy/version.rb | libexec
 	$(SPINEL) $< -o $@
 .PHONY: gate-franken-moe
 gate-franken-moe: libexec/toy-train-franken-moe
@@ -2639,7 +2673,8 @@ libexec/toy-train-franken-moe-cli: lib/toy/run/train_franken_moe_cli.rb lib/toy/
 		lib/toy/llm/primitives/rms_norm.rb lib/toy/train/dfa_b.rb \
 		lib/toy/llm/primitives/muon.rb \
 		lib/toy/llm/labels.rb lib/toy/io/toy_corpus_loader.rb \
-		tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+		tinynn/libtinynn_ggml.a $(SPINEL_DEPS) \
+		lib/toy/dev/toy_card.rb lib/toy/llm/primitives/situ_glu.rb lib/toy/models/transformer.rb lib/toy/version.rb | libexec
 	$(SPINEL) $< -o $@
 .PHONY: gate-franken-moe-cli
 gate-franken-moe-cli: libexec/toy-train-franken-moe-cli libexec/toy-train-franken-moe
@@ -2660,7 +2695,8 @@ libexec/toy-train-franken-llama: lib/toy/run/train_franken_llama.rb lib/toy.rb l
 		lib/toy/llm/primitives/rope.rb lib/toy/llm/primitives/gqa.rb \
 		lib/toy/llm/recipe_options.rb lib/toy/dev/toy_describe_flow.rb lib/toy/train/dfa_b.rb \
 		lib/toy/train/toy_gguf_writer.rb lib/toy/train/toy_gguf_fuse.rb \
-		tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+		tinynn/libtinynn_ggml.a $(SPINEL_DEPS) \
+		lib/toy/dev/toy_card.rb lib/toy/io/toy_corpus_loader.rb lib/toy/llm/adamw.rb lib/toy/llm/labels.rb lib/toy/llm/primitives/muon.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/train/toy_lr_schedule.rb lib/toy/version.rb | libexec
 	$(SPINEL) $< -o $@
 .PHONY: gate-franken-llama
 gate-franken-llama: libexec/toy-train-franken-llama
@@ -2758,7 +2794,8 @@ libexec/toy-train-franken-llama-cuda: lib/toy/run/train_franken_llama_cuda.rb li
 		lib/toy/ffi/tinynn_cuda.rb lib/toy/io/json_builder.rb lib/toy/io/json.rb \
 		lib/toy/io/toy_events.rb lib/toy/llm/recipe_options.rb lib/toy/dev/toy_describe_flow.rb lib/toy/train/dfa_b.rb \
 		lib/toy/train/toy_gguf_writer.rb lib/toy/train/toy_gguf_fuse.rb \
-		tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) | libexec
+		tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) \
+		lib/toy/dev/toy_card.rb lib/toy/ffi/tinynn.rb lib/toy/io/toy_corpus_loader.rb lib/toy/llm/adamw.rb lib/toy/llm/archs/layer_spec.rb lib/toy/llm/archs/llama_arch_cuda.rb lib/toy/llm/blocks/gdn_block.rb lib/toy/llm/blocks/transformer_block_cuda.rb lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/llm/labels.rb lib/toy/llm/primitives/gdn.rb lib/toy/llm/primitives/gqa_cuda.rb lib/toy/llm/primitives/muon.rb lib/toy/llm/primitives/rms_norm_cuda.rb lib/toy/llm/primitives/rope_cuda.rb lib/toy/llm/primitives/situ_glu_cuda.rb lib/toy/llm/primitives/swiglu_cuda.rb lib/toy/llm/recipes/franken_from_scratch_cuda.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/version.rb | libexec
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 .PHONY: gate-franken-llama-cuda
 gate-franken-llama-cuda: libexec/toy-train-franken-llama-cuda libexec/toy-train-cuda
@@ -2772,7 +2809,8 @@ libexec/toy-train-franken-moe-cli-cuda: lib/toy/run/train_franken_moe_cli_cuda.r
 		lib/toy/io/toy_events.rb lib/toy/dev/toy_describe_flow.rb \
 		lib/toy/llm/primitives/rms_norm_cuda.rb lib/toy/train/dfa_b.rb \
 		lib/toy/llm/labels.rb lib/toy/io/toy_corpus_loader.rb \
-		tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) | libexec
+		tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) \
+		lib/toy/dev/toy_card.rb lib/toy/ffi/tinynn.rb lib/toy/llm/primitives/muon_cuda.rb lib/toy/llm/primitives/situ_glu_cuda.rb lib/toy/models/transformer.rb lib/toy/version.rb | libexec
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
 .PHONY: gate-franken-moe-cuda
 gate-franken-moe-cuda: libexec/toy-train-franken-moe-cli-cuda

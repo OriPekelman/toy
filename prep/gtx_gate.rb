@@ -342,8 +342,51 @@ Dir.mktmpdir("gtx_gate_cli") do |dir|
   end
   cout, cst = Open3.capture2e({}, TOY, "train", "gtx", "--device", "cuda", chdir: ROOT)
   failures << "cli: gtx accepted --device cuda (CPU-only — tao#18)" unless cst.exitstatus == 2
+
+  # toy#169/#170 — THE BYTE-LM PATH THROUGH THE CLI.
+  #
+  # Every P3-P6 cell was driven through the GTX_* env harness because
+  # `--task bytelm` did not exist here, which is what blocked the formal
+  # registry from recording those runs. Two things had to land, and both
+  # are asserted because either one silently guts the path:
+  #
+  #   * the flag itself, plus --text to name the pack (there is NO
+  #     synthetic fallback corpus, by design), and --vocab for the P5
+  #     nominal head width;
+  #   * the stdout ALLOWLIST. `bytelm:` IS the lane's result and `gtx:`
+  #     carries vocab=/b_dim=. Filtered, a CLI run trains correctly and
+  #     reports neither its result nor its provenance — green, and
+  #     useless to anyone reading it.
+  if File.file?(File.join(ROOT, "data", "ae_shak_a65.tok.i32"))
+    bout, bst = Open3.capture2e({}, TOY, "train", "gtx", "--task", "bytelm",
+                                "--text", "data/ae_shak_a65", "--vocab", "65",
+                                "--steps", "5", "--seed", "0", "--val-batches", "2",
+                                "--policy", "dfa,dfa", "--out", dir, chdir: ROOT)
+    if bst.success?
+      failures << "cli bytelm: the run did not emit its RESULT line (bytelm: bpb=...) — the allowlist filters it, so every number this lane produces would be invisible to the caller" unless
+        bout.lines.any? { |l| l.start_with?("bytelm: ") }
+      failures << "cli bytelm: the run did not emit its WIRING line (gtx: bytelm ...) — vocab= and b_dim= are how a cell proves which head width it used" unless
+        bout.lines.any? { |l| l.start_with?("gtx: bytelm ") }
+      failures << "cli bytelm: --vocab 65 did not reach the runner (expected vocab=65 b_dim=65)" unless
+        bout.include?("vocab=65") && bout.include?("b_dim=65")
+      failures << "cli bytelm: --text did not reach the runner (no corpus: line naming the pack)" unless
+        bout.include?("pack=data/ae_shak_a65 ")
+    else
+      failures << "cli bytelm: `toy train gtx --task bytelm` exited #{bst.exitstatus}:\n#{bout.lines.last(5).join}"
+    end
+    # The refusals that keep the flag honest.
+    [
+      [%w[gtx --task bytelm],                                   "bytelm without --text"],
+      [%w[mlp --task bytelm --text data/ae_shak_a65],           "bytelm on a lane that has no such task"],
+      [%w[gtx --task bytelm --text data/nope],                  "--text naming a pack that is not there"],
+      [%w[gtx --task relational --vocab 512],                   "--vocab without bytelm on gtx"],
+    ].each do |argv, label|
+      rout, rst = Open3.capture2e({}, TOY, "train", *argv, chdir: ROOT)
+      failures << "cli bytelm fail-loud: #{label} exited #{rst.exitstatus} (expected 2)" unless rst.exitstatus == 2
+    end
+  end
 end
-puts failures.length == n0 ? "  ok: CLI reproduces the curve; lane-foreign flags and --device cuda are rejected" : "  FAIL: CLI"
+puts failures.length == n0 ? "  ok: CLI reproduces the curve; lane-foreign flags and --device cuda are rejected; `--task bytelm` runs end-to-end with --text/--vocab and its RESULT and WIRING lines reach the caller, and 4 degenerate forms fail loud" : "  FAIL: CLI"
 
 # ---- 11. THE RETROFIT LANE (toy#161) ----
 #

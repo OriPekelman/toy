@@ -606,6 +606,12 @@ module Toy
                              "GTX_FEATURES"    => (@features || 16).to_s,
                              "GTX_NOISE"       => (@noise ? @noise.to_s : ""),
                              "GTX_TASK"        => (@task || ""),
+                             "GTX_TEXT"        => (@text || ""),
+                             # EXPLICIT default, never "": train_gtx reads
+                             # (ENV["GTX_VOCAB"] || "256").to_i, and "" is
+                             # TRUTHY in Ruby, so an empty string would
+                             # silently become vocab 0 rather than 256.
+                             "GTX_VOCAB"       => (@vocab || 256).to_s,
                              "GTX_PAIRS"       => (@batch || 128).to_s,
                              "GTX_VAL_BATCHES" => (@val_batches || 8).to_s,
                              "GTX_TASK_SEED"   => (@task_seed || 7).to_s,
@@ -665,6 +671,7 @@ module Toy
                              "SSM_CONV_K"      => (@conv_k || 4).to_s,
                              "SSM_CLASSES"     => (@classes || 4).to_s,
                              "SSM_TASK"        => (@task || ""),
+                             "SSM_TEXT"        => (@text || ""),
                              "SSM_CUE_SPAN"    => (@cue_span ? @cue_span.to_s : ""),
                              "SSM_NOISE"       => (@noise ? @noise.to_s : ""),
                              "SSM_TASK_SEED"   => (@task_seed || 7).to_s,
@@ -843,7 +850,16 @@ module Toy
           # can-it-lose precondition). A sweep over --latent-dim reads all
           # four off stdout, so filtering them here would leave the lane's
           # actual finding reachable only by opening a bundle.
-          losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") || l.start_with?("val:") || l.start_with?("train:") || l.start_with?("graph:") || l.start_with?("stream:") || l.start_with?("gen:") || l.start_with?("corpus:") || l.start_with?("noise:") || l.start_with?("half_snr:") || l.start_with?("control:") || l.start_with?("latent_std:") || l.start_with?("converged:") || l.start_with?("stage1:") || l.start_with?("arm:") || l.start_with?("resid:") || l.start_with?("judge:") || l.start_with?("objective:") || l.start_with?("epsmse:") }.map(&:chomp)
+          # toy#169/#170 add the byte-LM pair, and they are the reason the
+          # CLI could not carry P2-P6 at all: "bytelm:" IS the lane's
+          # result (held-out bpb — every P3/P4/P5/P6 number is quoted from
+          # it), and "gtx:" is the wiring line the sweeps grep for
+          # `vocab=` and `b_dim=` to prove a cell is the arm and the head
+          # width it claims. Filtered, a CLI run trains correctly and
+          # reports neither its result nor its provenance — which is
+          # exactly how every cell ended up driven through the env
+          # harness instead.
+          losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") || l.start_with?("val:") || l.start_with?("train:") || l.start_with?("graph:") || l.start_with?("stream:") || l.start_with?("gen:") || l.start_with?("corpus:") || l.start_with?("noise:") || l.start_with?("half_snr:") || l.start_with?("control:") || l.start_with?("latent_std:") || l.start_with?("converged:") || l.start_with?("stage1:") || l.start_with?("arm:") || l.start_with?("resid:") || l.start_with?("judge:") || l.start_with?("objective:") || l.start_with?("epsmse:") || l.start_with?("bytelm:") || l.start_with?("gtx: ") }.map(&:chomp)
           emit(run_id, run_dir, losses)
         end
 
@@ -1374,11 +1390,11 @@ module Toy
               i += 1
               val = @argv[i]
               return bad_arg("--task requires a value") if val.nil?
-              return bad_arg("--task must be teacher, blobs, community, cue, mean, relational, local, mixture or single, got #{val.inspect}") unless %w[teacher blobs community cue mean relational local mixture single].include?(val)
+              return bad_arg("--task must be teacher, blobs, community, cue, mean, relational, local, bytelm, mixture or single, got #{val.inspect}") unless %w[teacher blobs community cue mean relational local bytelm mixture single].include?(val)
               @task = val
             when /\A--task=(.*)\z/
               val = $1
-              return bad_arg("--task must be teacher, blobs, community, cue, mean, relational, local, mixture or single, got #{val.inspect}") unless %w[teacher blobs community cue mean relational local mixture single].include?(val)
+              return bad_arg("--task must be teacher, blobs, community, cue, mean, relational, local, bytelm, mixture or single, got #{val.inspect}") unless %w[teacher blobs community cue mean relational local bytelm mixture single].include?(val)
               @task = val
             when "--task-seed"
               i += 1
@@ -1990,10 +2006,19 @@ when /\A--dfa-feedback-lr=(.*)\z/
              (!@arm.nil? || !@ae_steps.nil? || !@tsteps.nil? || !@gen_bytes.nil? || !@judge_steps.nil? ||
               !@loss_weight.nil? || !@minsnr_gamma.nil?),
              " (toy#166)"],
-            ["--text/--noise-eval/--noise-seed/--val-frac-pct/--target-ce/--eval-every/--probe-batches", %w[ae difflm],
-             (!@text.nil? || !@noise_eval.nil? || !@noise_seed.nil? || !@val_frac_pct.nil? ||
+            # toy#169/#170 SPLIT this row. It used to bundle seven flags
+            # under one lane list, so widening it for `--text` silently
+            # legalised --noise-eval/--probe-batches/--target-ce and the
+            # rest on gtx/ssm, which ignore them — caught by
+            # gate-train-cli-matrix. `--text` is the only one the byte-LM
+            # lanes read, so it gets its own row and the ae/difflm probe
+            # knobs keep theirs.
+            ["--text", %w[ae difflm gtx ssm], !@text.nil?,
+             " (toy#165 names a byte pack from prep/fetch_text.rb, NOT a TOYC corpus; toy#169/#170 add the byte-LM lanes, where it needs --task bytelm)"],
+            ["--noise-eval/--noise-seed/--val-frac-pct/--target-ce/--eval-every/--probe-batches", %w[ae difflm],
+             (!@noise_eval.nil? || !@noise_seed.nil? || !@val_frac_pct.nil? ||
               !@target_ce.nil? || !@eval_every.nil? || !@probe_batches.nil?),
-             " (toy#165; --text names a byte pack from prep/fetch_text.rb, NOT a TOYC corpus)"],
+             " (toy#165; the ae/difflm probe knobs — the byte-LM lanes have no noise probe)"],
             ["--cue-span",      %w[ssm lstm],                       !@cue_span.nil?, " (toy#155/#157)"],
             # toy#162: the FAIR BPTT control lives on the lane whose
             # stability claim needs it. Widening it is a follow-on, not
@@ -2041,7 +2066,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
             # lanes, and letting `ae` take a string there would make one flag
             # mean two different types depending on the recipe.
             ["--context",       %w[franken franken-moe ae difflm], !@context.nil?, " (toy#129/#165/#166)"],
-            ["--vocab",         %w[franken franken-moe],           !@vocab.nil?, " (toy#129; on the ae lane the head is byte-wide by construction, so there is no --vocab)"],
+            ["--vocab",         %w[franken franken-moe gtx],       !@vocab.nil?, " (toy#129 names a headerless pack vocab; toy#170/P5 on gtx it is the NOMINAL HEAD WIDTH under --task bytelm. On the ae lane the head is byte-wide by construction, so there is no --vocab)"],
             ["--batch",         %w[franken franken-moe mlp ctr ssm lstm gtx diff], !@batch.nil?, " (toy#133; on gtx it is the labelled PAIRS per step)"],
             ["--act",           %w[franken],                        !@act.nil?, " (toy#136/K1; MoE experts get their GLU in K4)"],
             ["--rope",          %w[franken],                        !@rope.nil?, " (toy#136/K1)"],
@@ -2088,7 +2113,13 @@ when /\A--dfa-feedback-lr=(.*)\z/
           if @eval_corpus && !File.file?(@eval_corpus)
             return bad_arg("no such file: #{@eval_corpus} (--eval-corpus streams packed-i32 tokens)")
           end
-          if @vocab && @corpus.nil?
+          # toy#129's rule, and it is about the FRANKEN lanes: there
+          # `--vocab` names a headerless corpus pack's vocab, so it is
+          # meaningless without `--corpus`. On gtx (toy#170/P5) the same
+          # flag means the NOMINAL HEAD WIDTH and the data comes from
+          # `--text`, so requiring `--corpus` there would refuse the one
+          # configuration the flag exists for.
+          if @vocab && @corpus.nil? && !%w[gtx].include?(@recipe)
             return bad_arg("--vocab needs --corpus (it names a headerless pack's vocab; TOYC packs declare their own)")
           end
           if @recipe == "franken-moe" && @context && @corpus.nil?
@@ -2194,6 +2225,47 @@ when /\A--dfa-feedback-lr=(.*)\z/
           end
           if (@task == "relational" || @task == "local") && @recipe != "gtx"
             return bad_arg("--task #{@task} is only valid with recipe 'gtx' (toy#160)")
+          end
+          # toy#169/#170 — the AR byte-LM task is SHARED by the two
+          # generative-body lanes, for the same reason cue|mean is shared
+          # by the recurrent pair: gtx and ssm run the same experiment on
+          # different architectures, and one experiment gets one name.
+          #
+          # Every P2-P6 cell was driven through the GTX_*/SSM_* env
+          # harness because this flag did not exist, which is what blocks
+          # `tao conclude` from recording those runs against the registry.
+          if @task == "bytelm" && !%w[gtx ssm].include?(@recipe)
+            return bad_arg("--task bytelm is only valid with recipe 'gtx' or 'ssm' (toy#169/#170)")
+          end
+          # ...and the converse, which gate-ae caught: on gtx/ssm the
+          # runner reads GTX_TEXT/SSM_TEXT ONLY under bytelm, so `--text`
+          # on a relational or cue/mean run is accepted and then ignored.
+          # A flag that silently does nothing is the failure this lane's
+          # CLI checks exist to prevent, so refuse it rather than widen
+          # the lane matrix and call it done.
+          if !@text.nil? && %w[gtx ssm].include?(@recipe) && @task != "bytelm"
+            return bad_arg("--text on recipe #{@recipe.inspect} is only valid with --task bytelm (toy#169/#170); the #{@recipe} lane's other tasks generate their own data and would ignore it")
+          end
+          # Same refusal as the ae/difflm lanes and for the same reason:
+          # there is no synthetic fallback corpus, so a bytelm run without
+          # --text would train on nothing and report a confident number.
+          # Checked here as well as in the runner, and the pack is checked
+          # to exist so a typo does not surface as "could not read".
+          if @task == "bytelm"
+            if @text.nil?
+              return bad_arg("--task bytelm requires --text <pack-prefix> (prep/fetch_text.rb, or prep/remap_alphabet.rb for the dense packs)")
+            end
+            missing = %w[.meta.i32 .tok.i32].reject { |sfx| File.file?(@text + sfx) }
+            unless missing.empty?
+              return bad_arg("--text #{@text.inspect} is not a byte pack: missing #{missing.join(', ')}")
+            end
+          end
+          # `--vocab` is SHARED with franken/franken-moe, where it names a
+          # headerless pack's vocab (toy#129). On gtx it is the toy#170/P5
+          # nominal head width, and it only means anything under bytelm —
+          # for the relational task the head is TY*TY by construction.
+          if !@vocab.nil? && @recipe == "gtx" && @task != "bytelm"
+            return bad_arg("--vocab on recipe 'gtx' is only valid with --task bytelm (toy#170/P5: it sets the head, the embedding AND the DFA feedback matrix B together; the relational task's head is TY*TY)")
           end
           if @task == "community" && @recipe != "gnn"
             return bad_arg("--task community is only valid with recipe 'gnn' (toy#153); 'mlp' takes teacher|blobs")
