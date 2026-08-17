@@ -509,6 +509,14 @@ N_NODES = IS_BYTELM ? CONTEXT : task.gt_nodes
 # runner gets to say what is actually wrong.
 bl_task = AeTask.new(CONTEXT + 1, GTX_TASK_SEED_BL)
 if IS_BYTELM
+  # toy#170 (P6) — widen the pack contract only when the head is actually
+  # wider. `max(256, N_CLASSES)`, never `N_CLASSES` alone: under a NARROW
+  # head the 256 byte contract must stay in force, so that a raw byte pack
+  # run at `--vocab 65` is refused by the GTX_VOCAB guard below — which
+  # names the flag, the max id and the remap script — rather than by
+  # load_pack!'s generic range message. Same reason the arc's older cells
+  # stay comparable: at the default this is exactly 256.
+  bl_task.at_max_vocab = N_CLASSES > AeTask::VOCAB ? N_CLASSES : AeTask::VOCAB
   if bl_task.load_pack!(TEXT) != 0
     exit 1
   end

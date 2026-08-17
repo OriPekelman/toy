@@ -36,9 +36,15 @@
 # DATA changes across the axis. Classes that never occur simply never get
 # mass, which is a fact the reported alphabet size already states.
 #
-# ── PACK FORMAT (written by prep/fetch_text.rb) ──
+# ── PACK FORMAT (written by prep/fetch_text.rb, prep/remap_alphabet.rb) ──
 #   <prefix>.meta.i32   [n_tokens, alphabet_size]
-#   <prefix>.tok.i32    n_tokens byte ids, 0..255, in corpus order
+#   <prefix>.tok.i32    n_tokens token ids, 0..max_vocab-1, in corpus order
+#
+# `max_vocab` defaults to 256 — the original byte contract, and what every
+# lane gets unless it says otherwise, so a byte pack reads identically to
+# before toy#170/P6. A lane that needs token ids past 255 sets
+# `at_max_vocab` BEFORE load_pack!; the ceiling is VOCAB_MAX, which is a
+# statement about the dense one-hot labels, not about the file format.
 #
 # Windows are drawn uniformly over the WHOLE pack rather than from a
 # prefix. That matters for the multilingual corpus, whose members are
@@ -51,18 +57,39 @@
 
 class AeTask
   # The head is byte-wide on every corpus; see the header on why this is
-  # not derived from the observed alphabet.
+  # not derived from the observed alphabet. This stays the DEFAULT
+  # ceiling, so every lane that does not ask for more is unchanged.
   VOCAB = 256
+
+  # toy#170 (P6) — the pack contract widens from "byte ids" to "token
+  # ids", and this is where it stops.
+  #
+  # The ceiling is set by the LABELS, not by the format: `m_labels` is a
+  # DENSE one-hot Mat of [positions, classes], so the per-step upload
+  # grows linearly with the ceiling. At 4096 and context 128 that is
+  # 524k floats a step, which is fine; at 50k it is ~25 MB a step, which
+  # is not. Sparse labels would lift it and are deliberately NOT built:
+  # the 50k regime is out of scope for this program by design, because no
+  # controlled experiment can reach it (inflation raises ARITHMETIC rank
+  # while the learnable structure stays put, and learnable rank cannot
+  # rise without difficulty rising). So this cap is a statement about
+  # what the experiment means, not about effort.
+  VOCAB_MAX = 4096
 
   attr_accessor :at_context, :at_n_tokens, :at_alphabet, :at_tokens,
                 :at_counts, :at_floor_p, :at_floor_id, :at_entropy, :at_s,
-                :at_max_id
+                :at_max_id, :at_max_vocab
 
   def initialize(context, task_seed)
     @at_context  = context
     @at_n_tokens = 0
     @at_alphabet = 0
     @at_max_id   = 0
+    # Defaults to the byte contract. A lane that wants token ids must say
+    # so BEFORE load_pack!, and one that does not ask reads exactly what
+    # it read before — the whole P3/depth/P4/P5 arc has to stay
+    # comparable across this change.
+    @at_max_vocab = VOCAB
     @at_tokens   = [0]; @at_tokens.pop
     @at_counts   = [0]; @at_counts.pop
     @at_floor_p  = 0.0
@@ -105,14 +132,27 @@ class AeTask
     end
     @at_n_tokens = n
 
-    @at_counts = Array.new(VOCAB, 0)
+    # The ceiling is refused HERE rather than trusted, because it arrives
+    # from a caller: a lane that asked for more than the dense labels can
+    # carry would otherwise allocate a per-step upload that quietly makes
+    # every cell slower without ever being wrong, which is the hardest
+    # kind of mistake to notice.
+    if @at_max_vocab < 2 || @at_max_vocab > VOCAB_MAX
+      puts "ae: max_vocab " + @at_max_vocab.to_s + " is outside 2.." +
+           VOCAB_MAX.to_s + " — the labels are a DENSE one-hot Mat, so" +
+           " the ceiling is what a per-step upload can carry, not a format limit"
+      return 1
+    end
+    @at_counts = Array.new(@at_max_vocab, 0)
     i = 0
     while i < n
       tk = @at_tokens[i]
-      if tk < 0 || tk >= VOCAB
+      if tk < 0 || tk >= @at_max_vocab
         puts "ae: token " + tk.to_s + " at index " + i.to_s +
-             " is outside 0.." + (VOCAB - 1).to_s +
-             " — the pack is not byte ids"
+             " is outside 0.." + (@at_max_vocab - 1).to_s +
+             (@at_max_vocab == VOCAB ?
+               " — the pack is not byte ids" :
+               " — the pack exceeds the token-id ceiling this lane asked for")
         return 1
       end
       @at_counts[tk] = @at_counts[tk] + 1
@@ -124,7 +164,7 @@ class AeTask
     best_c   = -1
     ent      = 0.0
     c = 0
-    while c < VOCAB
+    while c < @at_max_vocab
       k = @at_counts[c]
       if k > 0
         distinct = distinct + 1
@@ -153,7 +193,7 @@ class AeTask
     # to k must gate on this, not on the alphabet.
     hi = 0
     c = 0
-    while c < VOCAB
+    while c < @at_max_vocab
       if @at_counts[c] > 0
         hi = c
       end

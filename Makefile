@@ -974,6 +974,7 @@ libexec/toy-train-ssm: lib/toy/run/train_ssm.rb lib/toy/dev/toy_describe_flow.rb
 		vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
 		lib/toy/io/toy_ssm_task.rb lib/toy/llm/engine/ssm_engine.rb \
 		lib/toy/llm/recipes/ssm_seq.rb lib/toy/llm/adamw.rb \
+		lib/toy/io/toy_ae_task.rb \
 		lib/toy/train/dfa_b.rb lib/toy/train/stream_bytes.rb \
 		lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
 	$(SPINEL) $< -o $@
@@ -2693,6 +2694,57 @@ GATES := $(filter-out gate-metal %-metal,$(ALL_GATES))
 endif
 .PHONY: gates
 gates: $(GATES)
+	@echo "ALL GATES PASS ($(words $(GATES)) legs)"
+
+# ── gates-fast: the same legs, in two phases, safe under -j ──
+#
+# `make -j gates` is NOT safe, and the reason is not obvious. Several
+# gate targets declare no prerequisites (gate-cpu, gate-cuda,
+# gate-ckpt-roundtrip, gate-lmc, gate-consumer, ...), and 31 of the gate
+# SCRIPTS shell out to `make` themselves to build a runner they find
+# missing. Run those concurrently and two recursive makes can build the
+# SAME libexec/* path at once — two spinel processes writing one output
+# file. That is a corrupt binary, not a slow build, and it would surface
+# later as an unrelated-looking gate failure.
+#
+# Phase 1 builds EVERY runner first, so by phase 2 no gate script's
+# fallback can fire and the race has nothing to race over. Phase 2 then
+# runs the legs concurrently. Both phases inherit the caller's -j through
+# the jobserver, so `make -j8 gates-fast` parallelises both.
+#
+# WHY IT IS WORTH IT: a serial battery leaves the box idle. Measured
+# during a run, the battery occupied ~2-3 of 20 cores, much of it
+# SINGLE-THREADED spinel compilation — the legs are mostly short runs
+# where process startup and codegen dominate, not wide matmuls.
+#
+# CUDA IS DELIBERATELY SERIALISED. The cuda legs share one GB10 and one
+# unified 121 GiB pool; running them concurrently trades a small wall
+# win for contention and OOM flakiness on a box that also hosts other
+# services (see gx-status). They run after, serially, and that is a
+# choice rather than an oversight.
+GATE_RUNNERS := $(sort $(shell grep -oE '^libexec/toy-[a-z0-9-]+' $(firstword $(MAKEFILE_LIST))))
+ifeq ($(shell uname),Darwin)
+GATE_RUNNERS := $(filter-out %-cuda,$(GATE_RUNNERS))
+else
+GATE_RUNNERS := $(filter-out %-metal,$(GATE_RUNNERS))
+endif
+GATES_CUDA := $(filter %-cuda gate-cuda,$(GATES))
+GATES_CPU  := $(filter-out $(GATES_CUDA),$(GATES))
+# Explicit, NOT inherited from the caller's -j. `make -j gates-fast` with
+# an unlimited jobserver would launch all 49 CPU legs at once, and this
+# box shares one 121 GiB pool with whatever else is resident (gx-status).
+# Phase 1 is single-threaded spinel + cc1 per file, so it takes a wider
+# fan-out than the legs, which mix 4-thread training runs in.
+BUILD_JOBS ?= 10
+GATE_JOBS  ?= 6
+.PHONY: gates-fast
+gates-fast:
+	@echo "== phase 1/3: building $(words $(GATE_RUNNERS)) runners (-j$(BUILD_JOBS)) =="
+	@$(MAKE) -j$(BUILD_JOBS) $(GATE_RUNNERS)
+	@echo "== phase 2/3: $(words $(GATES_CPU)) CPU gate legs (-j$(GATE_JOBS)) =="
+	@$(MAKE) -j$(GATE_JOBS) $(GATES_CPU)
+	@echo "== phase 3/3: $(words $(GATES_CUDA)) CUDA gate legs (serial, one GPU) =="
+	@$(MAKE) -j1 $(GATES_CUDA)
 	@echo "ALL GATES PASS ($(words $(GATES)) legs)"
 
 # toy#109 CUDA franken leg — the CUDA twin of the spec-callable runner

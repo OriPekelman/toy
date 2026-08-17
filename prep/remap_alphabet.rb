@@ -72,10 +72,21 @@ def densify(toks)
   toks.map { |t| m[t] }
 end
 
+# toy#170 (P6) — the ceiling is AeTask::VOCAB_MAX, and it is about the
+# DENSE one-hot label upload, not the file format. Kept in sync by hand
+# because prep/ must not require the lib (see the lib-vs-example rule);
+# the runner refuses anything past it, so a drift here fails loud there
+# rather than producing a pack nothing can load.
+MAX_CODE = Integer(ENV["REMAP_MAX_CODE"] || "4096")
+
 def write_pack(prefix, toks, note)
   toks = densify(toks)
   distinct = toks.uniq.size
-  raise "#{prefix}: code >= 256 (#{toks.max}) — the head is 256 wide" if toks.max >= 256
+  if toks.max >= MAX_CODE
+    raise "#{prefix}: code #{toks.max} >= #{MAX_CODE} — past what a dense " \
+          "one-hot label upload carries; raise AeTask::VOCAB_MAX first, and " \
+          "read its comment on why 50k is out of scope by design"
+  end
   raise "#{prefix}: not dense (max #{toks.max}, distinct #{distinct})" if toks.max != distinct - 1
   counts = Hash.new(0); toks.each { |t| counts[t] += 1 }
   n = toks.size.to_f
@@ -119,7 +130,18 @@ puts
 # cannot be run on it). And running it at head 256 must reproduce
 # ae_shakespeare's numbers within seed noise — which is the only end-to-
 # end check that this remap pipeline does not itself move the result.
-[1, 2, 3].each do |m|
+# toy#170 (P6) — the ladder. m=1/2/3 were P5 and are UNCHANGED by adding
+# rungs above them: the stream is seeded per m (`SEED + m`) and densify is
+# deterministic, so each pack's sha depends only on its own m. m=6 is the
+# noise-linearity pre-check that gates the rest; 8/16/40 are the ladder
+# proper, topping out near what the dense labels carry.
+#
+# Note the rungs land BELOW 65*m: a symbol occurring fewer than m times
+# cannot use all m of its codes, so the realised rank is what the pack
+# reports, never what the arithmetic predicts. The runs read it from
+# provenance for exactly this reason.
+REMAP_MS = (ENV["REMAP_MS"] || "1 2 3 6 8 16 40").split.map { |x| Integer(x) }
+REMAP_MS.each do |m|
   rng = Random.new(SEED + m)
   out = toks.map { |t| rank_of[t] * m + rng.rand(m) }
   ent = write_pack("data/ae_shak_a#{out.uniq.size}", out,

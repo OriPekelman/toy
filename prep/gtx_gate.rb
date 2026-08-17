@@ -617,16 +617,23 @@ HW = { "GTX_TASK" => "bytelm", "GTX_CONTEXT" => "64", "GTX_D_MODEL" => "64",
 def hw_wiring(out)
   out.lines.find { |x| x.start_with?("gtx: bytelm ") } || ""
 end
+def hw_bpb(out)
+  l = out.lines.find { |x| x.start_with?("bytelm: ") }
+  l ? l[/bpb=([0-9.eE+-]+)/, 1].to_f : nil
+end
+# Defined at top level, NOT inside a leg's else: legs 13 and 14 both call
+# it, so binding it inside one of them would turn a SKIP into a NameError
+# in the other.
+def hw_run(extra)
+  run_gtx(HW.merge({ "STEPS" => "40", "GTX_LR" => "0.003",
+                     "GTX_TEXT" => "data/ae_shak_a65",
+                     "GTX_POLICY" => "dfa,dfa", "GTX_DFA_CUT" => "layer" })
+            .merge(extra), nil)
+end
 if !File.file?(File.join(ROOT, "data", "ae_shak_a65.tok.i32")) ||
    !File.file?(File.join(ROOT, "data", "ae_shakespeare.tok.i32"))
   puts "  skip: HEAD WIDTH (toy#170/P5) — data/ae_shak_a65 or data/ae_shakespeare absent (run prep/fetch_text.rb then prep/remap_alphabet.rb)"
 else
-  def hw_run(extra)
-    run_gtx(HW.merge({ "STEPS" => "40", "GTX_LR" => "0.003",
-                       "GTX_TEXT" => "data/ae_shak_a65",
-                       "GTX_POLICY" => "dfa,dfa", "GTX_DFA_CUT" => "layer" })
-              .merge(extra), nil)
-  end
 
   # 13a. THE DEFAULT CHANGES NOTHING. Not "vocab 256 works" — that the
   # knob left unset and the knob set to its default are BYTE-IDENTICAL
@@ -667,6 +674,67 @@ else
   puts failures.length == n0 ?
     "  ok: HEAD WIDTH (toy#170/P5) — GTX_VOCAB unset is byte-identical to 256 (old cells stay comparable), --vocab 65 narrows the head AND the DFA feedback matrix together (b_dim asserted separately from vocab) and is not inert, and a pack whose ids overflow the head is REFUSED by max id with the number named" :
     "  FAIL: head width"
+end
+
+# ── LEG 14: THE WIDENED PACK CONTRACT (toy#170 / spec P6) ──
+#
+# AeTask carried a hard `VOCAB = 256` refusal — "the pack is not byte
+# ids" — which capped symbol-inflation at m=3 (rank 192 < 256) purely by
+# luck. P6 widens the contract to token ids so the arithmetic-rank ladder
+# can run, and AeTask is shared by FOUR runners (ae, difflm, gtx, ssm).
+#
+# The whole P3/depth/P4/P5 arc has to stay comparable across that change,
+# so what this leg owes the program is that widening the contract did NOT
+# move the byte path, and that the new ceiling still refuses loudly.
+n0 = failures.length
+WIDE = File.join(ROOT, "data", "ae_shak_a380.tok.i32")
+if !File.file?(File.join(ROOT, "data", "ae_shak_a65.tok.i32"))
+  puts "  skip: PACK CONTRACT (toy#170/P6) — data/ae_shak_a65 absent (run prep/remap_alphabet.rb)"
+else
+  # 14a. THE BYTE PATH DID NOT MOVE. A byte-id pack under the default
+  # ceiling must still train the same curve it did before the contract
+  # widened — this is the assertion that keeps every pre-P6 cell in the
+  # arc comparable, and it is the reason the default is 256 rather than
+  # VOCAB_MAX.
+  bp1 = hw_run({})
+  failures << "pack contract: a byte-id pack under the DEFAULT ceiling did not produce a bpb — the widened contract broke the byte path" if
+    hw_bpb(bp1).nil?
+  failures << "pack contract: the default run no longer reports vocab=256 b_dim=256" unless
+    hw_wiring(bp1).include?("vocab=256") && hw_wiring(bp1).include?("b_dim=256")
+
+  if !File.file?(WIDE)
+    puts "  note: PACK CONTRACT — data/ae_shak_a380 absent, skipping the token-id half (run prep/remap_alphabet.rb)"
+  else
+    # 14b. A pack with ids past 255 is REFUSED under the default ceiling.
+    # Not "handled" — refused. Silently accepting it is how a rank-380
+    # corpus would get scored against a 256-wide head with 124 symbols
+    # folded into nothing.
+    outw, stw = Open3.capture2e(
+      HW.merge({ "STEPS" => "2", "GTX_TEXT" => "data/ae_shak_a380" }), RUNNER, chdir: ROOT)
+    failures << "pack contract: a token-id pack (rank 380) was accepted under the DEFAULT 256 ceiling — ids past 255 must be refused, not folded" if stw.success?
+
+    # 14c. ...and ACCEPTED once the head asks for the width. This is the
+    # pair that proves the widening is real rather than a relaxed check:
+    # same pack, refused at 256, runs at 512.
+    okw = hw_run("GTX_TEXT" => "data/ae_shak_a380", "GTX_VOCAB" => "512")
+    failures << "pack contract: rank-380 pack did not run at --vocab 512 — the widening is not actually wired" if
+      hw_bpb(okw).nil?
+    failures << "pack contract: the rank-380 run did not report vocab=512 b_dim=512" unless
+      hw_wiring(okw).include?("vocab=512") && hw_wiring(okw).include?("b_dim=512")
+    failures << "pack contract: the rank-380 run reports an alphabet other than 380 — the pack or the counter disagrees with the file" unless
+      okw.include?("alphabet=380")
+  end
+
+  # 14d. The ceiling itself fails loud. It exists because the labels are
+  # a DENSE one-hot Mat, so asking for 50k would not be wrong, it would
+  # be quietly enormous — the hardest kind of mistake to catch.
+  outc, stc = Open3.capture2e(
+    HW.merge({ "STEPS" => "2", "GTX_VOCAB" => "65536" }), RUNNER, chdir: ROOT)
+  failures << "pack contract fail-loud: --vocab 65536 exited 0 — past VOCAB_MAX the dense one-hot label upload is ~25 MB/step, which is slow rather than wrong and would never announce itself" if stc.success?
+
+  puts failures.length == n0 ?
+    "  ok: PACK CONTRACT (toy#170/P6) — the byte path is UNMOVED by the widening (default ceiling still 256, still trains), a rank-380 token-id pack is REFUSED at the default and RUNS at --vocab 512 reporting its own alphabet, and a request past VOCAB_MAX fails loud" :
+    "  FAIL: pack contract"
 end
 
 if failures.empty?
