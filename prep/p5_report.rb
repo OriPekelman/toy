@@ -244,7 +244,53 @@ end
 # If it is superlinear the ladder shortens, because the top rungs would
 # need seed counts nobody wants to pay: n scales as sd^2 for a fixed
 # effect.
+# ── P6 PRIMARY READOUT: per-arm EXCESS over the irreducible log2(m) ──
+#
+# Recovery (frozen - dfa) is the WRONG headline for P6's question, and
+# the pre-check cells showed why. Recovery rose 65->192 while the DFA
+# arm's own excess ALSO rose (0.250 -> 0.456): DFA is degrading under a
+# wider, mostly-noise error vector, and recovery climbed only because the
+# frozen control degrades faster still. So the ratio does not merely fail
+# to answer "how does B condition as its error vector widens" — it points
+# the opposite way on it.
+#
+# Every arm must pay exactly log2(m) more bits, by construction, since
+# inflation adds that much irreducible noise to all of them equally. What
+# an arm pays BEYOND that is its own degradation. The DFA arm's excess
+# vs rank IS the B-conditioning curve, stated on the arm rather than on a
+# ratio of two moving things.
+#
+# Paired by SEED against the b=0 rung: the same seed's base value, not
+# the base median, so the seed's own draw cancels instead of adding
+# variance to a difference of two noisy quantities.
 if MODE == "rank"
+  base_key = SERIES.find { |k| summary[k] }
+  if base_key && summary.size > 1
+    bjf = File.join("data", base_key.sub(/_v\d+\z/, "") + ".json")
+    base_e = File.file?(bjf) ? JSON.parse(File.read(bjf))["entropy"] : nil
+    if base_e
+      puts "== PER-ARM EXCESS over the irreducible log2(m)  [P6 PRIMARY] =="
+      puts "   the dfa row IS the B-conditioning curve; recovery is the relative view"
+      puts "   rung            rank    b        bp             dfa            frozen"
+      SERIES.each do |key|
+        next unless summary[key]
+        jf = File.join("data", key.sub(/_v\d+\z/, "") + ".json")
+        next unless File.file?(jf)
+        b = JSON.parse(File.read(jf))["entropy"] - base_e
+        cells = summary[key][:seeds].each_index.to_a
+        # Only seeds present in BOTH rungs can be paired.
+        paired = cells.select { |i| summary[base_key][:bp][i] && summary[key][:bp][i] }
+        cols = [:bp, :dfa, :fz].map do |arm|
+          ex = paired.map { |i| (summary[key][arm][i] - summary[base_key][arm][i]) - b }
+          "%+.3f+-%.3f" % [mean(ex), sd(ex)]
+        end
+        puts "   %-14s %5d  %5.3f   %s  %s  %s" %
+             [key.sub("_v#{HEAD}", ""), summary[key][:alpha], b, cols[0], cols[1], cols[2]]
+      end
+      puts "   (the b=0 rung is the reference — its row is 0 by construction, shown for orientation)"
+      puts
+    end
+  end
   puts "== NOISE LINEARITY (the P6 pre-check) =="
   base_ent = nil
   pts = []
