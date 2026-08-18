@@ -2748,10 +2748,17 @@ gates: $(GATES)
 # runs the legs concurrently. Both phases inherit the caller's -j through
 # the jobserver, so `make -j8 gates-fast` parallelises both.
 #
-# WHY IT IS WORTH IT: a serial battery leaves the box idle. Measured
-# during a run, the battery occupied ~2-3 of 20 cores, much of it
-# SINGLE-THREADED spinel compilation — the legs are mostly short runs
-# where process startup and codegen dominate, not wide matmuls.
+# WHY IT IS WORTH IT, and what it CANNOT buy: a serial battery leaves the
+# box idle, and -j4 takes 70.3 min down to 52.8. But the floor is 49.8 min
+# because gate-franken-moe-cli alone is that long, so the parallel win is
+# nearly exhausted at -j4 and further job count makes it WORSE.
+#
+# (An earlier version of this comment named gate-lstm as the critical path
+# at ~15 min. That came from reading a profile file while it was still
+# being written — the run had not reached franken-moe-cli yet. The
+# per-leg profile is now `prep/gate_profile.sh`, which is Makefile-derived,
+# serial, and records exit codes, and whose total reconciles with the
+# measured serial battery to within 2 seconds.)
 #
 # CUDA IS DELIBERATELY SERIALISED. The cuda legs share one GB10 and one
 # unified 121 GiB pool; running them concurrently trades a small wall
@@ -2771,8 +2778,18 @@ GATES_CPU  := $(filter-out $(GATES_CUDA),$(GATES))
 # box shares one 121 GiB pool with whatever else is resident (gx-status).
 # Phase 1 is single-threaded spinel + cc1 per file, so it takes a wider
 # fan-out than the legs, which mix 4-thread training runs in.
+# MEASURED on an idle box, identical build state per variant (prep/gate_profile.sh
+# for the per-leg numbers). Wall time for the full battery:
+#
+#   serial    70.3 min      -j6   60.6 min      -j4   52.8 min      -j10  76.8 min
+#
+# -j10 is SLOWER THAN SERIAL: runners are ~4-thread, so 10 jobs put 40 threads on
+# 20 cores. -j4 is the measured optimum and sits within 6% of the hard floor, which
+# is 49.8 min — the wall time of gate-franken-moe-cli, ONE LEG that is 71% of the
+# battery. So there is nothing left for job count to buy; the only remaining lever
+# is that leg. Phase 1 stays wider because it is single-threaded spinel + cc1.
 BUILD_JOBS ?= 10
-GATE_JOBS  ?= 6
+GATE_JOBS  ?= 4
 .PHONY: gates-fast
 gates-fast:
 	@echo "== phase 1/3: building $(words $(GATE_RUNNERS)) runners (-j$(BUILD_JOBS)) =="
