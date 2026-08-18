@@ -1,0 +1,42 @@
+# prep/fixtures/train_gtx_bytelm_baseline.txt — the CPU byte-LM lane,
+# RECORDED FROM THE PRE-tao#24 BINARY.
+#
+# This file exists for exactly one reason: tao#24 added a CUDA twin to
+# `gtx --task bytelm`, and the standing rule is that a change which is
+# supposed to add a device must not move the device that was already
+# there. `prep/gtx_cuda_gate.rb` asserts the CURRENT libexec/toy-train-gtx
+# reproduces these bytes.
+#
+# Its authority comes from HOW it was recorded: the two curves below were
+# produced by libexec/toy-train-gtx built from the commit BEFORE the twin
+# landed (caa1f10), not by re-recording the post-change binary and calling
+# the match a proof. Re-recording it from the current binary would make
+# the leg vacuous — if you need to, say so in the commit and explain what
+# legitimately moved.
+#
+# Cell (both arms): STEPS=5 SEED=0 GTX_TASK=bytelm
+#   GTX_TEXT=data/ae_shak_a65 GTX_VOCAB=65 GTX_CONTEXT=32 GTX_D_MODEL=32
+#   GTX_HEADS=2 GTX_D_FF=64 GTX_BLOCKS=2 GTX_VAL_BATCHES=2
+# Small on purpose: this leg is a byte-null check, not a science cell, and
+# it runs in ~2 s on both arms.
+#
+# The `corpus:` line is NOT recorded — it names an absolute-ish pack path
+# and a token count that belong to the data, not to the code under test.
+--- arm chain (GTX_POLICY unset)
+gtx: bytelm blocks=2 nodes=32 vocab=65 b_dim=65 attn=causal readout=per_position routing=position_t cut=layer dfa_wired=0 frozen=0 taps=0 emb_tapped=0
+step 1: loss=5.791232109069824
+step 2: loss=4.762396335601807
+step 3: loss=4.668254852294922
+step 4: loss=4.670657157897949
+step 5: loss=4.507976531982422
+bytelm: bpb=6.149148611165627 n=64 routing=position_t head=bp vocab=65 attn=causal
+graph: nodes=89 bytes=316292
+--- arm dfa (GTX_POLICY=dfa,dfa)
+gtx: bytelm blocks=2 nodes=32 vocab=65 b_dim=65 attn=causal readout=per_position routing=position_t cut=layer dfa_wired=2 frozen=0 taps=3 emb_tapped=1
+step 1: loss=5.791232109069824
+step 2: loss=4.821664810180664
+step 3: loss=4.79987907409668
+step 4: loss=4.747403144836426
+step 5: loss=4.838589191436768
+bytelm: bpb=6.690034995860865 n=64 routing=position_t head=bp vocab=65 attn=causal
+graph: nodes=109 bytes=394648

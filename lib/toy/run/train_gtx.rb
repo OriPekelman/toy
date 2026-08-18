@@ -13,7 +13,15 @@
 # Modelled on Graph Language Models (Plenz & Frank, arXiv:2401.07105),
 # whose gGLM is a graph transformer with a 17-relation head.
 #
-# CPU-ONLY (tao#18). Own compilation unit (landmine #16).
+# DEVICE SCOPE (tao#24). This runner is the CPU lane and serves all three
+# tasks. `--task bytelm` ALSO has a CUDA twin — libexec/toy-train-gtx-cuda,
+# mechanically mirrored from this file by prep/gen_cuda_mirror.rb — because
+# toy#170/P3 changed that task's workload by orders of magnitude (vocab
+# 4096, ctx 128, ~3.2 TFLOP/cell at ~32 GFLOP/s with the GB10 at 0%). The
+# relational/local tasks stay CPU-only: the rationale there did NOT lapse.
+# Cross-device cells are NOT numerically comparable — a sweep runs entirely
+# on one device or it re-runs the reference.
+# Own compilation unit (landmine #16).
 #
 # ENV CONTRACT:
 #   STEPS / SEED / TAO_RUN_DIR / TOY_RUN_ID   — as every other runner
@@ -273,6 +281,43 @@ N_ADAPTERS = RETROFIT ? AD_LAYERS : 0
 # neighbourhood is what makes mean-pooling provably uninformative, which
 # is what lets the frozen control lose. See toy_gtx_task.rb.
 DEGREE    = N_TYPES
+
+# tao#24 — THE GPU TWIN'S SCOPE. One flag, flipped by the mirror.
+#
+# GPU_TWIN is 0 in the CPU source and 1 in every generated backend mirror
+# (the SKIP/STUB sentinel below is the only thing the generator changes).
+# So `libexec/toy-train-gtx` keeps all three tasks and
+# `libexec/toy-train-gtx-cuda` refuses everything but `bytelm`.
+#
+# Why the flag and not a stubbed-out `if` block: the generator emits STUB
+# lines VERBATIM — they are collected before the substitution table runs,
+# so a message written inside a stub would keep whatever binary name it
+# was typed with and the metal mirror would announce itself as `-cuda`.
+# Keeping the refusal as ORDINARY source puts it back under the same
+# per-backend rename as every other message in this file.
+#
+# Why a refusal and not a silent fallback: tao#24 reopened the CPU-only
+# decision for the byte-LM lane ONLY. The relational task is d_model 64 /
+# 16 classes / 1500 steps — a GPU buys nothing there, and a twin that
+# quietly accepted it would invite cells comparable to no P1-P6 number
+# ever measured. It must fail loud.
+#
+# The guard sits here, BEFORE recipe.realize!, on purpose: ggml aborts
+# during graph build (exit 134 + a GGML_ASSERT line), so a validation
+# placed after realize! is dead code that never gets to speak.
+# CUDA-MIRROR-SKIP-BEGIN: the bytelm-only scope is a GPU-twin property (tao#24)
+# CUDA-MIRROR-STUB: GPU_TWIN = 1
+GPU_TWIN = 0
+# CUDA-MIRROR-SKIP-END
+if GPU_TWIN == 1 && !IS_BYTELM
+  puts "toy-train-gtx: GTX_TASK " +
+       (TASK_S.length > 0 ? TASK_S : "relational") +
+       " has no GPU twin (tao#24 reopened the CPU-only scope for `bytelm`" +
+       " ONLY: that task is vocab up to 4096 / ctx 128 / ~3.2 TFLOP per" +
+       " cell, the relational one is d_model 64 / 16 classes and a GPU" +
+       " buys it nothing). Run it on libexec/toy-train-gtx."
+  exit 1
+end
 
 def parse_gtx_policy(pol_s, n_blocks)
   policy = [0]; policy.pop

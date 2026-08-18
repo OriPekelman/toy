@@ -340,8 +340,14 @@ Dir.mktmpdir("gtx_gate_cli") do |dir|
     sout, sst = Open3.capture2e({}, TOY, "train", *argv, chdir: ROOT)
     failures << "cli: #{label} (exit #{sst.exitstatus}: #{sout.lines.last(1).join.strip})" unless sst.exitstatus == 2
   end
+  # tao#24 narrowed this from "gtx is CPU-only" to "gtx is CPU-only
+  # EXCEPT under --task bytelm". With no task named, the default is
+  # relational, so the refusal stands — and it has to, or the twin's
+  # scope would be the recipe rather than the task. The positive case
+  # (`--task bytelm --device cuda` runs, on cuda) and the rest of the
+  # device matrix live in prep/gtx_cuda_gate.rb, which needs a GPU.
   cout, cst = Open3.capture2e({}, TOY, "train", "gtx", "--device", "cuda", chdir: ROOT)
-  failures << "cli: gtx accepted --device cuda (CPU-only — tao#18)" unless cst.exitstatus == 2
+  failures << "cli: gtx accepted --device cuda on the RELATIONAL task (tao#24 reopened the device scope for --task bytelm ONLY)" unless cst.exitstatus == 2
 
   # toy#169/#170 — THE BYTE-LM PATH THROUGH THE CLI.
   #

@@ -288,6 +288,29 @@ module TinyNNMetal
   # checkpoint fuse/write path can find them; byte-matches tinynn_cuda.rb.
   ffi_func :tnn_tensor_set_name,  [:ptr, :str],             :void
 
+  # tao#24 — MIRROR COMPLETION. These are declared in tinynn.rb and
+  # tinynn_cuda.rb but were missing here, so the generated Metal mirror of
+  # any engine that measures its graph or writes a checkpoint (gtx_engine
+  # is the first) referenced TinyNNMetal.* names that did not exist. They
+  # are the SAME C symbols out of the same libtinynn_ggml.a every Metal
+  # target already links for the base ggml surface — nothing backend-
+  # specific, and no new shim function. Declaration-only; the standing
+  # both-backends rule (feedback_ffi_cuda_metal_mirror) is why this is
+  # here rather than left as a Linux-invisible gap.
+  # gx10 CANNOT build or run these (macOS-only target) — UNVERIFIED at
+  # runtime, stated plainly rather than implied by their presence.
+  ffi_func :tnn_tensor_nbytes,    [:ptr],                   :size_t
+  ffi_func :tnn_tensor_name,      [:ptr],                   :str
+  ffi_func :tnn_graph_n_nodes,    [:ptr],                   :int
+  ffi_func :tnn_graph_node,       [:ptr, :int],             :ptr
+  ffi_func :tnn_gguf_w_init,      [],                       :ptr
+  ffi_func :tnn_gguf_w_set_str,   [:ptr, :str, :str],       :void
+  ffi_func :tnn_gguf_w_set_u32,   [:ptr, :str, :int],       :void
+  ffi_func :tnn_gguf_w_set_f32,   [:ptr, :str, :double],    :void
+  ffi_func :tnn_gguf_w_add_tensor,[:ptr, :ptr],             :void
+  ffi_func :tnn_gguf_w_finalize,  [:ptr, :str],             :int
+  ffi_func :tnn_gguf_w_free,      [:ptr],                   :void
+
   # CPU-parity bindings (file-utility helpers + extra GGUF accessors).
   ffi_func :tnn_rms_norm_back,    [:ptr, :ptr, :ptr, :double], :ptr
   ffi_func :tnn_gguf_load_empty,            [],                              :ptr

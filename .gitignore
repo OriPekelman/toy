@@ -256,7 +256,15 @@ data/*.bin
 # build time by prep/gen_cuda_mirror.rb — see Makefile MIRROR_CUDA/MIRROR_METAL
 # rules). Gitignored so the ~19k generated lines never live in git; make/gates
 # regenerate on demand. Hand-written GPU files (tinynn_*, transformer_lm_*,
-# lib/toy/run/*_cuda — landmine #16) stay TRACKED — they are not in this list.
+# most of lib/toy/run/*_cuda — landmine #16) stay TRACKED — not in this list.
+#
+# tao#24 NOTE: lib/toy/run/train_gtx_cuda.rb is the ONE generated runner,
+# so it IS listed below. Every other GPU runner is hand-written because
+# something about it is not mechanical (a differing ctor arity, a
+# monomorphic mmap cfg); train_gtx.rb has no such thing, and generating it
+# is what makes the CPU/CUDA numeric-agreement gate meaningful — the two
+# devices provably run the same program. Adding a runner here without
+# adding it to MIRRORABLE would delete it from the tree.
 lib/toy/llm/primitives/rms_norm_cuda.rb
 lib/toy/llm/primitives/rms_norm_metal.rb
 lib/toy/llm/primitives/rope_cuda.rb
@@ -281,6 +289,12 @@ lib/toy/llm/engine/llama_seq_engine_cuda.rb
 lib/toy/llm/engine/llama_seq_engine_metal.rb
 lib/toy/llm/engine/gpt2_seq_engine_cuda.rb
 lib/toy/llm/engine/gpt2_seq_engine_metal.rb
+lib/toy/llm/engine/gtx_engine_cuda.rb
+lib/toy/llm/engine/gtx_engine_metal.rb
+lib/toy/llm/recipes/gtx_graph_cuda.rb
+lib/toy/llm/recipes/gtx_graph_metal.rb
+lib/toy/run/train_gtx_cuda.rb
+lib/toy/run/train_gtx_metal.rb
 lib/toy/llm/recipes/from_scratch_cuda.rb
 lib/toy/llm/recipes/from_scratch_metal.rb
 lib/toy/llm/recipes/lora_cuda.rb

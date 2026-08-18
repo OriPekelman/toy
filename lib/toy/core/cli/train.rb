@@ -98,8 +98,15 @@ module Toy
         LSTM_RUNNER_TARGET = "libexec/toy-train-lstm"
         # toy#160 (DFA-arch T4) — the graph transformer, which separates
         # ATTENTION from OUTPUT DIM on the program's one open negative.
-        # Own binary, CPU-only.
+        # Own binary. CPU serves all three tasks; `--task bytelm` ALSO has
+        # a CUDA twin (tao#24) because toy#170/P3 grew that task by orders
+        # of magnitude (vocab 4096, ctx 128, ~3.2 TFLOP/cell) while the
+        # relational task it was scoped against is still 16 classes.
         GTX_RUNNER_TARGET = "libexec/toy-train-gtx"
+        # tao#24 — the byte-LM CUDA twin. SEPARATE single-type binary
+        # (landmine #16) built from the GENERATED runner mirror, which
+        # refuses every task but bytelm. There is no metal twin.
+        GTX_CUDA_RUNNER_TARGET = "libexec/toy-train-gtx-cuda"
         # toy#165 (capstone P1a) — the per-token latent autoencoder. All
         # BP: no DFA and no diffusion on this lane. Own binary, CPU-only.
         AE_RUNNER_TARGET = "libexec/toy-train-ae"
@@ -401,7 +408,10 @@ module Toy
           elsif @recipe == "ae"
                      AE_RUNNER_TARGET
                    elsif @recipe == "gtx"
-                     GTX_RUNNER_TARGET
+                     # tao#24: cuda reaches here ONLY under --task bytelm
+                     # (validate! refuses every other combination), so the
+                     # twin binary is never selected for the relational lane.
+                     @device == "cuda" ? GTX_CUDA_RUNNER_TARGET : GTX_RUNNER_TARGET
                    elsif @recipe == "lstm"
                      LSTM_RUNNER_TARGET
                    elsif @recipe == "diff"
@@ -2335,9 +2345,29 @@ when /\A--dfa-feedback-lr=(.*)\z/
           if (@adapter_policy || @no_freeze_backbone) && !@retrofit
             return bad_arg("--adapter-policy/--no-freeze-backbone need --retrofit (there are no adapters and no frozen backbone outside a retrofit, so the flag would silently do nothing)")
           end
-          if @recipe == "gtx" && @device != "cpu"
-            return bad_arg("--device #{@device.inspect} is not supported for recipe 'gtx' (CPU-only by decision — tao#18: the cross-architecture lanes are small by construction and get no CUDA twin)")
+          # tao#24 — gtx is the ONE cross-architecture lane with a device
+          # choice, and it is scoped to a single TASK rather than to the
+          # recipe. The original CPU-only call (recorded in code as
+          # "tao#18", a stale pre-GitHub number; the decision is tao#24)
+          # was right for the relational task: d_model 64, 16 relation
+          # classes, 1500 steps, where a GPU buys nothing. `--task bytelm`
+          # (toy#170/P3) is a different workload by orders of magnitude —
+          # vocab up to 4096, ctx 128, 4000 steps, ~3.2 TFLOP/cell measured
+          # at ~32 GFLOP/s with the accelerator idle. The scope lapsed; the
+          # decision was not wrong, and it lapsed for exactly one task.
+          #
+          # metal is refused outright: no metal gtx binary is built, and
+          # accepting the flag to fail later at the build is worse than
+          # saying so here.
+          if @recipe == "gtx" && @device == "metal"
+            return bad_arg("--device metal is not supported for recipe 'gtx' (tao#24 built a CUDA twin for --task bytelm only; there is no metal gtx binary)")
           end
+          if @recipe == "gtx" && @device == "cuda" && @task != "bytelm"
+            return bad_arg("--device cuda on recipe 'gtx' requires --task bytelm (tao#24: the CUDA twin was built for THAT task — vocab up to 4096, ctx 128, ~3.2 TFLOP/cell — and the relational/local tasks stay CPU-only because a 16-class head at d_model 64 gains nothing from a GPU). Drop --device, or add --task bytelm --text <pack>.")
+          end
+          # NOTE for anyone reading a number off this lane: CUDA cells are
+          # NOT numerically comparable to the CPU P3-P6 cells. A sweep runs
+          # entirely on one device, or it re-runs its reference there.
           if @recipe == "gnn" && @device != "cpu"
             return bad_arg("--device #{@device.inspect} is not supported for recipe 'gnn' (CPU-only by decision — tao#18)")
           end
