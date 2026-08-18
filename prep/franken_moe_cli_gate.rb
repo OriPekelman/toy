@@ -48,6 +48,46 @@ require "fileutils"
 # the CLI contract, not the caller's env hygiene.
 CLEAN = { "SPINEL_DIR" => nil, "SPINEL_SKIP_PIN_CHECK" => nil }
 
+# This gate was 2990s — 71% of the ENTIRE battery, and the floor no
+# amount of `make -j` could get under. Profiling its subprocesses (152
+# calls) showed 100 of them under a second and 45 at ~38s, all of them
+# `--shape deep --experts 4` runs of FOUR TO SIX STEPS. So the cost is
+# graph realization for that shape, paid 45 times over — not arithmetic,
+# which is also why a GPU would do nothing for it.
+#
+# Those calls sit in independent cells that are only aggregated
+# afterwards, so they run in a bounded pool. Ruby threads are right
+# DESPITE the GVL because each blocks in Open3 waiting on a subprocess.
+#
+# run_cli `abort`s on a non-zero exit; inside a worker thread Ruby would
+# SWALLOW that, so the pool sets abort_on_exception and every caller
+# checks it got a result for each cell. Same hazard, same fix, as the
+# lstm gate's success bar.
+MOE_GATE_JOBS = Integer(ENV["MOE_GATE_JOBS"] || "4")
+def par_map(items)
+  return items.map { |it| yield it } if MOE_GATE_JOBS <= 1
+  Thread.abort_on_exception = true
+  q = Queue.new
+  items.each_with_index { |it, i| q << [i, it] }
+  # Seeded with :missing, NOT nil — a cell that passes legitimately
+  # returns nil, so a nil-initialised slot would make a worker that died
+  # indistinguishable from a clean pass.
+  out = Array.new(items.size, :missing)
+  mx = Mutex.new
+  Array.new([MOE_GATE_JOBS, items.size].min) do
+    Thread.new do
+      loop do
+        i, it = (begin q.pop(true); rescue ThreadError; break; end)
+        r = yield it
+        mx.synchronize { out[i] = r }
+      end
+    end
+  end.each(&:join)
+  # Order is preserved by index, so downstream assertions read exactly
+  # what they read serially.
+  out
+end
+
 def run_cli(args, extra_env, run_dir)
   env = CLEAN.merge(extra_env)
   env = env.merge("TOY_RUN_ID" => "moe-cli-gate") if run_dir
@@ -423,26 +463,35 @@ n0 = failures.length
 fz = %w[--steps 4 --seed 0 --shape deep --experts 4 --context 16
         --corpus data/fineweb_gpt2_smoke.bin --moe-policy dfa-experts --lr 0.05]
 fz_ev = %w[--eval-corpus data/fineweb_gpt2_smoke.bin --eval-tokens 64]
-[["adamw", []],
- ["muon",  %w[--optimizer muon]],
- ["sgd",   %w[--optimizer sgd]]].each do |oname, oarg|
-  [["flat", []],
-   ["ramp", %w[--lr-schedule ramp-down --lr-lo 0.005 --lr-hi 0.05]]].each do |rname, rarg|
-    Dir.mktmpdir("moe_fz_a") do |da|
-      Dir.mktmpdir("moe_fz_b") do |db|
-        run_cli(fz + oarg + rarg, {}, da)
-        run_cli(fz + oarg + rarg + fz_ev, {}, db)
-        la = JSON.parse(File.readlines(File.join(da, "events.jsonl")).last)["layer_sig"]
-        lb = JSON.parse(File.readlines(File.join(db, "events.jsonl")).last)["layer_sig"]
-        if la.nil? || lb.nil?
-          failures << "eval-freeze(#{oname}/#{rname}): no run_end layer_sig (run died)"
-        elsif la != lb
-          d0 = (0...6).map { |i| ((lb["l#{i}"] || 0) - (la["l#{i}"] || 0)).abs }.max
-          failures << "eval-freeze(#{oname}/#{rname}): --eval-corpus MOVED the weights (max |delta| #{d0.round(3)}) — the held-out metric is training on its own split"
-        end
+fz_cells = [["adamw", []], ["muon", %w[--optimizer muon]], ["sgd", %w[--optimizer sgd]]]
+             .product([["flat", []],
+                       ["ramp", %w[--lr-schedule ramp-down --lr-lo 0.005 --lr-hi 0.05]]])
+             .map { |(oname, oarg), (rname, rarg)| [oname, oarg, rname, rarg] }
+# 6 cells x 2 runs. Each cell is self-contained (its own two tmpdirs, its
+# own comparison), so the cells run concurrently and the verdicts are
+# collected in index order afterwards.
+par_map(fz_cells) do |oname, oarg, rname, rarg|
+  Dir.mktmpdir("moe_fz_a") do |da|
+    Dir.mktmpdir("moe_fz_b") do |db|
+      run_cli(fz + oarg + rarg, {}, da)
+      run_cli(fz + oarg + rarg + fz_ev, {}, db)
+      la = JSON.parse(File.readlines(File.join(da, "events.jsonl")).last)["layer_sig"]
+      lb = JSON.parse(File.readlines(File.join(db, "events.jsonl")).last)["layer_sig"]
+      if la.nil? || lb.nil?
+        "eval-freeze(#{oname}/#{rname}): no run_end layer_sig (run died)"
+      elsif la != lb
+        d0 = (0...6).map { |i| ((lb["l#{i}"] || 0) - (la["l#{i}"] || 0)).abs }.max
+        "eval-freeze(#{oname}/#{rname}): --eval-corpus MOVED the weights (max |delta| #{d0.round(3)}) — the held-out metric is training on its own split"
+      else
+        :ok
       end
     end
   end
+end.each_with_index do |verdict, i|
+  # A cell that returned nothing at all did not run — that must not read
+  # as a pass.
+  failures << "eval-freeze: cell #{fz_cells[i][0]}/#{fz_cells[i][2]} produced no verdict (worker died)" if verdict == :missing
+  failures << verdict if verdict.is_a?(String)
 end
 # The sgd arm above also covers the abort: run_cli aborts the gate on a
 # non-zero exit, so reaching this line at all means sgd + --eval-corpus
@@ -875,10 +924,18 @@ end
  ["muon",      %w[--moe-policy dfa-experts --optimizer muon]],
  ["sgd",       %w[--moe-policy dfa-experts --optimizer sgd]],
  ["top1",      %w[--routing top1 --moe-policy bp-spine]],
- ["latent",    %w[--moe-policy dfa-experts --moe-latent --expert-act situ-glu]]].each do |name, lane|
-  b = losses(run_cli(lg + lane, {}, nil))
-  r = losses(run_cli(lg + lane + ramp, {}, nil))
-  failures << "lr-schedule: no effect on the #{name} lane (the ramp is not generic)" if r.empty? || b == r
+ ["latent",    %w[--moe-policy dfa-experts --moe-latent --expert-act situ-glu]]].then do |lanes|
+  # Each lane is a base run and a ramped run compared only against each
+  # other, so the lanes are independent and run concurrently. Verdicts
+  # come back in lane order.
+  par_map(lanes) do |name, lane|
+    b = losses(run_cli(lg + lane, {}, nil))
+    r = losses(run_cli(lg + lane + ramp, {}, nil))
+    (r.empty? || b == r) ? "lr-schedule: no effect on the #{name} lane (the ramp is not generic)" : :ok
+  end.each_with_index do |verdict, i|
+    failures << "lr-schedule: lane #{lanes[i][0]} produced no verdict (worker died)" if verdict == :missing
+    failures << verdict if verdict.is_a?(String)
+  end
 end
 # Guards, all fail-loud.
 [[%w[--lr-schedule ramp-up], "ramp without --lr-lo/--lr-hi"],

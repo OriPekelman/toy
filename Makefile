@@ -2772,7 +2772,14 @@ else
 GATE_RUNNERS := $(filter-out %-metal,$(GATE_RUNNERS))
 endif
 GATES_CUDA := $(filter %-cuda gate-cuda,$(GATES))
-GATES_CPU  := $(filter-out $(GATES_CUDA),$(GATES))
+# gate-run-log SCANS THE WHOLE REPO runs/ TREE, so it cannot run beside
+# any gate that writes a bundle: it will read one mid-write and fail with
+# "has no run_start event" on a bundle that is perfectly valid seconds
+# later. That is a flaky red battery caused by nothing but timing, and it
+# bit once before being understood. It runs in the serial phase, after
+# every bundle-writing leg has finished.
+GATES_SERIAL := gate-run-log
+GATES_CPU  := $(filter-out $(GATES_CUDA) $(GATES_SERIAL),$(GATES))
 # Explicit, NOT inherited from the caller's -j. `make -j gates-fast` with
 # an unlimited jobserver would launch all 49 CPU legs at once, and this
 # box shares one 121 GiB pool with whatever else is resident (gx-status).
@@ -2792,12 +2799,14 @@ BUILD_JOBS ?= 10
 GATE_JOBS  ?= 4
 .PHONY: gates-fast
 gates-fast:
-	@echo "== phase 1/3: building $(words $(GATE_RUNNERS)) runners (-j$(BUILD_JOBS)) =="
+	@echo "== phase 1/4: building $(words $(GATE_RUNNERS)) runners (-j$(BUILD_JOBS)) =="
 	@$(MAKE) -j$(BUILD_JOBS) $(GATE_RUNNERS)
-	@echo "== phase 2/3: $(words $(GATES_CPU)) CPU gate legs (-j$(GATE_JOBS)) =="
+	@echo "== phase 2/4: $(words $(GATES_CPU)) CPU gate legs (-j$(GATE_JOBS)) =="
 	@$(MAKE) -j$(GATE_JOBS) $(GATES_CPU)
-	@echo "== phase 3/3: $(words $(GATES_CUDA)) CUDA gate legs (serial, one GPU) =="
+	@echo "== phase 3/4: $(words $(GATES_CUDA)) CUDA gate legs (serial, one GPU) =="
 	@$(MAKE) -j1 $(GATES_CUDA)
+	@echo "== phase 4/4: $(words $(GATES_SERIAL)) leg(s) that must run ALONE =="
+	@$(MAKE) -j1 $(GATES_SERIAL)
 	@echo "ALL GATES PASS ($(words $(GATES)) legs)"
 
 # toy#109 CUDA franken leg — the CUDA twin of the spec-callable runner
