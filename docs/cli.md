@@ -83,7 +83,7 @@ recipes are:
 | `gnn` | GCN-class node classification over a normalised adjacency, transductive semi-supervised (CPU-only). Runs on a seeded graph or on real Cora (`ruby prep/fetch_cora.rb`) | `--policy`, `--graph`, `--layers`, `--hidden`, `--classes`, `--features`, `--nodes`, `--degree`, `--homophily`, `--feat-signal`, `--train-per-class`, `--task`, `--feedback-route`, `--feedback-hops`, `--weight-decay` |
 | `ssm` | selective-scan / Mamba-lite sequence classifier — an UNROLLED input-dependent linear recurrence + conv branch + gating, last-step readout (CPU-only) | `--policy`, `--dfa-cut`, `--selection`, `--layers`, `--seq`, `--d-model`, `--d-inner`, `--conv-k`, `--classes`, `--task`, `--cue-span`, `--noise`, `--dt-init` |
 | `lstm` | gated recurrence: a stack of textbook LSTM cells UNROLLED over T, last-step readout, on the same task + cut axis as `ssm` (CPU-only) | `--policy`, `--dfa-cut`, `--layers`, `--hidden`, `--features`, `--seq`, `--classes`, `--task`, `--cue-span`, `--noise`, `--batch`, `--val-batches`, `--task-seed`, `--lr`, `--dfa-b-*` |
-| `gtx` | graph transformer — masked self-attention whose mask **is an adjacency**, small relation head (16 classes), inductive relational retrieval (CPU-only). `--retrofit` adds the DFA-adapter mode | `--policy`, `--dfa-cut`, `--layers`, `--d-model`, `--heads`, `--d-ff`, `--entities`, `--types`, `--features`, `--task`, `--noise`, `--batch`, `--val-batches`, `--task-seed`, `--dfa-b-*`, `--retrofit`, `--adapter-policy`, `--adapter-layers`, `--adapter-rank`, `--pretrain-steps`, `--pretrain-lr`, `--no-freeze-backbone` |
+| `gtx` | graph transformer — masked self-attention whose mask **is an adjacency**, small relation head (16 classes), inductive relational retrieval. CPU-only **except `--task bytelm`, which has a CUDA twin** (tao#24). `--retrofit` adds the DFA-adapter mode | `--policy`, `--dfa-cut`, `--layers`, `--d-model`, `--heads`, `--d-ff`, `--entities`, `--types`, `--features`, `--task`, `--noise`, `--batch`, `--val-batches`, `--task-seed`, `--dfa-b-*`, `--retrofit`, `--adapter-policy`, `--adapter-layers`, `--adapter-rank`, `--pretrain-steps`, `--pretrain-lr`, `--no-freeze-backbone` |
 | `diff` | latent diffusion denoiser — time-conditioned eps-prediction over a LOW-DIM latent, scored by a generative metric (CPU-only) | `--policy`, `--latent`, `--time-feat`, `--layers`, `--hidden`, `--task`, `--modes`, `--spread`, `--mode-scale`, `--diff-steps`, `--beta-lo`, `--beta-hi`, `--eval-n`, `--align-events` |
 | `ae` | per-token latent AUTOENCODER (capstone P1a) — bidirectional encoder -> **d-dim per-position bottleneck** -> **per-position** decode head back to the byte. **All BP: no `--policy`, no DFA, no diffusion.** Scored by the NOISE MARGIN, not clean reconstruction (CPU-only) | `--text`, `--latent`, `--context`, `--layers`, `--d-model`, `--heads`, `--d-ff`, `--noise-eval`, `--noise-seed`, `--val-batches`, `--val-frac-pct`, `--task-seed`, `--lr`, `--warmup`, `--target-ce`, `--eval-every`, `--probe-batches` |
 
@@ -91,8 +91,17 @@ An unknown recipe is rejected loud (`supported: 'from-scratch', 'lora',
 'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp', 'ctr', 'gnn', 'ssm', 'lstm', 'gtx', 'diff', 'ae'`). `--arch gpt2`
 trains the from-scratch GPT-2 arch (`from-scratch` only, CPU-only);
 `--device cuda|metal` selects the per-device runner (`metal` is macOS-only;
-GPT-2, ViT-Tiny, `mlp`, `ctr`, `gnn`, `ssm`, `lstm`, `gtx`, `diff` and `ae` are CPU-only, and `franken`'s macro-DFA mode is
-CPU-only by decision).
+ViT-Tiny, `mlp`, `ctr`, `gnn`, `ssm`, `lstm`, `diff`, `difflm` and `ae` are CPU-only, and `franken`'s macro-DFA mode is
+CPU-only by decision; GPT-2 has cuda + metal twins).
+**`gtx` is the one lane whose device scope is per-TASK rather than per-recipe**:
+`--device cuda` is accepted **only** with `--task bytelm` and refused otherwise,
+because tao#24 reopened the CPU-only decision for that task alone — toy#170/P3
+grew it to vocab 4096 / ctx 128 / ~3.2 TFLOP per cell, while the relational task
+it was originally scoped against is still a 16-class head at d_model 64. There is
+no metal `gtx` binary. **CUDA cells are not numerically comparable to the CPU
+P3-P6 cells** (measured: 0.034 bits of bpb on the DFA arm at the 4000-step
+operating point, against an E-series signal of 0.065-0.230 bits), so a sweep runs
+entirely on one device or re-runs its reference there.
 Defaults: `--steps 5`, `--seed 0`, `--arch llama`, `--device cpu`, `--out runs/<id>`.
 Writes the run bundle (see [Run bundle layout](#run-bundle-layout)) and echoes
 the byte-deterministic loss curve to stdout.
