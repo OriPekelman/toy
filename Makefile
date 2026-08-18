@@ -866,6 +866,40 @@ libexec/toy-train-gtx: lib/toy/run/train_gtx.rb lib/toy/dev/toy_describe_flow.rb
 toy-train-gtx: libexec/toy-train-gtx
 .PHONY: toy-train-gtx
 
+# tao#24 — the CUDA twin, and it is a twin of the BYTE-LM TASK ONLY.
+#
+# The CPU-only decision for this lane was correct for gtx's relational
+# task (d_model 64, 16 relation classes, 1500 steps — a GPU buys
+# nothing). toy#170/P3's `--task bytelm` then changed the workload by
+# orders of magnitude: vocab up to 4096, ctx 128, 4000 steps, ~3.2
+# TFLOP/cell measured at ~32 GFLOP/s with the GB10 at 0% and ~6h per
+# ladder. The scope LAPSED; it was not wrong. The relational/local tasks
+# and every other cross-architecture lane stay CPU-only.
+#
+# The runner source is GENERATED (lib/toy/run/train_gtx_cuda.rb, from
+# lib/toy/run/train_gtx.rb via prep/gen_cuda_mirror.rb) rather than
+# hand-copied, so the twin cannot drift from the lane it is supposed to
+# agree with numerically — which is this ticket's actual deliverable.
+# The generated runner refuses every task but bytelm.
+#
+# SEPARATE single-type binary (landmine #16), force-linking the CUDA ggml
+# backend via -Wl,-u,tnn_cuda_force_link like every other cuda target.
+# BOTH shims are in the unit: TinyNNCuda drives the graph, and the CPU
+# TinyNN arrives with Mat (lib/toy/models/transformer.rb) and
+# ToyDescribeFlow's introspection — same shape as libexec/toy-train-cuda.
+libexec/toy-train-gtx-cuda: lib/toy/run/train_gtx_cuda.rb lib/toy/dev/toy_describe_flow.rb \
+		lib/toy/io/json_builder.rb lib/toy/io/json.rb lib/toy/io/toy_events.rb \
+		vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
+		lib/toy/io/toy_gtx_task.rb lib/toy/llm/engine/gtx_engine_cuda.rb \
+		lib/toy/llm/recipes/gtx_graph_cuda.rb lib/toy/llm/adamw.rb \
+		lib/toy/train/dfa_b.rb \
+		lib/toy/io/toy_ae_task.rb \
+		lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb lib/toy/ffi/tinynn_cuda.rb \
+		tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
+toy-train-gtx-cuda: libexec/toy-train-gtx-cuda
+.PHONY: toy-train-gtx-cuda
+
 # toy#160 gate: chain byte-null, determinism, the B seed, the MANDATORY
 # success bar with each arm at ITS OWN best LR, and the two controls
 # that make the lane mean anything — frozen must LOSE (the mask
@@ -875,6 +909,21 @@ toy-train-gtx: libexec/toy-train-gtx
 .PHONY: gate-gtx
 gate-gtx: libexec/toy-train-gtx
 	ruby prep/gtx_gate.rb
+
+# tao#24 gate: the byte-LM CUDA twin. CROSS-BACKEND NUMERIC AGREEMENT is
+# the deliverable here, not the speedup — a twin that is 5x faster and
+# quietly computes something else would put a wrong number into the
+# E-series ladder wearing a plausible face. Asserts the run really used
+# cuda (from run_start provenance, since ggml falls back silently), a
+# BYTE-IDENTICAL graph on both backends, agreement at two stated
+# tolerances (arithmetic at lr=0; trained at each arm's own LR), CUDA
+# self-determinism, the bytelm-ONLY scope at both the binary and the CLI,
+# and that the CPU lane is byte-identical to the pre-twin binary.
+# Named *-cuda so the battery puts it in the serialised GPU phase and
+# macOS filters it out.
+.PHONY: gate-gtx-cuda
+gate-gtx-cuda: libexec/toy-train-gtx libexec/toy-train-gtx-cuda
+	ruby prep/gtx_cuda_gate.rb
 
 # toy#171 — the prerequisite lists are hand-maintained and duplicate the
 # runners' require_relative graphs, so they drift. Silently: a change to
@@ -1591,6 +1640,8 @@ MIRROR_CUDA := \
   lib/toy/llm/primitives/mla_cuda.rb \
   lib/toy/llm/blocks/transformer_block_cuda.rb lib/toy/llm/archs/llama_arch_cuda.rb \
   lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/llm/engine/gpt2_seq_engine_cuda.rb \
+  lib/toy/llm/engine/gtx_engine_cuda.rb lib/toy/llm/recipes/gtx_graph_cuda.rb \
+  lib/toy/run/train_gtx_cuda.rb \
   lib/toy/llm/recipes/from_scratch_cuda.rb lib/toy/llm/recipes/lora_cuda.rb \
   lib/toy/llm/recipes/warm_start_cuda.rb \
   lib/toy/llm/engine/llama_kv_engine_cuda.rb \

@@ -252,8 +252,19 @@ failures << "matrix: diff full flag set hit the matrix (#{out.lines.last(1).join
 # way `cue`/`mean` belong to the two recurrent lanes.
 out, st = probe(%w[gtx --heads 2 --d-ff 64 --types 4 --entities 32 --d-model 32 --features 16 --layers 2 --dfa-cut step --batch 64 --val-batches 2 --task-seed 3 --lr 0.001 --noise 0.2 --task community])
 failures << "matrix: gtx full flag set hit the matrix (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("--task community is only valid with recipe 'gnn'")
+# tao#24 — gtx's device rule is scoped to a TASK, not to the recipe, and
+# this pair is what proves it is scoped rather than merely worded that
+# way. Both probes must pass the FLAG MATRIX (which is what this gate is
+# about) and then stop at a LATER rule; which later rule they hit is the
+# whole point:
+#   relational + cuda -> stops at the DEVICE rule (the twin is bytelm-only)
+#   bytelm     + cuda -> gets PAST the device rule and stops at --text
+# If the device check ever widened back to the recipe, the second probe
+# would report the device message instead and fail here.
 out, st = probe(%w[gtx --task relational --device cuda])
-failures << "matrix: gtx --task relational was rejected (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("not supported for recipe 'gtx'")
+failures << "matrix: gtx --task relational was rejected (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("requires --task bytelm")
+out, st = probe(%w[gtx --task bytelm --device cuda])
+failures << "matrix: gtx --task bytelm --device cuda did not reach the --text rule, so the device check is still recipe-scoped rather than task-scoped (tao#24) (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("requires --text")
 out, st = probe(%w[mlp --task relational])
 failures << "matrix: mlp --task relational not rejected (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("only valid with recipe 'gtx'")
 # toy#157: the lstm lane's own flags all pass the matrix, INCLUDING the
