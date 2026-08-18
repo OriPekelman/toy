@@ -134,6 +134,17 @@ CONTEXT     = (ENV["GTX_CONTEXT"] || "128").to_i
 # gets, so no run changes meaning (see the durable rule: a knob that
 # reinterprets existing configs defaults to the OLD behaviour).
 VOCAB       = (ENV["GTX_VOCAB"] || "256").to_i
+# toy#172 (E1) — the B-conditioning instrument. OPT-IN and byte-null when
+# off: the Gram is O(V n^2), which at n=4096 is ~137s and would cost more
+# than the cell it instruments (a CUDA byte-LM cell is ~18s). So a
+# measurement pass asks for it; ordinary sweep cells never pay it.
+#
+# GTX_INSTRUMENT_N is the sample count, and it is the axis that matters:
+# rank(C_E) <= n, so a rank measured at its own ceiling is not a
+# measurement. Matched n ACROSS RUNGS keeps the ceiling constant instead
+# of letting it move with V.
+INSTRUMENT   = (ENV["GTX_INSTRUMENT"] || "0").to_i
+INSTRUMENT_N = (ENV["GTX_INSTRUMENT_N"] || "1024").to_i
 # NOTE: no ||g|| instrument on this lane. The ssm-lane version (toy#169)
 # works; the gtx port built the node and realized it as ZEROS, and a
 # metric that silently reads 0.0 is worse than no metric — it is the
@@ -422,6 +433,155 @@ end
 
 # EXACT held-out bits/byte from the logits. An AR LM scores itself — no
 # judge model, no sampler.
+# ---- toy#172 / E1: the B-CONDITIONING INSTRUMENT ----
+#
+# P6 stated its verdict on the DFA arm's excess-over-noise, never on any
+# measured rank. This is a NEW claim: it measures the error covariance
+# C_E = E[e e'] with e = softmax(logits) - y, whose conditioning is what
+# "B is poorly conditioned under a wide error vector" would be about.
+#
+# WHY IT COSTS NOTHING EXTRA TO OBSERVE: e is fully reconstructible from
+# the logits and labels the eval loop ALREADY downloads for bpb. No new
+# graph node and no new readout path — which is the right prior on this
+# lane, where the ||g|| instrument realized as ZEROS through three
+# separate readout paths and had to be removed.
+#
+# THE SAMPLING CEILING, which is the whole design constraint:
+#   rank(C_E) <= n_samples, NOT <= V.
+# One eval batch gives N=context error vectors; V is up to 4096. So a
+# naive read would show "effective rank collapses with width" purely
+# because the sample count stopped keeping up — which is exactly the E1
+# `rank` verdict, manufactured from a sampling artifact. n is therefore
+# emitted beside every rank, and a rank at its own ceiling is flagged
+# rather than reported as a measurement.
+#
+# THE CHEAP IDENTITY: the nonzero spectrum of C_E [V x V] equals that of
+# the Gram G = E' E [n x n], so nothing V x V is ever formed.
+#   tr C  = ||E||_F^2                      (O(V n) — free)
+#   tr C2 = ||G||_F^2                      (needs G: O(V n^2))
+#   participation ratio = (tr C)^2 / tr C2
+#   stable rank         = tr C / lambda_max(G)
+# Only tr C2 and lambda_max need G, which is why n is a knob: V*n^2 is
+# ~4.3e9 MACs at n=1024 and ~6.9e10 at n=4096.
+def bc_fill_err!(ebuf, slot, buf, m_labels, n_pos, classes, want)
+  # Append this batch's per-position error vectors to ebuf, stopping at
+  # `want` samples. Returns the new slot count.
+  s = slot
+  i = 0
+  while i < n_pos && s < want
+    base = i * classes
+    mx = buf[base]
+    c = 1
+    while c < classes
+      if buf[base + c] > mx
+        mx = buf[base + c]
+      end
+      c = c + 1
+    end
+    tot = 0.0
+    c2 = 0
+    while c2 < classes
+      tot = tot + Math.exp(buf[base + c2] - mx)
+      c2 = c2 + 1
+    end
+    dst = s * classes
+    c3 = 0
+    while c3 < classes
+      ebuf[dst + c3] = (Math.exp(buf[base + c3] - mx) / tot) - m_labels.flat[base + c3]
+      c3 = c3 + 1
+    end
+    s = s + 1
+    i = i + 1
+  end
+  s
+end
+
+def bc_trace(ebuf, n, classes)
+  t = 0.0
+  k = 0
+  lim = n * classes
+  while k < lim
+    t = t + ebuf[k] * ebuf[k]
+    k = k + 1
+  end
+  t
+end
+
+def bc_gram!(g, ebuf, n, classes)
+  # G[i][j] = e_i . e_j, symmetric, so only the upper triangle is
+  # computed and mirrored.
+  i = 0
+  while i < n
+    j = i
+    while j < n
+      s = 0.0
+      ai = i * classes
+      aj = j * classes
+      c = 0
+      while c < classes
+        s = s + ebuf[ai + c] * ebuf[aj + c]
+        c = c + 1
+      end
+      g[i * n + j] = s
+      g[j * n + i] = s
+      j = j + 1
+    end
+    i = i + 1
+  end
+  nil
+end
+
+def bc_fro2(g, n)
+  s = 0.0
+  k = 0
+  lim = n * n
+  while k < lim
+    s = s + g[k] * g[k]
+    k = k + 1
+  end
+  s
+end
+
+def bc_lambda_max(g, n, iters)
+  # Power iteration. G is PSD by construction, so no shift is needed and
+  # the dominant eigenvalue is what stable rank divides by.
+  v = Array.new(n, 1.0 / Math.sqrt(n.to_f))
+  w = Array.new(n, 0.0)
+  lam = 0.0
+  it = 0
+  while it < iters
+    i = 0
+    while i < n
+      s = 0.0
+      j = 0
+      while j < n
+        s = s + g[i * n + j] * v[j]
+        j = j + 1
+      end
+      w[i] = s
+      i = i + 1
+    end
+    nrm = 0.0
+    i2 = 0
+    while i2 < n
+      nrm = nrm + w[i2] * w[i2]
+      i2 = i2 + 1
+    end
+    nrm = Math.sqrt(nrm)
+    if nrm <= 0.0
+      return 0.0
+    end
+    lam = nrm
+    i3 = 0
+    while i3 < n
+      v[i3] = w[i3] / nrm
+      i3 = i3 + 1
+    end
+    it = it + 1
+  end
+  lam
+end
+
 def bl_bpb(buf, m_labels, n_pos, classes)
   nll = 0.0
   i = 0
@@ -953,9 +1113,17 @@ end
 FINAL_OUT = RETROFIT ? RETRO_CLASSES : N_CLASSES
 if IS_BYTELM
   bpb_sum = 0.0
+  # toy#172 (E1): the error buffer is filled from the SAME download the
+  # bpb uses. Sized to the requested sample count, so an instrument pass
+  # simply runs more val batches rather than needing a second eval.
+  bc_want = INSTRUMENT == 1 ? INSTRUMENT_N : 0
+  bc_buf  = Array.new(bc_want * N_CLASSES, 0.0)
+  bc_n    = 0
+  bc_batches = 0
   vb = 0
-  while vb < VAL_BATCHES
-    bl_fill!(bl_task, bl_tokens, m_labels, bl_starts[vb], N_NODES, N_CLASSES)
+  while vb < VAL_BATCHES || (INSTRUMENT == 1 && bc_n < bc_want)
+    bi = vb % VAL_BATCHES
+    bl_fill!(bl_task, bl_tokens, m_labels, bl_starts[bi], N_NODES, N_CLASSES)
     recipe.step_bytelm!(bl_tokens, m_labels, val_hp, false)
     rcb = TinyNN.tnn_download_to_f64_array(recipe.gr_cache.sess,
             recipe.gr_cache.t_logits, logit_buf, N_NODES * N_CLASSES)
@@ -963,12 +1131,54 @@ if IS_BYTELM
       puts "toy-train-gtx: bytelm logits download failed: rc=" + rcb.to_s
       exit 1
     end
-    bpb_sum = bpb_sum + bl_bpb(logit_buf, m_labels, N_NODES, N_CLASSES)
+    # bpb is scored over the FIRST VAL_BATCHES only, so an instrument
+    # pass reports exactly the bpb a non-instrument run would: the
+    # measurement must not move the number it sits beside.
+    if vb < VAL_BATCHES
+      bpb_sum = bpb_sum + bl_bpb(logit_buf, m_labels, N_NODES, N_CLASSES)
+    end
+    if INSTRUMENT == 1 && bc_n < bc_want
+      bc_n = bc_fill_err!(bc_buf, bc_n, logit_buf, m_labels, N_NODES, N_CLASSES, bc_want)
+      bc_batches = bc_batches + 1
+    end
     vb = vb + 1
+    if vb > 4096
+      puts "toy-train-gtx: instrument could not reach " + bc_want.to_s +
+           " samples (corpus too short for the requested GTX_INSTRUMENT_N)"
+      exit 1
+    end
   end
   puts "bytelm: bpb=" + (bpb_sum / VAL_BATCHES.to_f).to_s +
        " n=" + (VAL_BATCHES * N_NODES).to_s +
        " routing=position_t head=bp vocab=" + N_CLASSES.to_s + " attn=causal"
+  if INSTRUMENT == 1
+    bc_g   = Array.new(bc_n * bc_n, 0.0)
+    bc_gram!(bc_g, bc_buf, bc_n, N_CLASSES)
+    bc_tr  = bc_trace(bc_buf, bc_n, N_CLASSES)
+    bc_tr2 = bc_fro2(bc_g, bc_n)
+    bc_lm  = bc_lambda_max(bc_g, bc_n, 64)
+    bc_pr  = bc_tr2 > 0.0 ? (bc_tr * bc_tr / bc_tr2) : 0.0
+    bc_sr  = bc_lm  > 0.0 ? (bc_tr / bc_lm) : 0.0
+    # THE CEILING IS PART OF THE READING, not a footnote. rank(C_E) <= n,
+    # so a participation ratio or stable rank sitting near n is capped by
+    # the sample count rather than measured, and the E1 verdict must not
+    # be read off it. `capped` states which side of that line this cell
+    # is on, and `n`/`v` let a reader re-derive it.
+    bc_cap = (bc_pr > 0.9 * bc_n.to_f || bc_sr > 0.9 * bc_n.to_f) ? "SAMPLE-CAPPED" :
+             (bc_n < N_CLASSES ? "below-V" : "ok")
+    puts "bcond: n=" + bc_n.to_s + " v=" + N_CLASSES.to_s +
+         " batches=" + bc_batches.to_s +
+         " trace=" + bc_tr.to_s +
+         " lambda_max=" + bc_lm.to_s +
+         " participation_ratio=" + bc_pr.to_s +
+         " stable_rank=" + bc_sr.to_s +
+         " capped=" + bc_cap
+    # B's OWN stable rank is a flat CONTROL, never the diagnostic: B is a
+    # fixed i.i.d. draw that does not move during training, so this
+    # should be constant across rungs. If it is not, the draw or the
+    # scale rule is wrong and every conditioning number above is suspect.
+    puts "bcond_control: " + recipe.gr_cache.b_stable_rank_report
+  end
   puts "graph: nodes=" + recipe.gr_cache.gx_graph_nodes.to_s +
        " bytes=" + recipe.gr_cache.gx_graph_bytes.to_s
   exit 0

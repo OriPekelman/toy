@@ -786,6 +786,83 @@ else
     "  FAIL: pack contract"
 end
 
+# ── LEG 15: THE B-CONDITIONING INSTRUMENT (toy#172 / E1 Phase 1.1) ──
+#
+# P6's verdict is stated on the DFA arm's excess-over-noise, NOT on any
+# measured rank. This instrument is a NEW claim, so what the gate owes it
+# is that it is honest about its own limits rather than that it confirms
+# anything.
+#
+# The load-bearing assertion is the SAMPLING CEILING. rank(C_E) <= n, not
+# <= V, so a naive read shows "effective rank collapses with width" purely
+# because the sample count stopped keeping up — which is exactly E1's
+# `rank` verdict, manufactured from an artifact. `n` and `v` must appear
+# on every line and a capped reading must SAY it is capped.
+n0 = failures.length
+if !File.file?(File.join(ROOT, "data", "ae_shak_a65.tok.i32"))
+  puts "  skip: B-CONDITIONING (toy#172/E1) — data/ae_shak_a65 absent"
+else
+  def bc_run(extra)
+    run_gtx(HW.merge({ "STEPS" => "40", "GTX_LR" => "0.003",
+                       "GTX_TEXT" => "data/ae_shak_a65",
+                       "GTX_POLICY" => "dfa,dfa", "GTX_DFA_CUT" => "layer" })
+              .merge(extra), nil)
+  end
+  def bc_line(out)
+    out.lines.find { |l| l.start_with?("bcond: ") } || ""
+  end
+
+  # 15a. OFF BY DEFAULT AND BYTE-NULL. An instrument that perturbs the
+  # sweep it measures is worthless; every P3-P6 cell was run without it
+  # and must stay comparable.
+  bc_off = bc_run({})
+  failures << "b-conditioning: the instrument emitted a bcond line when NOT asked for — it must be opt-in" unless
+    bc_line(bc_off).empty?
+  failures << "b-conditioning: GTX_INSTRUMENT unset is not byte-identical to GTX_INSTRUMENT=0" unless
+    curve(bc_off) == curve(bc_run("GTX_INSTRUMENT" => "0"))
+
+  # 15b. ON, it emits — and it does NOT move the bpb it sits beside.
+  bc_on = bc_run("GTX_INSTRUMENT" => "1", "GTX_INSTRUMENT_N" => "128")
+  failures << "b-conditioning: --instrument produced no bcond line" if bc_line(bc_on).empty?
+  failures << "b-conditioning: no bcond_control line (B's own stable rank is the flat control that proves the draw is sane)" unless
+    bc_on.lines.any? { |l| l.start_with?("bcond_control: ") }
+  off_bpb = hw_bpb(bc_off)
+  on_bpb  = hw_bpb(bc_on)
+  failures << "b-conditioning: the instrument MOVED the bpb (#{off_bpb} -> #{on_bpb}) — a measurement that perturbs its own subject" unless
+    off_bpb && on_bpb && off_bpb == on_bpb
+
+  # 15c. n AND v ARE ON THE LINE. A rank without its sample count cannot
+  # be read at all — it is the difference between a finding and an
+  # artifact, and it is the one thing E1's verdict hinges on.
+  bl = bc_line(bc_on)
+  failures << "b-conditioning: bcond line omits n= (a rank without its sample count is unreadable — rank(C_E) <= n)" unless bl.include?(" n=")
+  failures << "b-conditioning: bcond line omits v= (the ceiling cannot be re-derived without it)" unless bl.include?(" v=")
+  failures << "b-conditioning: bcond line omits capped= (a sample-capped reading must SAY so, or it reads as the E1 `rank` verdict)" unless bl.include?(" capped=")
+  failures << "b-conditioning: requested n=128 but the line reports otherwise (#{bl[/ n=(\d+)/, 1]})" unless bl.include?(" n=128 ")
+
+  # 15d. THE CEILING IS DETECTED. Asking for fewer samples than a rank
+  # could occupy must produce `SAMPLE-CAPPED`, not a confident number.
+  # Without this the instrument's headline failure mode is silent.
+  bc_tiny = bc_run("GTX_INSTRUMENT" => "1", "GTX_INSTRUMENT_N" => "8")
+  tl = bc_line(bc_tiny)
+  failures << "b-conditioning: n=8 against a 256-wide error vector did not report capped=SAMPLE-CAPPED or below-V — the ceiling is undetected, which is precisely how a sampling artifact becomes the `rank` verdict" unless
+    tl.include?("capped=SAMPLE-CAPPED") || tl.include?("capped=below-V")
+
+  # 15e. The statistics are finite and ordered. stable_rank <= n and
+  # participation_ratio <= n hold by construction; violating either means
+  # the Gram or the power iteration is wrong.
+  sr = bl[/stable_rank=([0-9.eE+-]+)/, 1].to_f
+  pr = bl[/participation_ratio=([0-9.eE+-]+)/, 1].to_f
+  lm = bl[/lambda_max=([0-9.eE+-]+)/, 1].to_f
+  failures << "b-conditioning: stable_rank #{sr} is not in (0, n] — the Gram or the power iteration is wrong" unless sr > 0.0 && sr <= 128.0 + 1e-6
+  failures << "b-conditioning: participation_ratio #{pr} is not in (0, n]" unless pr > 0.0 && pr <= 128.0 + 1e-6
+  failures << "b-conditioning: lambda_max #{lm} is not positive — C_E is PSD by construction" unless lm > 0.0
+
+  puts failures.length == n0 ?
+    "  ok: B-CONDITIONING (toy#172/E1) — opt-in and byte-null when off, does NOT move the bpb it sits beside, emits n/v/capped on every line, DETECTS the sampling ceiling (the artifact that would manufacture the `rank` verdict), and its statistics are finite and bounded by n" :
+    "  FAIL: b-conditioning"
+end
+
 if failures.empty?
   puts "GATE PASS [gtx]: graph transformer + RETROFIT + per-block policy — byte fixture, the B seed, the small-head assertion, the MANDATORY success bar with each arm at ITS OWN best LR showing ATTENTION IS NOT DFA-HOSTILE (dfa .920 vs BP .985 vs frozen .111), the mixing-cut collapse, and a frozen control that provably CAN lose (toy#160)"
   exit 0

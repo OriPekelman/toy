@@ -132,6 +132,7 @@ class GtxEngine
     @gx_b_dist  = 0
     @gx_b_scale = 0
     @gx_b_sigma = 0.0
+    @gx_b_sr    = ""
     @gx_dfa_wired    = 0
     @gx_frozen_count = 0
     @gx_taps         = 0
@@ -879,15 +880,58 @@ class GtxEngine
 
   def refresh_b!
     bi = 0
+    @gx_b_sr = ""
     while bi < @gx_b_handles.length
       dout = @gx_b_douts[bi]
       nb   = dout * @gx_active_classes
       sig  = Toy::Train::DfaB.sigma_for(@gx_b_scale, @gx_active_classes, dout, @gx_b_sigma)
-      TinyNN.tnn_upload_from_float_array(@sess, @gx_b_handles[bi],
-        Toy::Train::DfaB.fill(nb, @gx_b_seeds[bi], @gx_b_dist, sig), nb)
+      vals = Toy::Train::DfaB.fill(nb, @gx_b_seeds[bi], @gx_b_dist, sig)
+      TinyNN.tnn_upload_from_float_array(@sess, @gx_b_handles[bi], vals, nb)
+      # toy#172 (E1) — B's stable rank, computed HERE because B is
+      # generated on the host and never has to be read back. It is the
+      # instrument's flat CONTROL: B is a fixed i.i.d. draw that does not
+      # move during training, so this should not vary across rungs.
+      #
+      # ||B||_F^2 is exact; ||B||_2 is bounded below by the largest row
+      # norm, which is what is used — so this is an UPPER bound on the
+      # stable rank, and it is labelled as such rather than presented as
+      # the spectral norm.
+      fro2 = 0.0
+      k = 0
+      while k < nb
+        fro2 = fro2 + vals[k] * vals[k]
+        k = k + 1
+      end
+      rmax = 0.0
+      r = 0
+      while r < dout
+        rn = 0.0
+        c = 0
+        base = r * @gx_active_classes
+        while c < @gx_active_classes
+          rn = rn + vals[base + c] * vals[base + c]
+          c = c + 1
+        end
+        if rn > rmax
+          rmax = rn
+        end
+        r = r + 1
+      end
+      sr = rmax > 0.0 ? (fro2 / rmax) : 0.0
+      @gx_b_sr = @gx_b_sr + (bi > 0 ? " " : "") +
+                 "B" + bi.to_s + "=[" + dout.to_s + "x" + @gx_active_classes.to_s +
+                 "]sr_ub=" + sr.to_s
       bi = bi + 1
     end
     nil
+  end
+
+  # The control line, assembled at refresh time. Named `_ub` throughout
+  # because it is an upper bound (largest row norm <= spectral norm), not
+  # the stable rank itself — a number that quietly overstates itself is
+  # the failure this program keeps paying for.
+  def b_stable_rank_report
+    @gx_b_sr.length > 0 ? @gx_b_sr : "none (no DFA taps wired)"
   end
 
   def param_count
