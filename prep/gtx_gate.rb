@@ -863,6 +863,145 @@ else
     "  FAIL: b-conditioning"
 end
 
+# ── LEG 16: nDFA, THE ERROR-SIDE PRECONDITIONER (toy#172 / E1 Phase 1.2) ──
+#
+# nDFA left-multiplies the broadcast error by lambda(C_E + lambda I)^-1,
+# folded into B host-side. What this leg owes the program is FOUR things,
+# and each of them is a way the flag could look like a finding while
+# being nothing of the sort:
+#
+#   * OFF IS THE OLD BINARY. Not "off works" — byte-identical. Every
+#     P3-P6 cell was measured before this flag existed and the E1 sweep
+#     REUSES those cells as its nDFA=off arm, so an off path that moved
+#     by one ulp would silently re-base the comparison.
+#   * LARGE LAMBDA IS THE IDENTITY, BYTE-FOR-BYTE. That is what the
+#     lambda-NORMALISATION buys: P = lambda(C_E+lambda I)^-1 tends to I,
+#     where the unnormalised (C_E+lambda I)^-1 tends to I/lambda and
+#     would silently rescale every DFA update — an LR change wearing a
+#     conditioning costume. A byte identity is the only version of this
+#     check that cannot be argued with.
+#   * IT IS NOT INERT. An inert knob reads as a clean negative, which is
+#     this program's most expensive failure mode.
+#   * IT FAILS LOUD WHERE IT MEANS NOTHING. Not bytelm, no dfa block, no
+#     ridge, a cadence longer than the run: each of those would otherwise
+#     produce a cell that reports itself preconditioned and is not.
+n0 = failures.length
+if !File.file?(File.join(ROOT, "data", "ae_shak_a65.tok.i32"))
+  puts "  skip: nDFA (toy#172/E1 Phase 1.2) — data/ae_shak_a65 absent"
+else
+  ND_BASE = HW.merge({ "STEPS" => "60", "GTX_LR" => "0.003",
+                       "GTX_TEXT" => "data/ae_shak_a65",
+                       "GTX_POLICY" => "dfa,dfa", "GTX_DFA_CUT" => "layer" })
+  # STEPS 60 / every 20 gives THREE refreshes, so `refreshes=` is a real
+  # count rather than a boolean, and m=128 at context 64 makes the
+  # collection window two steps — enough for the window arithmetic to be
+  # exercised rather than degenerate at one.
+  ND_ON = { "GTX_NDFA" => "1", "GTX_NDFA_EVERY" => "20", "GTX_NDFA_M" => "128" }
+  def nd_run(extra)
+    run_gtx(ND_BASE.merge(extra), nil)
+  end
+  def nd_fail(extra)
+    Open3.capture2e(ND_BASE.merge(extra), RUNNER, chdir: ROOT)
+  end
+  def nd_line(out)
+    out.lines.find { |l| l.start_with?("ndfa: ") } || ""
+  end
+
+  # 16a. OFF BY DEFAULT AND BYTE-NULL.
+  nd_off = nd_run({})
+  failures << "ndfa: an off run emitted an ndfa: line — the flag must be silent when it is not on, or every pre-existing cell's provenance changes" unless
+    nd_line(nd_off).empty?
+  failures << "ndfa: GTX_NDFA unset is not byte-identical to GTX_NDFA=0. The E1 sweep REUSES the P6 cells as its off arm; if unset and 0 differ, that reuse is invalid and so is every comparison built on it" unless
+    curve(nd_off) == curve(nd_run("GTX_NDFA" => "0"))
+
+  # 16b. LARGE LAMBDA IS A BYTE IDENTITY. The bracket
+  # (lambda m I + G)^-1 goes to zero, so B' underflows back to exactly B
+  # in f64 long before the f32 upload — the whole point of normalising P
+  # by lambda rather than shipping (C_E + lambda I)^-1 raw.
+  nd_inf = nd_run(ND_ON.merge({ "GTX_NDFA_LAMBDA" => "1e30" }))
+  failures << "ndfa: lambda=1e30 is NOT byte-identical to the unpreconditioned arm — P is supposed to be the IDENTITY in that limit, and if it is not then the lambda normalisation is wrong and every finite-lambda cell carries an unstated global gain" unless
+    curve(nd_inf) == curve(nd_off)
+  failures << "ndfa: lambda=1e30 moved the bpb it is supposed to leave alone" unless
+    hw_bpb(nd_inf) == hw_bpb(nd_off)
+  failures << "ndfa: lambda=1e30 did not report b_shrink=1.0 — B' is bit-identical to B there, so the ratio is exactly 1 and anything else means the norms are not being computed on what is uploaded" unless
+    nd_line(nd_inf).include?("b_shrink=1.0 ")
+
+  # 16c. IT MOVES THE DFA CURVE AT A FINITE LAMBDA.
+  nd_on = nd_run(ND_ON.merge({ "GTX_NDFA_LAMBDA" => "0.01" }))
+  failures << "ndfa: lambda=0.01 produced a curve byte-identical to the unpreconditioned arm — the knob is INERT, and an inert knob reads as a clean negative" if
+    curve(nd_on) == curve(nd_off)
+
+  # 16d. THE PROVENANCE CARRIES THE CADENCE. A preconditioner refreshed
+  # every 20 steps and one refreshed every 500 are different experiments;
+  # without the cadence on the line they carry the same label.
+  nl = nd_line(nd_on)
+  failures << "ndfa: no ndfa: provenance line on an nDFA run" if nl.empty?
+  %w[on= lambda= every= m= gain= refreshes= err_pre= err_post= b_shrink=].each do |k|
+    failures << "ndfa: provenance line omits #{k} — the cadence, the sample count and the ridge ARE the experiment on this flag" unless nl.include?(" #{k}") || nl.start_with?("ndfa: #{k}")
+  end
+  failures << "ndfa: the cadence is not honoured — STEPS=60 every=20 must be 3 refreshes, line says #{nl[/refreshes=(\d+)/, 1].inspect}" unless
+    nl[/refreshes=(\d+)/, 1] == "3"
+  failures << "ndfa: the line reports m=#{nl[/ m=(\d+)/, 1].inspect} but 128 samples were requested — an m that silently differs from the request is the Phase 1.1 sampling-ceiling trap one level down" unless
+    nl[/ m=(\d+)/, 1] == "128"
+
+  # 16e. THE PRECONDITIONED ERROR NORM IS FINITE, AND IT ACTUALLY
+  # SHRANK. Finite first: a blowup in the Cholesky solve would upload
+  # inf/nan into B and the loss would simply stop being a number partway
+  # through a 4000-step run, with nothing in the output saying so.
+  # `num_or_null` prints non-finite as `null`, so a null here is the
+  # failure the spec asked to be gated.
+  ep = nl[/err_pre=([0-9.eE+-]+|null)/, 1]
+  eq = nl[/err_post=([0-9.eE+-]+|null)/, 1]
+  failures << "ndfa: err_post is #{eq.inspect} — the preconditioned error norm is NOT FINITE, which is silent everywhere else in the run" if eq.nil? || eq == "null"
+  failures << "ndfa: err_pre is #{ep.inspect} — not finite" if ep.nil? || ep == "null"
+  if ep && eq && ep != "null" && eq != "null"
+    failures << "ndfa: ||B'E||_F (#{eq}) is not smaller than ||BE||_F (#{ep}) at lambda=0.01 — P's eigenvalues are lambda/(lambda+s) in (0,1], so the preconditioned error CANNOT be larger; if it is, the solve is wrong" unless
+      eq.to_f < ep.to_f
+  end
+
+  # 16f. FAIL LOUD WHERE THE FLAG WOULD MEAN NOTHING. Five refusals, and
+  # each is a cell that would otherwise be filed as an nDFA measurement
+  # while being the plain DFA arm.
+  [
+    [{ "GTX_NDFA" => "1", "GTX_NDFA_LAMBDA" => "0.01", "GTX_TASK" => "relational" },
+     "bytelm", "accepted nDFA on the RELATIONAL task, whose head is 16 classes wide"],
+    [ND_ON.merge({ "GTX_NDFA_LAMBDA" => "0.01", "GTX_POLICY" => "chain,chain" }),
+     "no `dfa` block", "accepted nDFA on a chain-only policy, where there is no B to fold into"],
+    [ND_ON.merge({ "GTX_POLICY" => "dfa,dfa" }),
+     "GTX_NDFA_LAMBDA", "accepted nDFA with no ridge — lambda IS the experiment"],
+    [{ "GTX_NDFA" => "1", "GTX_NDFA_LAMBDA" => "0.01", "GTX_NDFA_EVERY" => "1",
+       "GTX_NDFA_M" => "128" },
+     "collection window", "accepted a cadence shorter than its own collection window"],
+    [{ "GTX_NDFA" => "1", "GTX_NDFA_LAMBDA" => "0.01", "GTX_NDFA_EVERY" => "500",
+       "GTX_NDFA_M" => "128" },
+     "no refresh ever ran", "accepted a run whose step budget never reaches the first refresh — that cell IS the unpreconditioned arm wearing an nDFA label"],
+  ].each do |extra, needle, label|
+    o, s = nd_fail(extra)
+    if s.success?
+      failures << "ndfa fail-loud: #{label}"
+    else
+      failures << "ndfa fail-loud: the refusal for `#{label}` does not name #{needle.inspect}, so it cannot be acted on:\n#{o.lines.last(2).join}" unless o.include?(needle)
+    end
+  end
+
+  # 16g. THE CLI SURFACE REFUSES THE SAME THINGS. The sweeps call
+  # libexec/ directly and `toy train` is a second front door; a knob
+  # guarded on only one of them is guarded on neither.
+  [
+    [%w[mlp --dfa-feedback-precond ndfa --ndfa-lambda 0.01], "mlp accepted --dfa-feedback-precond"],
+    [%w[gtx --dfa-feedback-precond ndfa --ndfa-lambda 0.01], "gtx accepted nDFA without --task bytelm"],
+    [%w[gtx --task bytelm --text data/ae_shak_a65 --dfa-feedback-precond ndfa], "gtx accepted --dfa-feedback-precond ndfa with no --ndfa-lambda"],
+    [%w[gtx --task bytelm --text data/ae_shak_a65 --ndfa-lambda 0.01], "gtx accepted --ndfa-lambda with the preconditioner off"],
+  ].each do |argv, label|
+    cout, cst = Open3.capture2e({}, TOY, "train", *argv, chdir: ROOT)
+    failures << "ndfa cli: #{label} (exit #{cst.exitstatus}: #{cout.lines.last(1).join.strip})" unless cst.exitstatus == 2
+  end
+
+  puts failures.length == n0 ?
+    "  ok: nDFA (toy#172/E1 Phase 1.2) — off is BYTE-IDENTICAL to the pre-flag runner (so the P6 cells are a legitimate off arm), lambda->inf is a BYTE IDENTITY rather than an approximation, a finite lambda MOVES the curve and provably SHRINKS ||B'E||_F, the cadence/m/ridge all ride in the provenance, and five configurations where the flag would mean nothing are REFUSED on both front doors" :
+    "  FAIL: ndfa"
+end
+
 if failures.empty?
   puts "GATE PASS [gtx]: graph transformer + RETROFIT + per-block policy — byte fixture, the B seed, the small-head assertion, the MANDATORY success bar with each arm at ITS OWN best LR showing ATTENTION IS NOT DFA-HOSTILE (dfa .920 vs BP .985 vs frozen .111), the mixing-cut collapse, and a frozen control that provably CAN lose (toy#160)"
   exit 0

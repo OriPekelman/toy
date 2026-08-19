@@ -934,6 +934,352 @@ class GtxEngine
     @gx_b_sr.length > 0 ? @gx_b_sr : "none (no DFA taps wired)"
   end
 
+  # ---- toy#172 / E1 Phase 1.2: the nDFA ERROR-SIDE PRECONDITIONER ----
+  #
+  # nDFA (Safaai et al. 2026, arXiv:2607.18574) left-multiplies the
+  # broadcast error by the inverse local-error second moment. E1 Phase
+  # 1.1 measured that the thing being inverted is real: C_E occupies
+  # 5-11% of the dimensions available to it and relatively less as the
+  # head widens. So there IS anisotropy to whiten.
+  #
+  # ── WHY THIS IS FOLDED INTO B AND NOT ADDED TO THE GRAPH ──
+  #
+  # The preconditioner acts on the error, and the error reaches every tap
+  # through exactly one product — B . e. So
+  #
+  #     (B) . (P e)  ==  (B P) . e
+  #
+  # and B is generated HOST-SIDE by refresh_b! and uploaded. Folding P
+  # into B therefore needs NO new graph node, NO new readout path and no
+  # new backend surface — which is the right prior on this lane, where
+  # the ||g|| instrument realized as ZEROS through three separate readout
+  # paths and had to be removed rather than shipped reading 0.0.
+  #
+  # ── THE IDENTITY, AND WHY NOTHING [V x V] IS EVER FORMED ──
+  #
+  #   C_E = (1/m) E E'          E = [V x m] error samples
+  #   P   = lambda (C_E + lambda I)^-1
+  #       = I - E (lambda m I_m + G)^-1 E'          G = E'E, [m x m]
+  #   B'  = B P = B - (B E) (lambda m I_m + G)^-1 E'
+  #
+  # (Woodbury.) At V=4096, m=256, dout=128 that is ~1.4e9 MACs for five
+  # taps against 2.3e10 for the [V x V] inverse — and the [V x V] inverse
+  # is where f32 accumulation would go wrong SILENTLY, which is the whole
+  # reason the spec asked for a finite-norm assertion.
+  #
+  # ── THE lambda NORMALISATION IS LOAD-BEARING ──
+  #
+  # P is lambda(C_E + lambda I)^-1, NOT (C_E + lambda I)^-1. The bracket
+  # above goes to ZERO as lambda grows, so B' -> B EXACTLY (the
+  # correction underflows against B's own magnitude in f64 long before
+  # the f32 upload), which makes "large lambda changes nothing" a BYTE
+  # IDENTITY rather than an approximation. The unnormalised form tends to
+  # I/lambda instead and would silently rescale every DFA update — an LR
+  # change wearing a conditioning costume.
+  #
+  # ── AND SO IS THE GAIN RULE ──
+  #
+  # P's eigenvalues are lambda/(lambda + s_i) in (0, 1], so nDFA can only
+  # SHRINK B — hardest along the error's dominant directions, which is
+  # the point, but with a global gain drop riding along. On this lane a
+  # global gain on B is indistinguishable from an LR change (toy#152's
+  # B-scale finding restated), so `preserve` renormalises B' back to
+  # ||B||_F and leaves ONLY the direction reweighting under test. `raw`
+  # keeps the shrinkage, and the measured pre-renorm ratio is emitted
+  # either way so the size of what was removed is never hidden.
+  #
+  # Returns FOUR FLOATS and nothing else (a mixed-type array comes back
+  # `unknown` under Spinel and the first .to_f on it fails at runtime):
+  #   [0] status  0 ok / 1 Cholesky failed / 2 no DFA taps wired
+  #   [1] ||B E||_F   before preconditioning, summed over taps
+  #   [2] ||B' E||_F  after, i.e. the error as the taps actually see it
+  #   [3] ||B'||_F / ||B||_F  BEFORE any gain restoration
+  def precondition_b!(ebuf, n, lam, preserve_gain)
+    out = [0.0]
+    out.push(0.0)
+    out.push(0.0)
+    out.push(1.0)
+    if @gx_b_handles.length == 0 || n < 1
+      out[0] = 2.0
+      return out
+    end
+    v = @gx_active_classes
+
+    # G = E'E. Symmetric, so only the upper triangle is computed and
+    # mirrored — same shape as the instrument's bc_gram!, kept here
+    # rather than shared because the engine is its own mirrored unit and
+    # a cross-file top-level call from an instance method is exactly the
+    # kind of thing Spinel's inference gets wrong quietly.
+    g = Array.new(n * n, 0.0)
+    i = 0
+    while i < n
+      j = i
+      while j < n
+        s = 0.0
+        ai = i * v
+        aj = j * v
+        c = 0
+        while c < v
+          s = s + ebuf[ai + c] * ebuf[aj + c]
+          c = c + 1
+        end
+        g[i * n + j] = s
+        g[j * n + i] = s
+        j = j + 1
+      end
+      i = i + 1
+    end
+
+    # M = lambda m I + G, then its Cholesky IN PLACE. M is SPD for any
+    # lambda > 0 (G is PSD by construction), so a failure here means the
+    # ridge is too small for f64 at this width, and it FAILS rather than
+    # falling back to something that still returns a number.
+    mm = Array.new(n * n, 0.0)
+    k = 0
+    lim = n * n
+    while k < lim
+      mm[k] = g[k]
+      k = k + 1
+    end
+    d = 0
+    while d < n
+      mm[d * n + d] = mm[d * n + d] + lam * n.to_f
+      d = d + 1
+    end
+    if nd_chol!(mm, n) != 0
+      out[0] = 1.0
+      return out
+    end
+
+    pre2  = 0.0
+    post2 = 0.0
+    shr_n = 0.0
+    shr_d = 0.0
+    @gx_b_sr = ""
+    bi = 0
+    while bi < @gx_b_handles.length
+      dout = @gx_b_douts[bi]
+      nb   = dout * v
+      sig  = Toy::Train::DfaB.sigma_for(@gx_b_scale, v, dout, @gx_b_sigma)
+      # REGENERATED from the seed, never read back and never accumulated
+      # across refreshes: B' is a function of (B, E) alone, so a second
+      # refresh must precondition the ORIGINAL draw and not last
+      # refresh's output. Compounding would make the flag's meaning
+      # depend on the cadence.
+      vals = Toy::Train::DfaB.fill(nb, @gx_b_seeds[bi], @gx_b_dist, sig)
+
+      fro_pre = 0.0
+      fk = 0
+      while fk < nb
+        fro_pre = fro_pre + vals[fk] * vals[fk]
+        fk = fk + 1
+      end
+
+      # be = B E   [dout x n]
+      be = Array.new(dout * n, 0.0)
+      r = 0
+      while r < dout
+        br = r * v
+        sc = 0
+        while sc < n
+          acc = 0.0
+          er = sc * v
+          c2 = 0
+          while c2 < v
+            acc = acc + vals[br + c2] * ebuf[er + c2]
+            c2 = c2 + 1
+          end
+          be[r * n + sc] = acc
+          pre2 = pre2 + acc * acc
+          sc = sc + 1
+        end
+        r = r + 1
+      end
+
+      # z = (B E) M^-1, one Cholesky solve per row of B E.
+      z = Array.new(dout * n, 0.0)
+      x = Array.new(n, 0.0)
+      r2 = 0
+      while r2 < dout
+        q = 0
+        while q < n
+          x[q] = be[r2 * n + q]
+          q = q + 1
+        end
+        nd_chol_solve!(mm, x, n)
+        q2 = 0
+        while q2 < n
+          z[r2 * n + q2] = x[q2]
+          q2 = q2 + 1
+        end
+        r2 = r2 + 1
+      end
+
+      # ||B' E||_F, from B'E = BE - z G. [dout x n x n] and so cheap
+      # next to the two [dout x n x v] products either side of it. This
+      # is THE number the finite-norm assertion is stated on, because it
+      # is the error as the taps actually receive it rather than an
+      # abstract P e.
+      r4 = 0
+      while r4 < dout
+        s4 = 0
+        while s4 < n
+          acc4 = be[r4 * n + s4]
+          t4 = 0
+          while t4 < n
+            acc4 = acc4 - z[r4 * n + t4] * g[t4 * n + s4]
+            t4 = t4 + 1
+          end
+          post2 = post2 + acc4 * acc4
+          s4 = s4 + 1
+        end
+        r4 = r4 + 1
+      end
+
+      # B' = B - z E'
+      r3 = 0
+      while r3 < dout
+        br2 = r3 * v
+        s3 = 0
+        while s3 < n
+          zz = z[r3 * n + s3]
+          er2 = s3 * v
+          c3 = 0
+          while c3 < v
+            vals[br2 + c3] = vals[br2 + c3] - zz * ebuf[er2 + c3]
+            c3 = c3 + 1
+          end
+          s3 = s3 + 1
+        end
+        r3 = r3 + 1
+      end
+
+      fro_post = 0.0
+      fk2 = 0
+      while fk2 < nb
+        fro_post = fro_post + vals[fk2] * vals[fk2]
+        fk2 = fk2 + 1
+      end
+      shr_n = shr_n + fro_post
+      shr_d = shr_d + fro_pre
+      # At large lambda vals is BIT-IDENTICAL to the draw, so this ratio
+      # is exactly 1.0 and the rescale below is exactly the identity —
+      # which is what makes the byte-null gate a byte gate.
+      if preserve_gain == 1 && fro_post > 0.0
+        gsc = Math.sqrt(fro_pre / fro_post)
+        gk = 0
+        while gk < nb
+          vals[gk] = vals[gk] * gsc
+          gk = gk + 1
+        end
+      end
+
+      TinyNN.tnn_upload_from_float_array(@sess, @gx_b_handles[bi], vals, nb)
+
+      # The stable-rank CONTROL is recomputed here on purpose. It is
+      # emitted once, at the end of the run; leaving it describing the
+      # initial draw while the live matrix is B' would make the control
+      # describe a matrix the run stopped using.
+      fro2 = 0.0
+      k5 = 0
+      while k5 < nb
+        fro2 = fro2 + vals[k5] * vals[k5]
+        k5 = k5 + 1
+      end
+      rmax = 0.0
+      r5 = 0
+      while r5 < dout
+        rn = 0.0
+        c5 = 0
+        base5 = r5 * v
+        while c5 < v
+          rn = rn + vals[base5 + c5] * vals[base5 + c5]
+          c5 = c5 + 1
+        end
+        if rn > rmax
+          rmax = rn
+        end
+        r5 = r5 + 1
+      end
+      sr = rmax > 0.0 ? (fro2 / rmax) : 0.0
+      @gx_b_sr = @gx_b_sr + (bi > 0 ? " " : "") +
+                 "B" + bi.to_s + "=[" + dout.to_s + "x" + v.to_s +
+                 "]sr_ub=" + sr.to_s
+      bi = bi + 1
+    end
+
+    out[1] = Math.sqrt(pre2)
+    out[2] = post2 > 0.0 ? Math.sqrt(post2) : post2
+    out[3] = shr_d > 0.0 ? Math.sqrt(shr_n / shr_d) : 1.0
+    out
+  end
+
+  # Lower Cholesky of a SYMMETRIC POSITIVE-DEFINITE flat row-major [n x n],
+  # in place: the lower triangle becomes L, the upper is left as it was
+  # (nd_chol_solve! only ever reads the lower half). Returns 0 on
+  # success, 1 if a pivot goes non-positive.
+  #
+  # Written out rather than reached for because there is no dense linear
+  # algebra in this program: everything else goes through ggml, and ggml
+  # has no Cholesky. n is the SAMPLE count (256-1024), so n^3/3 is
+  # 5.6e6-3.6e8 — small beside the [dout x n x v] products it enables.
+  def nd_chol!(a, n)
+    j = 0
+    while j < n
+      s = a[j * n + j]
+      k = 0
+      while k < j
+        s = s - a[j * n + k] * a[j * n + k]
+        k = k + 1
+      end
+      if s <= 0.0
+        return 1
+      end
+      dg = Math.sqrt(s)
+      a[j * n + j] = dg
+      i = j + 1
+      while i < n
+        s2 = a[i * n + j]
+        k2 = 0
+        while k2 < j
+          s2 = s2 - a[i * n + k2] * a[j * n + k2]
+          k2 = k2 + 1
+        end
+        a[i * n + j] = s2 / dg
+        i = i + 1
+      end
+      j = j + 1
+    end
+    0
+  end
+
+  # Solve L L' x = x in place for the L that nd_chol! left in `l`.
+  def nd_chol_solve!(l, x, n)
+    i = 0
+    while i < n
+      s = x[i]
+      k = 0
+      while k < i
+        s = s - l[i * n + k] * x[k]
+        k = k + 1
+      end
+      x[i] = s / l[i * n + i]
+      i = i + 1
+    end
+    i2 = n - 1
+    while i2 >= 0
+      s2 = x[i2]
+      k2 = i2 + 1
+      while k2 < n
+        s2 = s2 - l[k2 * n + i2] * x[k2]
+        k2 = k2 + 1
+      end
+      x[i2] = s2 / l[i2 * n + i2]
+      i2 = i2 - 1
+    end
+    nil
+  end
+
   def param_count
     n = 0
     wi = 0

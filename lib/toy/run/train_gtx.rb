@@ -59,6 +59,18 @@
 #   GTX_TASK_SEED   — task seed, SEPARATE from SEED (default 7)
 #   GTX_LR / GTX_WARMUP
 #
+#   toy#172 / E1 THE B-CONDITIONING INSTRUMENT + nDFA:
+#   GTX_INSTRUMENT / GTX_INSTRUMENT_N — Phase 1.1, opt-in, byte-null off
+#   GTX_NDFA        — 0 (default) | 1. Phase 1.2's error-side
+#                     preconditioner, FOLDED INTO B host-side.
+#                     `--task bytelm` + a `dfa` policy only.
+#   GTX_NDFA_LAMBDA — the ridge. REQUIRED when GTX_NDFA=1; no default.
+#   GTX_NDFA_EVERY  — steps between refreshes (default 500)
+#   GTX_NDFA_M      — error samples per refresh (default 256)
+#   GTX_NDFA_GAIN   — preserve (default) | raw. `preserve` renormalises
+#                     B' back to ||B||_F so only the DIRECTION
+#                     reweighting is under test.
+#
 #   toy#161 RETROFIT MODE (GTX_RETROFIT=1):
 #   GTX_PRETRAIN_STEPS — BP steps on the PRETRAIN task (default 1500)
 #   GTX_PRETRAIN_LR    — BP's own cell for phase 1 (default 0.003)
@@ -145,6 +157,34 @@ VOCAB       = (ENV["GTX_VOCAB"] || "256").to_i
 # of letting it move with V.
 INSTRUMENT   = (ENV["GTX_INSTRUMENT"] || "0").to_i
 INSTRUMENT_N = (ENV["GTX_INSTRUMENT_N"] || "1024").to_i
+# toy#172 (E1 Phase 1.2) — the nDFA ERROR-SIDE PRECONDITIONER.
+#
+# Left-multiplies the broadcast error by lambda(C_E + lambda I)^-1, which
+# is FOLDED INTO B host-side (see GtxEngine#precondition_b! for the
+# Woodbury identity and why nothing [V x V] is ever formed). OFF by
+# default and byte-null when off: every P3-P6 cell was measured without
+# it and stays comparable only if 0 really is the old binary.
+#
+# THE CADENCE IS A FLAG, NOT A CONSTANT. A per-step refresh would cost
+# more than the step it preconditions (the Gram alone is O(V m^2)), so
+# the refresh runs every GTX_NDFA_EVERY steps and the cadence rides in
+# the provenance line — a preconditioner whose staleness is invisible is
+# a different experiment at every step budget.
+#
+# THE SAMPLES COME FROM THE TRAINING STEPS THEMSELVES, deliberately. The
+# obvious implementation — run extra forward passes at the refresh point
+# — would consume the corpus RNG stream and update the Adam moments
+# through opt_step_adamw (lr=0 does NOT freeze m and v), so the
+# lambda -> inf arm would diverge from the unpreconditioned one for
+# reasons having nothing to do with B, and the byte gate below could
+# never pass. Reading the logits the step already computed costs a
+# download and changes no number.
+NDFA         = (ENV["GTX_NDFA"] || "0").to_i
+NDFA_LAM_S   = ENV["GTX_NDFA_LAMBDA"] || ""
+NDFA_EVERY   = (ENV["GTX_NDFA_EVERY"] || "500").to_i
+NDFA_M       = (ENV["GTX_NDFA_M"] || "256").to_i
+NDFA_GAIN_S  = ENV["GTX_NDFA_GAIN"] || ""
+NDFA_LAM     = NDFA_LAM_S.length > 0 ? NDFA_LAM_S.to_f : -1.0
 # NOTE: no ||g|| instrument on this lane. The ssm-lane version (toy#169)
 # works; the gtx port built the node and realized it as ZEROS, and a
 # metric that silently reads 0.0 is worse than no metric — it is the
@@ -274,6 +314,54 @@ if TASK_S.length > 0 && TASK_S != "relational" && TASK_S != "local" && TASK_S !=
   exit 1
 end
 
+# ---- toy#172 (E1 Phase 1.2): the nDFA knobs, validated BEFORE the graph
+# is realized. ggml aborts during graph build (exit 134 with a
+# GGML_ASSERT line), so anything checked after recipe.realize! is dead
+# code that never gets to speak.
+if NDFA != 0 && NDFA != 1
+  puts "toy-train-gtx: GTX_NDFA must be 0 or 1, got " + NDFA.to_s
+  exit 1
+end
+if NDFA == 1 && TASK_S != "bytelm"
+  puts "toy-train-gtx: GTX_NDFA=1 needs GTX_TASK bytelm. The nDFA" +
+       " preconditioner inverts the ERROR COVARIANCE C_E, and the whole" +
+       " question (toy#172/E1) is about a WIDE error vector: the" +
+       " relational task's error is 16-wide with the head 16 classes, so" +
+       " there is no anisotropy of the kind Phase 1.1 measured and the" +
+       " sample count would exceed the width on the first step. Run it on" +
+       " --task bytelm, where the head is up to 4096."
+  exit 1
+end
+if NDFA == 1 && RETROFIT
+  puts "toy-train-gtx: GTX_NDFA=1 is not supported with GTX_RETROFIT=1 —" +
+       " a retrofit rebuilds the graph and its B mid-run, so a" +
+       " preconditioner refreshed on the pretrain phase's error would be" +
+       " silently carried into a different head. Refused rather than" +
+       " given an unstated meaning."
+  exit 1
+end
+if NDFA == 1 && NDFA_LAM <= 0.0
+  puts "toy-train-gtx: GTX_NDFA=1 requires GTX_NDFA_LAMBDA > 0 and there" +
+       " is NO defensible default. P = lambda(C_E + lambda I)^-1 is the" +
+       " IDENTITY as lambda -> inf and a PROJECTOR as lambda -> 0, so the" +
+       " ridge is not a tuning detail, it IS the experiment. Pick it" +
+       " against the lambda_max the instrument reports (GTX_INSTRUMENT=1)."
+  exit 1
+end
+if NDFA == 1 && NDFA_M < 1
+  puts "toy-train-gtx: GTX_NDFA_M must be >= 1, got " + NDFA_M.to_s
+  exit 1
+end
+if NDFA == 1 && NDFA_EVERY < 1
+  puts "toy-train-gtx: GTX_NDFA_EVERY must be >= 1, got " + NDFA_EVERY.to_s
+  exit 1
+end
+if NDFA == 1 && NDFA_GAIN_S.length > 0 && NDFA_GAIN_S != "preserve" && NDFA_GAIN_S != "raw"
+  puts "toy-train-gtx: GTX_NDFA_GAIN " + NDFA_GAIN_S + " unsupported (preserve|raw)"
+  exit 1
+end
+NDFA_PRESERVE = NDFA_GAIN_S == "raw" ? 0 : 1
+
 TASK_KIND = TASK_S == "local" ? GtxTask::KIND_LOCAL : GtxTask::KIND_RELATIONAL
 DFA_CUT   = CUT_S == "step" ? Toy::LLM::Engine::GtxEngine::CUT_STEP :
                               Toy::LLM::Engine::GtxEngine::CUT_LAYER
@@ -375,6 +463,18 @@ def parse_gtx_policy(pol_s, n_blocks)
     j = j - 1
   end
   policy
+end
+
+def count_dfa_blocks(policy)
+  n = 0
+  i = 0
+  while i < policy.length
+    if policy[i] == 1
+      n = n + 1
+    end
+    i = i + 1
+  end
+  n
 end
 
 def dist_code(s)
@@ -705,6 +805,36 @@ task = GtxTask.new(TASK_KIND, D_FEAT, N_ENTITIES, N_TYPES, DEGREE,
                    TASK_SEED, NOISE)
 N_NODES = IS_BYTELM ? CONTEXT : task.gt_nodes
 
+# toy#172 (E1 Phase 1.2) — the two nDFA checks that need the parsed
+# policy and the node count.
+#
+# nDFA folds into B, and B exists only where a `dfa` block wired a tap.
+# On a chain- or frozen-only policy the flag would therefore be a SILENT
+# no-op that still reports itself as on — which is precisely how an inert
+# knob gets published as a clean negative.
+NDFA_DFA_BLOCKS = count_dfa_blocks(POLICY)
+if NDFA == 1 && NDFA_DFA_BLOCKS == 0
+  puts "toy-train-gtx: GTX_NDFA=1 with no `dfa` block in GTX_POLICY —" +
+       " nDFA is folded INTO the feedback matrix B, and B is built only" +
+       " where a dfa block taps. On this policy there is nothing to" +
+       " precondition, so the flag would run, report itself on, and" +
+       " change nothing."
+  exit 1
+end
+# Each refresh needs GTX_NDFA_M error vectors and one step yields
+# GTX_CONTEXT of them, so the collection window is ceil(m / context)
+# steps. A cadence shorter than its own window could never fill the
+# buffer and would refresh on a short sample without saying so.
+NDFA_NEED = NDFA == 1 ? ((NDFA_M + N_NODES - 1) / N_NODES) : 0
+if NDFA == 1 && NDFA_EVERY < NDFA_NEED
+  puts "toy-train-gtx: GTX_NDFA_EVERY " + NDFA_EVERY.to_s +
+       " is shorter than the collection window it needs (" +
+       NDFA_NEED.to_s + " steps to gather GTX_NDFA_M=" + NDFA_M.to_s +
+       " error vectors at GTX_CONTEXT=" + N_NODES.to_s +
+       " per step). Raise the cadence or lower GTX_NDFA_M."
+  exit 1
+end
+
 # The corpus is loaded BEFORE the graph is realized, and that ordering is
 # load-bearing rather than tidy. Realizing the graph sizes the lm_head
 # and the label tensor from N_CLASSES; if the pack's ids do not fit, ggml
@@ -994,6 +1124,17 @@ PRE_STEPS_EFF = (RETROFIT && LOAD_CKPT.length == 0) ? PRE_STEPS : 0
 TOTAL_STEPS = RETROFIT ? PRE_STEPS_EFF + STEPS : STEPS
 bb_sig_pre  = 0.0
 final_loss = 0.0
+# toy#172 (E1 Phase 1.2) — the nDFA ring. Allocated at size 0 when the
+# flag is off, so the off path allocates nothing and does nothing.
+nd_buf = Array.new(NDFA == 1 ? NDFA_M * N_CLASSES : 0, 0.0)
+nd_n   = 0
+nd_refreshes  = 0
+nd_wall_us    = 0
+nd_err_pre    = 0.0
+nd_err_post   = 0.0
+nd_shrink     = 1.0
+nd_first_step = 0
+nd_m_used     = 0
 step = 0
 while step < TOTAL_STEPS
   step_wall_start = TinyNN.tnn_events_now_seconds
@@ -1089,6 +1230,71 @@ while step < TOTAL_STEPS
     es.add_num("wall_us", step_wall_us)
     TinyNN.tnn_events_emit(es.dump)
   end
+  # ---- toy#172 (E1 Phase 1.2): COLLECT, then REFRESH B'. ----
+  #
+  # Collection rides the training step's OWN logits — a download, no
+  # second forward pass — so it consumes no corpus RNG and steps no
+  # optimizer state. That is what lets `lambda -> inf` be byte-identical
+  # to the unpreconditioned arm rather than merely close to it.
+  #
+  # The window is the LAST ceil(m / context) steps of each cadence
+  # period, so the covariance describes the error the network is making
+  # NOW rather than an average over the whole period, and the download
+  # cost is paid on those steps only.
+  if NDFA == 1
+    nd_pos = step % NDFA_EVERY
+    if nd_pos >= NDFA_EVERY - NDFA_NEED
+      rc_nd = TinyNN.tnn_download_to_f64_array(recipe.gr_cache.sess,
+                recipe.gr_cache.t_logits, logit_buf, N_NODES * N_CLASSES)
+      if rc_nd != 0
+        puts "toy-train-gtx: nDFA logits download failed: step=" +
+             (step + 1).to_s + " rc=" + rc_nd.to_s
+        exit 1
+      end
+      nd_n = bc_fill_err!(nd_buf, nd_n, logit_buf, m_labels, N_NODES,
+                          N_CLASSES, NDFA_M)
+    end
+    if nd_pos == NDFA_EVERY - 1
+      nd_t0 = TinyNN.tnn_events_now_seconds
+      nd_r = recipe.gr_cache.precondition_b!(nd_buf, nd_n, NDFA_LAM,
+                                             NDFA_PRESERVE)
+      nd_wall_us = nd_wall_us +
+                   ((TinyNN.tnn_events_now_seconds - nd_t0) * 1.0e6).to_i
+      if nd_r[0] == 1.0
+        puts "toy-train-gtx: nDFA Cholesky failed at step " + (step + 1).to_s +
+             " — (lambda*m I + G) went non-positive in f64, which means" +
+             " GTX_NDFA_LAMBDA=" + NDFA_LAM.to_s + " is too small for this" +
+             " width. Raise it; do not fall back."
+        exit 1
+      end
+      if nd_r[0] == 2.0
+        puts "toy-train-gtx: nDFA refresh found no feedback matrices to" +
+             " precondition at step " + (step + 1).to_s
+        exit 1
+      end
+      # FINITE OR NOTHING. f32/f64 blowup in the solve would otherwise be
+      # completely silent — B' would upload as inf/nan, every DFA update
+      # would go to nan, and the loss would simply stop being a number
+      # partway through a 4000-step run.
+      nd_chk = nd_r[2] - nd_r[2]
+      if nd_chk != 0.0 || nd_r[2] < 0.0
+        puts "toy-train-gtx: nDFA preconditioned error norm is NOT FINITE" +
+             " at step " + (step + 1).to_s + " (||B'E||_F=" + nd_r[2].to_s +
+             ", ||BE||_F=" + nd_r[1].to_s + ", lambda=" + NDFA_LAM.to_s +
+             ", m=" + nd_n.to_s + ")"
+        exit 1
+      end
+      nd_err_pre  = nd_r[1]
+      nd_err_post = nd_r[2]
+      nd_shrink   = nd_r[3]
+      nd_m_used   = nd_n
+      if nd_refreshes == 0
+        nd_first_step = step + 1
+      end
+      nd_refreshes = nd_refreshes + 1
+      nd_n = 0
+    end
+  end
   # toy#164 — the BACKBONE checkpoint. Written only during the pretrain
   # phase (or a plain run): a retrofit's backbone is frozen, so writing
   # it again would just duplicate the file it was loaded from.
@@ -1151,6 +1357,55 @@ if IS_BYTELM
   puts "bytelm: bpb=" + (bpb_sum / VAL_BATCHES.to_f).to_s +
        " n=" + (VAL_BATCHES * N_NODES).to_s +
        " routing=position_t head=bp vocab=" + N_CLASSES.to_s + " attn=causal"
+  # toy#172 (E1 Phase 1.2) — the nDFA provenance. Emitted ONLY when the
+  # flag is on, so an off run is byte-identical to the pre-change binary.
+  #
+  # The CADENCE is on the line because a preconditioner refreshed every
+  # 500 steps and one refreshed every 50 are different experiments that
+  # would otherwise carry the same label. `m` is the ACTUAL sample count
+  # of the last refresh, not the request — the same discipline the
+  # Phase 1.1 instrument's `n` follows, and for the same reason.
+  #
+  # err_pre / err_post are ||B E||_F and ||B' E||_F over the taps: the
+  # broadcast error as the taps ACTUALLY receive it, before and after.
+  # That is what the finite-norm assertion is stated on, and it is
+  # asserted at every refresh, not just printed here.
+  #
+  # b_shrink is ||B'||_F / ||B||_F BEFORE the gain rule. Under
+  # gain=preserve it is the size of what the preconditioner removed and
+  # was then given back; under gain=raw it is a live multiplier on every
+  # DFA update. Either way it must be visible, because a global gain on
+  # B is indistinguishable from an LR change on this lane.
+  if NDFA == 1
+    # A run whose step budget never reaches the first refresh IS the
+    # unpreconditioned arm, and would be filed as an nDFA cell. Fail
+    # loud: an inert knob that reports itself on is the most expensive
+    # failure mode this program has.
+    if nd_refreshes == 0
+      puts "toy-train-gtx: GTX_NDFA=1 but no refresh ever ran — STEPS=" +
+           STEPS.to_s + " never reaches GTX_NDFA_EVERY=" + NDFA_EVERY.to_s +
+           ", so this cell is the UNPRECONDITIONED arm wearing an nDFA" +
+           " label. Lower the cadence or raise STEPS."
+      exit 1
+    end
+    puts "ndfa: on=1 lambda=" + NDFA_LAM.to_s +
+         " every=" + NDFA_EVERY.to_s +
+         " m=" + nd_m_used.to_s + " m_req=" + NDFA_M.to_s +
+         " gain=" + (NDFA_PRESERVE == 1 ? "preserve" : "raw") +
+         " refreshes=" + nd_refreshes.to_s +
+         " first_refresh_step=" + nd_first_step.to_s +
+         " err_pre=" + num_or_null(nd_err_pre) +
+         " err_post=" + num_or_null(nd_err_post) +
+         " b_shrink=" + num_or_null(nd_shrink) +
+         # THE CLOCK IS NOT ALWAYS RUNNING. tnn_events_now_seconds
+         # returns 0.0 when the event file is not open, so without a
+         # TAO_RUN_DIR every interval measures as exactly zero — which is
+         # the ||g||-instrument failure mode in miniature: a metric that
+         # silently reads 0.0. Say `unmeasured` instead of printing it.
+         " refresh_ms=" +
+           (EVENTS.length > 0 ? (nd_wall_us / nd_refreshes / 1000).to_s :
+                                "unmeasured-no-run-dir")
+  end
   if INSTRUMENT == 1
     bc_g   = Array.new(bc_n * bc_n, 0.0)
     bc_gram!(bc_g, bc_buf, bc_n, N_CLASSES)

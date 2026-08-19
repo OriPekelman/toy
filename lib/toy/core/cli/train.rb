@@ -234,6 +234,14 @@ module Toy
           @d_ff           = nil
           @types          = nil
           @entities       = nil
+          # toy#172 (E1 Phase 1.2): the nDFA error-side preconditioner on
+          # the gtx byte-LM lane. All nil = OFF, and off is byte-null
+          # against the runner as it stood before the flag existed.
+          @dfa_feedback_precond = nil
+          @ndfa_lambda    = nil
+          @ndfa_every     = nil
+          @ndfa_samples   = nil
+          @ndfa_gain      = nil
           # toy#165 (ae): the latent-autoencoder lane (capstone P1a).
           #
           # --text is NOT --corpus and there is NO --vocab here. --corpus
@@ -638,6 +646,20 @@ module Toy
                              "GTX_ADAPTER_RANK"   => (@adapter_rank || 16).to_s,
                              "GTX_FREEZE_BACKBONE" => (@no_freeze_backbone ? "0" : "1"),
                              "GTX_CKPT_EVERY"     => (@ckpt_every || 0).to_s,
+                             # toy#172/E1 Phase 1.2 — nDFA. EXPLICIT
+                             # defaults, never "": the runner reads these
+                             # with `(ENV[..] || "N").to_i` and an empty
+                             # string is TRUTHY in Ruby, so "" would come
+                             # back 0 rather than the default (the same
+                             # trap GTX_VOCAB documents two blocks up).
+                             # The lambda is the exception and is passed
+                             # through verbatim — it has NO default and
+                             # the runner refuses without it.
+                             "GTX_NDFA"        => (@dfa_feedback_precond == "ndfa" ? "1" : "0"),
+                             "GTX_NDFA_LAMBDA" => (@ndfa_lambda || ""),
+                             "GTX_NDFA_EVERY"  => (@ndfa_every || 500).to_s,
+                             "GTX_NDFA_M"      => (@ndfa_samples || 256).to_s,
+                             "GTX_NDFA_GAIN"   => (@ndfa_gain || ""),
                              "GTX_LOAD_CKPT"      => (@load_ckpt || ""))
           elsif @recipe == "lstm"
             # Lane-local LSTM_* namespace, same discipline as the others.
@@ -869,7 +891,7 @@ module Toy
           # reports neither its result nor its provenance — which is
           # exactly how every cell ended up driven through the env
           # harness instead.
-          losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") || l.start_with?("val:") || l.start_with?("train:") || l.start_with?("graph:") || l.start_with?("stream:") || l.start_with?("gen:") || l.start_with?("corpus:") || l.start_with?("noise:") || l.start_with?("half_snr:") || l.start_with?("control:") || l.start_with?("latent_std:") || l.start_with?("converged:") || l.start_with?("stage1:") || l.start_with?("arm:") || l.start_with?("resid:") || l.start_with?("judge:") || l.start_with?("objective:") || l.start_with?("epsmse:") || l.start_with?("bytelm:") || l.start_with?("gtx: ") }.map(&:chomp)
+          losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") || l.start_with?("val:") || l.start_with?("train:") || l.start_with?("graph:") || l.start_with?("stream:") || l.start_with?("gen:") || l.start_with?("corpus:") || l.start_with?("noise:") || l.start_with?("half_snr:") || l.start_with?("control:") || l.start_with?("latent_std:") || l.start_with?("converged:") || l.start_with?("stage1:") || l.start_with?("arm:") || l.start_with?("resid:") || l.start_with?("judge:") || l.start_with?("objective:") || l.start_with?("epsmse:") || l.start_with?("bytelm:") || l.start_with?("ndfa:") || l.start_with?("bcond") || l.start_with?("gtx: ") }.map(&:chomp)
           emit(run_id, run_dir, losses)
         end
 
@@ -1458,6 +1480,66 @@ module Toy
               @dfa_b_scale = val
             when /\A--dfa-b-scale=(.*)\z/
               @dfa_b_scale = $1
+            # ---- toy#172 / E1 Phase 1.2 (gtx --task bytelm): nDFA ----
+            # The preconditioner is named on the FEEDBACK, not on the
+            # optimizer, because that is what it changes: it folds
+            # lambda(C_E + lambda I)^-1 into B and touches nothing else.
+            # `none` is the default and is byte-identical to the runner
+            # before the flag existed.
+            when "--dfa-feedback-precond"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--dfa-feedback-precond requires a value") if val.nil?
+              return bad_arg("--dfa-feedback-precond must be none or ndfa, got #{val.inspect}") unless %w[none ndfa].include?(val)
+              @dfa_feedback_precond = val
+            when /\A--dfa-feedback-precond=(.*)\z/
+              val = $1
+              return bad_arg("--dfa-feedback-precond must be none or ndfa, got #{val.inspect}") unless %w[none ndfa].include?(val)
+              @dfa_feedback_precond = val
+            # The ridge is kept as a STRING all the way to the env. It is
+            # experiment identity on this lane, and `1e30`.to_f.to_s is
+            # "1.0e+30" — a different cell label for the same cell, which
+            # is exactly how a sweep's files stop matching its greps.
+            when "--ndfa-lambda"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--ndfa-lambda requires a value") if val.nil?
+              return bad_arg("--ndfa-lambda must be a positive float, got #{val.inspect}") unless val =~ /\A\d*\.?\d+([eE][+-]?\d+)?\z/ && val.to_f > 0.0
+              @ndfa_lambda = val
+            when /\A--ndfa-lambda=(.*)\z/
+              val = $1
+              return bad_arg("--ndfa-lambda must be a positive float, got #{val.inspect}") unless val =~ /\A\d*\.?\d+([eE][+-]?\d+)?\z/ && val.to_f > 0.0
+              @ndfa_lambda = val
+            when "--ndfa-every", "--ndfa-samples"
+              key = tok
+              i += 1
+              val = @argv[i]
+              return bad_arg("#{key} requires a value") if val.nil?
+              return bad_arg("#{key} must be an integer >= 1, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= 1
+              if key == "--ndfa-every"
+                @ndfa_every = val.to_i
+              else
+                @ndfa_samples = val.to_i
+              end
+            when /\A--ndfa-(every|samples)=(.*)\z/
+              key = $1
+              val = $2
+              return bad_arg("--ndfa-#{key} must be an integer >= 1, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= 1
+              if key == "every"
+                @ndfa_every = val.to_i
+              else
+                @ndfa_samples = val.to_i
+              end
+            when "--ndfa-gain"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--ndfa-gain requires a value") if val.nil?
+              return bad_arg("--ndfa-gain must be preserve or raw, got #{val.inspect}") unless %w[preserve raw].include?(val)
+              @ndfa_gain = val
+            when /\A--ndfa-gain=(.*)\z/
+              val = $1
+              return bad_arg("--ndfa-gain must be preserve or raw, got #{val.inspect}") unless %w[preserve raw].include?(val)
+              @ndfa_gain = val
             when "--align-events"
               @align_events = true
             when "--no-shadow"
@@ -1970,6 +2052,12 @@ when /\A--dfa-feedback-lr=(.*)\z/
             ["--fields/--cardinality/--numeric/--emb/--pairs", %w[ctr], (!@fields.nil? || !@cardinality.nil? || !@numeric.nil? || !@emb.nil? || !@pairs.nil?), " (toy#154)"],
             ["--base-rate/--lin-scale/--fm-branch", %w[ctr], (!@base_rate.nil? || !@lin_scale.nil? || @fm_branch), " (toy#154)"],
             ["--dfa-b-*",       %w[franken franken-moe mlp ctr gnn ssm lstm gtx diff], (!@dfa_b_seed.nil? || !@dfa_b_dist.nil? || !@dfa_b_scale.nil?), ""],
+            # toy#172/E1 Phase 1.2. gtx ONLY, and inside gtx `--task
+            # bytelm` only (checked below): nDFA inverts the ERROR
+            # COVARIANCE, and the question is about a WIDE error vector.
+            ["--dfa-feedback-precond/--ndfa-*", %w[gtx],
+             (!@dfa_feedback_precond.nil? || !@ndfa_lambda.nil? || !@ndfa_every.nil? ||
+              !@ndfa_samples.nil? || !@ndfa_gain.nil?), " (toy#172/E1: the nDFA error-side preconditioner folds lambda(C_E+lambda I)^-1 into the gtx byte-LM lane's feedback matrix B)"],
             # --align-events deliberately EXCLUDES ssm AND lstm: on both,
             # the DFA update arrives through autodiff from the surrogate
             # roots, so it lands in the same accumulator a BP run would
@@ -2276,6 +2364,31 @@ when /\A--dfa-feedback-lr=(.*)\z/
           # for the relational task the head is TY*TY by construction.
           if !@vocab.nil? && @recipe == "gtx" && @task != "bytelm"
             return bad_arg("--vocab on recipe 'gtx' is only valid with --task bytelm (toy#170/P5: it sets the head, the embedding AND the DFA feedback matrix B together; the relational task's head is TY*TY)")
+          end
+          # ---- toy#172 / E1 Phase 1.2: the nDFA conditionals ----
+          #
+          # Three rules, and each of them exists because the alternative
+          # is a flag that runs, reports itself on, and changes nothing:
+          #   (a) bytelm only — the relational head is 16 classes and
+          #       there is no wide error vector to whiten;
+          #   (b) the ridge is REQUIRED — lambda is the experiment, not a
+          #       tuning detail, and the identity/projector limits sit at
+          #       its two ends;
+          #   (c) the sub-knobs are meaningless with the preconditioner
+          #       off, so passing them alone is refused rather than
+          #       ignored.
+          # The runner repeats (a) and (b) — a CLI check protects `toy
+          # train`, and the sweeps call libexec/ directly.
+          ndfa_sub = !@ndfa_lambda.nil? || !@ndfa_every.nil? ||
+                     !@ndfa_samples.nil? || !@ndfa_gain.nil?
+          if @recipe == "gtx" && (!@dfa_feedback_precond.nil? || ndfa_sub) && @task != "bytelm"
+            return bad_arg("--dfa-feedback-precond/--ndfa-* on recipe 'gtx' require --task bytelm (toy#172/E1: nDFA inverts the ERROR COVARIANCE C_E and the question is about a WIDE error vector — the relational task's head is TY*TY = 16 classes, where the sample count passes the width on the first step and there is nothing to whiten)")
+          end
+          if @dfa_feedback_precond == "ndfa" && @ndfa_lambda.nil?
+            return bad_arg("--dfa-feedback-precond ndfa requires --ndfa-lambda <ridge> — there is NO defensible default. P = lambda(C_E + lambda I)^-1 is the IDENTITY as lambda grows and a PROJECTOR as it shrinks, so the ridge IS the experiment. Read a scale off the Phase 1.1 instrument's lambda_max (GTX_INSTRUMENT=1)")
+          end
+          if ndfa_sub && @dfa_feedback_precond != "ndfa"
+            return bad_arg("--ndfa-* is meaningless without --dfa-feedback-precond ndfa — the knobs would be parsed, wired and then never read, which is an inert flag that still labels the cell")
           end
           if @task == "community" && @recipe != "gnn"
             return bad_arg("--task community is only valid with recipe 'gnn' (toy#153); 'mlp' takes teacher|blobs")

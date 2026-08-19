@@ -83,7 +83,7 @@ recipes are:
 | `gnn` | GCN-class node classification over a normalised adjacency, transductive semi-supervised (CPU-only). Runs on a seeded graph or on real Cora (`ruby prep/fetch_cora.rb`) | `--policy`, `--graph`, `--layers`, `--hidden`, `--classes`, `--features`, `--nodes`, `--degree`, `--homophily`, `--feat-signal`, `--train-per-class`, `--task`, `--feedback-route`, `--feedback-hops`, `--weight-decay` |
 | `ssm` | selective-scan / Mamba-lite sequence classifier — an UNROLLED input-dependent linear recurrence + conv branch + gating, last-step readout (CPU-only) | `--policy`, `--dfa-cut`, `--selection`, `--layers`, `--seq`, `--d-model`, `--d-inner`, `--conv-k`, `--classes`, `--task`, `--cue-span`, `--noise`, `--dt-init` |
 | `lstm` | gated recurrence: a stack of textbook LSTM cells UNROLLED over T, last-step readout, on the same task + cut axis as `ssm` (CPU-only) | `--policy`, `--dfa-cut`, `--layers`, `--hidden`, `--features`, `--seq`, `--classes`, `--task`, `--cue-span`, `--noise`, `--batch`, `--val-batches`, `--task-seed`, `--lr`, `--dfa-b-*` |
-| `gtx` | graph transformer — masked self-attention whose mask **is an adjacency**, small relation head (16 classes), inductive relational retrieval. CPU-only **except `--task bytelm`, which has a CUDA twin** (tao#24). `--retrofit` adds the DFA-adapter mode | `--policy`, `--dfa-cut`, `--layers`, `--d-model`, `--heads`, `--d-ff`, `--entities`, `--types`, `--features`, `--task`, `--noise`, `--batch`, `--val-batches`, `--task-seed`, `--dfa-b-*`, `--retrofit`, `--adapter-policy`, `--adapter-layers`, `--adapter-rank`, `--pretrain-steps`, `--pretrain-lr`, `--no-freeze-backbone` |
+| `gtx` | graph transformer — masked self-attention whose mask **is an adjacency**, small relation head (16 classes), inductive relational retrieval. CPU-only **except `--task bytelm`, which has a CUDA twin** (tao#24). `--retrofit` adds the DFA-adapter mode | `--policy`, `--dfa-cut`, `--layers`, `--d-model`, `--heads`, `--d-ff`, `--entities`, `--types`, `--features`, `--task`, `--noise`, `--batch`, `--val-batches`, `--task-seed`, `--dfa-b-*`, `--retrofit`, `--adapter-policy`, `--adapter-layers`, `--adapter-rank`, `--pretrain-steps`, `--pretrain-lr`, `--no-freeze-backbone`, `--dfa-feedback-precond`, `--ndfa-lambda`, `--ndfa-every`, `--ndfa-samples`, `--ndfa-gain` |
 | `diff` | latent diffusion denoiser — time-conditioned eps-prediction over a LOW-DIM latent, scored by a generative metric (CPU-only) | `--policy`, `--latent`, `--time-feat`, `--layers`, `--hidden`, `--task`, `--modes`, `--spread`, `--mode-scale`, `--diff-steps`, `--beta-lo`, `--beta-hi`, `--eval-n`, `--align-events` |
 | `ae` | per-token latent AUTOENCODER (capstone P1a) — bidirectional encoder -> **d-dim per-position bottleneck** -> **per-position** decode head back to the byte. **All BP: no `--policy`, no DFA, no diffusion.** Scored by the NOISE MARGIN, not clean reconstruction (CPU-only) | `--text`, `--latent`, `--context`, `--layers`, `--d-model`, `--heads`, `--d-ff`, `--noise-eval`, `--noise-seed`, `--val-batches`, `--val-frac-pct`, `--task-seed`, `--lr`, `--warmup`, `--target-ce`, `--eval-every`, `--probe-batches` |
 
@@ -298,6 +298,65 @@ round trip that itself has to be trusted.
   graph counters cannot show this (they exclude the backward
   extension — freezing even reads +1 node, the detach), which is the
   mirror of tao#21's caveat.
+
+#### `gtx --dfa-feedback-precond ndfa` — the nDFA error-side preconditioner (toy#172/E1)
+
+`--task bytelm` only, and only on a policy that actually has a `dfa`
+block. It left-multiplies the broadcast error by
+`lambda (C_E + lambda I)^-1` — the inverse local-error second moment,
+ridge-regularised — which is **folded into the feedback matrix `B`**
+host-side rather than added to the graph:
+
+```
+toy train gtx --task bytelm --text data/ae_shak_a2504 --vocab 4096 \
+  --policy dfa,dfa,dfa,dfa --dfa-cut layer --lr 0.00003 --steps 4000 \
+  --dfa-feedback-precond ndfa --ndfa-lambda 0.0001 --ndfa-every 500 --ndfa-samples 256
+```
+
+| flag | meaning |
+| --- | --- |
+| `--dfa-feedback-precond none\|ndfa` | `none` (default) is byte-identical to the runner before the flag existed |
+| `--ndfa-lambda R` | the ridge. **Required** with `ndfa`; there is no default |
+| `--ndfa-every K` | steps between refreshes (default 500) |
+| `--ndfa-samples M` | error vectors per refresh (default 256) |
+| `--ndfa-gain preserve\|raw` | `preserve` (default) renormalises `B'` back to `‖B‖_F` |
+
+Five things about it are load-bearing:
+
+- **`lambda` is the experiment, not a tuning detail**, which is why it
+  has no default and is refused if omitted. `P` is the **identity** as
+  `lambda` grows and a **projector** as it shrinks; pick it against the
+  `lambda_max` the Phase 1.1 instrument reports (`GTX_INSTRUMENT=1`),
+  which was measured falling from 0.121 at rank 65 to 0.0079 at rank
+  2504.
+- **The normalisation is `lambda (C_E + lambda I)^-1`, not
+  `(C_E + lambda I)^-1`.** The first tends to `I`, so large `lambda` is
+  a *byte identity* with the unpreconditioned arm (gated); the second
+  tends to `I/lambda` and would silently rescale every DFA update — an
+  LR change wearing a conditioning costume.
+- **Nothing `[V x V]` is ever formed.** Woodbury turns the inverse into
+  an `[m x m]` Cholesky on the Gram `G = EᵀE`, so `B' = B - (B E)(lambda
+  m I + G)^-1 Eᵀ`. No new graph node, no new readout path.
+- **`gain preserve` is the default because a global gain on `B` is
+  indistinguishable from an LR change on this lane.** `P`'s eigenvalues
+  are `lambda/(lambda + s)` in `(0, 1]`, so nDFA can only shrink `B`;
+  `preserve` gives the norm back and leaves only the *direction*
+  reweighting under test. The pre-renorm ratio is printed as `b_shrink`
+  either way.
+- **The samples come from the training steps themselves.** Running extra
+  forward passes at the refresh point would consume the corpus RNG and
+  step the Adam moments (lr=0 does **not** freeze `m` and `v`), so the
+  large-`lambda` arm would diverge from the unpreconditioned one for
+  reasons having nothing to do with `B`.
+
+The run prints `ndfa: on=1 lambda=… every=… m=… gain=… refreshes=…
+err_pre=… err_post=… b_shrink=…`. `err_pre`/`err_post` are `‖B E‖_F` and
+`‖B' E‖_F`, the broadcast error as the taps actually receive it; the
+runner **aborts** if `err_post` is not finite, because an inf/nan `B'`
+would otherwise just stop the loss being a number partway through a run.
+`refresh_ms` reads `unmeasured-no-run-dir` without `--out`: the clock
+this lane has returns 0.0 when no event file is open, and printing that
+would be a metric silently reading zero.
 
 `diff` prints `gen: energy=…` — the ENERGY DISTANCE between generated
 and held-out real samples. It is the lane's headline metric and **lower
