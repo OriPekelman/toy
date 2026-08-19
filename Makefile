@@ -1128,6 +1128,7 @@ libexec/toy-train-cuda: lib/toy/run/train_cuda.rb lib/toy/dev/toy_describe_flow.
 		lib/toy/train/toy_gguf_writer.rb lib/toy/train/toy_drift_grad.rb lib/toy/train/toy_gguf_fuse.rb lib/toy/models/transformer.rb \
 		lib/toy/llm/primitives/rms_norm_cuda.rb lib/toy/llm/primitives/rope_cuda.rb \
 		lib/toy/llm/primitives/swiglu_cuda.rb lib/toy/llm/primitives/gqa_cuda.rb \
+		lib/toy/llm/primitives/situ_glu_cuda.rb \
 		lib/toy/llm/blocks/transformer_block_cuda.rb lib/toy/llm/archs/llama_arch_cuda.rb \
 		lib/toy/ffi/tinynn_cuda.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) \
 		lib/toy/dev/toy_card.rb lib/toy/io/json_builder.rb lib/toy/llm/archs/layer_spec.rb lib/toy/llm/blocks/gdn_block.rb lib/toy/llm/blocks/kda_block.rb lib/toy/llm/blocks/mla_block.rb lib/toy/llm/primitives/gdn.rb lib/toy/llm/primitives/kda.rb lib/toy/llm/primitives/mla.rb lib/toy/llm/primitives/muon.rb lib/toy/llm/primitives/situ_glu_cuda.rb lib/toy/train/dfa_b.rb lib/toy/version.rb | libexec
@@ -1150,6 +1151,7 @@ libexec/toy-train-lora-cuda: lib/toy/run/train_lora_cuda.rb lib/toy/dev/toy_desc
 		lib/toy/train/toy_gguf_writer.rb lib/toy/train/toy_drift_grad.rb lib/toy/models/transformer.rb \
 		lib/toy/llm/primitives/rms_norm_cuda.rb lib/toy/llm/primitives/rope_cuda.rb \
 		lib/toy/llm/primitives/swiglu_cuda.rb lib/toy/llm/primitives/gqa_cuda.rb \
+		lib/toy/llm/primitives/situ_glu_cuda.rb \
 		lib/toy/llm/blocks/transformer_block_cuda.rb lib/toy/llm/archs/llama_arch_cuda.rb \
 		lib/toy/ffi/tinynn_cuda.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) \
 		lib/toy/dev/toy_card.rb lib/toy/io/json_builder.rb lib/toy/llm/archs/layer_spec.rb lib/toy/llm/blocks/gdn_block.rb lib/toy/llm/blocks/kda_block.rb lib/toy/llm/blocks/mla_block.rb lib/toy/llm/primitives/gdn.rb lib/toy/llm/primitives/kda.rb lib/toy/llm/primitives/mla.rb lib/toy/llm/primitives/muon.rb lib/toy/llm/primitives/situ_glu_cuda.rb lib/toy/train/dfa_b.rb lib/toy/version.rb | libexec
@@ -1365,13 +1367,25 @@ prep/smokes/smoke_gdn_train: prep/smokes/smoke_gdn_train.rb lib/toy.rb lib/toy/f
 # compute-surface gate but requires compute_cuda + links the CUDA
 # archives with the force-link flag. The generated CUDA mirrors in the
 # dep list are kept fresh by the $(MIRROR_CUDA) pattern rules.
+# The mirror list here is the FULL require_relative closure of
+# lib/toy/compute_cuda.rb (the one-require surface), not a subset:
+# situ_glu_cuda and lora_cuda were both missing, and in a tree that had
+# generated them once the gap is INVISIBLE — `make` says up to date and
+# only a FRESH checkout fails. Same class as toy#171's prereq audit and
+# b3bb7c1's dropped ggml patch. Written out rather than $(MIRROR_CUDA)
+# because prerequisite lists are expanded when the makefile is READ and
+# MIRROR_CUDA is defined several hundred lines below this rule, so the
+# variable would expand to nothing here and silently declare no mirrors
+# at all — a fix that looks like a fix and restores the original bug.
 prep/smokes/smoke_compute_surface_cuda: prep/smokes/smoke_compute_surface_cuda.rb lib/toy/compute_cuda.rb \
 		lib/toy/llm/training_batch.rb lib/toy/llm/recipe_options.rb \
 		lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/llm/engine/gpt2_seq_engine_cuda.rb \
 		lib/toy/llm/engine/llama_kv_engine_cuda.rb \
 		lib/toy/llm/recipes/from_scratch_cuda.rb lib/toy/llm/recipes/warm_start_cuda.rb \
+		lib/toy/llm/recipes/lora_cuda.rb \
 		lib/toy/llm/primitives/rms_norm_cuda.rb lib/toy/llm/primitives/rope_cuda.rb \
 		lib/toy/llm/primitives/swiglu_cuda.rb lib/toy/llm/primitives/gqa_cuda.rb \
+		lib/toy/llm/primitives/situ_glu_cuda.rb \
 		lib/toy/llm/blocks/transformer_block_cuda.rb lib/toy/llm/archs/llama_arch_cuda.rb \
 		lib/toy/ffi/tinynn_cuda.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS)
 	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
@@ -1638,6 +1652,9 @@ MIRROR_CUDA := \
   lib/toy/llm/primitives/rms_norm_cuda.rb lib/toy/llm/primitives/rope_cuda.rb \
   lib/toy/llm/primitives/swiglu_cuda.rb lib/toy/llm/primitives/gqa_cuda.rb \
   lib/toy/llm/primitives/mla_cuda.rb \
+  lib/toy/llm/primitives/situ_glu_cuda.rb lib/toy/llm/primitives/kda_cuda.rb \
+  lib/toy/llm/primitives/muon_cuda.rb \
+  lib/toy/llm/recipes/franken_from_scratch_cuda.rb \
   lib/toy/llm/blocks/transformer_block_cuda.rb lib/toy/llm/archs/llama_arch_cuda.rb \
   lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/llm/engine/gpt2_seq_engine_cuda.rb \
   lib/toy/llm/engine/gtx_engine_cuda.rb lib/toy/llm/recipes/gtx_graph_cuda.rb \
