@@ -19,6 +19,12 @@
 #  11c. THE CHECKPOINT (toy#164): bit-exact round trip, refused mismatch.
 #  12. THE BYTE-LM TASK (toy#170 / capstone P3): the embedding tap, the
 #      two cuts as distinct wirings, and PER-ARM EFFECT.
+#  13-14. THE NOMINAL HEAD WIDTH + the widened pack contract (toy#170/P5,P6).
+#  15. THE B-CONDITIONING INSTRUMENT (toy#172/E1 Phase 1.1).
+#  16. nDFA, the error-side preconditioner (toy#172/E1 Phase 1.2).
+#  17. LDFA, adaptive low-rank feedback (toy#172/E2): the scale match is
+#      the load-bearing assertion — the arms must differ in RANK and not
+#      in SCALE, or "low rank hurts" is just "the updates got smaller".
 #
 # ── WHAT THIS LANE ANSWERS ──
 #
@@ -1000,6 +1006,222 @@ else
   puts failures.length == n0 ?
     "  ok: nDFA (toy#172/E1 Phase 1.2) — off is BYTE-IDENTICAL to the pre-flag runner (so the P6 cells are a legitimate off arm), lambda->inf is a BYTE IDENTITY rather than an approximation, a finite lambda MOVES the curve and provably SHRINKS ||B'E||_F, the cadence/m/ridge all ride in the provenance, and five configurations where the flag would mean nothing are REFUSED on both front doors" :
     "  FAIL: ndfa"
+end
+
+# ── LEG 17: LDFA, ADAPTIVE LOW-RANK FEEDBACK (toy#172 / E2) ──
+#
+# LDFA factorises B as Q[dout x r].P[r x V], folded into the same uploaded
+# tensor. What this leg owes the program is SIX things, and every one of
+# them is a way the arms could look like a finding while being nothing of
+# the sort:
+#
+#   * `full` IS THE OLD BINARY. Byte-identical, not "works" — every P3-P6
+#     cell predates the flag and the E2 sweep states its contrast against
+#     them.
+#   * RANK IS NOT INERT. An inert knob reads as a clean negative, which is
+#     this program's most expensive failure mode. Twice over here: the
+#     rank must move the curve, and `oja` must differ from `none` at the
+#     SAME r, or the adaptation is a no-op wearing an adaptive label.
+#   * THE SCALE MATCHES. This is the leg's load-bearing assertion. A
+#     rank-r Q.P has a different ||.||_F from the full-width B it
+#     replaces, so an unnormalised arm would make "low rank hurts"
+#     indistinguishable from "the updates got smaller" — a global gain on
+#     B is an LR change wearing a rank costume. The arms must differ in
+#     RANK and not in SCALE, and it must be checkable from the output.
+#   * THE EMITTED RANK IS THE RANK ASKED FOR — and rank_eff, which is
+#     min(r, dout) and is NOT r once r passes d_model.
+#   * OJA'S BASIS STAYS ORTHONORMAL-ISH. Silent divergence here would
+#     look exactly like a result: B would fill with garbage of the right
+#     norm and the bpb would simply be worse.
+#   * IT FAILS LOUD WHERE IT MEANS NOTHING. Not bytelm, no dfa block,
+#     r >= V, composed with nDFA, adaptation with no factorisation: each
+#     of those is a cell that reports itself low-rank and is not.
+n0 = failures.length
+if !File.file?(File.join(ROOT, "data", "ae_shak_a65.tok.i32"))
+  puts "  skip: LDFA (toy#172/E2) — data/ae_shak_a65 absent"
+else
+  LD_BASE = HW.merge({ "STEPS" => "60", "GTX_LR" => "0.003",
+                       "GTX_TEXT" => "data/ae_shak_a65",
+                       "GTX_POLICY" => "dfa,dfa", "GTX_DFA_CUT" => "layer" })
+  # STEPS 60 / every 20 gives THREE refreshes, so `refreshes=` is a real
+  # count rather than a boolean, and m=128 at context 64 makes the
+  # collection window two steps — the window arithmetic gets exercised
+  # rather than being degenerate at one.
+  LD_ON = { "GTX_LDFA_EVERY" => "20", "GTX_LDFA_M" => "128" }
+  def ld_run(extra)
+    run_gtx(LD_BASE.merge(extra), nil)
+  end
+  def ld_fail(extra)
+    Open3.capture2e(LD_BASE.merge(extra), RUNNER, chdir: ROOT)
+  end
+  def ld_line(out)
+    out.lines.find { |l| l.start_with?("ldfa: ") } || ""
+  end
+  def ld_num(line, key)
+    line[/#{Regexp.escape(key)}=([0-9.eE+-]+)/, 1]
+  end
+
+  # 17a. `full` IS BYTE-NULL, and unset means `full`.
+  ld_off = ld_run({})
+  failures << "ldfa: an unconfigured run emitted an ldfa: line — the flag must be silent when it is not on, or every pre-existing cell's provenance changes" unless
+    ld_line(ld_off).empty?
+  failures << "ldfa: GTX_DFA_RANK unset is not byte-identical to GTX_DFA_RANK=full. The E2 sweep states its contrast against cells measured before this flag existed; if unset and `full` differ, that contrast is invalid" unless
+    curve(ld_off) == curve(ld_run("GTX_DFA_RANK" => "full"))
+  failures << "ldfa: GTX_DFA_RANK=full moved the bpb it is supposed to leave alone" unless
+    hw_bpb(ld_off) == hw_bpb(ld_run("GTX_DFA_RANK" => "full"))
+
+  # 17b. RANK IS NOT INERT, AND ADAPTATION IS NOT INERT. The head here is
+  # 256 wide (HW leaves GTX_VOCAB at its default), so r=16 is a genuine
+  # 16x compression and r=64 sits at dout=64, the rank_eff boundary.
+  ld_r16 = ld_run(LD_ON.merge({ "GTX_DFA_RANK" => "16" }))
+  failures << "ldfa: r=16 produced a curve byte-identical to the full-width arm — the RANK knob is INERT, and an inert knob reads as a clean negative" if
+    curve(ld_r16) == curve(ld_off)
+  ld_r16o = ld_run(LD_ON.merge({ "GTX_DFA_RANK" => "16",
+                                 "GTX_DFA_ADAPT" => "oja",
+                                 "GTX_LDFA_ETA" => "0.05" }))
+  failures << "ldfa: adapt=oja produced a curve byte-identical to adapt=none at the SAME r=16 — the ADAPTATION is a no-op, and the fixed-vs-adaptive contrast IS the whole hypothesis" if
+    curve(ld_r16o) == curve(ld_r16)
+  # ... and eta=0 must be the frozen control it claims to be: same P as
+  # `none` after the shared init orthonormalisation, so the two curves
+  # must agree. If they do not, something other than the Oja update
+  # differs between the arms and the contrast is not a clean B-test.
+  ld_r16z = ld_run(LD_ON.merge({ "GTX_DFA_RANK" => "16",
+                                 "GTX_DFA_ADAPT" => "oja",
+                                 "GTX_LDFA_ETA" => "0" }))
+  failures << "ldfa: adapt=oja at eta=0 is NOT byte-identical to adapt=none at the same r. Both arms share the init orthonormalisation and differ only in whether the Oja update is applied, so at eta=0 they must be the same run — if they are not, the fixed/adaptive contrast is confounded by something other than the adaptivity" unless
+    curve(ld_r16z) == curve(ld_r16)
+  failures << "ldfa: eta=0 did not relabel itself `adapt=oja-frozen` — an eta=0 cell that reports `adapt=oja` would be filed as an adaptive measurement" unless
+    ld_line(ld_r16z).include?("adapt=oja-frozen ")
+
+  # 17c. THE SCALE MATCHES, AND IT IS CHECKABLE FROM THE OUTPUT. Without
+  # this the fixed-vs-adaptive contrast — and the whole rank ladder — is
+  # confounded by a scalar rather than by rank.
+  [["none", ld_r16], ["oja", ld_r16o]].each do |lbl, out|
+    l = ld_line(out)
+    if l.empty?
+      failures << "ldfa: no ldfa: provenance line on the #{lbl} arm"
+      next
+    end
+    eff  = ld_num(l, "b_eff_fro")
+    full = ld_num(l, "b_full_fro")
+    rat  = ld_num(l, "scale_ratio")
+    if eff.nil? || full.nil? || rat.nil? || eff == "null" || full == "null"
+      failures << "ldfa (#{lbl}): the line omits or nulls b_eff_fro/b_full_fro/scale_ratio — without both norms a reader cannot tell whether the arms differ in RANK or in SCALE, which is the one thing this experiment turns on: #{l}"
+    else
+      # f64 host-side arithmetic, so the tolerance is numerical rather
+      # than statistical. 1e-9 relative is ~7 orders looser than the
+      # 1e-14 observed and still far tighter than any gain that could
+      # masquerade as an LR change.
+      failures << "ldfa (#{lbl}): ||B_eff||_F=#{eff} does not match ||B_full||_F=#{full} (ratio #{rat}) — the low-rank arm is running at a different SCALE from the full-width arm it is compared against, so any difference between them is confounded" unless
+        (rat.to_f - 1.0).abs < 1e-9
+    end
+  end
+
+  # 17d. THE EMITTED RANK IS THE RANK ASKED FOR — and rank_eff is NOT r
+  # once r passes dout. On this config dout = d_model = 64, so r=128 must
+  # report rank_eff=64: reading "r=128" as "rank 128" would misstate every
+  # rung of the ladder above d_model.
+  l16 = ld_line(ld_r16)
+  failures << "ldfa: asked for rank 16, the line says #{ld_num(l16, 'rank').inspect}" unless ld_num(l16, "rank") == "16"
+  failures << "ldfa: r=16 at dout=64 must report rank_eff=16, line says #{ld_num(l16, 'rank_eff').inspect}" unless ld_num(l16, "rank_eff") == "16"
+  ld_r128 = ld_run(LD_ON.merge({ "GTX_DFA_RANK" => "128" }))
+  l128 = ld_line(ld_r128)
+  failures << "ldfa: r=128 against dout=64 must report rank_eff=64 — rank(Q.P) <= min(dout, r), so a reader who took r at face value would believe the arm had twice the feedback rank it has. Line says rank_eff=#{ld_num(l128, 'rank_eff').inspect} dout=#{ld_num(l128, 'dout').inspect}" unless
+    ld_num(l128, "rank_eff") == "64" && ld_num(l128, "dout") == "64"
+
+  # 17e. THE PROVENANCE CARRIES THE EXPERIMENT, and the cadence is
+  # honoured. Same discipline as nDFA's: a P adapted every 20 steps and
+  # one adapted every 500 are different experiments that would otherwise
+  # carry the same label.
+  lo = ld_line(ld_r16o)
+  %w[rank= rank_eff= dout= v= adapt= eta= every= m= refreshes= b_eff_fro= b_full_fro= p_row_min= p_row_max= p_offdiag_max= p_energy= p_energy_rand=].each do |k|
+    failures << "ldfa: provenance line omits #{k} — the rank, the cadence, the sample count and the realised scale ARE the experiment on this flag" unless lo.include?(" #{k}") || lo.start_with?("ldfa: #{k}")
+  end
+  failures << "ldfa: the cadence is not honoured — STEPS=60 every=20 must be 3 refreshes, line says #{lo[/refreshes=(\d+)/, 1].inspect}" unless
+    lo[/refreshes=(\d+)/, 1] == "3"
+  failures << "ldfa: the line reports m=#{lo[/ m=(\d+)/, 1].inspect} but 128 samples were requested — an m that silently differs from the request is the Phase 1.1 sampling-ceiling trap one level down" unless
+    lo[/ m=(\d+)/, 1] == "128"
+
+  # 17f. OJA'S BASIS STAYS ORTHONORMAL-ISH, AND IT ACTUALLY LEARNED
+  # SOMETHING. Both halves matter. A diverging basis fills B with garbage
+  # of exactly the right Frobenius norm and reads as a worse bpb, i.e. as
+  # a RESULT. An adaptation that ran but learned nothing sits at the
+  # random baseline r/V and is indistinguishable from one that worked
+  # unless the captured energy is measured against that baseline.
+  rmin = ld_num(lo, "p_row_min").to_f
+  rmax = ld_num(lo, "p_row_max").to_f
+  offd = ld_num(lo, "p_offdiag_max").to_f
+  failures << "ldfa: Oja left P's row norms at [#{rmin}, #{rmax}] before re-orthonormalisation — the basis is diverging, and a diverged basis uploads as garbage of the right norm and reads as a result" unless
+    rmin > 0.5 && rmax < 2.0
+  failures << "ldfa: Oja left max |P_i . P_j| = #{offd} before re-orthonormalisation — the rows are collapsing onto each other, so the effective rank is below the reported one" unless
+    offd < 0.25
+  # The FIXED arm is the control for both: it never steps P, so its basis
+  # must still be exactly the orthonormal one MGS produced at init.
+  ln = ld_line(ld_r16)
+  failures << "ldfa: the FIXED arm's P is not orthonormal (row norms #{ld_num(ln, 'p_row_min')}..#{ld_num(ln, 'p_row_max')}, offdiag #{ld_num(ln, 'p_offdiag_max')}) — nothing steps P on that arm, so anything but 1/1/~0 means the init orthonormalisation is wrong and the two arms do not start from the same basis" unless
+    (ld_num(ln, "p_row_min").to_f - 1.0).abs < 1e-9 &&
+    (ld_num(ln, "p_row_max").to_f - 1.0).abs < 1e-9 &&
+    ld_num(ln, "p_offdiag_max").to_f < 1e-9
+  # ... which also makes the fixed arm the right yardstick for `learned
+  # anything`: a random orthonormal P captures r/V of the error energy.
+  e_rand = ld_num(ln, "p_energy_rand").to_f
+  e_fix  = ld_num(ln, "p_energy").to_f
+  e_oja  = ld_num(lo, "p_energy").to_f
+  failures << "ldfa: the FIXED arm captured #{e_fix} of the error energy against a random-basis expectation of #{e_rand} — the two should agree, since a fixed random orthonormal P IS the random baseline" unless
+    e_rand > 0.0 && (e_fix / e_rand) > 0.3 && (e_fix / e_rand) < 3.0
+  failures << "ldfa: Oja captured #{e_oja} of the error energy against the fixed arm's #{e_fix} — the adaptation ran but learned nothing, which is indistinguishable from a no-op except through this number" unless
+    e_oja > e_fix * 1.5
+
+  # 17g. FAIL LOUD WHERE THE FLAG WOULD MEAN NOTHING. Six refusals, each
+  # a cell that would otherwise be filed as a low-rank measurement while
+  # being the full-width arm.
+  [
+    [{ "GTX_DFA_RANK" => "16", "GTX_TASK" => "relational" },
+     "bytelm", "accepted LDFA on the RELATIONAL task, whose head is 16 classes wide"],
+    [LD_ON.merge({ "GTX_DFA_RANK" => "16", "GTX_POLICY" => "chain,chain" }),
+     "no `dfa` block", "accepted LDFA on a chain-only policy, where there is no B to factorise"],
+    [LD_ON.merge({ "GTX_DFA_RANK" => "256" }),
+     "not below the error width", "accepted r >= V, which is `full` wearing a low-rank label"],
+    [LD_ON.merge({ "GTX_DFA_RANK" => "16", "GTX_NDFA" => "1",
+                   "GTX_NDFA_LAMBDA" => "0.01", "GTX_NDFA_EVERY" => "20",
+                   "GTX_NDFA_M" => "128" }),
+     "opposite interventions", "accepted LDFA composed with nDFA — two opposite interventions on the same uploaded B"],
+    [{ "GTX_DFA_ADAPT" => "oja" },
+     "meaningless at GTX_DFA_RANK=full", "accepted an adaptation with no factorisation to adapt"],
+    [{ "GTX_DFA_RANK" => "16", "GTX_LDFA_EVERY" => "500", "GTX_LDFA_M" => "128" },
+     "never reached", "accepted a run whose step budget never reaches the first refresh — that cell IS the fixed arm wearing an adaptive label"],
+  ].each do |extra, needle, label|
+    o, s = ld_fail(extra)
+    if s.success?
+      failures << "ldfa fail-loud: #{label}"
+    else
+      failures << "ldfa fail-loud: the refusal for `#{label}` does not name #{needle.inspect}, so it cannot be acted on:\n#{o.lines.last(2).join}" unless o.include?(needle)
+    end
+  end
+  # The empty-string trap, explicitly: "" must be `full`, not rank 0.
+  o_es, s_es = Open3.capture2e(LD_BASE.merge({ "GTX_DFA_RANK" => "" }), RUNNER, chdir: ROOT)
+  failures << "ldfa: GTX_DFA_RANK=\"\" was not treated as `full` — (ENV[x] || d).to_i is 0 for the empty string, and a knob that reads an unset value as rank 0 would silently disable every feedback matrix in the run" unless
+    s_es.success? && !o_es.lines.any? { |l| l.start_with?("ldfa: ") }
+
+  # 17h. THE CLI SURFACE REFUSES THE SAME THINGS. The sweeps call
+  # libexec/ directly and `toy train` is a second front door; a knob
+  # guarded on only one of them is guarded on neither.
+  [
+    [%w[mlp --dfa-feedback-rank 16], "mlp accepted --dfa-feedback-rank"],
+    [%w[gtx --dfa-feedback-rank 16], "gtx accepted LDFA without --task bytelm"],
+    [%w[gtx --task bytelm --text data/ae_shak_a65 --dfa-feedback-adapt oja], "gtx accepted --dfa-feedback-adapt at rank full"],
+    [%w[gtx --task bytelm --text data/ae_shak_a65 --dfa-feedback-rank 16 --ldfa-eta 0.05], "gtx accepted --ldfa-eta without --dfa-feedback-adapt oja"],
+    [%w[gtx --task bytelm --text data/ae_shak_a65 --vocab 4096 --dfa-feedback-rank 8192], "gtx accepted r >= vocab"],
+    [%w[gtx --task bytelm --text data/ae_shak_a65 --dfa-feedback-rank 16 --dfa-feedback-precond ndfa --ndfa-lambda 0.01], "gtx accepted LDFA composed with nDFA"],
+    [%w[gtx --task bytelm --text data/ae_shak_a65 --dfa-feedback-rank bogus], "gtx accepted a non-integer, non-`full` rank"],
+  ].each do |argv, label|
+    cout, cst = Open3.capture2e({}, TOY, "train", *argv, chdir: ROOT)
+    failures << "ldfa cli: #{label} (exit #{cst.exitstatus}: #{cout.lines.last(1).join.strip})" unless cst.exitstatus == 2
+  end
+
+  puts failures.length == n0 ?
+    "  ok: LDFA (toy#172/E2) — `full` is BYTE-IDENTICAL to the pre-flag runner, rank MOVES the curve and adaptation moves it AGAIN at the same r, eta=0 is byte-identical to the fixed arm (so the contrast is the Oja update and nothing else), ||B_eff||_F matches ||B_full||_F to 1e-9 so the arms differ in RANK and not in SCALE, rank_eff is reported as min(r, dout) rather than r, Oja's basis stays orthonormal-ish and provably CAPTURES more error energy than the random baseline, and thirteen configurations where the flag would mean nothing are REFUSED on both front doors" :
+    "  FAIL: ldfa"
 end
 
 if failures.empty?

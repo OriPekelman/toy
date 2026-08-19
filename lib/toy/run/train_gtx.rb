@@ -71,6 +71,19 @@
 #                     B' back to ||B||_F so only the DIRECTION
 #                     reweighting is under test.
 #
+#   toy#172 / E2 ADAPTIVE LOW-RANK FEEDBACK (LDFA):
+#   GTX_DFA_RANK    — full (default) | <r>. Factorises B as Q[dout x r] .
+#                     P[r x V]. `full` is BYTE-IDENTICAL to the pre-E2
+#                     binary. `--task bytelm` + a `dfa` policy only.
+#   GTX_DFA_ADAPT   — none (default) | oja. Whether P tracks the top-r
+#                     subspace of the ERROR stream by Oja's rule. Requires
+#                     GTX_DFA_RANK.
+#   GTX_LDFA_ETA    — Oja step size (default 0.05). 0 is legal and is the
+#                     FROZEN-OJA control; it relabels itself in provenance
+#                     so an eta=0 cell can never be filed as adaptive.
+#   GTX_LDFA_EVERY  — steps between refreshes (default 500)
+#   GTX_LDFA_M      — error samples per refresh (default 128)
+#
 #   toy#161 RETROFIT MODE (GTX_RETROFIT=1):
 #   GTX_PRETRAIN_STEPS — BP steps on the PRETRAIN task (default 1500)
 #   GTX_PRETRAIN_LR    — BP's own cell for phase 1 (default 0.003)
@@ -185,6 +198,28 @@ NDFA_EVERY   = (ENV["GTX_NDFA_EVERY"] || "500").to_i
 NDFA_M       = (ENV["GTX_NDFA_M"] || "256").to_i
 NDFA_GAIN_S  = ENV["GTX_NDFA_GAIN"] || ""
 NDFA_LAM     = NDFA_LAM_S.length > 0 ? NDFA_LAM_S.to_f : -1.0
+# toy#172 (E2) — LDFA, the ADAPTIVE LOW-RANK feedback path.
+#
+# B is factorised as Q[dout x r] . P[r x V] and folded into the SAME
+# uploaded B tensor, for the same reason nDFA was: the error reaches every
+# tap through exactly one product, B . e, so a factorisation is a change
+# to what refresh_b! uploads and to nothing else. No new graph node, no
+# new readout path — the standing prior on the lane where the ||g||
+# instrument realized as ZEROS through three separate readout paths.
+#
+# THE EMPTY-STRING TRAP is why these are parsed rather than `.to_i`d:
+# (ENV["X"] || "d").to_i is 0 for "", so an unset knob and an explicit
+# zero would be the same value and `full` would silently become rank 0.
+# The string is inspected first and `full`/unset map to 0 deliberately.
+LDFA_RANK_S  = ENV["GTX_DFA_RANK"]  || ""
+LDFA_ADAPT_S = ENV["GTX_DFA_ADAPT"] || ""
+LDFA_ETA_S   = ENV["GTX_LDFA_ETA"]  || ""
+LDFA_EVERY   = (ENV["GTX_LDFA_EVERY"] || "500").to_i
+LDFA_M       = (ENV["GTX_LDFA_M"] || "128").to_i
+LDFA_RANK    = (LDFA_RANK_S.length == 0 || LDFA_RANK_S == "full") ?
+                 0 : LDFA_RANK_S.to_i
+LDFA_ADAPT   = LDFA_ADAPT_S == "oja" ? 1 : 0
+LDFA_ETA     = LDFA_ETA_S.length > 0 ? LDFA_ETA_S.to_f : 0.05
 # NOTE: no ||g|| instrument on this lane. The ssm-lane version (toy#169)
 # works; the gtx port built the node and realized it as ZEROS, and a
 # metric that silently reads 0.0 is worse than no metric — it is the
@@ -361,6 +396,70 @@ if NDFA == 1 && NDFA_GAIN_S.length > 0 && NDFA_GAIN_S != "preserve" && NDFA_GAIN
   exit 1
 end
 NDFA_PRESERVE = NDFA_GAIN_S == "raw" ? 0 : 1
+
+# ---- toy#172 (E2): the LDFA knobs, validated BEFORE the graph is
+# realized, for the same reason nDFA's are — ggml aborts during graph
+# build (exit 134 + a GGML_ASSERT line) and anything checked after
+# recipe.realize! is dead code that never gets to speak.
+if LDFA_RANK_S.length > 0 && LDFA_RANK_S != "full" && LDFA_RANK < 1
+  puts "toy-train-gtx: GTX_DFA_RANK " + LDFA_RANK_S + " unsupported —" +
+       " it is `full` (the default, byte-identical to the pre-E2 binary)" +
+       " or a POSITIVE integer rank. Note that the empty string is NOT" +
+       " rank 0: it is `full`."
+  exit 1
+end
+if LDFA_ADAPT_S.length > 0 && LDFA_ADAPT_S != "none" && LDFA_ADAPT_S != "oja"
+  puts "toy-train-gtx: GTX_DFA_ADAPT " + LDFA_ADAPT_S + " unsupported (none|oja)"
+  exit 1
+end
+if LDFA_ADAPT_S.length > 0 && LDFA_RANK == 0
+  puts "toy-train-gtx: GTX_DFA_ADAPT is meaningless at GTX_DFA_RANK=full" +
+       " — the adaptation acts on P, and there is no P without a" +
+       " factorisation. The knob would be parsed, reported and never" +
+       " read, which is an inert flag that still labels the cell."
+  exit 1
+end
+if LDFA_ETA_S.length > 0 && LDFA_ADAPT != 1
+  puts "toy-train-gtx: GTX_LDFA_ETA is meaningless without GTX_DFA_ADAPT=oja" +
+       " — nothing steps P on the fixed arm."
+  exit 1
+end
+if LDFA_ADAPT == 1 && LDFA_ETA < 0.0
+  puts "toy-train-gtx: GTX_LDFA_ETA must be >= 0, got " + LDFA_ETA.to_s +
+       " (0 is legal and is the FROZEN-OJA control; it relabels itself" +
+       " adapt=oja-frozen in provenance)"
+  exit 1
+end
+if LDFA_RANK > 0 && TASK_S != "bytelm"
+  puts "toy-train-gtx: GTX_DFA_RANK needs GTX_TASK bytelm. LDFA compresses" +
+       " the ERROR to r dimensions, and the whole question (toy#172/E2) is" +
+       " about a WIDE error vector: the relational task's head is 16" +
+       " classes, where r < V is not a compression worth the name. Run it" +
+       " on --task bytelm, where the head is up to 4096."
+  exit 1
+end
+if LDFA_RANK > 0 && RETROFIT
+  puts "toy-train-gtx: GTX_DFA_RANK is not supported with GTX_RETROFIT=1 —" +
+       " a retrofit rebuilds the graph and its B mid-run, so a P adapted to" +
+       " the pretrain phase's error would be silently carried into a" +
+       " different head. Refused rather than given an unstated meaning."
+  exit 1
+end
+if LDFA_RANK > 0 && NDFA == 1
+  puts "toy-train-gtx: GTX_DFA_RANK and GTX_NDFA=1 both fold into the SAME" +
+       " uploaded B and are opposite interventions (nDFA WHITENS the" +
+       " dominant error directions; LDFA COMPRESSES TO them). Composing" +
+       " them silently would produce a cell that is neither arm. Refused."
+  exit 1
+end
+if LDFA_RANK > 0 && LDFA_M < 1
+  puts "toy-train-gtx: GTX_LDFA_M must be >= 1, got " + LDFA_M.to_s
+  exit 1
+end
+if LDFA_RANK > 0 && LDFA_EVERY < 1
+  puts "toy-train-gtx: GTX_LDFA_EVERY must be >= 1, got " + LDFA_EVERY.to_s
+  exit 1
+end
 
 TASK_KIND = TASK_S == "local" ? GtxTask::KIND_LOCAL : GtxTask::KIND_RELATIONAL
 DFA_CUT   = CUT_S == "step" ? Toy::LLM::Engine::GtxEngine::CUT_STEP :
@@ -835,6 +934,50 @@ if NDFA == 1 && NDFA_EVERY < NDFA_NEED
   exit 1
 end
 
+# toy#172 (E2) — the same three checks for LDFA, and for the same
+# reasons. B_eff exists only where a `dfa` block wired a tap; the
+# collection window must fit inside the cadence; and a run whose budget
+# never reaches the first refresh is the FIXED arm wearing an adaptive
+# label, which is the failure mode this program has paid for most.
+#
+# The r-vs-V check lives HERE and not up with the other LDFA parsing,
+# and that is not tidiness: N_CLASSES is assigned further down the file,
+# and a top-level constant read before its assignment is 0 rather than an
+# error — so the check ran against "the error width 0" and refused every
+# rank. Same family as the empty-env-string trap, one scope out.
+if LDFA_RANK > 0 && LDFA_RANK >= N_CLASSES
+  puts "toy-train-gtx: GTX_DFA_RANK " + LDFA_RANK.to_s + " is not below the" +
+       " error width " + N_CLASSES.to_s + ". At r >= V the factorisation" +
+       " spans the whole error space and the arm is `full` wearing a" +
+       " low-rank label — which is exactly how an inert knob gets" +
+       " published as a clean negative."
+  exit 1
+end
+if LDFA_RANK > 0 && NDFA_DFA_BLOCKS == 0
+  puts "toy-train-gtx: GTX_DFA_RANK with no `dfa` block in GTX_POLICY —" +
+       " LDFA factorises the feedback matrix B, and B is built only where" +
+       " a dfa block taps. On this policy there is nothing to factorise," +
+       " so the flag would run, report itself on, and change nothing."
+  exit 1
+end
+LDFA_NEED = LDFA_RANK > 0 ? ((LDFA_M + N_NODES - 1) / N_NODES) : 0
+if LDFA_RANK > 0 && LDFA_EVERY < LDFA_NEED
+  puts "toy-train-gtx: GTX_LDFA_EVERY " + LDFA_EVERY.to_s +
+       " is shorter than the collection window it needs (" +
+       LDFA_NEED.to_s + " steps to gather GTX_LDFA_M=" + LDFA_M.to_s +
+       " error vectors at GTX_CONTEXT=" + N_NODES.to_s +
+       " per step). Raise the cadence or lower GTX_LDFA_M."
+  exit 1
+end
+if LDFA_RANK > 0 && STEPS < LDFA_EVERY
+  puts "toy-train-gtx: GTX_LDFA_EVERY " + LDFA_EVERY.to_s + " is never" +
+       " reached in STEPS=" + STEPS.to_s + ", so P would never be adapted" +
+       " and never measured. Under GTX_DFA_ADAPT=oja that cell IS the" +
+       " fixed low-rank arm wearing an adaptive label. Lower the cadence" +
+       " or raise STEPS."
+  exit 1
+end
+
 # The corpus is loaded BEFORE the graph is realized, and that ordering is
 # load-bearing rather than tidy. Realizing the graph sizes the lm_head
 # and the label tensor from N_CLASSES; if the pack's ids do not fit, ggml
@@ -881,6 +1024,16 @@ if IS_BYTELM
 end
 
 recipe = Toy::LLM::Recipes::GtxGraph.new
+# toy#172 (E2) — set BEFORE realize!, because refresh_b! runs at the end
+# of the graph build and is where B_eff is first assembled. Rank 0 is
+# what the engine already initialises to, so an unconfigured run does not
+# touch a single branch of the new path.
+recipe.gr_cache.gx_b_rank  = LDFA_RANK
+recipe.gr_cache.gx_b_adapt = LDFA_ADAPT
+# P's seed is SEPARATE from every tap's B seed: P is shared across taps
+# (the compression is a property of the error stream, not of the tap), so
+# reusing a tap's seed would make P a copy of that tap's Q rows.
+recipe.gr_cache.gx_b_pseed = B_SEED + 991
 recipe.realize!(D_FEAT, D_MODEL, N_HEADS, D_FF, N_BLOCKS, N_NODES,
                 N_PAIRS, N_CLASSES, SEED, 1.0, POLICY, DFA_CUT, B_SEED,
                 dist_code(B_DIST_S), scale_code(B_SCALE_S),
@@ -1135,6 +1288,18 @@ nd_err_post   = 0.0
 nd_shrink     = 1.0
 nd_first_step = 0
 nd_m_used     = 0
+# toy#172 (E2) — the LDFA ring. Same shape as nDFA's, and allocated at
+# size 0 when the flag is off.
+ld_buf = Array.new(LDFA_RANK > 0 ? LDFA_M * N_CLASSES : 0, 0.0)
+ld_n   = 0
+ld_refreshes  = 0
+ld_wall_us    = 0
+ld_first_step = 0
+ld_m_used     = 0
+ld_row_min    = 1.0
+ld_row_max    = 1.0
+ld_off_max    = 0.0
+ld_energy     = 0.0
 step = 0
 while step < TOTAL_STEPS
   step_wall_start = TinyNN.tnn_events_now_seconds
@@ -1295,6 +1460,58 @@ while step < TOTAL_STEPS
       nd_n = 0
     end
   end
+  # ---- toy#172 (E2): COLLECT, then ADAPT P and REBUILD B_eff. ----
+  #
+  # Structurally identical to the nDFA ring above, and deliberately so:
+  # the samples ride the training step's OWN logits (a download, no second
+  # forward pass), so nothing consumes corpus RNG or steps an optimizer
+  # moment, and the FIXED arm runs exactly the same collection and
+  # measurement as the ADAPTIVE one. The only difference between the two
+  # arms is whether the Oja update is applied — which is what makes this
+  # contrast a clean B-test rather than nDFA's by-construction one.
+  if LDFA_RANK > 0
+    ld_pos = step % LDFA_EVERY
+    if ld_pos >= LDFA_EVERY - LDFA_NEED
+      rc_ld = TinyNN.tnn_download_to_f64_array(recipe.gr_cache.sess,
+                recipe.gr_cache.t_logits, logit_buf, N_NODES * N_CLASSES)
+      if rc_ld != 0
+        puts "toy-train-gtx: LDFA logits download failed: step=" +
+             (step + 1).to_s + " rc=" + rc_ld.to_s
+        exit 1
+      end
+      ld_n = bc_fill_err!(ld_buf, ld_n, logit_buf, m_labels, N_NODES,
+                          N_CLASSES, LDFA_M)
+    end
+    if ld_pos == LDFA_EVERY - 1
+      ld_t0 = TinyNN.tnn_events_now_seconds
+      ld_r = recipe.gr_cache.adapt_p!(ld_buf, ld_n, LDFA_ETA, LDFA_ADAPT)
+      ld_wall_us = ld_wall_us +
+                   ((TinyNN.tnn_events_now_seconds - ld_t0) * 1.0e6).to_i
+      if ld_r[0] == 1.0
+        puts "toy-train-gtx: LDFA Oja diverged at step " + (step + 1).to_s +
+             " — P's rows went non-finite or its basis collapsed at" +
+             " GTX_LDFA_ETA=" + LDFA_ETA.to_s + ". Lower eta; do not fall" +
+             " back to a renormalised basis, which would look like a" +
+             " healthy adaptation."
+        exit 1
+      end
+      if ld_r[0] == 2.0
+        puts "toy-train-gtx: LDFA refresh found no factorisation to adapt" +
+             " at step " + (step + 1).to_s
+        exit 1
+      end
+      ld_row_min = ld_r[1]
+      ld_row_max = ld_r[2]
+      ld_off_max = ld_r[3]
+      ld_energy  = ld_r[4]
+      ld_m_used  = ld_n
+      if ld_refreshes == 0
+        ld_first_step = step + 1
+      end
+      ld_refreshes = ld_refreshes + 1
+      ld_n = 0
+    end
+  end
   # toy#164 — the BACKBONE checkpoint. Written only during the pretrain
   # phase (or a plain run): a retrofit's backbone is frozen, so writing
   # it again would just duplicate the file it was loaded from.
@@ -1404,6 +1621,66 @@ if IS_BYTELM
          # silently reads 0.0. Say `unmeasured` instead of printing it.
          " refresh_ms=" +
            (EVENTS.length > 0 ? (nd_wall_us / nd_refreshes / 1000).to_s :
+                                "unmeasured-no-run-dir")
+  end
+  # toy#172 (E2) — the LDFA provenance. Emitted ONLY when the flag is on,
+  # so `full` is byte-identical to the pre-E2 binary.
+  #
+  # THE SCALE PAIR IS THE POINT OF THIS LINE. A rank-r Q.P has a different
+  # Frobenius norm from the full-width B it replaces, so without the
+  # rescale "low rank hurts" would be indistinguishable from "the updates
+  # got smaller" and the entire fixed-vs-adaptive contrast would be
+  # confounded by a scalar. b_eff_fro and b_full_fro are both printed so a
+  # reader can verify the arms differ in RANK and not in SCALE instead of
+  # taking the rescale on faith.
+  #
+  # rank_eff IS NOT rank. rank(Q.P) <= min(dout, r), and dout is d_model
+  # here — so on this fixture r=256 buys the SAME matrix rank as full
+  # width and only confines the row space. Printed beside dout for exactly
+  # that reason.
+  #
+  # p_energy is the fraction of the error's energy P captures, against
+  # p_energy_rand = r/V for a random orthonormal P. It is the CONVERGENCE
+  # CHECK on Oja: an adaptation that ran but learned nothing sits at the
+  # random baseline, and would otherwise be indistinguishable from one
+  # that worked.
+  if LDFA_RANK > 0
+    if ld_refreshes == 0
+      puts "toy-train-gtx: GTX_DFA_RANK set but no refresh ever ran —" +
+           " STEPS=" + STEPS.to_s + " never reaches GTX_LDFA_EVERY=" +
+           LDFA_EVERY.to_s + ", so P was never adapted and never measured."
+      exit 1
+    end
+    puts "ldfa: rank=" + LDFA_RANK.to_s +
+         " rank_eff=" + recipe.gr_cache.gx_ld_rank_eff.to_s +
+         " dout=" + recipe.gr_cache.gx_ld_dout.to_s +
+         " v=" + N_CLASSES.to_s +
+         " adapt=" + (LDFA_ADAPT == 1 ?
+                        (LDFA_ETA > 0.0 ? "oja" : "oja-frozen") : "none") +
+         " eta=" + (LDFA_ADAPT == 1 ? LDFA_ETA.to_s : "n/a") +
+         " every=" + LDFA_EVERY.to_s +
+         " m=" + ld_m_used.to_s + " m_req=" + LDFA_M.to_s +
+         " refreshes=" + ld_refreshes.to_s +
+         " first_refresh_step=" + ld_first_step.to_s +
+         " p_ortho=init" +
+         " b_eff_fro=" + num_or_null(recipe.gr_cache.gx_ld_fro_eff) +
+         " b_full_fro=" + num_or_null(recipe.gr_cache.gx_ld_fro_full) +
+         " scale_ratio=" +
+           num_or_null(recipe.gr_cache.gx_ld_fro_full > 0.0 ?
+             (recipe.gr_cache.gx_ld_fro_eff /
+              recipe.gr_cache.gx_ld_fro_full) : 0.0) +
+         " p_row_min=" + num_or_null(ld_row_min) +
+         " p_row_max=" + num_or_null(ld_row_max) +
+         " p_offdiag_max=" + num_or_null(ld_off_max) +
+         " p_energy=" + num_or_null(ld_energy) +
+         " p_energy_rand=" +
+           num_or_null(LDFA_RANK.to_f / N_CLASSES.to_f) +
+         # Same clock caveat as nDFA's: tnn_events_now_seconds returns 0.0
+         # with no event file open, so without a TAO_RUN_DIR every interval
+         # measures as exactly zero. Say `unmeasured` rather than ship a
+         # metric that silently reads 0.0.
+         " refresh_ms=" +
+           (EVENTS.length > 0 ? (ld_wall_us / ld_refreshes / 1000).to_s :
                                 "unmeasured-no-run-dir")
   end
   if INSTRUMENT == 1

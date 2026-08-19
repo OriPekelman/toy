@@ -83,7 +83,7 @@ recipes are:
 | `gnn` | GCN-class node classification over a normalised adjacency, transductive semi-supervised (CPU-only). Runs on a seeded graph or on real Cora (`ruby prep/fetch_cora.rb`) | `--policy`, `--graph`, `--layers`, `--hidden`, `--classes`, `--features`, `--nodes`, `--degree`, `--homophily`, `--feat-signal`, `--train-per-class`, `--task`, `--feedback-route`, `--feedback-hops`, `--weight-decay` |
 | `ssm` | selective-scan / Mamba-lite sequence classifier — an UNROLLED input-dependent linear recurrence + conv branch + gating, last-step readout (CPU-only) | `--policy`, `--dfa-cut`, `--selection`, `--layers`, `--seq`, `--d-model`, `--d-inner`, `--conv-k`, `--classes`, `--task`, `--cue-span`, `--noise`, `--dt-init` |
 | `lstm` | gated recurrence: a stack of textbook LSTM cells UNROLLED over T, last-step readout, on the same task + cut axis as `ssm` (CPU-only) | `--policy`, `--dfa-cut`, `--layers`, `--hidden`, `--features`, `--seq`, `--classes`, `--task`, `--cue-span`, `--noise`, `--batch`, `--val-batches`, `--task-seed`, `--lr`, `--dfa-b-*` |
-| `gtx` | graph transformer — masked self-attention whose mask **is an adjacency**, small relation head (16 classes), inductive relational retrieval. CPU-only **except `--task bytelm`, which has a CUDA twin** (tao#24). `--retrofit` adds the DFA-adapter mode | `--policy`, `--dfa-cut`, `--layers`, `--d-model`, `--heads`, `--d-ff`, `--entities`, `--types`, `--features`, `--task`, `--noise`, `--batch`, `--val-batches`, `--task-seed`, `--dfa-b-*`, `--retrofit`, `--adapter-policy`, `--adapter-layers`, `--adapter-rank`, `--pretrain-steps`, `--pretrain-lr`, `--no-freeze-backbone`, `--dfa-feedback-precond`, `--ndfa-lambda`, `--ndfa-every`, `--ndfa-samples`, `--ndfa-gain` |
+| `gtx` | graph transformer — masked self-attention whose mask **is an adjacency**, small relation head (16 classes), inductive relational retrieval. CPU-only **except `--task bytelm`, which has a CUDA twin** (tao#24). `--retrofit` adds the DFA-adapter mode | `--policy`, `--dfa-cut`, `--layers`, `--d-model`, `--heads`, `--d-ff`, `--entities`, `--types`, `--features`, `--task`, `--noise`, `--batch`, `--val-batches`, `--task-seed`, `--dfa-b-*`, `--retrofit`, `--adapter-policy`, `--adapter-layers`, `--adapter-rank`, `--pretrain-steps`, `--pretrain-lr`, `--no-freeze-backbone`, `--dfa-feedback-precond`, `--ndfa-lambda`, `--ndfa-every`, `--ndfa-samples`, `--ndfa-gain`, `--dfa-feedback-rank`, `--dfa-feedback-adapt`, `--ldfa-eta`, `--ldfa-every`, `--ldfa-samples` |
 | `diff` | latent diffusion denoiser — time-conditioned eps-prediction over a LOW-DIM latent, scored by a generative metric (CPU-only) | `--policy`, `--latent`, `--time-feat`, `--layers`, `--hidden`, `--task`, `--modes`, `--spread`, `--mode-scale`, `--diff-steps`, `--beta-lo`, `--beta-hi`, `--eval-n`, `--align-events` |
 | `ae` | per-token latent AUTOENCODER (capstone P1a) — bidirectional encoder -> **d-dim per-position bottleneck** -> **per-position** decode head back to the byte. **All BP: no `--policy`, no DFA, no diffusion.** Scored by the NOISE MARGIN, not clean reconstruction (CPU-only) | `--text`, `--latent`, `--context`, `--layers`, `--d-model`, `--heads`, `--d-ff`, `--noise-eval`, `--noise-seed`, `--val-batches`, `--val-frac-pct`, `--task-seed`, `--lr`, `--warmup`, `--target-ce`, `--eval-every`, `--probe-batches` |
 
@@ -357,6 +357,66 @@ would otherwise just stop the loss being a number partway through a run.
 `refresh_ms` reads `unmeasured-no-run-dir` without `--out`: the clock
 this lane has returns 0.0 when no event file is open, and printing that
 would be a metric silently reading zero.
+
+#### `gtx --dfa-feedback-rank` — LDFA, adaptive low-rank feedback (toy#172/E2)
+
+`--task bytelm` only, and only on a policy that actually has a `dfa`
+block. It factorises the feedback matrix as `B_eff = Q[dout x r] . P[r x
+V]` and folds the product into the **same uploaded `B` tensor** — no new
+graph node, no new readout path, the same route nDFA took:
+
+```
+toy train gtx --task bytelm --text data/ae_shak_a2504 --vocab 4096 \
+  --policy dfa,dfa,dfa,dfa --dfa-cut layer --lr 0.00003 --steps 4000 \
+  --dfa-feedback-rank 64 --dfa-feedback-adapt oja --ldfa-eta 0.05 \
+  --ldfa-every 500 --ldfa-samples 128
+```
+
+| flag | meaning |
+| --- | --- |
+| `--dfa-feedback-rank full\|R` | `full` (default) is byte-identical to the runner before the flag existed |
+| `--dfa-feedback-adapt none\|oja` | whether `P` tracks the error's top-`r` subspace by Oja's rule |
+| `--ldfa-eta E` | Oja step size (default 0.05). `0` is legal and relabels itself `adapt=oja-frozen` |
+| `--ldfa-every K` | steps between refreshes (default 500) |
+| `--ldfa-samples M` | error vectors per refresh (default 128) |
+
+Four things about it are load-bearing:
+
+- **The scale is matched, and that is what makes the arms comparable.**
+  A rank-`r` `Q.P` has a completely different Frobenius norm from the
+  full-width `B` it replaces, so without a rescale "low rank hurts"
+  would be indistinguishable from "the updates got smaller" — a global
+  gain on `B` is an LR change wearing a rank costume. `B_eff` is
+  rescaled to the **realised** `‖B‖_F` of the full-width draw from the
+  same seed, and **both norms are printed** (`b_eff_fro`, `b_full_fro`,
+  `scale_ratio`) so a reader can check it rather than assume it.
+- **`rank_eff` is not `r`.** `rank(Q.P) <= min(dout, r)` and `dout` is
+  `d_model`, so on the P6 fixture (`d_model` 128) `r = 256` buys the
+  *same matrix rank as full width* and only confines the row space. Both
+  numbers are on the provenance line for exactly that reason.
+- **`P` is orthonormalised at init in BOTH modes** (`p_ortho=init`).
+  Oja's rule requires orthonormal rows, so an un-orthonormalised fixed
+  arm would differ from the adaptive one in two ways at once. The only
+  difference between `none` and `oja` is whether the Oja update is
+  applied — both collect the same samples on the same steps.
+- **`p_energy` is the convergence check.** It is the fraction of the
+  error's energy `P` captures, against `p_energy_rand = r/V` for a
+  random orthonormal `P`. An adaptation that ran but learned nothing
+  sits at the random baseline, which is otherwise indistinguishable from
+  one that worked.
+
+The run prints `ldfa: rank=… rank_eff=… dout=… v=… adapt=… eta=…
+every=… m=… refreshes=… b_eff_fro=… b_full_fro=… scale_ratio=…
+p_row_min=… p_row_max=… p_offdiag_max=… p_energy=… p_energy_rand=…`. The
+`p_row_*`/`p_offdiag_max` numbers are measured **before**
+re-orthonormalisation — after MGS they would be 1 and 0 by construction,
+and a diverging `eta` would go unnoticed behind a tautology. The runner
+**aborts** if the basis goes non-finite rather than renormalising it,
+which would look like a healthy adaptation.
+
+LDFA and nDFA are refused together: they fold into the same `B` and are
+opposite interventions (nDFA *whitens* the dominant error directions;
+LDFA *compresses to* them), so a composed cell is neither arm.
 
 `diff` prints `gen: energy=…` — the ENERGY DISTANCE between generated
 and held-out real samples. It is the lane's headline metric and **lower

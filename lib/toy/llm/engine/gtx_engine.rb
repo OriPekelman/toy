@@ -96,7 +96,9 @@ class GtxEngine
                 :gx_retro_classes, :gx_adapters, :gx_adapter_rank,
                 :gx_bytelm, :t_tokens, :ix_emb, :ix_lmhead, :gx_gnorm, :t_gnorm, :gx_gnorm_built,
                 :gx_retrofit, :gx_freeze_backbone, :gx_adapter_policy,
-                :gx_backbone_first, :gx_backbone_count, :gx_active_classes
+                :gx_backbone_first, :gx_backbone_count, :gx_active_classes,
+                :gx_b_rank, :gx_b_adapt, :gx_b_pseed,
+                :gx_ld_fro_eff, :gx_ld_fro_full, :gx_ld_rank_eff, :gx_ld_dout
 
   def initialize
     @sess       = TinyNN.tnn_null_ptr
@@ -154,6 +156,19 @@ class GtxEngine
     @gx_backbone_first  = 0
     @gx_backbone_count  = 0
     @gx_active_classes  = 0
+    # toy#172 (E2) — the LDFA low-rank factorisation. 0 means FULL WIDTH,
+    # i.e. exactly the pre-E2 path, and every branch below is keyed on
+    # that so the default binary is byte-identical.
+    @gx_b_rank   = 0
+    @gx_b_adapt  = 0
+    @gx_b_pseed  = 0
+    @gx_p        = [0.0]; @gx_p.pop
+    @gx_p_ready  = 0
+    @gx_ld_tgt2  = [0.0]; @gx_ld_tgt2.pop
+    @gx_ld_fro_eff  = 0.0
+    @gx_ld_fro_full = 0.0
+    @gx_ld_rank_eff = 0
+    @gx_ld_dout     = 0
   end
 
   def realize_for_random_init(d_in, d_model, heads, d_ff, n_blocks,
@@ -306,6 +321,11 @@ class GtxEngine
     @gx_b_handles = [TinyNN.tnn_null_ptr]; @gx_b_handles.pop
     @gx_b_seeds   = [0]; @gx_b_seeds.pop
     @gx_b_douts   = [0]; @gx_b_douts.pop
+    # toy#172 (E2) — the LDFA scale targets are keyed by TAP INDEX, so a
+    # rebuild that changes the tap set must not inherit them. LDFA refuses
+    # retrofit outright, which is the only caller that rebuilds; this line
+    # is here so the invariant does not depend on that refusal staying.
+    @gx_ld_tgt2   = [0.0]; @gx_ld_tgt2.pop
     @gx_frozen_count = 0
     taps  = [TinyNN.tnn_null_ptr]; taps.pop
     tapd  = [0]; tapd.pop
@@ -879,6 +899,13 @@ class GtxEngine
   end
 
   def refresh_b!
+    # toy#172 (E2) — the LDFA fork. Rank 0 IS full width and falls through
+    # to the original body untouched, which is what makes
+    # `--dfa-feedback-rank full` a byte identity rather than a promise.
+    if @gx_b_rank > 0
+      refresh_b_lowrank!
+      return nil
+    end
     bi = 0
     @gx_b_sr = ""
     while bi < @gx_b_handles.length
@@ -932,6 +959,392 @@ class GtxEngine
   # the failure this program keeps paying for.
   def b_stable_rank_report
     @gx_b_sr.length > 0 ? @gx_b_sr : "none (no DFA taps wired)"
+  end
+
+  # ---- toy#172 / E2: ADAPTIVE LOW-RANK FEEDBACK (LDFA) ----
+  #
+  # LDFA (Hanut & Kadmon 2026, arXiv:2502.20580) factorises the feedback
+  # matrix as B_eff = Q . P with Q [dout x r] and P [r x V]. P is either
+  # a fixed random draw or ADAPTED to the error stream by Oja's rule; the
+  # fixed-vs-adaptive contrast at each width IS the hypothesis.
+  #
+  # ── NO NEW GRAPH NODE, FOR THE THIRD TIME ──
+  #
+  # Same argument as nDFA's: B is generated HOST-SIDE by refresh_b! and
+  # uploaded, so a factorisation is a change to what gets uploaded and
+  # nothing else. The ||g|| instrument on this lane realized as ZEROS
+  # through three separate readout paths and had to be removed; the
+  # E1 instrument and nDFA both avoided a new node and both worked.
+  #
+  # ── THE SCALE CONTROL, WHICH IS WHAT MAKES ANY OF THIS MEAN ANYTHING ──
+  #
+  # Q.P has a completely different Frobenius norm from the full-width B it
+  # replaces (it is a product of two draws, and its scale depends on r).
+  # Left alone, "low rank hurts" would be indistinguishable from "the
+  # updates got smaller" — a global gain on B is an LR change wearing a
+  # rank costume, exactly the confound nDFA's `preserve` gain was built to
+  # remove. So the full-width draw this arm REPLACES is regenerated from
+  # the SAME seed and B_eff is rescaled to its realised ||B||_F. Both
+  # norms are emitted, so a reader can verify the arms differ in RANK and
+  # not in SCALE rather than take it on faith.
+  #
+  # ── P IS ORTHONORMALISED AT INIT IN *BOTH* MODES ──
+  #
+  # A deliberate deviation from the spec's "fixed random draw": Oja's rule
+  # REQUIRES orthonormal rows, so an un-orthonormalised `none` would
+  # differ from `oja` in two ways at once and the contrast would not be a
+  # clean B-test. At r << V a Gaussian [r x V] draw is already
+  # near-orthogonal, so this changes the fixed arm very little — but
+  # "very little" is not "nothing", and the point of the arm is that the
+  # ONLY difference is the adaptivity. Stated in provenance as
+  # `p_ortho=init`.
+  #
+  # ── rank_eff IS NOT r ──
+  #
+  # rank(Q.P) <= min(dout, r), and dout is d_model = 128 on this fixture.
+  # So r = 256 does NOT give a rank-256 feedback matrix — it gives the
+  # SAME rank as full width, with the row space confined to P's 256-dim
+  # span. That is still a real intervention under `oja` (the span is the
+  # error's dominant subspace rather than a random one) but it is NOT a
+  # rank reduction, and reading "r=256" as "rank 256" would misstate the
+  # whole ladder. `rank_eff` and `dout` are both on the provenance line.
+  def refresh_b_lowrank!
+    v = @gx_active_classes
+    r = @gx_b_rank
+    if @gx_p_ready == 0
+      init_p!(v, r)
+      @gx_p_ready = 1
+    end
+    @gx_b_sr = ""
+    eff2  = 0.0
+    full2 = 0.0
+    rke   = 0
+    dmax  = 0
+    bi = 0
+    while bi < @gx_b_handles.length
+      dout = @gx_b_douts[bi]
+      nb   = dout * v
+      # THE SCALE TARGET: the realised Frobenius norm of the full-width
+      # draw this tap would have had. It is a function of the SEED alone,
+      # so it is computed once and cached — the draw itself is 5 x 5e5
+      # Box-Muller samples and paying for it at every Oja refresh would
+      # cost more than the adaptation it normalises.
+      if bi >= @gx_ld_tgt2.length
+        sigf  = Toy::Train::DfaB.sigma_for(@gx_b_scale, v, dout, @gx_b_sigma)
+        bfull = Toy::Train::DfaB.fill(nb, @gx_b_seeds[bi], @gx_b_dist, sigf)
+        acc0 = 0.0
+        k = 0
+        while k < nb
+          acc0 = acc0 + bfull[k] * bfull[k]
+          k = k + 1
+        end
+        @gx_ld_tgt2.push(acc0)
+      end
+      tf2 = @gx_ld_tgt2[bi]
+      # Q [dout x r], from the tap's OWN seed, so --b-seed keeps meaning
+      # what it meant on every other arm of this lane.
+      sigq = Toy::Train::DfaB.sigma_for(@gx_b_scale, r, dout, @gx_b_sigma)
+      q = Toy::Train::DfaB.fill(dout * r, @gx_b_seeds[bi], @gx_b_dist, sigq)
+
+      # B_eff = Q P, accumulated row by row: the inner loop walks P and
+      # B_eff contiguously, which matters at dout*r*v ~ 1.3e8 per tap.
+      vals = Array.new(nb, 0.0)
+      rr = 0
+      while rr < dout
+        base = rr * v
+        t = 0
+        while t < r
+          qq = q[rr * r + t]
+          pb = t * v
+          c = 0
+          while c < v
+            vals[base + c] = vals[base + c] + qq * @gx_p[pb + c]
+            c = c + 1
+          end
+          t = t + 1
+        end
+        rr = rr + 1
+      end
+
+      ef2 = 0.0
+      k2 = 0
+      while k2 < nb
+        ef2 = ef2 + vals[k2] * vals[k2]
+        k2 = k2 + 1
+      end
+      if ef2 > 0.0
+        gsc = Math.sqrt(tf2 / ef2)
+        k3 = 0
+        while k3 < nb
+          vals[k3] = vals[k3] * gsc
+          k3 = k3 + 1
+        end
+      end
+      # Re-measured AFTER the rescale, not assumed from it: the emitted
+      # ||B_eff||_F must describe what was actually uploaded.
+      ef2b = 0.0
+      k4 = 0
+      while k4 < nb
+        ef2b = ef2b + vals[k4] * vals[k4]
+        k4 = k4 + 1
+      end
+      eff2  = eff2 + ef2b
+      full2 = full2 + tf2
+
+      TinyNN.tnn_upload_from_float_array(@sess, @gx_b_handles[bi], vals, nb)
+
+      rk = r < dout ? r : dout
+      if rk > rke
+        rke = rk
+      end
+      if dout > dmax
+        dmax = dout
+      end
+
+      fro2 = ef2b
+      rmax = 0.0
+      r5 = 0
+      while r5 < dout
+        rn = 0.0
+        c5 = 0
+        base5 = r5 * v
+        while c5 < v
+          rn = rn + vals[base5 + c5] * vals[base5 + c5]
+          c5 = c5 + 1
+        end
+        if rn > rmax
+          rmax = rn
+        end
+        r5 = r5 + 1
+      end
+      sr = rmax > 0.0 ? (fro2 / rmax) : 0.0
+      @gx_b_sr = @gx_b_sr + (bi > 0 ? " " : "") +
+                 "B" + bi.to_s + "=[" + dout.to_s + "x" + v.to_s +
+                 "]sr_ub=" + sr.to_s
+      bi = bi + 1
+    end
+    @gx_ld_fro_eff  = Math.sqrt(eff2)
+    @gx_ld_fro_full = Math.sqrt(full2)
+    @gx_ld_rank_eff = rke
+    @gx_ld_dout     = dmax
+    nil
+  end
+
+  # P [r x V]: one i.i.d. draw from the SAME DfaB machinery, then MGS.
+  # Its seed is separate from every tap's, because P is SHARED across taps
+  # — the compression is a property of the error stream, not of the tap,
+  # which is the whole structure LDFA proposes.
+  def init_p!(v, r)
+    sigp = Toy::Train::DfaB.sigma_for(@gx_b_scale, v, r, @gx_b_sigma)
+    @gx_p = Toy::Train::DfaB.fill(r * v, @gx_b_pseed, @gx_b_dist, sigp)
+    ortho_p!(v, r)
+  end
+
+  # Modified Gram-Schmidt over the ROWS of P, in place. Returns 0, or 1 if
+  # a row collapses to zero (which at r << V means the draw or an Oja step
+  # destroyed the basis, and it must not be silently renormalised).
+  def ortho_p!(v, r)
+    i = 0
+    while i < r
+      bi2 = i * v
+      j = 0
+      while j < i
+        bj = j * v
+        d = 0.0
+        c = 0
+        while c < v
+          d = d + @gx_p[bi2 + c] * @gx_p[bj + c]
+          c = c + 1
+        end
+        c2 = 0
+        while c2 < v
+          @gx_p[bi2 + c2] = @gx_p[bi2 + c2] - d * @gx_p[bj + c2]
+          c2 = c2 + 1
+        end
+        j = j + 1
+      end
+      nrm = 0.0
+      c3 = 0
+      while c3 < v
+        nrm = nrm + @gx_p[bi2 + c3] * @gx_p[bi2 + c3]
+        c3 = c3 + 1
+      end
+      nrm = Math.sqrt(nrm)
+      d0 = nrm - nrm
+      if nrm <= 0.0 || d0 != 0.0
+        return 1
+      end
+      c4 = 0
+      while c4 < v
+        @gx_p[bi2 + c4] = @gx_p[bi2 + c4] / nrm
+        c4 = c4 + 1
+      end
+      i = i + 1
+    end
+    0
+  end
+
+  # ── ONE ADAPTATION / MEASUREMENT PASS OVER m ERROR SAMPLES ──
+  #
+  # Oja's subspace rule, per error sample e (a V-vector), with P's rows
+  # orthonormal:
+  #
+  #     y = P e                                  [r]
+  #     P += eta (y e' - y y' P)  ==  eta y (e - P'y)'
+  #
+  # The right-hand form is what is implemented and it is why this is
+  # cheap: y y' P is [r x r][r x V] read naively, but (y y')P = y (P'y)'
+  # is a RANK-1 update, so the whole step is 3 r V rather than r^2 V.
+  #
+  # `apply` is 0 for the FIXED arm, which still runs the measurement pass
+  # (the energy fraction below is the two arms' only common yardstick) and
+  # updates nothing. Both arms therefore download the same logits on the
+  # same steps — the fixed/adaptive contrast is the Oja update and nothing
+  # else.
+  #
+  # The orthonormality diagnostics are taken BEFORE re-orthonormalising,
+  # deliberately: after MGS the row norms are 1 and the off-diagonals ~0
+  # BY CONSTRUCTION, so measuring there would print a tautology while a
+  # diverging eta went unnoticed. What is reported is the drift Oja
+  # actually accumulated over this refresh's m samples.
+  #
+  # Returns SEVEN FLOATS and nothing else (a mixed-type array comes back
+  # `unknown` under Spinel and the first .to_f on it fails at runtime):
+  #   [0] status  0 ok / 1 basis collapsed or non-finite / 2 not configured
+  #   [1] min row norm of P before re-orthonormalisation
+  #   [2] max row norm     "
+  #   [3] max |P_i . P_j|, i != j, before re-orthonormalisation
+  #   [4] captured energy fraction  sum||P e||^2 / sum||e||^2
+  #   [5] ||B_eff||_F after the rebuild
+  #   [6] ||B_full||_F, the scale target
+  def adapt_p!(ebuf, n, eta, apply)
+    out = [0.0]
+    out.push(0.0); out.push(0.0); out.push(0.0)
+    out.push(0.0); out.push(0.0); out.push(0.0)
+    if @gx_b_rank < 1 || @gx_p_ready == 0 || n < 1
+      out[0] = 2.0
+      return out
+    end
+    v = @gx_active_classes
+    r = @gx_b_rank
+    y = Array.new(r, 0.0)
+    w = Array.new(v, 0.0)
+    cap = 0.0
+    tot = 0.0
+    s = 0
+    while s < n
+      eb = s * v
+      t = 0
+      while t < r
+        acc = 0.0
+        pb = t * v
+        c = 0
+        while c < v
+          acc = acc + @gx_p[pb + c] * ebuf[eb + c]
+          c = c + 1
+        end
+        y[t] = acc
+        cap = cap + acc * acc
+        t = t + 1
+      end
+      c0 = 0
+      while c0 < v
+        tot = tot + ebuf[eb + c0] * ebuf[eb + c0]
+        c0 = c0 + 1
+      end
+      if apply == 1 && eta > 0.0
+        c1 = 0
+        while c1 < v
+          w[c1] = 0.0
+          c1 = c1 + 1
+        end
+        t2 = 0
+        while t2 < r
+          yy = y[t2]
+          pb2 = t2 * v
+          c3 = 0
+          while c3 < v
+            w[c3] = w[c3] + yy * @gx_p[pb2 + c3]
+            c3 = c3 + 1
+          end
+          t2 = t2 + 1
+        end
+        t3 = 0
+        while t3 < r
+          g = eta * y[t3]
+          pb3 = t3 * v
+          c4 = 0
+          while c4 < v
+            @gx_p[pb3 + c4] = @gx_p[pb3 + c4] + g * (ebuf[eb + c4] - w[c4])
+            c4 = c4 + 1
+          end
+          t3 = t3 + 1
+        end
+      end
+      s = s + 1
+    end
+
+    # Drift, measured on the CURRENT P (post-Oja, pre-MGS).
+    rn_min = 0.0
+    rn_max = 0.0
+    off    = 0.0
+    i = 0
+    while i < r
+      bi2 = i * v
+      nn = 0.0
+      c5 = 0
+      while c5 < v
+        nn = nn + @gx_p[bi2 + c5] * @gx_p[bi2 + c5]
+        c5 = c5 + 1
+      end
+      nn = Math.sqrt(nn)
+      if i == 0 || nn < rn_min
+        rn_min = nn
+      end
+      if nn > rn_max
+        rn_max = nn
+      end
+      j = 0
+      while j < i
+        bj = j * v
+        d = 0.0
+        c6 = 0
+        while c6 < v
+          d = d + @gx_p[bi2 + c6] * @gx_p[bj + c6]
+          c6 = c6 + 1
+        end
+        if d < 0.0
+          d = 0.0 - d
+        end
+        if d > off
+          off = d
+        end
+        j = j + 1
+      end
+      i = i + 1
+    end
+    # FINITE OR NOTHING. A diverged eta uploads inf/nan into B and the
+    # loss simply stops being a number partway through a 4000-step run,
+    # with nothing in the output saying so.
+    dchk = (rn_max - rn_max) + (off - off) + (cap - cap)
+    if dchk != 0.0
+      out[0] = 1.0
+      return out
+    end
+    if apply == 1 && eta > 0.0
+      if ortho_p!(v, r) != 0
+        out[0] = 1.0
+        return out
+      end
+      refresh_b_lowrank!
+    end
+    out[1] = rn_min
+    out[2] = rn_max
+    out[3] = off
+    out[4] = tot > 0.0 ? (cap / tot) : 0.0
+    out[5] = @gx_ld_fro_eff
+    out[6] = @gx_ld_fro_full
+    out
   end
 
   # ---- toy#172 / E1 Phase 1.2: the nDFA ERROR-SIDE PRECONDITIONER ----

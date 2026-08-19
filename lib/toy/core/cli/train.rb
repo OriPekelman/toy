@@ -242,6 +242,14 @@ module Toy
           @ndfa_every     = nil
           @ndfa_samples   = nil
           @ndfa_gain      = nil
+          # toy#172 (E2): LDFA, adaptive low-rank feedback on the same
+          # lane. All nil = `full`, which is byte-identical to the runner
+          # as it stood before the flag existed.
+          @dfa_feedback_rank  = nil
+          @dfa_feedback_adapt = nil
+          @ldfa_eta       = nil
+          @ldfa_every     = nil
+          @ldfa_samples   = nil
           # toy#165 (ae): the latent-autoencoder lane (capstone P1a).
           #
           # --text is NOT --corpus and there is NO --vocab here. --corpus
@@ -660,6 +668,17 @@ module Toy
                              "GTX_NDFA_EVERY"  => (@ndfa_every || 500).to_s,
                              "GTX_NDFA_M"      => (@ndfa_samples || 256).to_s,
                              "GTX_NDFA_GAIN"   => (@ndfa_gain || ""),
+                             # toy#172 (E2). The RANK is passed verbatim
+                             # as a string: "full" and an integer are the
+                             # two legal values and the runner is what
+                             # distinguishes them — mapping "full" to 0
+                             # here would re-create the empty-string trap
+                             # the runner documents, one layer up.
+                             "GTX_DFA_RANK"    => (@dfa_feedback_rank || ""),
+                             "GTX_DFA_ADAPT"   => (@dfa_feedback_adapt || ""),
+                             "GTX_LDFA_ETA"    => (@ldfa_eta || ""),
+                             "GTX_LDFA_EVERY"  => (@ldfa_every || 500).to_s,
+                             "GTX_LDFA_M"      => (@ldfa_samples || 128).to_s,
                              "GTX_LOAD_CKPT"      => (@load_ckpt || ""))
           elsif @recipe == "lstm"
             # Lane-local LSTM_* namespace, same discipline as the others.
@@ -891,7 +910,7 @@ module Toy
           # reports neither its result nor its provenance — which is
           # exactly how every cell ended up driven through the env
           # harness instead.
-          losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") || l.start_with?("val:") || l.start_with?("train:") || l.start_with?("graph:") || l.start_with?("stream:") || l.start_with?("gen:") || l.start_with?("corpus:") || l.start_with?("noise:") || l.start_with?("half_snr:") || l.start_with?("control:") || l.start_with?("latent_std:") || l.start_with?("converged:") || l.start_with?("stage1:") || l.start_with?("arm:") || l.start_with?("resid:") || l.start_with?("judge:") || l.start_with?("objective:") || l.start_with?("epsmse:") || l.start_with?("bytelm:") || l.start_with?("ndfa:") || l.start_with?("bcond") || l.start_with?("gtx: ") }.map(&:chomp)
+          losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") || l.start_with?("val:") || l.start_with?("train:") || l.start_with?("graph:") || l.start_with?("stream:") || l.start_with?("gen:") || l.start_with?("corpus:") || l.start_with?("noise:") || l.start_with?("half_snr:") || l.start_with?("control:") || l.start_with?("latent_std:") || l.start_with?("converged:") || l.start_with?("stage1:") || l.start_with?("arm:") || l.start_with?("resid:") || l.start_with?("judge:") || l.start_with?("objective:") || l.start_with?("epsmse:") || l.start_with?("bytelm:") || l.start_with?("ndfa:") || l.start_with?("ldfa:") || l.start_with?("bcond") || l.start_with?("gtx: ") }.map(&:chomp)
           emit(run_id, run_dir, losses)
         end
 
@@ -1540,6 +1559,63 @@ module Toy
               val = $1
               return bad_arg("--ndfa-gain must be preserve or raw, got #{val.inspect}") unless %w[preserve raw].include?(val)
               @ndfa_gain = val
+            # toy#172 (E2) — LDFA. `--dfa-feedback-rank` is deliberately
+            # NOT an integer-only flag: `full` is a legal value and it is
+            # the default, so the flag can name the control arm explicitly
+            # rather than by omission.
+            when "--dfa-feedback-rank"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--dfa-feedback-rank requires a value") if val.nil?
+              return bad_arg("--dfa-feedback-rank must be `full` or a positive integer, got #{val.inspect}") unless val == "full" || (val =~ /\A\d+\z/ && val.to_i >= 1)
+              @dfa_feedback_rank = val
+            when /\A--dfa-feedback-rank=(.*)\z/
+              val = $1
+              return bad_arg("--dfa-feedback-rank must be `full` or a positive integer, got #{val.inspect}") unless val == "full" || (val =~ /\A\d+\z/ && val.to_i >= 1)
+              @dfa_feedback_rank = val
+            when "--dfa-feedback-adapt"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--dfa-feedback-adapt requires a value") if val.nil?
+              return bad_arg("--dfa-feedback-adapt must be none or oja, got #{val.inspect}") unless %w[none oja].include?(val)
+              @dfa_feedback_adapt = val
+            when /\A--dfa-feedback-adapt=(.*)\z/
+              val = $1
+              return bad_arg("--dfa-feedback-adapt must be none or oja, got #{val.inspect}") unless %w[none oja].include?(val)
+              @dfa_feedback_adapt = val
+            # eta stays a STRING to the env for the same reason the ridge
+            # does: it is experiment identity, and "0.05".to_f.to_s round
+            # trips fine while "1e-3" does not.
+            when "--ldfa-eta"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--ldfa-eta requires a value") if val.nil?
+              return bad_arg("--ldfa-eta must be a non-negative float, got #{val.inspect}") unless val =~ /\A\d*\.?\d+([eE][+-]?\d+)?\z/ && val.to_f >= 0.0
+              @ldfa_eta = val
+            when /\A--ldfa-eta=(.*)\z/
+              val = $1
+              return bad_arg("--ldfa-eta must be a non-negative float, got #{val.inspect}") unless val =~ /\A\d*\.?\d+([eE][+-]?\d+)?\z/ && val.to_f >= 0.0
+              @ldfa_eta = val
+            when "--ldfa-every", "--ldfa-samples"
+              key = tok
+              i += 1
+              val = @argv[i]
+              return bad_arg("#{key} requires a value") if val.nil?
+              return bad_arg("#{key} must be an integer >= 1, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= 1
+              if key == "--ldfa-every"
+                @ldfa_every = val.to_i
+              else
+                @ldfa_samples = val.to_i
+              end
+            when /\A--ldfa-(every|samples)=(.*)\z/
+              key = $1
+              val = $2
+              return bad_arg("--ldfa-#{key} must be an integer >= 1, got #{val.inspect}") unless val =~ /\A\d+\z/ && val.to_i >= 1
+              if key == "every"
+                @ldfa_every = val.to_i
+              else
+                @ldfa_samples = val.to_i
+              end
             when "--align-events"
               @align_events = true
             when "--no-shadow"
@@ -2058,6 +2134,12 @@ when /\A--dfa-feedback-lr=(.*)\z/
             ["--dfa-feedback-precond/--ndfa-*", %w[gtx],
              (!@dfa_feedback_precond.nil? || !@ndfa_lambda.nil? || !@ndfa_every.nil? ||
               !@ndfa_samples.nil? || !@ndfa_gain.nil?), " (toy#172/E1: the nDFA error-side preconditioner folds lambda(C_E+lambda I)^-1 into the gtx byte-LM lane's feedback matrix B)"],
+            # toy#172/E2. Same scope and for the same reason: LDFA
+            # COMPRESSES the error to r dimensions, and r < V is only a
+            # compression where V is wide.
+            ["--dfa-feedback-rank/--dfa-feedback-adapt/--ldfa-*", %w[gtx],
+             (!@dfa_feedback_rank.nil? || !@dfa_feedback_adapt.nil? || !@ldfa_eta.nil? ||
+              !@ldfa_every.nil? || !@ldfa_samples.nil?), " (toy#172/E2: LDFA factorises the gtx byte-LM lane's feedback matrix B as Q[dout x r].P[r x V])"],
             # --align-events deliberately EXCLUDES ssm AND lstm: on both,
             # the DFA update arrives through autodiff from the surrogate
             # roots, so it lands in the same accumulator a BP run would
@@ -2389,6 +2471,33 @@ when /\A--dfa-feedback-lr=(.*)\z/
           end
           if ndfa_sub && @dfa_feedback_precond != "ndfa"
             return bad_arg("--ndfa-* is meaningless without --dfa-feedback-precond ndfa — the knobs would be parsed, wired and then never read, which is an inert flag that still labels the cell")
+          end
+          # ---- toy#172 / E2: the LDFA conditionals ----
+          #
+          # Same shape as nDFA's and for the same reasons. The one that is
+          # NOT shared: LDFA and nDFA both fold into the SAME uploaded B
+          # and are OPPOSITE interventions — nDFA whitens the dominant
+          # error directions, LDFA compresses to them — so composing them
+          # produces a cell that is neither arm and is refused on both
+          # front doors rather than given an unstated meaning.
+          ldfa_sub = !@dfa_feedback_adapt.nil? || !@ldfa_eta.nil? ||
+                     !@ldfa_every.nil? || !@ldfa_samples.nil?
+          if @recipe == "gtx" && (!@dfa_feedback_rank.nil? || ldfa_sub) && @task != "bytelm"
+            return bad_arg("--dfa-feedback-rank/--dfa-feedback-adapt/--ldfa-* on recipe 'gtx' require --task bytelm (toy#172/E2: LDFA compresses the ERROR to r dimensions and the question is about a WIDE error vector — the relational task's head is TY*TY = 16 classes, where r < V is not a compression worth the name)")
+          end
+          if ldfa_sub && (@dfa_feedback_rank.nil? || @dfa_feedback_rank == "full")
+            return bad_arg("--dfa-feedback-adapt/--ldfa-* are meaningless at --dfa-feedback-rank full (the default) — the adaptation acts on P, and there is no P without a factorisation, so the knobs would be parsed, wired and then never read")
+          end
+          if !@ldfa_eta.nil? && @dfa_feedback_adapt != "oja"
+            return bad_arg("--ldfa-eta is meaningless without --dfa-feedback-adapt oja — nothing steps P on the fixed arm")
+          end
+          if !@dfa_feedback_rank.nil? && @dfa_feedback_rank != "full" &&
+             @dfa_feedback_precond == "ndfa"
+            return bad_arg("--dfa-feedback-rank and --dfa-feedback-precond ndfa both fold into the SAME uploaded feedback matrix B and are OPPOSITE interventions (nDFA whitens the dominant error directions; LDFA compresses to them). Composing them silently would produce a cell that is neither arm")
+          end
+          if !@dfa_feedback_rank.nil? && @dfa_feedback_rank != "full" &&
+             !@vocab.nil? && @dfa_feedback_rank.to_i >= @vocab
+            return bad_arg("--dfa-feedback-rank #{@dfa_feedback_rank} is not below --vocab #{@vocab}: at r >= V the factorisation spans the whole error space and the arm is `full` wearing a low-rank label")
           end
           if @task == "community" && @recipe != "gnn"
             return bad_arg("--task community is only valid with recipe 'gnn' (toy#153); 'mlp' takes teacher|blobs")
