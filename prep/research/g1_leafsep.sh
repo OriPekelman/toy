@@ -1,5 +1,5 @@
 #!/bin/zsh
-# prep/g1_leafsep.sh — toy#173 (G1) read 3: LEAF SEPARABILITY.
+# prep/research/g1_leafsep.sh — toy#173 (G1) read 3: LEAF SEPARABILITY.
 #
 # The dimension read says structure is small (76, saturating) while the
 # leaf vocabulary is open (1091 at 400 functions, growing ~n^0.79). So
@@ -17,14 +17,15 @@
 # two are entangled and the small-output claim does not survive the
 # leaves — which is the honest `no-go` on separability.
 set -e
-cd "$(dirname "$0")/.."
+# repo root is TWO levels up from prep/research/ (was one, from prep/).
+cd "$(dirname "$0")/../.."
 OUT=${OUT:-/srv/data/scratch/g1leaf}
 mkdir -p "$OUT"
 STEPS=${STEPS:-3000}
 SEEDS=${SEEDS:-5}
 LR=${LR:-0.03}
 
-python3 prep/build_ast_pack.py --out data/ast_leafmerged --merge-leaves >/dev/null 2>&1 || {
+python3 prep/research/build_ast_pack.py --out data/ast_leafmerged --merge-leaves >/dev/null 2>&1 || {
   echo "build_ast_pack.py has no --merge-leaves yet"; exit 2; }
 
 for pack in ast_code ast_leafmerged; do

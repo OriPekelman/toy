@@ -1,5 +1,5 @@
 #!/usr/bin/env ruby
-# prep/g1_report.rb — toy#173 (G1): read the AST-node-type arms.
+# prep/research/g1_report.rb — toy#173 (G1): read the AST-node-type arms.
 #
 # THE THREE READS TAO ASKED FOR, in order:
 #   1. the structural node-type dimension (the head width) WITH the raw
@@ -8,7 +8,7 @@
 #   2. dfa-structure vs bp vs frozen, per-arm LR, with sd — does F17's
 #      Cora result (dfa .736 > bp .672) transfer from a homophilous
 #      citation graph to a heterophilous code tree;
-#   3. leaf separability — handled by prep/g1_leafsep.sh, not here.
+#   3. leaf separability — handled by prep/research/g1_leafsep.sh, not here.
 #
 # The gate on every comparison is `bp > frozen`, checked PER SEED. On a
 # tree that is not free: structure is informative and a frozen random GNN

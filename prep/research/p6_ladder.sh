@@ -1,5 +1,5 @@
 #!/bin/zsh
-# prep/p6_ladder.sh — toy#170 spec P6: ARITHMETIC RANK at a pinned head.
+# prep/research/p6_ladder.sh — toy#170 spec P6: ARITHMETIC RANK at a pinned head.
 #
 # WHAT THIS IS NOT. This is not the output-dim law's rematch. P5 settled
 # that in the controlled 27-1024 range and the udhr evidence for it was a
@@ -35,7 +35,8 @@
 # while a 0.1-bit decay needs n ~ 10 at b=3 and ~ 19 at b=5. The sign is
 # nearly free and boring; a decay is the only interesting outcome.
 set -e
-cd "$(dirname "$0")/.."
+# repo root is TWO levels up from prep/research/ (was one, from prep/).
+cd "$(dirname "$0")/../.."
 OUT=${OUT:-/srv/data/scratch/p6}
 mkdir -p "$OUT"
 STEPS=${STEPS:-4000}

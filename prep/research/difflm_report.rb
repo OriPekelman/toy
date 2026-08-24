@@ -1,6 +1,6 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-# prep/difflm_report.rb — the toy#166 (capstone P1b) GENERATION METRICS.
+# prep/research/difflm_report.rb — the toy#166 (capstone P1b) GENERATION METRICS.
 #
 # Reads the byte streams a difflm run emitted (`gen.bytes`, `real.bytes`)
 # and computes the distribution-match half of the metric:
@@ -22,7 +22,7 @@
 # under any judge. The n-gram JS is the distribution guard, and the
 # distinct-3gram ratio makes the failure legible when it happens.
 #
-#   ruby prep/difflm_report.rb <run-dir> [<run-dir> ...]
+#   ruby prep/research/difflm_report.rb <run-dir> [<run-dir> ...]
 #
 # Plain MRI (NOT Spinel-compiled) — same status as every other prep/
 # analysis script.

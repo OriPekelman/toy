@@ -1,5 +1,5 @@
 #!/usr/bin/env ruby
-# prep/p5_report.rb — read the P5 cells and report the alphabet axis.
+# prep/research/p5_report.rb — read the P5 cells and report the alphabet axis.
 #
 # PRIMARY STATISTIC = ABSOLUTE BITS RECOVERED (frozen - dfa).
 #

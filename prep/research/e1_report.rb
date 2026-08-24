@@ -1,5 +1,5 @@
 #!/usr/bin/env ruby
-# prep/e1_report.rb — toy#172/E1: read the B-conditioning instrument off
+# prep/research/e1_report.rb — toy#172/E1: read the B-conditioning instrument off
 # the rank ladder.
 #
 # THE VERDICT IS READ ACROSS ARMS, NOT JUST ACROSS RUNGS. If DFA's

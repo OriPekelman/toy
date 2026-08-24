@@ -1,5 +1,5 @@
 #!/bin/zsh
-# prep/p3_sweep.sh — toy#170 (capstone P3) arm sweep on the gtx byte-LM lane.
+# prep/research/p3_sweep.sh — toy#170 (capstone P3) arm sweep on the gtx byte-LM lane.
 #
 # PER-ARM LR (F22 / toy#160's carried lesson): every arm is measured at
 # ITS OWN best LR. An arm scored at another arm's cell is not a negative,
@@ -11,7 +11,8 @@
 # word-split an unquoted parameter, and the two arms then silently run
 # the default and look bit-identical (the toy#141 landmine).
 set -e
-cd "$(dirname "$0")/.."
+# repo root is TWO levels up from prep/research/ (was one, from prep/).
+cd "$(dirname "$0")/../.."
 OUT=${OUT:-/srv/data/scratch/p3}
 mkdir -p "$OUT"
 

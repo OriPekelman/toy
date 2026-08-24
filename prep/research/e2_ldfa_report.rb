@@ -1,5 +1,5 @@
 #!/usr/bin/env ruby
-# prep/e2_ldfa_report.rb — toy#172/E2: read the LDFA arms off the P6 rank
+# prep/research/e2_ldfa_report.rb — toy#172/E2: read the LDFA arms off the P6 rank
 # ladder. Fixed-wide vs fixed-lowrank vs adaptive-lowrank, at each rung
 # and each r.
 #

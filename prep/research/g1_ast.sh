@@ -1,5 +1,5 @@
 #!/bin/zsh
-# prep/g1_ast.sh — toy#173 (G1): masked AST-node-type prediction on the
+# prep/research/g1_ast.sh — toy#173 (G1): masked AST-node-type prediction on the
 # GNN lane.
 #
 # NO ENGINE CHANGE. train_gnn takes GNN_GRAPH as a bundle prefix and
@@ -31,7 +31,8 @@
 # BEAT bp (.736 vs .672) as a regulariser. Cora is homophilous; an AST is
 # a heterophilous tree. That is the open question G1 exists to answer.
 set -e
-cd "$(dirname "$0")/.."
+# repo root is TWO levels up from prep/research/ (was one, from prep/).
+cd "$(dirname "$0")/../.."
 OUT=${OUT:-/srv/data/scratch/g1}
 mkdir -p "$OUT"
 GRAPH=${GRAPH:-data/ast_code}

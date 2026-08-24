@@ -1,9 +1,9 @@
 #!/usr/bin/env ruby
-# prep/e1_ndfa_report.rb — toy#172/E1 Phase 1.2: read the nDFA arms off
+# prep/research/e1_ndfa_report.rb — toy#172/E1 Phase 1.2: read the nDFA arms off
 # the P6 rank ladder beside the unpreconditioned ones.
 #
 # PRIMARY STATISTIC = PER-ARM EXCESS OVER log2(m), the same one P6's
-# verdict is stated on (prep/p5_report.rb MODE=rank). Each rung's
+# verdict is stated on (prep/research/p5_report.rb MODE=rank). Each rung's
 # inflation adds b = H(rung) - H(base) bits of pure noise to the label,
 # so the part of a bpb rise that is NOT b is the part the credit rule is
 # responsible for. Paired BY SEED against the b=0 rung, so a seed's own
@@ -52,7 +52,7 @@ def bpb_of(f)
   v&.to_f
 end
 
-# The per-rung best LR, re-derived exactly as prep/p6_ladder.sh derived
+# The per-rung best LR, re-derived exactly as prep/research/p6_ladder.sh derived
 # it — off seed 0, over that arm's own grid. Never a single LR across
 # rungs: the DFA optimum slid 3e-4 -> 1e-3 and then CRASHED to 3e-5.
 def best_lr(dir, arm, rung, grid, head)

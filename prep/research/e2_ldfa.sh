@@ -1,5 +1,5 @@
 #!/bin/zsh
-# prep/e2_ldfa.sh — toy#172/E2: LDFA, adaptive low-rank feedback, across
+# prep/research/e2_ldfa.sh — toy#172/E2: LDFA, adaptive low-rank feedback, across
 # the P6 rank ladder.
 #
 # THE HYPOTHESIS IS A CONTRAST, NOT A CURVE. LDFA (Hanut & Kadmon 2026)
@@ -61,7 +61,8 @@
 # at 4-184x the random baseline across the whole ladder. That is the
 # default. Both settings are reported — the ladder was run twice.
 set -e
-cd "$(dirname "$0")/.."
+# repo root is TWO levels up from prep/research/ (was one, from prep/).
+cd "$(dirname "$0")/../.."
 OUT=${OUT:-/srv/data/scratch/e2ldfa}
 mkdir -p "$OUT"
 STEPS=${STEPS:-4000}

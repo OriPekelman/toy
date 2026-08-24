@@ -57,7 +57,7 @@ data/gnn_*.split.i32
 # token ids has no business in the history.
 data/ae_*.meta.i32
 # toy#173 (G1): AST graph packs are BUILD ARTIFACTS — reproducible
-# from prep/build_ast_pack.py, whose module list is pinned and whose
+# from prep/research/build_ast_pack.py, whose module list is pinned and whose
 # sidecar records the interpreter version and a SHA over the exact
 # sources. Same treatment as the ae_*/gnn_* packs.
 data/ast_*.i32
@@ -328,3 +328,7 @@ prep/smokes/smoke_projection_lens_metal.rb
 
 # spin build output (build/bin/<target>); spin clean removes it
 /build/
+
+# Python bytecode (e.g. from `python3 -m py_compile` spot-checks)
+__pycache__/
+*.pyc

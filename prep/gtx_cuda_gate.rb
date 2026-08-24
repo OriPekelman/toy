@@ -136,7 +136,7 @@ SMALL = { "GTX_TASK" => "bytelm", "GTX_TEXT" => PACK,
           "GTX_VOCAB" => "65", "GTX_CONTEXT" => "32", "GTX_D_MODEL" => "32",
           "GTX_HEADS" => "2", "GTX_D_FF" => "64", "GTX_BLOCKS" => "2",
           "GTX_VAL_BATCHES" => "2" }
-# The shape the science actually runs (prep/p6_ladder.sh), at a step count
+# The shape the science actually runs (prep/research/p6_ladder.sh), at a step count
 # a gate can afford. Shape is what decides which CUDA kernels are hit, so
 # it must not be shrunk to the small cell.
 BIG   = { "GTX_TASK" => "bytelm", "GTX_TEXT" => PACK,

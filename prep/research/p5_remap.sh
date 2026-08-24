@@ -1,5 +1,5 @@
 #!/bin/zsh
-# prep/p5_remap.sh — toy#170 spec P5: the CONTROLLED alphabet axis.
+# prep/research/p5_remap.sh — toy#170 spec P5: the CONTROLLED alphabet axis.
 #
 # P4 moved the alphabet by moving the CORPUS, so alphabet travelled with
 # difficulty, redundancy, genre and language count. Its one separated
@@ -33,7 +33,8 @@
 # every later pack inherit the first one's numbers — a flat curve, which
 # is a predicted outcome and therefore the most dangerous possible bug.
 set -e
-cd "$(dirname "$0")/.."
+# repo root is TWO levels up from prep/research/ (was one, from prep/).
+cd "$(dirname "$0")/../.."
 OUT=${OUT:-/srv/data/scratch/p5}
 mkdir -p "$OUT"
 STEPS=${STEPS:-4000}

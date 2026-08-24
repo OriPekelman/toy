@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""prep/build_ast_pack.py — toy#173 (G1): a Python-AST graph bundle for
+"""prep/research/build_ast_pack.py — toy#173 (G1): a Python-AST graph bundle for
 the GNN lane.
 
 WHY PYTHON AND WHY IN prep/. `prep/` already carries Python steps

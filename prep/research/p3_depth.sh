@@ -1,5 +1,5 @@
 #!/bin/zsh
-# prep/p3_depth.sh — toy#170 (capstone P3) DEPTH sweep on the gtx byte-LM.
+# prep/research/p3_depth.sh — toy#170 (capstone P3) DEPTH sweep on the gtx byte-LM.
 #
 # The question: P3 measured DFA recovering ~25% of what BP buys on a
 # 4-block transformer. Does that fraction HOLD as depth grows? If it
@@ -21,7 +21,8 @@
 # parameter, and the arms then silently run the default and look
 # bit-identical (the toy#141 landmine).
 set -e
-cd "$(dirname "$0")/.."
+# repo root is TWO levels up from prep/research/ (was one, from prep/).
+cd "$(dirname "$0")/../.."
 OUT=${OUT:-/srv/data/scratch/p3depth}
 mkdir -p "$OUT"
 STEPS=${STEPS:-4000}

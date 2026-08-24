@@ -430,7 +430,7 @@ Dir.mktmpdir("difflm_cli") do |dir|
       failures << "cli: output lacks #{k.inspect}" unless out.include?(k)
     end
     %w[gen.bytes real.bytes sample.txt].each do |f|
-      failures << "cli: #{f} not written — the n-gram metrics are computed OUT of the runner (prep/difflm_report.rb), so the byte streams have to reach disk" unless File.file?(File.join(dir, f))
+      failures << "cli: #{f} not written — the n-gram metrics are computed OUT of the runner (prep/research/difflm_report.rb), so the byte streams have to reach disk" unless File.file?(File.join(dir, f))
     end
   else
     failures << "cli: `toy train difflm` exited #{st.exitstatus}:\n#{out.lines.last(6).join}"

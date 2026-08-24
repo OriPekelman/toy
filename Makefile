@@ -309,6 +309,13 @@ help:
 	@echo "    make coverage-check                CI form (no diff means in sync)"
 	@echo "    make test                          all tinynn FFI smoke binaries"
 	@echo ""
+	@echo "  GATES — the reproducibility battery"
+	@echo "    make gates-fast                    ALL $(words $(GATES)) legs, phased, safe under -j (the sign-off run)"
+	@echo "    make gates                         same legs, strictly serial"
+	@echo "    make gates-framework               $(words $(GATES_FRAMEWORK)) framework legs only — fast iteration, NOT a sweep"
+	@echo "    make gates-research                $(words $(GATES_RESEARCH)) fixture-lane legs only — NOT a sweep"
+	@echo "    make gate-<name>                   one leg (e.g. make gate-mlp)"
+	@echo ""
 	@echo "  COMMON MAKE FLAGS"
 	@echo "    DEVICE=cuda                        on example_train_from_scratch / example_finetune_cuda"
 	@echo "    GGUF=path/to/model.gguf            on example_finetune (toy infer takes a positional path)"
@@ -2877,6 +2884,52 @@ gates-fast:
 	@echo "== phase 4/4: $(words $(GATES_SERIAL)) leg(s) that must run ALONE =="
 	@$(MAKE) -j1 $(GATES_SERIAL)
 	@echo "ALL GATES PASS ($(words $(GATES)) legs)"
+
+# ── the capability/fixture split, as SUBSETS ───────────────────────────
+#
+# `gates` and `gates-fast` still run EVERY leg and that is deliberate.
+# toy#119's note above is emphatic about why: a shared-layer change must
+# sweep all consumers, and toy#113 and toy#119 BOTH escaped through a green
+# sibling gate. Splitting the default aggregate would re-open exactly that
+# hole. These two targets are for iterating, not for signing off.
+#
+# The lane list is READ FROM THE RUBY, not typed here. FIXTURE_RECIPES in
+# lib/toy/core/cli/train.rb is the one place that decides what a fixture is;
+# a second hand-maintained copy would drift, which is the failure this
+# cleanup has now found five times (the recipe list, the prereq lists, the
+# ggml patch, the `lr` literal, the matrix gate's own probe count).
+FIXTURE_LANES := $(shell sed -n '/FIXTURE_RECIPES *= *%w\[/,/\]/p' lib/toy/core/cli/train.rb | tr '\n' ' ' | sed 's/.*%w\[//; s/\].*//')
+# gate-lmc is the two-checkpoint linear-mode-connectivity instrument — a
+# research instrument that is not named after a lane, so it is added by hand.
+GATES_RESEARCH  := $(sort $(foreach l,$(FIXTURE_LANES),$(filter gate-$(l) gate-$(l)-%,$(GATES))) $(filter gate-lmc,$(GATES)))
+GATES_FRAMEWORK := $(filter-out $(GATES_RESEARCH),$(GATES))
+
+.PHONY: gates-framework
+gates-framework:
+	@echo "== $(words $(GATES_FRAMEWORK)) FRAMEWORK legs (of $(words $(GATES)) total) =="
+	@$(MAKE) -j$(GATE_JOBS) $(filter-out $(GATES_CUDA) $(GATES_SERIAL),$(GATES_FRAMEWORK))
+	@$(MAKE) -j1 $(filter $(GATES_CUDA),$(GATES_FRAMEWORK))
+	@$(MAKE) -j1 $(filter $(GATES_SERIAL),$(GATES_FRAMEWORK))
+	@echo "FRAMEWORK GATES PASS ($(words $(GATES_FRAMEWORK)) legs) — NOT a full sweep; run 'make gates-fast' before shipping"
+
+.PHONY: gates-research
+gates-research:
+	@echo "== $(words $(GATES_RESEARCH)) RESEARCH FIXTURE legs (of $(words $(GATES)) total) =="
+	@$(MAKE) -j$(GATE_JOBS) $(filter-out $(GATES_CUDA) $(GATES_SERIAL),$(GATES_RESEARCH))
+	@$(MAKE) -j1 $(filter $(GATES_CUDA),$(GATES_RESEARCH))
+	@echo "RESEARCH GATES PASS ($(words $(GATES_RESEARCH)) legs) — NOT a full sweep; run 'make gates-fast' before shipping"
+
+# Partition assertion: every leg lands in exactly one half. Cheap, and it
+# is what keeps the derived lane list honest — if the sed ever stops
+# matching, GATES_RESEARCH silently empties and `gates-framework` quietly
+# becomes the whole battery while still calling itself a subset.
+.PHONY: gates-partition-check
+gates-partition-check:
+	@test $$(( $(words $(GATES_FRAMEWORK)) + $(words $(GATES_RESEARCH)) )) -eq $(words $(GATES)) \
+	  || { echo "PARTITION BROKEN: $(words $(GATES_FRAMEWORK))+$(words $(GATES_RESEARCH)) != $(words $(GATES))"; exit 1; }
+	@test $(words $(FIXTURE_LANES)) -eq 11 \
+	  || { echo "FIXTURE_LANES read $(words $(FIXTURE_LANES)) lanes, expected 11 — the sed against FIXTURE_RECIPES has drifted"; exit 1; }
+	@echo "ok: $(words $(GATES)) legs = $(words $(GATES_FRAMEWORK)) framework + $(words $(GATES_RESEARCH)) research; $(words $(FIXTURE_LANES)) lanes read from FIXTURE_RECIPES"
 
 # toy#109 CUDA franken leg — the CUDA twin of the spec-callable runner
 # (`toy train franken --device cuda`). Force-link keeps the CUDA backend

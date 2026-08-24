@@ -1,5 +1,5 @@
 #!/bin/zsh
-# prep/p4_alphabet.sh — toy#170 spec P4: the ALPHABET arm on the gtx
+# prep/research/p4_alphabet.sh — toy#170 spec P4: the ALPHABET arm on the gtx
 # byte-LM lane.
 #
 # The question: P3 measured DFA recovering ~25% of what BP buys at
@@ -16,7 +16,8 @@
 #
 # Depth is FIXED at 4 (the P3 anchor) so the alphabet is the only axis.
 set -e
-cd "$(dirname "$0")/.."
+# repo root is TWO levels up from prep/research/ (was one, from prep/).
+cd "$(dirname "$0")/../.."
 OUT=${OUT:-/srv/data/scratch/p4}
 mkdir -p "$OUT"
 STEPS=${STEPS:-4000}
@@ -43,7 +44,7 @@ cell () {          # cell <label> <policy> <cut> <lr> <seed> <corpus>
 
 rep () {           # rep <token> <n>
   # Separate `local` lines: zsh evaluates every RHS on a `local` line
-  # BEFORE any of its assignments bind (see prep/p3_depth.sh).
+  # BEFORE any of its assignments bind (see prep/research/p3_depth.sh).
   local t=$1
   local n=$2
   local s=$t

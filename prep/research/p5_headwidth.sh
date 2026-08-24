@@ -1,8 +1,8 @@
 #!/bin/zsh
-# prep/p5_headwidth.sh — toy#170 spec P5, the OTHER half: the NOMINAL
+# prep/research/p5_headwidth.sh — toy#170 spec P5, the OTHER half: the NOMINAL
 # head width.
 #
-# P4 and prep/p5_remap.sh both move how many symbols the corpus ACTUALLY
+# P4 and prep/research/p5_remap.sh both move how many symbols the corpus ACTUALLY
 # uses while the head stays 256. But the output-dim law is a claim about
 # the FEEDBACK MATRIX: B is [d_model, vocab] and its inv_sqrt_fan scale
 # is 1/sqrt(vocab). Both were pinned at 256 on every byte-LM cell this
@@ -33,7 +33,8 @@
 # env var, where a BPE route to the same span would introduce a new
 # tokenization and a new per-underlying-byte metric alongside the axis.
 set -e
-cd "$(dirname "$0")/.."
+# repo root is TWO levels up from prep/research/ (was one, from prep/).
+cd "$(dirname "$0")/../.."
 OUT=${OUT:-/srv/data/scratch/p5hw}
 mkdir -p "$OUT"
 STEPS=${STEPS:-4000}

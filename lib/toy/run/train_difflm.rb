@@ -1669,7 +1669,7 @@ puts "gen: arm=" + ARM + " bytes=" + GEN_BYTES.to_s +
 # cells reproducibly took the process to 117 GB RSS and SIGKILL under
 # Spinel, which is a codegen problem and not a real memory need.
 #
-# Emitting the bytes and scoring them in plain MRI (prep/difflm_report.rb,
+# Emitting the bytes and scoring them in plain MRI (prep/research/difflm_report.rb,
 # and the gate) is better regardless of that bug: the metric becomes
 # independently checkable, re-scorable without re-running a cell, and
 # reviewable in a language where a JS divergence is four obvious lines.

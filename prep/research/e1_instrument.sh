@@ -1,5 +1,5 @@
 #!/bin/zsh
-# prep/e1_instrument.sh — toy#172/E1 Phase 1.1: read the B-conditioning
+# prep/research/e1_instrument.sh — toy#172/E1 Phase 1.1: read the B-conditioning
 # instrument across the P6 rank ladder.
 #
 # NOT a re-read: the instrument needs the ERROR VECTORS, and the stored
@@ -18,7 +18,8 @@
 # conditioning change is specific to the credit rule or a property of the
 # task at that width.
 set -e
-cd "$(dirname "$0")/.."
+# repo root is TWO levels up from prep/research/ (was one, from prep/).
+cd "$(dirname "$0")/../.."
 OUT=${OUT:-/srv/data/scratch/e1}
 mkdir -p "$OUT"
 STEPS=${STEPS:-4000}

@@ -1,5 +1,5 @@
 #!/bin/zsh
-# prep/e1_ndfa.sh — toy#172/E1 Phase 1.2: the nDFA error-side
+# prep/research/e1_ndfa.sh — toy#172/E1 Phase 1.2: the nDFA error-side
 # preconditioner across the P6 rank ladder.
 #
 # WHAT IS AND IS NOT MEASURED HERE.
@@ -31,7 +31,8 @@
 # ANOTHER arm's cell is not a negative" is this program's most expensive
 # rule and it applies to nDFA too.
 set -e
-cd "$(dirname "$0")/.."
+# repo root is TWO levels up from prep/research/ (was one, from prep/).
+cd "$(dirname "$0")/../.."
 OUT=${OUT:-/srv/data/scratch/e1ndfa}
 BASE=${BASE:-/srv/data/scratch/p6}
 mkdir -p "$OUT"
