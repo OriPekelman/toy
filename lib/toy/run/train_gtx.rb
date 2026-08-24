@@ -229,6 +229,7 @@ LDFA_ADAPT_S = ENV["GTX_DFA_ADAPT"] || ""
 LDFA_ETA_S   = ENV["GTX_LDFA_ETA"]  || ""
 LDFA_EVERY   = (ENV["GTX_LDFA_EVERY"] || "500").to_i
 LDFA_M       = (ENV["GTX_LDFA_M"] || "128").to_i
+LDFA_MAP     = ENV["GTX_LDFA_MAP"] || ""
 LDFA_RANK    = (LDFA_RANK_S.length == 0 || LDFA_RANK_S == "full") ?
                  0 : LDFA_RANK_S.to_i
 LDFA_ADAPT   = LDFA_ADAPT_S == "oja" ? 1 : 0
@@ -455,8 +456,21 @@ if LDFA_RANK_S.length > 0 && LDFA_RANK_S != "full" && LDFA_RANK < 1
        " rank 0: it is `full`."
   exit 1
 end
-if LDFA_ADAPT_S.length > 0 && LDFA_ADAPT_S != "none" && LDFA_ADAPT_S != "oja"
-  puts "toy-train-gtx: GTX_DFA_ADAPT " + LDFA_ADAPT_S + " unsupported (none|oja)"
+if LDFA_ADAPT_S.length > 0 && LDFA_ADAPT_S != "none" &&
+   LDFA_ADAPT_S != "oja" && LDFA_ADAPT_S != "oracle"
+  puts "toy-train-gtx: GTX_DFA_ADAPT " + LDFA_ADAPT_S +
+       " unsupported (none|oja|oracle)"
+  exit 1
+end
+if LDFA_ADAPT_S == "oracle" && LDFA_MAP.length == 0
+  puts "toy-train-gtx: GTX_DFA_ADAPT oracle needs GTX_LDFA_MAP" +
+       " <map-pack-prefix> (rev2026-08-23/D1: the pooling map that" +
+       " undoes the inflation)"
+  exit 1
+end
+if LDFA_MAP.length > 0 && LDFA_ADAPT_S != "oracle"
+  puts "toy-train-gtx: GTX_LDFA_MAP is meaningless without" +
+       " GTX_DFA_ADAPT=oracle"
   exit 1
 end
 if LDFA_ADAPT_S.length > 0 && LDFA_RANK == 0
@@ -1108,6 +1122,7 @@ recipe.gr_cache.gx_adapter_site = AD_SITE_S == "block" ?
 if AD_SITE_S == "block"
   recipe.gr_cache.gx_adapter_policy = AD_POLICY
 end
+recipe.gr_cache.gx_p_map   = LDFA_MAP
 recipe.realize!(D_FEAT, D_MODEL, N_HEADS, D_FF, N_BLOCKS, N_NODES,
                 N_PAIRS, N_CLASSES, SEED, 1.0, POLICY, DFA_CUT, B_SEED,
                 dist_code(B_DIST_S), scale_code(B_SCALE_S),
@@ -1748,7 +1763,8 @@ if IS_BYTELM
          " dout=" + recipe.gr_cache.gx_ld_dout.to_s +
          " v=" + N_CLASSES.to_s +
          " adapt=" + (LDFA_ADAPT == 1 ?
-                        (LDFA_ETA > 0.0 ? "oja" : "oja-frozen") : "none") +
+                        (LDFA_ETA > 0.0 ? "oja" : "oja-frozen") :
+                        (LDFA_MAP.length > 0 ? "oracle" : "none")) +
          " eta=" + (LDFA_ADAPT == 1 ? LDFA_ETA.to_s : "n/a") +
          " every=" + LDFA_EVERY.to_s +
          " m=" + ld_m_used.to_s + " m_req=" + LDFA_M.to_s +
