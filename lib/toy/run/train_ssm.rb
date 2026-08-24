@@ -16,7 +16,7 @@
 # Own compilation unit (landmine #16).
 #
 # ENV CONTRACT:
-#   STEPS / SEED / TAO_RUN_DIR / TOY_RUN_ID   — as every other runner
+#   STEPS / SEED / RUN_DIR / TOY_RUN_ID   — as every other runner
 #   SSM_POLICY     — per-LAYER tokens: chain | dfa | frozen
 #                    (default: all chain, i.e. full BPTT)
 #   SSM_SELECTION  — selective (default) | lti   [the ticket's control]
@@ -76,9 +76,14 @@ require_relative "../dev/toy_describe_flow"
 
 STEPS       = (ENV["STEPS"] || "5").to_i
 SEED        = (ENV["SEED"]  || "0").to_i
-TAO_RUN_DIR = ENV["TAO_RUN_DIR"] || ""
+# The run-directory contract. TOY_RUN_DIR is canonical; RUN_DIR is
+# the compatibility fallback — the framework's own contract should not
+# be named after a client repo. Length-checked, not truthiness-checked:
+# "" is truthy in Ruby.
+RUN_DIR_NEW = ENV["TOY_RUN_DIR"] || ""
+RUN_DIR     = RUN_DIR_NEW.length > 0 ? RUN_DIR_NEW : (ENV["TAO_RUN_DIR"] || "")
 RUN_ID      = ENV["TOY_RUN_ID"]  || ""
-EVENTS      = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/events.jsonl") : ""
+EVENTS      = RUN_DIR.length > 0 ? (RUN_DIR + "/events.jsonl") : ""
 
 POLICY_S    = ENV["SSM_POLICY"] || ""
 SELECT_S    = ENV["SSM_SELECTION"] || ""
@@ -316,7 +321,7 @@ recipe.realize!(D_MODEL, D_INNER, SEQ_T, BATCH, EFF_CLASSES, N_LAYERS,
                 scale_code(B_SCALE_S), scale_sigma(B_SCALE_S),
                 IS_BYTELM ? 1 : 0, CLIP, GNORM ? 1 : 0)
 # tao#flow-json-emit (#25): self-describing run bundle.
-ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe.sq_cache.sess)
+ToyDescribeFlow.emit_flow_json(RUN_DIR, recipe.sq_cache.sess)
 
 task = SsmTask.new(TASK_KIND, D_MODEL, SEQ_T, N_CLASSES, CUE_SPAN,
                    TASK_SEED, NOISE)

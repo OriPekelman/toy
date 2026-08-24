@@ -40,12 +40,17 @@ require_relative "../serve/openai/toy_backend"
 # TOP-LEVEL constants (NEVER inside a branch — Spinel does not initialize a
 # top-level CONSTANT assigned inside a conditional arm at runtime; it reads
 # back empty, silently skipping all event writes; landmine, train.rb:82-85).
-# TAO_RUN_DIR is set by `toy serve` (lib/toy/core/cli/serve.rb) when it has
+# RUN_DIR is set by `toy serve` (lib/toy/core/cli/serve.rb) when it has
 # resolved a run id + created runs/<id>/. When empty, serving is events-OFF
 # (cheap-when-off: every emit guard short-circuits), exactly like train.
-TAO_RUN_DIR = ENV["TAO_RUN_DIR"] || ""
+# The run-directory contract. TOY_RUN_DIR is canonical; RUN_DIR is
+# the compatibility fallback — the framework's own contract should not
+# be named after a client repo. Length-checked, not truthiness-checked:
+# "" is truthy in Ruby.
+RUN_DIR_NEW = ENV["TOY_RUN_DIR"] || ""
+RUN_DIR     = RUN_DIR_NEW.length > 0 ? RUN_DIR_NEW : (ENV["TAO_RUN_DIR"] || "")
 RUN_ID      = ENV["TOY_RUN_ID"] || ""
-EVENTS      = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/events.jsonl") : ""
+EVENTS      = RUN_DIR.length > 0 ? (RUN_DIR + "/events.jsonl") : ""
 
 # git provenance read pure-Ruby from .git/HEAD (COPIED VERBATIM from
 # train.rb:124-151; resolves ref: → 40-char sha; defaults "unknown").

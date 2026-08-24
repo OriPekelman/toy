@@ -181,7 +181,7 @@ Spinel-compiled runner. The mapping:
 A command builds its runner on demand (`make <target>`, e.g.
 `make libexec/toy-train`) or you can build them all up front with `toy install`.
 Runners read config from a controlled env hash (e.g. `STEPS`, `SEED`,
-`TAO_RUN_DIR`, `TOY_RUN_ID`) passed via `Open3`, so a stale caller environment
+`TOY_RUN_DIR`, `TOY_RUN_ID`) passed via `Open3`, so a stale caller environment
 cannot leak in.
 
 `infer` / `train` / `eval` accept `--device cuda|metal`, which selects a separate
@@ -222,8 +222,9 @@ trainer (`examples/legacy/06_train_from_scratch.rb`, built by
 | `D_MODEL` `D_FF` `N_HEADS` `N_LAYERS` `CONTEXT` | Model shape |
 | `STEPS` `LR` `SEED` | Training schedule |
 | `DEVICE=cuda` | Use the CUDA mirror path |
-| `TAO_RUN_DIR=<dir>` | Emit the `events.jsonl` stream (and a final checkpoint) here |
-| `TOY_EVENTS=<path>` | Raw alternative to `TAO_RUN_DIR`: full path to the events file |
+| `TOY_RUN_DIR=<dir>` | Emit the `events.jsonl` stream (and a final checkpoint) here |
+| `TAO_RUN_DIR=<dir>` | Compatibility fallback for `TOY_RUN_DIR`. Used only when `TOY_RUN_DIR` is unset **or empty**; `TOY_RUN_DIR` wins when both are set. Retained indefinitely — see tao#27 |
+| `TOY_EVENTS=<path>` | Raw alternative to `TOY_RUN_DIR`: full path to the events file |
 | `CHECKPOINT_EVERY=N` | Write `weights/step_<N>.gguf` every N steps (+ `latest` symlink) |
 | `TOY_DESCRIBE=json\|mermaid\|text` | Dump the compute graph and exit (no training) |
 | `TOY_GRAD_SENTINELS=1` `TOY_DRIFT_EVERY=N` `TOY_CKA=N` | Instrumentation events |

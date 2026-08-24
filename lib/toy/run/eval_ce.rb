@@ -36,7 +36,7 @@
 #                   slice — is the CALLER's contract)
 #   SEED          — session random-init seed (default 0; every param is
 #                   overwritten, the seed only names the throwaway init)
-#   TAO_RUN_DIR   — when set, emit events.jsonl HERE (FILE only)
+#   RUN_DIR   — when set, emit events.jsonl HERE (FILE only)
 #   TOY_RUN_ID    — run_id for events (default "eval-ce")
 #
 # VOCAB: the model's llama.vocab_size is the authority. A TOYC pack
@@ -68,7 +68,12 @@ SEQ_LEN  = (ENV["CONTEXT"] || "32").to_i
 EVAL_TOKENS = (ENV["EVAL_TOKENS"] || "8192").to_i
 EVAL_OFFSET = (ENV["EVAL_OFFSET"] || "0").to_i
 SEED     = (ENV["SEED"] || "0").to_i
-RUN_DIR  = ENV["TAO_RUN_DIR"] || ""
+# The run-directory contract. TOY_RUN_DIR is canonical; RUN_DIR is
+# the compatibility fallback — the framework's own contract should not
+# be named after a client repo. Length-checked, not truthiness-checked:
+# "" is truthy in Ruby.
+RUN_DIR_NEW = ENV["TOY_RUN_DIR"] || ""
+RUN_DIR  = RUN_DIR_NEW.length > 0 ? RUN_DIR_NEW : (ENV["TAO_RUN_DIR"] || "")
 RUN_ID   = ENV["TOY_RUN_ID"]  || "eval-ce"
 
 if GGUF_P == "" || PACK == ""

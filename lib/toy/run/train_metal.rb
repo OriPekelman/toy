@@ -23,7 +23,7 @@
 # CONTRACT (read from ENV only):
 #   STEPS        — number of training steps (default "5")
 #   SEED         — random-init seed (default "0")
-#   TAO_RUN_DIR  — when set, emit events.jsonl + a final checkpoint HERE.
+#   RUN_DIR  — when set, emit events.jsonl + a final checkpoint HERE.
 #                  When empty, compute-only.
 #   TOY_RUN_ID   — the resolved run id string (run_start/checkpoint metadata)
 #
@@ -60,7 +60,12 @@ require_relative "../train/toy_gguf_fuse"
 
 STEPS       = (ENV["STEPS"] || "5").to_i
 SEED        = (ENV["SEED"]  || "0").to_i
-TAO_RUN_DIR = ENV["TAO_RUN_DIR"] || ""
+# The run-directory contract. TOY_RUN_DIR is canonical; RUN_DIR is
+# the compatibility fallback — the framework's own contract should not
+# be named after a client repo. Length-checked, not truthiness-checked:
+# "" is truthy in Ruby.
+RUN_DIR_NEW = ENV["TOY_RUN_DIR"] || ""
+RUN_DIR     = RUN_DIR_NEW.length > 0 ? RUN_DIR_NEW : (ENV["TAO_RUN_DIR"] || "")
 RUN_ID      = ENV["TOY_RUN_ID"] || ""
 
 # Gate-fixed model SHAPE — hardcoded (NOT env/flags), the smoke config.
@@ -76,7 +81,7 @@ N_LAYERS = 2
 CONTEXT  = 32
 
 # Events sink — TOP-LEVEL (same constant-in-conditional Spinel caveat). FILE only.
-EVENTS = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/events.jsonl") : ""
+EVENTS = RUN_DIR.length > 0 ? (RUN_DIR + "/events.jsonl") : ""
 
 cfg = Toy::SmolLM2Config.mha(VOCAB, D_MODEL, N_HEADS,
                              D_FF, N_LAYERS, CONTEXT, 10000.0, 1.0e-5)
@@ -94,7 +99,7 @@ opts.seed   = SEED
 
 recipe = Toy::LLM::Recipes::FromScratchMetal.new
 recipe.realize!(cfg, opts)
-ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe.fs_cache.sess)
+ToyDescribeFlow.emit_flow_json(RUN_DIR, recipe.fs_cache.sess)
 
 # Per-step inputs built IN THE RUNNER, byte-identical to the CPU runner.
 # FAIL LOUD on a missing corpus (spinel-dev#17: silent "" then nil SEGV).
@@ -194,7 +199,7 @@ while step < STEPS
   step = step + 1
 end
 
-# --- Final checkpoint + run_end (only when TAO_RUN_DIR set). ---
+# --- Final checkpoint + run_end (only when RUN_DIR set). ---
 # THE CROSS-BACKEND SEAM. The write session is a CPU TinyNN session; the fuser
 # downloads weights from the Metal training session via TinyNN.tnn_download_*
 # and writes them into the CPU write session. Compute above stayed on Metal;
@@ -209,7 +214,7 @@ if EVENTS.length > 0 && TinyNNMetal.tnn_events_active == 1
   # fs_cache.sess must stay alive until write_step returns.
   write_sess = TinyNN.tnn_session_new(0)
   plist = ToyGGUFFuser.build_lens_folded_into_write_session(recipe.fs_cache, write_sess, true)
-  rc = ToyGGUFWriter.write_step(cfg, plist, TAO_RUN_DIR + "/weights", rid, STEPS)
+  rc = ToyGGUFWriter.write_step(cfg, plist, RUN_DIR + "/weights", rid, STEPS)
   if rc != 0
     puts "checkpoint write failed: rc=" + rc.to_s
   end

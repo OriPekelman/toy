@@ -10,8 +10,8 @@
 # shells out via Open3 with a CONTROLLED ENV.
 #
 # RUNNER: lib/toy/run/train.rb → libexec/toy-train. It reads config from ENV
-# only (STEPS/SEED/TAO_RUN_DIR/TOY_RUN_ID). We pass those as a controlled env
-# hash (first positional to Open3) so a stale caller TAO_RUN_DIR/STEPS can
+# only (STEPS/SEED/TOY_RUN_DIR/TOY_RUN_ID). We pass those as a controlled env
+# hash (first positional to Open3) so a stale caller TOY_RUN_DIR/TAO_RUN_DIR/STEPS can
 # NEVER leak into the child. The runner prints byte-deterministic
 # "step N: loss=" lines to stdout (the gated loss curve); events.jsonl + the
 # checkpoint go to runs/<id>/ (file-side, never stdout).
@@ -511,7 +511,7 @@ module Toy
 
           # Resolve a run id + create runs/<id>/ in the PROJECT cwd (the
           # train-specific net-new step, CRuby-side, BEFORE Open3 — the runner
-          # assumes TAO_RUN_DIR pre-exists; tnn_events_open does no parent
+          # assumes the run dir pre-exists; tnn_events_open does no parent
           # mkdir).
           project  = Dir.pwd
           cfg      = Toy::Core::Config.load(project)
@@ -532,7 +532,7 @@ module Toy
           # CONTROLLED ENV (first positional) so a stale caller env can't
           # leak. Built per-recipe (parallel to the runner's landmine-#16
           # branch discipline): each recipe's exact keys reproduce its gate.
-          base = { "TAO_RUN_DIR" => run_dir, "TOY_RUN_ID" => run_id,
+          base = { "TOY_RUN_DIR" => run_dir, "TOY_RUN_ID" => run_id,
                    "RECIPE" => @recipe }
           if @recipe == "lora"
             # NO SEED key: lora seed=42 is hardcoded in the runner branch.

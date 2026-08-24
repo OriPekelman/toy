@@ -57,7 +57,7 @@
 # KL term is the escalation if this is not enough, not the default.
 #
 # ENV CONTRACT:
-#   STEPS / SEED / TAO_RUN_DIR / TOY_RUN_ID
+#   STEPS / SEED / RUN_DIR / TOY_RUN_ID
 #   DL_ARM        — ar-baseline | diff-selfcond | diff-plain | prior-floor
 #   DL_TEXT       — byte pack prefix (prep/fetch_text.rb)
 #   DL_LATENT     — the operating d (default 8, P1a's pinned point)
@@ -91,9 +91,14 @@ require_relative "../dev/toy_describe_flow"
 
 STEPS       = (ENV["STEPS"] || "5").to_i
 SEED        = (ENV["SEED"]  || "0").to_i
-TAO_RUN_DIR = ENV["TAO_RUN_DIR"] || ""
+# The run-directory contract. TOY_RUN_DIR is canonical; RUN_DIR is
+# the compatibility fallback — the framework's own contract should not
+# be named after a client repo. Length-checked, not truthiness-checked:
+# "" is truthy in Ruby.
+RUN_DIR_NEW = ENV["TOY_RUN_DIR"] || ""
+RUN_DIR     = RUN_DIR_NEW.length > 0 ? RUN_DIR_NEW : (ENV["TAO_RUN_DIR"] || "")
 RUN_ID      = ENV["TOY_RUN_ID"]  || ""
-EVENTS      = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/events.jsonl") : ""
+EVENTS      = RUN_DIR.length > 0 ? (RUN_DIR + "/events.jsonl") : ""
 
 ARM         = ENV["DL_ARM"]  || "diff-selfcond"
 TEXT        = ENV["DL_TEXT"] || ""
@@ -670,7 +675,7 @@ resid_v = [0.0]; resid_v.pop
 # Declared at TOP LEVEL, not inside the diff-arm branch, because the
 # events block below reads them for EVERY arm. Declaring them where they
 # are filled left prior-floor referencing unassigned locals and the
-# runner SEGV'd only on the path that also had TAO_RUN_DIR set — i.e.
+# runner SEGV'd only on the path that also had RUN_DIR set — i.e.
 # only under `toy train`, not under a direct runner call. resid_t/resid_v
 # are up here for exactly this reason; the probe should have followed.
 eps_t = [0]; eps_t.pop
@@ -1669,8 +1674,8 @@ puts "gen: arm=" + ARM + " bytes=" + GEN_BYTES.to_s +
 # independently checkable, re-scorable without re-running a cell, and
 # reviewable in a language where a JS divergence is four obvious lines.
 # The runner keeps only what genuinely needs the judge MODEL — bits/byte.
-if TAO_RUN_DIR.length > 0
-  fg = File.open(TAO_RUN_DIR + "/gen.bytes", "w")
+if RUN_DIR.length > 0
+  fg = File.open(RUN_DIR + "/gen.bytes", "w")
   gi2 = 0
   while gi2 < GEN_BYTES
     fg.write(gen_bytes[gi2].to_s)
@@ -1678,7 +1683,7 @@ if TAO_RUN_DIR.length > 0
     gi2 = gi2 + 1
   end
   fg.close
-  fr = File.open(TAO_RUN_DIR + "/real.bytes", "w")
+  fr = File.open(RUN_DIR + "/real.bytes", "w")
   ri4 = 0
   while ri4 < REAL_N
     fr.write(real_bytes[ri4].to_s)
@@ -1691,7 +1696,7 @@ puts "graph: nodes=" + judge.ar_graph_nodes.to_s +
      " bytes=" + judge.ar_graph_bytes.to_s
 
 # ---- the qualitative dump ----
-if TAO_RUN_DIR.length > 0
+if RUN_DIR.length > 0
   smp = ""
   sn = GEN_BYTES < 1024 ? GEN_BYTES : 1024
   si = 0
@@ -1699,7 +1704,7 @@ if TAO_RUN_DIR.length > 0
     smp = smp + gen_bytes[si].chr
     si = si + 1
   end
-  f = File.open(TAO_RUN_DIR + "/sample.txt", "w")
+  f = File.open(RUN_DIR + "/sample.txt", "w")
   f.write(smp)
   f.close
 end

@@ -12,8 +12,8 @@
 # infer.rb hardcodes its fallback prompt IDs):
 #   STEPS        — number of training steps (default "5")
 #   SEED         — random-init seed (default "0")
-#   TAO_RUN_DIR  — when set, emit events.jsonl + a final checkpoint HERE
-#                  (06/TAO_RUN_DIR convention). When empty, compute-only.
+#   RUN_DIR  — when set, emit events.jsonl + a final checkpoint HERE
+#                  (06/RUN_DIR convention). When empty, compute-only.
 #   TOY_RUN_ID   — the resolved run id string (run_start/checkpoint metadata)
 #
 # Backend: CPU only. The recipe inlines TinyNN.* (backend-coupled) and the
@@ -67,7 +67,12 @@ require_relative "../train/toy_gguf_fuse"
 RECIPE      = ENV["RECIPE"] || "from-scratch"
 STEPS       = (ENV["STEPS"] || "5").to_i
 SEED        = (ENV["SEED"]  || "0").to_i
-TAO_RUN_DIR = ENV["TAO_RUN_DIR"] || ""
+# The run-directory contract. TOY_RUN_DIR is canonical; RUN_DIR is
+# the compatibility fallback — the framework's own contract should not
+# be named after a client repo. Length-checked, not truthiness-checked:
+# "" is truthy in Ruby.
+RUN_DIR_NEW = ENV["TOY_RUN_DIR"] || ""
+RUN_DIR     = RUN_DIR_NEW.length > 0 ? RUN_DIR_NEW : (ENV["TAO_RUN_DIR"] || "")
 RUN_ID      = ENV["TOY_RUN_ID"] || ""
 
 # Gate-fixed model SHAPE — hardcoded (NOT env/flags), the smoke config.
@@ -87,7 +92,7 @@ CONTEXT  = 32
 # Events sink — TOP-LEVEL (same constant-in-conditional Spinel caveat as the
 # shape consts; an EVENTS constant assigned inside a branch reads back empty
 # at runtime, silently skipping all event/checkpoint writes). FILE only.
-EVENTS = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/events.jsonl") : ""
+EVENTS = RUN_DIR.length > 0 ? (RUN_DIR + "/events.jsonl") : ""
 
 if RECIPE == "warm-start"
   # ==================================================================
@@ -126,7 +131,7 @@ if RECIPE == "warm-start"
   # INIT=scratch: skip realize_warm! (no donor GGUF, train from random init).
   recipe_ws.build!
   # tao#flow-json-emit (#25): self-describing run bundle, parallel to events.jsonl.
-  ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe_ws.ws_cache.sess)
+  ToyDescribeFlow.emit_flow_json(RUN_DIR, recipe_ws.ws_cache.sess)
 
   # NAMED AdamW hp. Defaults (beta2=0.95, bias_correct=false) → slots
   # 5/6 = constant betas, byte-identical to the historical inline hp.
@@ -235,7 +240,7 @@ if RECIPE == "warm-start"
     # finalize); both are local/ivar-held to end of this block.
     write_sess_ws = TinyNN.tnn_session_new(0)
     plist = ToyGGUFFuser.build_lens_folded_into_write_session(recipe_ws.ws_cache, write_sess_ws, true)
-    rc = ToyGGUFWriter.write_step(cfg_ws, plist, TAO_RUN_DIR + "/weights", rid, STEPS)
+    rc = ToyGGUFWriter.write_step(cfg_ws, plist, RUN_DIR + "/weights", rid, STEPS)
     if rc != 0
       puts "checkpoint write failed: rc=" + rc.to_s
     end
@@ -296,7 +301,7 @@ while gd < opts.gdn_layers.length
 end
 recipe.realize!(cfg, opts)
 # tao#flow-json-emit (#25): self-describing run bundle, parallel to events.jsonl.
-ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe.fs_cache.sess)
+ToyDescribeFlow.emit_flow_json(RUN_DIR, recipe.fs_cache.sess)
 
 # Per-step inputs built IN THE RUNNER (the from-scratch entrypoint, the
 # fixture's analog under lib-vs-example), byte-identical to smoke L56-84.
@@ -402,7 +407,7 @@ while step < STEPS
   step = step + 1
 end
 
-# --- Final checkpoint + run_end (only when TAO_RUN_DIR set). ---
+# --- Final checkpoint + run_end (only when RUN_DIR set). ---
 if EVENTS.length > 0 && TinyNN.tnn_events_active == 1
   rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
   # FOLD the projection lens into the embedding and FUSE per-head
@@ -416,7 +421,7 @@ if EVENTS.length > 0 && TinyNN.tnn_events_active == 1
   # to end of this block.
   write_sess = TinyNN.tnn_session_new(0)
   plist = ToyGGUFFuser.build_lens_folded_into_write_session(recipe.fs_cache, write_sess, true)
-  rc = ToyGGUFWriter.write_step(cfg, plist, TAO_RUN_DIR + "/weights", rid, STEPS)
+  rc = ToyGGUFWriter.write_step(cfg, plist, RUN_DIR + "/weights", rid, STEPS)
   if rc != 0
     puts "checkpoint write failed: rc=" + rc.to_s
   end

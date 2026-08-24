@@ -28,7 +28,7 @@
 # CPU-ONLY (tao#18). Own compilation unit (landmine #16).
 #
 # ENV CONTRACT:
-#   STEPS / SEED / TAO_RUN_DIR / TOY_RUN_ID   — as every other runner
+#   STEPS / SEED / RUN_DIR / TOY_RUN_ID   — as every other runner
 #   AE_TEXT         — pack prefix (prep/fetch_text.rb), e.g. data/ae_names
 #   AE_LATENT       — the bottleneck width d, the swept axis
 #   AE_CONTEXT      — window length T; also the batch, see below (default 256)
@@ -74,9 +74,14 @@ require_relative "../dev/toy_describe_flow"
 
 STEPS       = (ENV["STEPS"] || "5").to_i
 SEED        = (ENV["SEED"]  || "0").to_i
-TAO_RUN_DIR = ENV["TAO_RUN_DIR"] || ""
+# The run-directory contract. TOY_RUN_DIR is canonical; RUN_DIR is
+# the compatibility fallback — the framework's own contract should not
+# be named after a client repo. Length-checked, not truthiness-checked:
+# "" is truthy in Ruby.
+RUN_DIR_NEW = ENV["TOY_RUN_DIR"] || ""
+RUN_DIR     = RUN_DIR_NEW.length > 0 ? RUN_DIR_NEW : (ENV["TAO_RUN_DIR"] || "")
 RUN_ID      = ENV["TOY_RUN_ID"]  || ""
-EVENTS      = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/events.jsonl") : ""
+EVENTS      = RUN_DIR.length > 0 ? (RUN_DIR + "/events.jsonl") : ""
 
 TEXT        = ENV["AE_TEXT"] || ""
 D_LATENT    = (ENV["AE_LATENT"]   || "8").to_i
@@ -322,7 +327,7 @@ recipe = Toy::LLM::Recipes::AeAuto.new
 # builds no extra graph nodes, so every toy#165 number reproduces exactly.
 recipe.realize!(D_MODEL, N_HEADS, D_FF, N_BLOCKS, CONTEXT, D_LATENT,
                 SEED, 1.0, 0.0, 0)
-ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe.ae_cache.sess)
+ToyDescribeFlow.emit_flow_json(RUN_DIR, recipe.ae_cache.sess)
 
 # ---- the probe buffers. ----
 PROBE_N = CONTEXT * D_LATENT

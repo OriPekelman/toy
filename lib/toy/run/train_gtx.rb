@@ -24,7 +24,7 @@
 # Own compilation unit (landmine #16).
 #
 # ENV CONTRACT:
-#   STEPS / SEED / TAO_RUN_DIR / TOY_RUN_ID   — as every other runner
+#   STEPS / SEED / RUN_DIR / TOY_RUN_ID   — as every other runner
 #   GTX_POLICY      — per-BLOCK tokens: chain | dfa | frozen
 #   GTX_DFA_CUT     — layer (default) | step. `layer` cuts the block
 #                     boundary and taps the block output, BP intact
@@ -93,7 +93,7 @@
 #   GTX_FREEZE_BACKBONE— 1 (default) freezes AND DETACHES the backbone
 #   STEPS / GTX_LR then apply to the RETROFIT phase.
 #   GTX_CKPT_EVERY     — write the BACKBONE as GGUF every K steps and at
-#                        the final step, into TAO_RUN_DIR (toy#164)
+#                        the final step, into RUN_DIR (toy#164)
 #   GTX_LOAD_CKPT      — load a backbone and SKIP the pretrain phase;
 #                        requires GTX_RETROFIT=1
 #   GTX_B_SEED / GTX_B_DIST / GTX_B_SCALE — the DfaB feedback axes
@@ -125,9 +125,14 @@ require_relative "../dev/toy_describe_flow"
 
 STEPS       = (ENV["STEPS"] || "5").to_i
 SEED        = (ENV["SEED"]  || "0").to_i
-TAO_RUN_DIR = ENV["TAO_RUN_DIR"] || ""
+# The run-directory contract. TOY_RUN_DIR is canonical; RUN_DIR is
+# the compatibility fallback — the framework's own contract should not
+# be named after a client repo. Length-checked, not truthiness-checked:
+# "" is truthy in Ruby.
+RUN_DIR_NEW = ENV["TOY_RUN_DIR"] || ""
+RUN_DIR     = RUN_DIR_NEW.length > 0 ? RUN_DIR_NEW : (ENV["TAO_RUN_DIR"] || "")
 RUN_ID      = ENV["TOY_RUN_ID"]  || ""
-EVENTS      = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/events.jsonl") : ""
+EVENTS      = RUN_DIR.length > 0 ? (RUN_DIR + "/events.jsonl") : ""
 
 POLICY_S    = ENV["GTX_POLICY"] || ""
 CUT_S       = ENV["GTX_DFA_CUT"] || ""
@@ -297,8 +302,8 @@ if VAL_BATCHES < 1
   puts "toy-train-gtx: GTX_VAL_BATCHES must be >= 1, got " + VAL_BATCHES.to_s
   exit 1
 end
-if CKPT_EVERY > 0 && TAO_RUN_DIR.length == 0
-  puts "toy-train-gtx: GTX_CKPT_EVERY needs TAO_RUN_DIR — there is nowhere" +
+if CKPT_EVERY > 0 && RUN_DIR.length == 0
+  puts "toy-train-gtx: GTX_CKPT_EVERY needs RUN_DIR — there is nowhere" +
        " to write the checkpoint, and writing nowhere is not a silent no-op"
   exit 1
 end
@@ -1039,7 +1044,7 @@ recipe.realize!(D_FEAT, D_MODEL, N_HEADS, D_FF, N_BLOCKS, N_NODES,
                 dist_code(B_DIST_S), scale_code(B_SCALE_S),
                 scale_sigma(B_SCALE_S), RETRO_CLASSES, N_ADAPTERS, AD_RANK,
                 IS_BYTELM ? 1 : 0, 0)
-ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe.gr_cache.sess)
+ToyDescribeFlow.emit_flow_json(RUN_DIR, recipe.gr_cache.sess)
 
 # toy#164 — a loaded backbone REPLACES the pretrain phase. The weights
 # are persistent, so this overwrites the random init in place and the
@@ -1520,7 +1525,7 @@ while step < TOTAL_STEPS
     if done % CKPT_EVERY == 0 || done == TOTAL_STEPS
       ck_rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
       rc_w = recipe.gr_cache.write_backbone_ckpt(
-               TAO_RUN_DIR + "/step_" + done.to_s + ".gguf", ck_rid, done)
+               RUN_DIR + "/step_" + done.to_s + ".gguf", ck_rid, done)
       if rc_w != 0
         puts "toy-train-gtx: checkpoint write failed rc=" + rc_w.to_s
         exit 1
@@ -1616,7 +1621,7 @@ if IS_BYTELM
          " b_shrink=" + num_or_null(nd_shrink) +
          # THE CLOCK IS NOT ALWAYS RUNNING. tnn_events_now_seconds
          # returns 0.0 when the event file is not open, so without a
-         # TAO_RUN_DIR every interval measures as exactly zero — which is
+         # RUN_DIR every interval measures as exactly zero — which is
          # the ||g||-instrument failure mode in miniature: a metric that
          # silently reads 0.0. Say `unmeasured` instead of printing it.
          " refresh_ms=" +
@@ -1676,7 +1681,7 @@ if IS_BYTELM
          " p_energy_rand=" +
            num_or_null(LDFA_RANK.to_f / N_CLASSES.to_f) +
          # Same clock caveat as nDFA's: tnn_events_now_seconds returns 0.0
-         # with no event file open, so without a TAO_RUN_DIR every interval
+         # with no event file open, so without a RUN_DIR every interval
          # measures as exactly zero. Say `unmeasured` rather than ship a
          # metric that silently reads 0.0.
          " refresh_ms=" +

@@ -50,9 +50,14 @@ require_relative "../llm/adamw"
 STEPS       = (ENV["STEPS"]      || "5").to_i
 SEED        = (ENV["SEED"]       || "0").to_i
 IMG_DIR     = (ENV["IMG_DIR"]    || "data/vit_smoke")
-TAO_RUN_DIR = (ENV["TAO_RUN_DIR"] || "")
+# The run-directory contract. TOY_RUN_DIR is canonical; RUN_DIR is
+# the compatibility fallback — the framework's own contract should not
+# be named after a client repo. Length-checked, not truthiness-checked:
+# "" is truthy in Ruby.
+RUN_DIR_NEW = ENV["TOY_RUN_DIR"] || ""
+RUN_DIR     = RUN_DIR_NEW.length > 0 ? RUN_DIR_NEW : (ENV["TAO_RUN_DIR"] || "")
 TOY_RUN_ID  = (ENV["TOY_RUN_ID"]  || "vit-tiny")
-EVENTS      = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/events.jsonl") : ""
+EVENTS      = RUN_DIR.length > 0 ? (RUN_DIR + "/events.jsonl") : ""
 
 # Gate-fixed timm ViT-Tiny SHAPE — hardcoded (NOT env/flags). This is the
 # shape data/vit_smoke matches (224/16/196/10); the 16x16 ENV defaults in
@@ -87,7 +92,7 @@ opts.seed = SEED
 recipe = Toy::LLM::Recipes::VitTiny.new
 recipe.realize!(cfg, opts)
 # tao#flow-json-emit (#25): self-describing run bundle, parallel to events.jsonl.
-ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe.vt_cache.sess)
+ToyDescribeFlow.emit_flow_json(RUN_DIR, recipe.vt_cache.sess)
 
 # Pre-allocate buffers used every step (07_train_vit_tiny.rb:223-237).
 n_patches  = (IMAGE_SIZE / PATCH_SIZE) * (IMAGE_SIZE / PATCH_SIZE)  # 196

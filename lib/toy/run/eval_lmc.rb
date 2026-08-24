@@ -26,7 +26,7 @@
 #   CONTEXT        — SEQ_LEN (default "32"; MUST equal train.rb CONTEXT so the
 #                    endpoints match each ckpt's trained loss)
 #   SEED           — random-init seed for the eval session (default "0")
-#   TAO_RUN_DIR    — when set, emit events.jsonl HERE (FILE only); when empty,
+#   RUN_DIR    — when set, emit events.jsonl HERE (FILE only); when empty,
 #                    stdout-only.
 #   TOY_RUN_ID     — run_id string for events (default "lmc")
 #
@@ -58,7 +58,12 @@ LMC_B    = ENV["LMC_B"]      || ""
 ALPHAS_S = ENV["LMC_ALPHAS"] || "0,0.25,0.5,0.75,1.0"
 SEQ_LEN  = (ENV["CONTEXT"] || "32").to_i
 SEED     = (ENV["SEED"]    || "0").to_i
-RUN_DIR  = ENV["TAO_RUN_DIR"] || ""
+# The run-directory contract. TOY_RUN_DIR is canonical; RUN_DIR is
+# the compatibility fallback — the framework's own contract should not
+# be named after a client repo. Length-checked, not truthiness-checked:
+# "" is truthy in Ruby.
+RUN_DIR_NEW = ENV["TOY_RUN_DIR"] || ""
+RUN_DIR  = RUN_DIR_NEW.length > 0 ? RUN_DIR_NEW : (ENV["TAO_RUN_DIR"] || "")
 RUN_ID   = ENV["TOY_RUN_ID"]  || "lmc"
 
 if LMC_A == "" || LMC_B == ""

@@ -14,7 +14,7 @@
 # CPU-ONLY (tao#18). Own compilation unit (landmine #16).
 #
 # ENV CONTRACT:
-#   STEPS / SEED / TAO_RUN_DIR / TOY_RUN_ID   — as every other runner
+#   STEPS / SEED / RUN_DIR / TOY_RUN_ID   — as every other runner
 #   DIFF_POLICY      — per-HIDDEN-layer tokens: chain | dfa | frozen
 #   DIFF_LAYERS      — hidden layers (default 3)
 #   DIFF_HIDDEN      — hidden width (default 128)
@@ -76,9 +76,14 @@ require_relative "../dev/toy_describe_flow"
 
 STEPS       = (ENV["STEPS"] || "5").to_i
 SEED        = (ENV["SEED"]  || "0").to_i
-TAO_RUN_DIR = ENV["TAO_RUN_DIR"] || ""
+# The run-directory contract. TOY_RUN_DIR is canonical; RUN_DIR is
+# the compatibility fallback — the framework's own contract should not
+# be named after a client repo. Length-checked, not truthiness-checked:
+# "" is truthy in Ruby.
+RUN_DIR_NEW = ENV["TOY_RUN_DIR"] || ""
+RUN_DIR     = RUN_DIR_NEW.length > 0 ? RUN_DIR_NEW : (ENV["TAO_RUN_DIR"] || "")
 RUN_ID      = ENV["TOY_RUN_ID"]  || ""
-EVENTS      = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/events.jsonl") : ""
+EVENTS      = RUN_DIR.length > 0 ? (RUN_DIR + "/events.jsonl") : ""
 
 POLICY_S    = ENV["DIFF_POLICY"] || ""
 N_LAYERS    = (ENV["DIFF_LAYERS"] || "3").to_i
@@ -307,7 +312,7 @@ recipe = Toy::LLM::Recipes::DiffDenoiser.new
 recipe.realize!(D_IN, LATENT, D_HIDDEN, N_LAYERS, BATCH, SEED, 1.0,
                 POLICY, B_SEED, dist_code(B_DIST_S),
                 scale_code(B_SCALE_S), scale_sigma(B_SCALE_S))
-ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe.dn_cache.sess)
+ToyDescribeFlow.emit_flow_json(RUN_DIR, recipe.dn_cache.sess)
 
 task = DiffTask.new(TASK_KIND, LATENT, N_MODES, SPREAD, SCALE,
                     DIFF_STEPS, BETA_LO, BETA_HI, TASK_SEED)

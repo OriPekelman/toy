@@ -261,7 +261,8 @@ module Toy
           steps = steps_s.length > 0 ? steps_s.to_i : 40
           seed_s = ENV["SEED"] || ""
           seed = seed_s.length > 0 ? seed_s.to_i : 0
-          run_dir = ENV["TAO_RUN_DIR"] || ""
+          rd_new  = ENV["TOY_RUN_DIR"] || ""
+          run_dir = rd_new.length > 0 ? rd_new : (ENV["TAO_RUN_DIR"] || "")
           run_id_s = ENV["TOY_RUN_ID"] || ""
           routing_s = ENV["FRANKEN_MOE_ROUTING"] || ""
           top1 = routing_s == "top1"

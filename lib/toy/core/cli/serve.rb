@@ -87,12 +87,12 @@ module Toy
           # Resolve a run id + create runs/<id>/ in the PROJECT cwd, mirroring
           # cli/train.rb:101-113. serve uses Kernel.exec (NOT Open3) — there is
           # NO "after exec", so ALL resolution + mkdir MUST happen BEFORE the
-          # exec below. The runner assumes TAO_RUN_DIR pre-exists
+          # exec below. The runner assumes TOY_RUN_DIR pre-exists
           # (tnn_events_open does no parent mkdir). serve has no fixed arch, so
           # the {arch} run-id token is the literal "serve" (only shapes the
           # run_id STRING, e.g. serve-20260531-001). Always-on (matches train,
           # which has no off-switch): the runner's EVENTS.length>0 guard makes
-          # emission conditional on TAO_RUN_DIR being non-empty.
+          # emission conditional on the run dir being non-empty.
           project = Dir.pwd
           cfg     = Toy::Core::Config.load(project)
           run_id  = resolve_run_id(cfg.run_id_template, project, "serve")
@@ -114,7 +114,7 @@ module Toy
           # Control never returns past this line.
           Kernel.exec(
             { "MODEL_PATH" => path, "MODEL_NAME" => name, "PORT" => @port.to_s,
-              "TAO_RUN_DIR" => run_dir, "TOY_RUN_ID" => run_id },
+              "TOY_RUN_DIR" => run_dir, "TOY_RUN_ID" => run_id },
             runner
           )
         end

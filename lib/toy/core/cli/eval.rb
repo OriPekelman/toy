@@ -367,7 +367,7 @@ module Toy
                   "EVAL_OFFSET" => ce_offset.to_s }
           if ce_out
             FileUtils.mkdir_p(ce_out)
-            env = env.merge("TAO_RUN_DIR" => File.expand_path(ce_out))
+            env = env.merge("TOY_RUN_DIR" => File.expand_path(ce_out))
           end
           out, status = Open3.capture2e(env, runner)
           unless status.success?

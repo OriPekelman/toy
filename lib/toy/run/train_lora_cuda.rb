@@ -24,7 +24,7 @@
 # GB10 UVA) — NOT for compute.
 #
 # CONTRACT (ENV only): STEPS (default "5"), RANK (default "8"), GGUF
-# (default the 135m native gguf), TAO_RUN_DIR (events + checkpoint sink),
+# (default the 135m native gguf), RUN_DIR (events + checkpoint sink),
 # TOY_RUN_ID (run metadata). The gate-fixed lora knobs (LR=0.001,
 # TARGET_ID=99, TOKENS, seed=42, init_scale=0.01, hp) are HARDCODED here,
 # byte-mirroring train_lora.rb (the CPU gate ground truth). NO SEED env.
@@ -64,7 +64,12 @@ require_relative "../train/toy_gguf_writer"
 require_relative "../train/toy_drift_grad"
 
 STEPS       = (ENV["STEPS"] || "5").to_i
-TAO_RUN_DIR = ENV["TAO_RUN_DIR"] || ""
+# The run-directory contract. TOY_RUN_DIR is canonical; RUN_DIR is
+# the compatibility fallback — the framework's own contract should not
+# be named after a client repo. Length-checked, not truthiness-checked:
+# "" is truthy in Ruby.
+RUN_DIR_NEW = ENV["TOY_RUN_DIR"] || ""
+RUN_DIR     = RUN_DIR_NEW.length > 0 ? RUN_DIR_NEW : (ENV["TAO_RUN_DIR"] || "")
 RUN_ID      = ENV["TOY_RUN_ID"] || ""
 
 GGUF      = ENV["GGUF"] || "data/smollm2-135m-native.gguf"
@@ -97,7 +102,7 @@ opts_lora.qkv_bias   = lora_qkv_bias
 opts_lora.seed       = 42
 opts_lora.init_scale = 0.01
 recipe_lora.realize!(gguf_h, cfg_lora, RANK_LORA, opts_lora)
-ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe_lora.lora_cache.sess)
+ToyDescribeFlow.emit_flow_json(RUN_DIR, recipe_lora.lora_cache.sess)
 
 # Vocab × T one-hot labels: every position targets TARGET_ID.
 m_labels = Mat.new(TOKENS.length, cfg_lora.vocab)
@@ -119,8 +124,8 @@ adamw_lora = Toy::AdamW.for_lora   # beta2=0.999 + per-step bias correction
 
 positions = [0, 1, 2, 3]
 
-# --- Events (FILE only when TAO_RUN_DIR set). ---
-EVENTS = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/events.jsonl") : ""
+# --- Events (FILE only when RUN_DIR set). ---
+EVENTS = RUN_DIR.length > 0 ? (RUN_DIR + "/events.jsonl") : ""
 
 
 if EVENTS.length > 0
@@ -201,7 +206,7 @@ end
 if EVENTS.length > 0 && TinyNNCuda.tnn_events_active == 1
   rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
   plist = ToyDriftGrad.params(recipe_lora.lora_cache.sess)
-  rc = ToyGGUFWriter.write_step(cfg_lora, plist, TAO_RUN_DIR + "/weights", rid, STEPS)
+  rc = ToyGGUFWriter.write_step(cfg_lora, plist, RUN_DIR + "/weights", rid, STEPS)
   if rc != 0
     puts "checkpoint write failed: rc=" + rc.to_s
   end

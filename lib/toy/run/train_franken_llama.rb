@@ -8,7 +8,7 @@
 # like every other trainer.
 #
 # ENV CONTRACT (superset of train.rb's):
-#   STEPS / SEED / TAO_RUN_DIR / TOY_RUN_ID    — as train.rb
+#   STEPS / SEED / RUN_DIR / TOY_RUN_ID    — as train.rb
 #   FRANKEN_POLICY   — per-layer tokens: chain | dfa | mix:<a> |
 #                      maskdfa:<t> | maskbp:<t>  (default: all chain)
 #   FRANKEN_B_SEED   — B-matrix seed (default 0)
@@ -56,7 +56,12 @@ require_relative "../dev/toy_describe_flow"
 
 STEPS       = (ENV["STEPS"] || "5").to_i
 SEED        = (ENV["SEED"]  || "0").to_i
-TAO_RUN_DIR = ENV["TAO_RUN_DIR"] || ""
+# The run-directory contract. TOY_RUN_DIR is canonical; RUN_DIR is
+# the compatibility fallback — the framework's own contract should not
+# be named after a client repo. Length-checked, not truthiness-checked:
+# "" is truthy in Ruby.
+RUN_DIR_NEW = ENV["TOY_RUN_DIR"] || ""
+RUN_DIR     = RUN_DIR_NEW.length > 0 ? RUN_DIR_NEW : (ENV["TAO_RUN_DIR"] || "")
 RUN_ID      = ENV["TOY_RUN_ID"] || ""
 POLICY_S    = ENV["FRANKEN_POLICY"] || ""
 # toy#151: which tensor class a :dfa layer policies. Until this ticket
@@ -422,7 +427,7 @@ if hdr_v == 0 && env_v > 0
 end
 VOCAB = vsel0
 
-EVENTS = TAO_RUN_DIR.length > 0 ? (TAO_RUN_DIR + "/events.jsonl") : ""
+EVENTS = RUN_DIR.length > 0 ? (RUN_DIR + "/events.jsonl") : ""
 
 # ---- policy / axes parsing (the twin-runner token grammar) ----
 def parse_policy(pol_s, n_layers, p_alpha, p_tau)
@@ -643,7 +648,7 @@ recipe.realize!(cfg, opts)
 # tao#flow-json-emit (#25): self-describing run bundle, parallel to
 # events.jsonl — the toy#112 gap: F-series ran capture_flow:false and
 # `tao report --html` lost the architecture DAG for franken runs.
-ToyDescribeFlow.emit_flow_json(TAO_RUN_DIR, recipe.ff_cache.sess)
+ToyDescribeFlow.emit_flow_json(RUN_DIR, recipe.ff_cache.sess)
 
 # Per-step inputs — VERBATIM train.rb (fail-loud corpus guard included).
 # toy#122: with CORPUS set, sequences stream per step inside the loop
@@ -1079,12 +1084,12 @@ while step < STEPS
       ai = ai + 1
     end
   end
-  if CKPT_EVERY > 0 && TAO_RUN_DIR.length > 0 &&
+  if CKPT_EVERY > 0 && RUN_DIR.length > 0 &&
      ((step + 1) % CKPT_EVERY) == 0 && (step + 1) < STEPS
     ck_rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
     ck_sess = TinyNN.tnn_session_new(0)
     ck_plist = ToyGGUFFuser.build_lens_folded_into_write_session(recipe.ff_cache, ck_sess, true)
-    ck_rc = ToyGGUFWriter.write_step(cfg, ck_plist, TAO_RUN_DIR + "/weights", ck_rid, step + 1)
+    ck_rc = ToyGGUFWriter.write_step(cfg, ck_plist, RUN_DIR + "/weights", ck_rid, step + 1)
     if ck_rc != 0
       puts "checkpoint write failed: step=" + (step + 1).to_s + " rc=" + ck_rc.to_s
     end
@@ -1098,7 +1103,7 @@ if EVENTS.length > 0 && TinyNN.tnn_events_active == 1
   rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
   write_sess = TinyNN.tnn_session_new(0)
   plist = ToyGGUFFuser.build_lens_folded_into_write_session(recipe.ff_cache, write_sess, true)
-  rc = ToyGGUFWriter.write_step(cfg, plist, TAO_RUN_DIR + "/weights", rid, STEPS)
+  rc = ToyGGUFWriter.write_step(cfg, plist, RUN_DIR + "/weights", rid, STEPS)
   if rc != 0
     puts "checkpoint write failed: rc=" + rc.to_s
   end
