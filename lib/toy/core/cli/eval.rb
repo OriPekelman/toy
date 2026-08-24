@@ -50,8 +50,9 @@ module Toy
         # CPU-only like lmc.
         CE_RUNNER_TARGET = "libexec/toy-eval-ce"
 
-        def initialize(argv)
+        def initialize(argv, research: false)
           @argv = argv
+          @research = research
           @json = false
           @model = nil
           @top_k = DEFAULT_TOP_K
@@ -62,9 +63,23 @@ module Toy
         end
 
         def run
-          # LMC subcommand dispatch — `toy eval lmc ...`. The single-model path
-          # below is BYTE-UNCHANGED for the non-lmc case.
-          return run_lmc(@argv.drop(1)) if @argv.first == "lmc"
+          # Subcommand dispatch. The single-model path below is
+          # BYTE-UNCHANGED for the non-subcommand case.
+          #
+          # `ce` is a GENERIC capability — cross-entropy of a checkpoint
+          # over a corpus — and is registered like any other flag.
+          #
+          # `lmc` (two-checkpoint linear mode connectivity) is a RESEARCH
+          # instrument and its home is `toy research eval lmc`. The old
+          # spelling keeps working and says so once on stderr, exactly as
+          # the fixture lanes do (tao#25/#26). No deadline.
+          if @argv.first == "lmc"
+            unless @research
+              $stderr.puts 'toy eval: "lmc" is a research instrument; prefer ' \
+                           '`toy research eval lmc`. The old form still works (tao#25).'
+            end
+            return run_lmc(@argv.drop(1))
+          end
           return run_ce(@argv.drop(1)) if @argv.first == "ce"
 
           parsed = parse_args

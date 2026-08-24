@@ -146,8 +146,22 @@ a cell flip, not a scattered set of one-off checks.
 
 ### `eval <model> [--top-k K] [--device cpu|cuda|metal] [--json]`
 Score a GGUF model: per-token logprobs. Default `--top-k 5`, `--device cpu`.
-Two-checkpoint Linear Mode Connectivity is a subcommand:
-`eval lmc --ckpt A --other B [--alphas "0,0.25,…"]`.
+
+Two subcommands, on opposite sides of the capability/fixture seam:
+
+| | | |
+|---|---|---|
+| `eval ce --ckpt C --corpus P` | cross-entropy of a checkpoint over a corpus | capability |
+| `toy research eval lmc --ckpt A --other B [--alphas "0,0.25,…"]` | two-checkpoint linear mode connectivity | research instrument |
+
+`toy eval lmc` still works and prints one stderr line naming the new form.
+No deadline on the alias (tao#25).
+
+Both were dispatched but named in no registry, no help and no manifest
+before this — discoverable only by reading `lib/toy/core/cli/eval.rb`.
+They now appear in `toy eval --help` and under a `subcommands` key in
+`toy --manifest`, which is emitted only for commands that have them, so
+existing manifest consumers see no new key.
 
 ### `serve <model> [--port PORT] [--name NAME]`
 Serve a GGUF model over an OpenAI-compatible HTTP API (CPU). Default

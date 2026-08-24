@@ -94,12 +94,16 @@ module Toy
           class: Research,
           summary: "Run a research fixture lane (toy's own capability tests)",
           args:  [{ name: "subcommand", required: true, desc: "'train' | 'eval'" }],
+          subcommands: [{ name: "train", desc: "train a research fixture lane (see docs/research/lanes.md)" },
+                        { name: "eval", desc: "research evaluations (`eval lmc`)" }],
           flags: []
         },
         "eval" => {
           class: Eval,
-          summary: "Score a GGUF model (per-token logprobs; `eval lmc` for two-checkpoint LMC)",
+          summary: "Score a GGUF model (per-token logprobs)",
           args:  [{ name: "model", required: true, desc: "path to a .gguf file" }],
+          subcommands: [{ name: "ce", desc: "cross-entropy of a checkpoint over a corpus" },
+                        { name: "lmc", desc: "two-checkpoint linear mode connectivity (research; prefer `toy research eval lmc`)" }],
           flags: [{ name: "--top-k", desc: "top-K logprobs to report (default 5)" },
                   { name: "--device", desc: "cpu (default) | cuda | metal (macOS)" },
                   { name: "--json", desc: "machine output" }]
@@ -147,11 +151,71 @@ module Toy
           return EXIT_BAD_INPUT
         end
 
-        # (4) Instantiate the command with remaining argv; #run returns
+        # (4) `toy <cmd> --help`, GENERATED from this registry rather than
+        #     hand-written per command. Every subcommand except `train` and
+        #     `research` used to answer `unknown flag "--help"` — their flag
+        #     parsers reach a `when /\A-/` catch-all that swallows it — so
+        #     the only way to learn a command's arguments was to run it
+        #     wrong and read the rejection.
+        #
+        #     Generated, because the registry ALREADY carries the summary,
+        #     the args and the per-flag descriptions used by `--manifest`.
+        #     Hand-writing eleven help blocks would be eleven more strings
+        #     to drift out of step with the parsers, which is the failure
+        #     this repo keeps paying for. A new command gets help for free.
+        #
+        #     train and research are EXEMPT and print their own: train has
+        #     146 flags and needs the Data / Model / Optimization grouping,
+        #     and research leads with the fixture lanes. Both are richer
+        #     than a registry rendering, so the generic path must not
+        #     shadow them.
+        if (argv.include?("--help") || argv.include?("-h")) &&
+           !OWN_HELP.include?(name)
+          print_command_help($stdout, name, entry)
+          return EXIT_OK
+        end
+
+        # (5) Instantiate the command with remaining argv; #run returns
         #     an Integer exit code. Each command parses its OWN flags.
         entry[:class].new(argv).run
       rescue Interrupt
         EXIT_FAILURE
+      end
+
+      # Commands that print their OWN --help and must not be shadowed by
+      # the generated one. Keep this list SHORT: a command earns a place
+      # here by having help the registry genuinely cannot render, not by
+      # preference.
+      OWN_HELP = %w[train research].freeze
+
+      def print_command_help(io, name, entry)
+        args  = entry[:args]  || []
+        flags = entry[:flags] || []
+        usage = args.map { |a| a[:required] ? "<#{a[:name]}>" : "[#{a[:name]}]" }
+        io.puts "usage: toy #{name}#{usage.empty? ? '' : ' ' + usage.join(' ')}#{flags.empty? ? '' : ' [flags]'}"
+        io.puts ""
+        io.puts entry[:summary]
+        unless args.empty?
+          io.puts ""
+          io.puts "Arguments:"
+          args.each do |a|
+            io.puts format("  %-14s %s%s", a[:name], a[:desc],
+                           a[:required] ? "" : " (optional)")
+          end
+        end
+        subs = entry[:subcommands] || []
+        unless subs.empty?
+          io.puts ""
+          io.puts "Subcommands:"
+          subs.each { |c| io.puts format("  %-14s %s", c[:name], c[:desc]) }
+        end
+        unless flags.empty?
+          io.puts ""
+          io.puts "Flags:"
+          flags.each { |f| io.puts format("  %-14s %s", f[:name], f[:desc]) }
+        end
+        io.puts ""
+        io.puts "Full reference: docs/cli.md"
       end
 
       def print_usage(io)

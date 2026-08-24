@@ -21,12 +21,20 @@ module Toy
 
         def run
           commands = COMMANDS.map do |name, entry|
-            {
+            row = {
               "name" => name,
               "summary" => entry[:summary],
               "args" => entry[:args],
               "flags" => entry[:flags]
             }
+            # Emitted only when a command HAS subcommands, so every existing
+            # row stays byte-identical and no consumer sees a new null key.
+            # `eval ce` and `eval lmc` were dispatched but named in no
+            # registry, no help and no manifest — a machine consumer reading
+            # this file could not discover them at all.
+            subs = entry[:subcommands]
+            row["subcommands"] = subs if subs && !subs.empty?
+            row
           end
 
           manifest = {

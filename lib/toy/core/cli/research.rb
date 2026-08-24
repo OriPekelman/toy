@@ -53,7 +53,7 @@ module Toy
           when "eval"
             # `toy research eval lmc ...` -> the existing Eval dispatcher,
             # which already routes its own `lmc` sub-subcommand.
-            Eval.new(@argv.drop(1)).run
+            Eval.new(@argv.drop(1), research: true).run
           else
             $stderr.puts "toy research: unknown subcommand #{sub.inspect}"
             print_usage($stderr)
