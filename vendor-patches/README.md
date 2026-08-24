@@ -18,12 +18,16 @@ eventually — see each patch's commit message for the discussion notes.
 | `0002-cuda-buffer_from_ptr-reuse-iface.patch`   | `src/ggml-cuda/ggml-cuda.cu` | Refactor on top of 0001: reuse the standard CUDA buffer interface, drop the read-only flag pattern. |
 | `0003-cuda-buffer_from_ptr-copy-mode.patch`     | `src/ggml-cuda/ggml-cuda.cu` | Adds `GGML_CUDA_BYO_PTR_MODE=copy` for non-unified-memory SKUs that need a one-time host→device copy. UVA path (GB10 / DGX Spark / Jetson) stays zero-copy. |
 | `0004-cuda-cpy-strided.patch`                   | `src/ggml-cuda/cpy.cu`       | Guard `cpy_scalar_transpose` dispatch behind a contiguous-dst check. Without it, KV-cache writes that go into a strided `view_2d` (the canonical pattern) silently miswrite. F32 KV-cache CUDA path was broken before this. |
-| `0005-concat-backward.patch`                    | `src/ggml.c`                 | Adds `case GGML_OP_CONCAT` to `ggml_compute_backward`. Without it autograd aborts on SmolLM2 attention (per-head concat before the O projection). Required for F1.2 LoRA training. |
-| `0006-getrows-back-large-vocab.patch`           | `src/ggml-cuda/getrows.cu`   | Chunks the `get_rows_back` kernel launch. The original code set `gridDim.y = vocab`; CUDA caps that at 65535 so Qwen-class vocabs (V=151936) aborted training with "invalid argument". Required for F3 with embedding training on Qwen-class models. |
+| `0005-concat-backward.patch`                    | `src/ggml.c`                 | Adds `case GGML_OP_CONCAT` to `ggml_compute_backward`. Without it autograd aborts on SmolLM2 attention (per-head concat before the O projection). Required for LoRA training. |
+| `0006-getrows-back-large-vocab.patch`           | `src/ggml-cuda/getrows.cu`   | Chunks the `get_rows_back` kernel launch. The original code set `gridDim.y = vocab`; CUDA caps that at 65535 so Qwen-class vocabs (V=151936) aborted training with "invalid argument". Required for embedding training on Qwen-class models. |
 | `0007-gpt2-backward-kernels.patch`              | `include/ggml.h`, `src/ggml.c`, `src/ggml-alloc.c`, `src/ggml-backend-meta.cpp`, `src/ggml-cpu/{ops.cpp,ops.h,vec.h,ggml-cpu.c}` | Two dedicated fused backward kernels for GPT-2 train-from-scratch (CPU reference): `GGML_OP_GELU_BACK` (autograd of `GGML_UNARY_OP_GELU`) and `GGML_OP_NORM_BACK` (autograd of `GGML_OP_NORM`, the pure normalize, no affine). Without them autograd aborts on GPT-2's GELU FFN / LayerNorm. 2 of the 3 gaps in our upstream ggml#1514; finite-diff validated via `tinynn/gpt2_backward_probe.c`. See `docs/notes/gpt2-backward-patches.md`. |
 | `0008-mul-mat-backward-mixed-precision.patch`   | `src/ggml.c`                 | Mixed-precision training (GH#9): the `MUL_MAT` backward emits the **activation** gradient as `out_prod(src0=weight, …)`, but `OUT_PROD` only implements an f32 `src0` (CPU `supports_op`; CUDA out_prod is f32-only). With f16/bf16 weight storage `src0` is low-precision → backward sched-alloc aborts (`*cur_backend_id == -1`). The fix branches on `src0->type`: non-f32 weights take the algebraically-equivalent `mul_mat(cont(transpose(src0)), cont(grad))` form (already present upstream as a comment) — `MUL_MAT` supports f16/bf16 `src0` + f32 `src1` on every backend, with tensor-core throughput on CUDA. f32 weights keep the original out_prod fast path. f16 train-from-scratch converges within ~0.2% of the f32 baseline. |
 | `0009-sched-unsupported-node-diagnostic.patch`  | `src/ggml-backend.cpp`       | Fail-loud, not bare-assert: before `GGML_ASSERT(*cur_backend_id != -1)` in `ggml_backend_sched_split_graph`, dump the offending node (name/op/type) and its sources. That assert fires whenever no backend's `supports_op()` accepts a node — almost always a dtype an op's kernel doesn't implement — and the bare abort gives zero signal. Diagnostic-only (no behaviour change); how 0008's root cause was pinned. Keep until upstream surfaces the node itself. |
 | `0010-cuda-buffer_from_ptr-skip-init_tensor-padding-memset.patch` | `src/ggml-cuda/ggml-cuda.cu` | Sets `buf->iface.init_tensor = NULL` on the BYO-pointer buffer (next to the existing `free_buffer` override). The standard init_tensor zeroes the quantized row-padding via `cudaMemset(data+nbytes, 0, padded-nbytes)`, but a read-only mmap has no padding bytes → the write lands past the tensor / in the read-only mapping → illegal memory access for any quantized tensor with `ne0 % MATRIX_ROW_PADDING(512) != 0` (DeepSeek/Qwen3-MoE `down_exps`, ne0=expert_ff=1408/768; OLMoE's 1024 is exempt — which is why only some MoE models crashed). The zeroing is only NaN-safety: matmul kernels zero-pad the input vector, so `weight_padding * 0 = 0` regardless. Unblocks every quantized MoE model on CUDA (DeepSeek-V2 MLA, Qwen3-MoE, Qwen2-MoE). |
+| `0011-tensor-flag-detached.patch`               | `include/ggml.h`, `src/ggml.c` | Adds a `detached` tensor flag so a subgraph can be cut out of the backward pass without being cut out of the forward. This is what makes alternative credit assignment (`--policy dfa|frozen`) expressible at all: the forward stays bit-identical while the gradient stops at a chosen boundary. |
+| `0012-cuda-out-prod-k1-sger-fallback.patch`      | `src/ggml-cuda/out-prod.cu`  | `ggml_out_prod` with `k == 1` fell through to a path that produced wrong results on CUDA; routes it to an `sger`-style rank-1 update instead. Hit by any per-sample outer product — the shape every feedback-matrix update uses. |
+| `0013-tanh-sigmoid-backward.patch`               | `src/ggml.c`                 | Adds backward for `GGML_OP_TANH` and `GGML_UNARY_OP_SIGMOID`. Without it an LSTM cell cannot be trained by autograd at all — the gates are exactly these two nonlinearities. |
+| `0014-hip-symbol-map-for-toy-patches.patch`      | `src/ggml-cuda/vendors/hip.h` | Maps the CUDA symbols the patches above introduce onto their HIP equivalents, so a ROCm build still compiles with the patch set applied. **Was tracked and shipped but missing from the Makefile's `GGML_PATCHES` list for two weeks** — every fresh clone silently built ggml without it (fixed in `b3bb7c1`). |
 
 ## How the application works
 
@@ -76,7 +80,7 @@ Each patch has a doc:
 - `vendor-patches/0006-getrows-back-large-vocab.patch` carries its own
   rationale in the commit message.
 
-When the F1/F2/F3 work stabilises, propose each as a separate ggml-org/ggml PR.
+As each patch stabilises, propose it as a separate ggml-org/ggml PR.
 
 ## 0011-tensor-flag-detached.patch
 
@@ -90,7 +94,7 @@ DUP has forward kernels on every backend, so no new compute code).
 Purpose: sever exactly one edge from a differentiable subgraph — the
 expert-input path into `mul_mat_id` — while the residual and router
 branches keep their chain grads (the design doc's deferred opaque-cut;
-its 'an experiment demands it' trigger fired with F5).
+its 'an experiment demands it' trigger fired).
 
 ## 0014 — HIP symbol map for toy's own patches
 

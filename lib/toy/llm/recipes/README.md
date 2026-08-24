@@ -3,7 +3,12 @@
 A Recipe is a training plan: realize a model (random init, mmap'd
 base, or warm-started), then drive `step!` over the data.
 
-## What's here (4 recipes)
+## What's here (13 recipes)
+
+> **The public surface is the four framework recipes** — `from_scratch`, `lora`, `vit_tiny`, `warm_start` — which are exactly what `require "toy/compute"` loads.
+> The other 9 are **fixture** recipes reachable only from their own runner
+> mains; see [docs/research/lanes.md](../../../../docs/research/lanes.md).
+
 
 | File | Class | Realize | Notes |
 | --- | --- | --- | --- |

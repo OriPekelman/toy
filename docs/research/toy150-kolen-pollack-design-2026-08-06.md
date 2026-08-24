@@ -1,8 +1,11 @@
 # toy#150 — adaptive (Kolen–Pollack) DFA feedback: design + resume point
 
-Status: **designed and shape-verified, NOT implemented.** Everything
-below was derived against the real code, not sketched. Start at
-"Implementation order".
+Status: **SHIPPED** (6e5616b + 29e4639, toy#150). This document is the
+design record; the implementation landed as `--dfa-feedback kolen-pollack`
+and is gated. The status line below used to read "NOT implemented" and was
+never updated when the work shipped — corrected 2026-08-24.
+
+Everything below was derived against the real code, not sketched.
 
 The issue delegates the modelling choice ("the precise rule is your
 call — pick what's cleanest and note it"). This document IS that note.

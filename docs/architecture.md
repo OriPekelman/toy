@@ -87,21 +87,28 @@ classes with no taxonomy of their own — one engine per execution shape:
   Uses the surrogate-root DFA form so the injected error propagates
   into the embedding tables. CPU-only.
 
-The exact tree (verified):
+The exact tree, as of 2026-08-24 (`+ _cuda` / `_metal` mirrors are generated
+by `prep/gen_cuda_mirror.rb`, never hand-edited):
 
 ```
 lib/toy/llm/
-├── primitives/   rope.rb  swiglu.rb  rms_norm.rb  gqa.rb   (+ _cuda / _metal mirrors)
-│                 gdn.rb  diff_attention.rb  scalable_softmax.rb  depth_scale.rb  (Dragon; CPU-only)
-├── blocks/       transformer_block.rb  gdn_block.rb        (+ _cuda / _metal mirrors)
-├── archs/        llama_arch.rb  layer_spec.rb             (+ _cuda / _metal mirrors)
-├── engine/       llama_seq_engine.rb  llama_kv_engine.rb
-│                 gpt2_seq_engine.rb  gpt2_fwd_engine.rb
-│                 gpt2_kv_engine.rb  vit_tiny_engine.rb     (+ _cuda / _metal mirrors;
-│                 mlp_engine.rb  ctr_engine.rb               vit_tiny/mlp/ctr CPU-only)
-└── recipes/      from_scratch.rb  lora.rb  warm_start.rb   (+ _cuda / _metal mirrors)
-                  vit_tiny.rb                               (CPU-only)
+├── primitives/   12  rms_norm  rope  swiglu  gqa  mla  kda  muon  situ_glu
+│                     gdn  diff_attention  scalable_softmax  depth_scale
+├── blocks/        4  transformer_block  gdn_block  kda_block  mla_block
+├── archs/         2  llama_arch  layer_spec
+├── engine/       16  llama_seq  llama_kv  gpt2_seq  gpt2_fwd  gpt2_kv  vit_tiny
+│                     ── fixture engines (see docs/research/lanes.md) ──
+│                     ae  ar  ctr  diff  difflm  gnn  gtx  lstm  mlp  ssm
+└── recipes/      13  from_scratch  lora  warm_start  vit_tiny
+                      ── fixture recipes ──
+                      ae_auto  ctr_tower  diff_denoiser  franken_from_scratch
+                      gnn_node  gtx_graph  lstm_seq  mlp_classifier  ssm_seq
 ```
+
+The four recipes above the line are the **public library surface** — they are
+exactly what `require "toy/compute"` loads. The fixture recipes below it are
+reachable only from their own runner mains; see
+[the capability/fixture seam](INDEX.md#capability-vs-fixture--the-seam).
 
 **Recipes include curriculum.** A Recipe is a training plan: one stage
 (single dataset, single optimizer, one loop) or several (curriculum

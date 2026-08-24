@@ -14,18 +14,19 @@ training, multi-GPU, DiLoCo, non-ggml backend options) see
 [`roadmap/backends-and-scale-2026-05-27.md`](roadmap/backends-and-scale-2026-05-27.md),
 [`roadmap/training-backends-2026-05-27.md`](roadmap/training-backends-2026-05-27.md),
 and [`roadmap/decoupled-diloco-research-2026-05-27.md`](roadmap/decoupled-diloco-research-2026-05-27.md).
-For the **credit-assignment (DFA) research program** — can a network be
+For the **credit-assignment research programme** — can a network be
 trained without backpropagating through it — see
-[`roadmap/dfa-frankenmodels-2026-07-23.md`](roadmap/dfa-frankenmodels-2026-07-23.md)
-for the mechanism and
-[`roadmap/dfa-arch-program-2026-08-10.md`](roadmap/dfa-arch-program-2026-08-10.md)
-for the cross-architecture program (toy#152–#158). **Status: the first
-DFA positive is in** — the `mlp` anchor lane matches BP at 2 classes and
-the output-dim degradation is measured, monotone, over
-{2, 10, 100, 1000} classes; macro (block-tap) DFA + a RAdam-class
-optimizer close the "did we test the wrong recipe?" doubt on the
-transformer lanes. Remaining lanes: GNN (#153), CTR (#154),
-selective-scan (#155), latent diffusion (#156), LSTM (#157).
+[`research/dfa-arch-program-2026-08-10.md`](research/dfa-arch-program-2026-08-10.md)
+and [`research/dfa-frankenmodels-2026-07-23.md`](research/dfa-frankenmodels-2026-07-23.md).
+**Status: concluded (toy#152–#173).** DFA's demonstrated value is seven
+small-output positives; both routes out of the wide-output limit are closed
+(no form of the feedback matrix escapes it, and an AST relocates the limit
+rather than escaping it). The capabilities that arc produced —
+`--policy`, the `--dfa-*` feedback-matrix family, nDFA/LDFA, the
+conditioning instrument — are framework features now, documented in
+[`cli.md`](cli.md) and exercised by the fixture lanes in
+[`research/lanes.md`](research/lanes.md).
+
 For the **Kimi-K3 mechanism coverage** (KDA, Gated MLA, AttnRes,
 SiTU-GLU, QB, Muon, MTP, LatentMoE) see
 [`roadmap/kimi-k3-mechanisms-2026-07-29.md`](roadmap/kimi-k3-mechanisms-2026-07-29.md).
@@ -155,13 +156,6 @@ post-v0.7 deferred-queue session, `main@507e160` and follow-ups):
 Features that are scoped and understood but not built. These don't
 block phases — they land inside the layered structure when picked up.
 
-- **ViT / vision in the CLI** — the ViT examples and image-loader
-  smokes have no CLI command yet.
-- **GPT-2 arch in `toy train`** — only the Llama arch is exposed.
-  *In progress on the `gpt2-train` branch:* the two ggml backward kernels
-  (`ggml_gelu_back`, `ggml_norm_back` — vendor-patches/0007) are landed and
-  finite-diff validated (2/3 of our ggml#1514); the training arch + gate
-  (`prep/gpt2_train_gate.rb`) is the next step.
 - **Realize residuals** — llama3 `rope_freq_factors` wiring (un-gateable;
   the toy forward is rope-angle-insensitive at the logit level), and
   GQA-divergent on mmap/q8 (no divergent-head GGUF to gate against). The

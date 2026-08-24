@@ -4,7 +4,7 @@ A primitive is a single named op. One file per primitive, with a
 CPU implementation plus `_cuda` and `_metal` backend variants
 (mechanically mirrored by `prep/gen_cuda_mirror.rb`).
 
-## What's here (4 primitives)
+## What's here (12 primitives)
 
 | File | Module | Purpose |
 | --- | --- | --- |

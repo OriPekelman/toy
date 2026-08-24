@@ -1,14 +1,43 @@
 # Changelog
 
-## Unreleased — the credit-assignment arc (toy#120–#158)
+## Unreleased
 
-Everything since v0.9.0 serves one question: **can a network be trained
-without backpropagating through it?** Two research instruments were built
-(a dense Llama-shape "franken" lane and an MoE one), the Kimi-K3 mechanism
-wave landed alongside them, and the arc closes with the first DFA
-*positive* this program has produced.
+### Framework
 
-### Direct Feedback Alignment — the result
+- **Alternative credit assignment is now a framework capability.**
+  `--policy chain|dfa|frozen` threads through the Llama engines on CPU,
+  CUDA and Metal, with a documented feedback-matrix family
+  (`--dfa-b-{seed,dist,scale}`, `--dfa-cut`, `--dfa-granularity`,
+  `--dfa-feedback kolen-pollack`, the nDFA preconditioner and LDFA
+  low-rank feedback). See [`docs/cli.md`](docs/cli.md).
+- **New archs and primitives**: Gated-DeltaNet / KDA, Gated MLA, SiTU-GLU,
+  Muon, MTP, LatentMoE, AttnRes — with gates for DeepSeek-V2 (MLA),
+  Qwen3-MoE and Qwen2-MoE.
+- **Wider training surface**: `--optimizer`, `--lr-schedule`,
+  `--lr-control`, `--clip-grad`, `--ckpt-every`/`--load-ckpt`,
+  `--eval-corpus`.
+- **CUDA twin for the byte-LM path** (`--device cuda`, 4.7–5.8×), held to a
+  stated cross-backend tolerance. Cross-device cells are **not** numerically
+  comparable — a sweep runs on one device or re-runs its reference.
+- **`gate-prereq`** — `libexec/*` targets are now checked against each
+  runner's `require_relative` closure. 26 of 36 targets had drifted, so a
+  change to an undeclared source rebuilt nothing and its gate passed against
+  a stale binary. Two sibling instances of the same class were found and
+  fixed: a vendored ggml patch every fresh clone silently dropped, and four
+  CUDA mirrors `make` could never generate.
+- **`make gates-fast`** — the battery in phases; `make -j gates` is unsafe
+  (recursive makes race on one `libexec/` path) and `gate-run-log` must run
+  alone (it scans the whole `runs/` tree and will read a bundle mid-write).
+
+### Research fixtures and findings
+
+The eleven fixture lanes (`mlp ctr gnn ssm lstm gtx diff difflm ae franken
+franken-moe`) exist to test the capabilities above independently of any one
+question. The programme that drove them (toy#152–#173) is concluded; the
+record is in [`docs/research/`](docs/research/) and the lane reference in
+[`docs/research/lanes.md`](docs/research/lanes.md).
+
+#### Direct Feedback Alignment — the result
 
 - **A POSITIVE, at last (toy#152).** `toy train mlp` — an MLP classifier
   on a seeded synthetic task, the anchor lane. At 2 classes DFA **matches
@@ -56,7 +85,7 @@ wave landed alongside them, and the arc closes with the first DFA
   "washed out". Both `dfa_granularity` and `policied_tensors` now ride in
   every run bundle so the confusion cannot recur silently.
 
-### The Kimi-K3 mechanism wave (toy#135–#147)
+#### The Kimi-K3 mechanism wave (toy#135–#147)
 
 KDA (channel-wise delta rule with bounded decay), Gated MLA with a latent
 KV sandwich, Attention Residuals over depth, SiTU-GLU, NoPE, Quantile
@@ -66,7 +95,7 @@ LatentMoE with shared experts, Multi-Token Prediction where λ is a
 loss-reactive LR damper. Each is a flag on the research instruments, each
 independently gated, each byte-null when off.
 
-### Research-instrument surface (toy#120–#134)
+#### Research-instrument surface (toy#120–#134)
 
 Spec-callable `toy train franken` / `franken-moe`; real corpora (TOYC
 packs) with `--context`/`--vocab`/`--batch`; checkpoint writers and

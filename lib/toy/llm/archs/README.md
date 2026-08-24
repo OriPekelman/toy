@@ -3,7 +3,7 @@
 An Arch is the full network: embedding + stack of blocks + head.
 One file per arch.
 
-## What's here (1 arch)
+## What's here (2 archs)
 
 | File | Class | Blocks | Notes |
 | --- | --- | --- | --- |

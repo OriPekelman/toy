@@ -3,7 +3,7 @@
 A Block composes L1 primitives, owns its block-scoped weight tensors,
 and builds the forward graph for one block instance.
 
-## What's here (1 block)
+## What's here (4 blocks)
 
 | File | Class | Composes | Notes |
 | --- | --- | --- | --- |
