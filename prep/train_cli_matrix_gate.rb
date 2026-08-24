@@ -287,6 +287,28 @@ failures << "matrix: lstm --task cue was rejected — cue|mean is SHARED by ssm 
 # Nothing trains: the CLI rejects before it ever shells to the runner.
 out, st = probe(%w[from-scratch --lr 0.01 --d-model 128 --layers 4 --heads 8 --d-ff 256 --context 64 --vocab 700 --model x.gguf])
 failures << "matrix: a promoted framework knob was rejected on from-scratch — expected the run to stop on --model, the lora-only flag (toy#174) (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("only valid with recipe 'lora'")
+
+# The rejection MESSAGE, not just the rejection. The 120 probes above all
+# key on the substring "only valid with", which BOTH message forms carry —
+# so they cannot tell the two audiences apart and would stay green if the
+# framework-facing message regressed to the lane-list form. These two
+# assert the split itself.
+#
+# A FRAMEWORK recipe reaching for a fixture flag must be pointed at the
+# research namespace. Handing this reader eleven lane names and
+# "(toy#152/#153/#155/#157)" names issues they cannot read and lanes they
+# have no reason to know, and never says the useful thing: the flag exists,
+# it lives on the fixtures, here is how to reach it.
+out, st = probe(%w[from-scratch --classes 10])
+failures << "matrix: from-scratch --classes should point at the research namespace, not list lane names (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("toy research train mlp") && out.include?("docs/research/lanes.md")
+# A RESEARCH lane must KEEP the lane-list prose with its citation — that
+# text is written for that reader and is byte-unchanged.
+out, st = probe(%w[mlp --experts 4])
+failures << "matrix: mlp --experts lost the lane-list message written for the research reader (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("only valid with recipe 'franken-moe' (toy#128)")
+# A flag legal on framework recipes TOO must keep the plain list for
+# everyone — the fixtures-only special case must not fire on it.
+out, st = probe(%w[lora --lr 0.01])
+failures << "matrix: lora --lr wrongly took the fixtures-only branch (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("only valid with recipe 'from-scratch'") && !out.include?("research fixture lanes")
 puts failures.length == n0 ? "  ok: right-recipe probes pass the matrix (their errors come from later rules)" : "  FAIL: acceptance side"
 
 if failures.empty?

@@ -2406,10 +2406,39 @@ when /\A--dfa-feedback-lr=(.*)\z/
             ["--routing/--moe-policy/--moe-aux", %w[franken-moe],   (!@routing.nil? || !@moe_policy.nil? || !@moe_aux.nil?), ""],
             ["--experts",       %w[franken-moe],                    !@experts.nil?, " (toy#128)"],
           ]
+          # One rejection builder for the whole matrix, but TWO audiences.
+          #
+          # Someone on a research lane who reaches for another lane's flag
+          # wants the lane list and the issue citation — that prose is
+          # written for them and stays byte-identical.
+          #
+          # Someone on a FRAMEWORK recipe who reaches for a fixture flag is
+          # a different reader entirely. Today they get a wall of eleven
+          # lane names and something like "(toy#152/#153/#155/#157)", which
+          # names issues they cannot read and lanes they have no reason to
+          # know. Worse, it never says the thing they actually need: the
+          # flag DOES exist, it lives on the research fixtures, and here is
+          # how to reach it.
+          #
+          # The split is on whether the allowed list is fixtures-ONLY. When
+          # a flag is legal on framework recipes too (--lr, --context, the
+          # shape knobs after toy#174), the plain list is the right answer
+          # for everyone and the special case must not fire.
+          #
+          # "only valid with" is preserved in BOTH forms deliberately —
+          # prep/train_cli_matrix_gate.rb keys 120 probes on that substring,
+          # many of them using from-scratch as the wrong recipe.
           flag_matrix.each do |label, recipes, used, note|
             next unless used && !recipes.include?(@recipe)
             names = recipes.map { |r| "'#{r}'" }.join(" or ")
             verb = label.include?("/") ? "are" : "is"
+            fixtures_only = (recipes - FIXTURE_RECIPES).empty?
+            if fixtures_only && FRAMEWORK_RECIPES.include?(@recipe)
+              flag = label.split("/").first
+              return bad_arg("#{label} #{verb} only valid with the research fixture lanes " \
+                             "(#{recipes.join(', ')}) — try `toy research train #{recipes.first} #{flag} …`. " \
+                             "See docs/research/lanes.md.")
+            end
             return bad_arg("#{label} #{verb} only valid with recipe #{names}#{note}")
           end
           if (@eval_tokens || @eval_offset) && @eval_corpus.nil?
