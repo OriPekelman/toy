@@ -97,7 +97,7 @@ class GtxEngine
                 :gx_bytelm, :t_tokens, :ix_emb, :ix_lmhead, :gx_gnorm, :t_gnorm, :gx_gnorm_built,
                 :gx_retrofit, :gx_freeze_backbone, :gx_adapter_policy,
                 :gx_backbone_first, :gx_backbone_count, :gx_active_classes,
-                :gx_b_rank, :gx_b_adapt, :gx_b_pseed,
+                :gx_b_rank, :gx_b_adapt, :gx_b_pseed, :gx_p_map,
                 :gx_ld_fro_eff, :gx_ld_fro_full, :gx_ld_rank_eff, :gx_ld_dout
 
   def initialize
@@ -162,6 +162,7 @@ class GtxEngine
     @gx_b_rank   = 0
     @gx_b_adapt  = 0
     @gx_b_pseed  = 0
+    @gx_p_map    = ""
     @gx_p        = [0.0]; @gx_p.pop
     @gx_p_ready  = 0
     @gx_ld_tgt2  = [0.0]; @gx_ld_tgt2.pop
@@ -1135,9 +1136,80 @@ class GtxEngine
   # — the compression is a property of the error stream, not of the tap,
   # which is the whole structure LDFA proposes.
   def init_p!(v, r)
+    if @gx_p_map.length > 0
+      init_p_from_map!(v, r)
+      return 0
+    end
     sigp = Toy::Train::DfaB.sigma_for(@gx_b_scale, v, r, @gx_b_sigma)
     @gx_p = Toy::Train::DfaB.fill(r * v, @gx_b_pseed, @gx_b_dist, sigp)
     ortho_p!(v, r)
+  end
+
+  # rev2026-08-23/D1 — ORACLE pooling P, from a two-file map pack:
+  #   <prefix>.meta.i32  [n_codes, n_base]
+  #   <prefix>.tok.i32   n_codes row ids (code c -> its base symbol)
+  # Rows have disjoint support by construction and are normalised to unit
+  # norm, so P is exactly orthonormal; adapt_p! (apply=0) measures it
+  # unchanged and the scale gate in refresh_b_lowrank! applies as-is.
+  # Codes beyond n_codes are padded head columns and stay all-zero (they
+  # carry no error).
+  def init_p_from_map!(v, r)
+    hdr = Array.new(2, 0)
+    got = TinyNN.tnn_read_i32_file(@gx_p_map + ".meta.i32", 0, 2, hdr)
+    if got != 2
+      puts "gtx_engine: could not read oracle P map " + @gx_p_map + ".meta.i32"
+      exit 1
+    end
+    n_codes = hdr[0]
+    n_base  = hdr[1]
+    if n_base != r
+      puts "gtx_engine: oracle P map has " + n_base.to_s +
+           " base symbols but GTX_DFA_RANK is " + r.to_s +
+           " — rank must equal the map's base-symbol count"
+      exit 1
+    end
+    if n_codes > v
+      puts "gtx_engine: oracle P map covers " + n_codes.to_s +
+           " codes but the head has only " + v.to_s + " classes"
+      exit 1
+    end
+    map = Array.new(n_codes, 0)
+    got2 = TinyNN.tnn_read_i32_file(@gx_p_map + ".tok.i32", 0, n_codes, map)
+    if got2 != n_codes
+      puts "gtx_engine: oracle P map short read (" + got2.to_s + "/" +
+           n_codes.to_s + ")"
+      exit 1
+    end
+    @gx_p = Array.new(r * v, 0.0)
+    counts = Array.new(r, 0)
+    c = 0
+    while c < n_codes
+      b = map[c]
+      if b < 0 || b >= r
+        puts "gtx_engine: oracle P map code " + c.to_s + " row " + b.to_s +
+             " out of range"
+        exit 1
+      end
+      @gx_p[b * v + c] = 1.0
+      counts[b] = counts[b] + 1
+      c = c + 1
+    end
+    i = 0
+    while i < r
+      if counts[i] < 1
+        puts "gtx_engine: oracle P map leaves row " + i.to_s + " empty"
+        exit 1
+      end
+      nrm = Math.sqrt(counts[i].to_f)
+      pb = i * v
+      cc = 0
+      while cc < v
+        @gx_p[pb + cc] = @gx_p[pb + cc] / nrm
+        cc = cc + 1
+      end
+      i = i + 1
+    end
+    0
   end
 
   # Modified Gram-Schmidt over the ROWS of P, in place. Returns 0, or 1 if
