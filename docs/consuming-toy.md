@@ -199,6 +199,18 @@ line via the `SPINEL_EXT_<PLACEHOLDER>` escape hatch.
 
 ## MRI dev-runs: `require "toy/mri"` (toy#71)
 
+> **`require "toy"` does not work under MRI, and the error does not say so.**
+> It raises `undefined method 'ffi_lib' for TinyNN:Module (NoMethodError)`
+> from `lib/toy/ffi/tinynn.rb`, which reads like a broken install rather
+> than a wrong entry point. Use **`toy/compute`** (the library surface, see
+> the README) or **`toy/mri`** (FFI dev-runs, below).
+>
+> `lib/toy.rb` is the *Spinel* entry and is compiled; it cannot detect MRI
+> and re-route, because a conditional `require_relative` is silently
+> compiled to `0` (spinel-dev#20 — see the note at `lib/toy/mri.rb:33`), so
+> the obvious guard would break every compiled runner without failing.
+> Tracked as toy#175.
+
 Plain CRuby can load — and, with one `make` target, **run** — the whole
 compute surface; no Spinel:
 
