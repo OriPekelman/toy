@@ -67,7 +67,7 @@ require_relative "../train/toy_gguf_fuse"
 RECIPE      = ENV["RECIPE"] || "from-scratch"
 STEPS       = (ENV["STEPS"] || "5").to_i
 SEED        = (ENV["SEED"]  || "0").to_i
-# The run-directory contract. TOY_RUN_DIR is canonical; RUN_DIR is
+# The run-directory contract. TOY_RUN_DIR is canonical; TAO_RUN_DIR is
 # the compatibility fallback — the framework's own contract should not
 # be named after a client repo. Length-checked, not truthiness-checked:
 # "" is truthy in Ruby.

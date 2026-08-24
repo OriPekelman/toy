@@ -43,7 +43,7 @@ require_relative "../serve/openai/toy_backend"
 # RUN_DIR is set by `toy serve` (lib/toy/core/cli/serve.rb) when it has
 # resolved a run id + created runs/<id>/. When empty, serving is events-OFF
 # (cheap-when-off: every emit guard short-circuits), exactly like train.
-# The run-directory contract. TOY_RUN_DIR is canonical; RUN_DIR is
+# The run-directory contract. TOY_RUN_DIR is canonical; TAO_RUN_DIR is
 # the compatibility fallback — the framework's own contract should not
 # be named after a client repo. Length-checked, not truthiness-checked:
 # "" is truthy in Ruby.
