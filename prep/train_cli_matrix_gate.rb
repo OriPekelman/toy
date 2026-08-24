@@ -39,10 +39,15 @@ REJECT = [
   [%w[from-scratch --dfa-b-seed 1],       "--dfa-b-*"],
   [%w[from-scratch --policy chain],       "--policy"],
   [%w[from-scratch --align-every 2],      "--align-every"],
-  [%w[from-scratch --lr 0.01],            "--lr/--warmup"],
+# toy#174: --lr is now a FRAMEWORK knob and is ACCEPTED on from-scratch
+# (see the acceptance probe below). What must still be REJECTED is
+# --warmup: from-scratch trains with a constant hp and has no schedule,
+# so the flag would be a silent no-op. This probe is the guard on that
+# asymmetry being deliberate rather than an oversight.
+[%w[from-scratch --warmup 2],           "--warmup"],
   [%w[vit-tiny --warmup 2],               "--lr/--warmup"],
   [%w[warm-start --no-shadow],            "--no-shadow"],
-  [%w[from-scratch --context 64],         "--context/--vocab"],
+  [%w[vit-tiny --context 64],             "--context/--vocab"],
   [%w[from-scratch --batch 4],            "--batch"],
   [%w[from-scratch --act situ-glu],       "--act"],
   [%w[franken-moe --act situ-glu],        "--act"],
@@ -275,10 +280,23 @@ out, st = probe(%w[lstm --seq 32 --classes 4 --hidden 32 --features 16 --layers 
 failures << "matrix: lstm full flag set hit the matrix (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("--task community is only valid with recipe 'gnn'")
 out, st = probe(%w[lstm --task cue --device cuda])
 failures << "matrix: lstm --task cue was rejected — cue|mean is SHARED by ssm and lstm (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("not supported for recipe 'lstm'")
+# toy#174: the seven promoted framework knobs must all pass the matrix on
+# from-scratch. --model is lora-only and comes LAST, so the run stopping
+# on --model — and not on --lr, --d-model, --layers, --heads, --d-ff,
+# --context or --vocab — is what proves every one of them got through.
+# Nothing trains: the CLI rejects before it ever shells to the runner.
+out, st = probe(%w[from-scratch --lr 0.01 --d-model 128 --layers 4 --heads 8 --d-ff 256 --context 64 --vocab 700 --model x.gguf])
+failures << "matrix: a promoted framework knob was rejected on from-scratch — expected the run to stop on --model, the lora-only flag (toy#174) (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("only valid with recipe 'lora'")
 puts failures.length == n0 ? "  ok: right-recipe probes pass the matrix (their errors come from later rules)" : "  FAIL: acceptance side"
 
 if failures.empty?
-  puts "GATE PASS [train-cli-matrix]: #{REJECT.length} rejections + 12 acceptance probes (toy#132/#153/#155/#156/#157/#160)"
+# The acceptance count is DERIVED, not typed. It read "12" while this
+# section held 13 probes — a gate whose own summary drifts from what it
+# ran is the same "listed in one place, applied from another" shape as
+# toy#171 and the dropped ggml patch, and a gate is the worst place for
+# it. REJECT.length was already derived; this now matches.
+acc_n = File.read(__FILE__).split("---- acceptance side")[1].to_s.scan(/^out, st = probe\(/).size
+puts "GATE PASS [train-cli-matrix]: #{REJECT.length} rejections + #{acc_n} acceptance probes (toy#132/#153/#155/#156/#157/#160/#174)"
   exit 0
 else
   failures.each { |f| warn "GATE FAIL [train-cli-matrix]: #{f}" }

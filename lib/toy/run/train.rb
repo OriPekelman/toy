@@ -7,14 +7,33 @@
 # to it via Open3 with a CONTROLLED ENV. This is the same CRuby→runner COMPUTE
 # BRIDGE that lib/toy/run/infer.rb established; train follows it verbatim.
 #
-# CONTRACT (read from ENV only — lib-vs-example scope, NO experiment config
-# baked as flags; the gate-fixed model SHAPE is hardcoded below, exactly as
-# infer.rb hardcodes its fallback prompt IDs):
+# CONTRACT (read from ENV only — lib-vs-example scope; the CLI marshals its
+# flags into these and every one defaults to the historical gate-fixed
+# value, so an unset environment is byte-identical):
 #   STEPS        — number of training steps (default "5")
 #   SEED         — random-init seed (default "0")
-#   RUN_DIR  — when set, emit events.jsonl + a final checkpoint HERE
-#                  (06/RUN_DIR convention). When empty, compute-only.
+#   TOY_RUN_DIR  — when set, emit events.jsonl + a final checkpoint HERE.
+#                  When empty, compute-only. TAO_RUN_DIR is the fallback.
 #   TOY_RUN_ID   — the resolved run id string (run_start/checkpoint metadata)
+#   CORPUS       — warm-start's packed-i32 token stream
+#
+# Promoted framework knobs — ordinary training parameters that until now
+# existed ONLY on the research fixtures, so `toy train from-scratch` could
+# not set its own learning rate:
+#   TOY_LR       — learning rate           (default "0.001")
+#   TOY_VOCAB    — vocabulary size         (default "627")
+#   TOY_D_MODEL  — model width             (default "64")
+#   TOY_N_HEADS  — attention heads         (default "4")
+#   TOY_D_FF     — feed-forward width      (default "128")
+#   TOY_N_LAYERS — layer count             (default "2")
+#   TOY_CONTEXT  — sequence length         (default "32")
+#   TOY_WARMUP   — warm-start only, cosine warmup steps  (default "5")
+#   TOY_LR_MIN   — warm-start only, cosine floor         (default "0.00001")
+#
+# NOT promoted, because they are features rather than flags: --batch and
+# --val-batches. from-scratch trains on the FIRST LINE of data/ts_seqs.txt
+# repeated STEPS times — there is no batch dimension to widen and no eval
+# loop to size. Exposing them as flags would be a lie. See tao#28.
 #
 # Backend: CPU only. The recipe inlines TinyNN.* (backend-coupled) and the
 # CUDA twin (from_scratch_cuda.rb) is DEFERRED alongside the GPU deferral, so
@@ -36,8 +55,10 @@
 # so the structural additions cannot perturb the byte-gated stdout.
 #
 # Spinel hygiene (landmine #16): hand-built String-concat JSON (no #{}
-# interpolation, no Math.exp); no Struct.new; VOCAB is a hardcoded int literal
-# (never read ts_vocab.txt strings — poly-dispatch landmine, 06:21).
+# interpolation, no Math.exp); no Struct.new; VOCAB is an Integer derived from
+# ENV via .to_i — NEVER read from ts_vocab.txt as a String (poly-dispatch
+# landmine, 06:21). The .to_i keeps the constant's type identical to the
+# int literal it replaced, which is what that landmine actually turns on.
 
 require_relative "../../toy"
 require_relative "../io/json_builder"
@@ -75,19 +96,41 @@ RUN_DIR_NEW = ENV["TOY_RUN_DIR"] || ""
 RUN_DIR     = RUN_DIR_NEW.length > 0 ? RUN_DIR_NEW : (ENV["TAO_RUN_DIR"] || "")
 RUN_ID      = ENV["TOY_RUN_ID"] || ""
 
-# Gate-fixed model SHAPE — hardcoded (NOT env/flags), the smoke config.
+# Model SHAPE and learning rate. The defaults ARE the historical gate-fixed
+# smoke config — vocab=627 d=64 donor=128 heads=4 n_kv=4 ff=128 L=2 ctx=32
+# rope=1e4 eps=1e-5, lr=1e-3 — so an unset environment reproduces every
+# stored cell byte-for-byte. They are now overridable because a framework
+# whose own quickstart recipe cannot set a learning rate is not a training
+# tool; these knobs existed only on the research fixtures until now.
+#
 # Hoisted to TOP-LEVEL (NOT inside the RECIPE branches): Spinel does not
 # initialize top-level CONSTANTS assigned inside a conditional arm at
 # runtime ("uninitialized constant" abort), so the shared shape lives here.
 # from-scratch + warm-start use the SAME shape (both llama-scratch).
-# vocab=627 d=64 donor=128 heads=4 n_kv=4 ff=128 L=2 ctx=32 rope=1e4 eps=1e-5.
-VOCAB    = 627
-D_MODEL  = 64
+#
+# EVERY READ IS LENGTH-GUARDED, and that is not style. The CLI marshals
+# unset flags as the EMPTY STRING, not as an absent variable, so `ENV["X"]`
+# is "" rather than nil on the ordinary path. "" is truthy in Ruby and
+# "".to_i is 0 — so the obvious `(ENV["TOY_D_MODEL"] || "64").to_i` would
+# silently build a ZERO-WIDTH model on every default invocation. Same trap
+# as the empty-env-string .to_f landmine and the RUN_DIR resolution above.
+# The intermediates are CONSTANTS, not locals, for the Spinel reason above.
+S_VOCAB    = ENV["TOY_VOCAB"]    || ""
+S_D_MODEL  = ENV["TOY_D_MODEL"]  || ""
+S_N_HEADS  = ENV["TOY_N_HEADS"]  || ""
+S_D_FF     = ENV["TOY_D_FF"]     || ""
+S_N_LAYERS = ENV["TOY_N_LAYERS"] || ""
+S_CONTEXT  = ENV["TOY_CONTEXT"]  || ""
+S_LR       = ENV["TOY_LR"]       || ""
+
+VOCAB    = S_VOCAB.length    > 0 ? S_VOCAB.to_i    : 627
+D_MODEL  = S_D_MODEL.length  > 0 ? S_D_MODEL.to_i  : 64
 DONOR_D  = 128
-N_HEADS  = 4
-D_FF     = 128
-N_LAYERS = 2
-CONTEXT  = 32
+N_HEADS  = S_N_HEADS.length  > 0 ? S_N_HEADS.to_i  : 4
+D_FF     = S_D_FF.length     > 0 ? S_D_FF.to_i     : 128
+N_LAYERS = S_N_LAYERS.length > 0 ? S_N_LAYERS.to_i : 2
+CONTEXT  = S_CONTEXT.length  > 0 ? S_CONTEXT.to_i  : 32
+LR       = S_LR.length       > 0 ? S_LR.to_f       : 0.001
 
 # Events sink — TOP-LEVEL (same constant-in-conditional Spinel caveat as the
 # shape consts; an EVENTS constant assigned inside a branch reads back empty
@@ -100,9 +143,16 @@ if RECIPE == "warm-start"
   # prep/smokes/smoke_recipe_warm_start.rb at INIT=scratch (the gate ground
   # truth). INIT=scratch skips realize_warm! (no donor GGUF).
   # ==================================================================
-  lr_max = 0.001
-  lr_min = 0.00001
-  warmup = 5
+  # Cosine schedule. Defaults are the historical warm-start values, so an
+  # unset environment is byte-identical. Length-guarded for the same
+  # empty-string reason as the shape constants above — these are LOCALS
+  # inside the branch (not read back as top-level constants), so the
+  # guard is written inline rather than via an S_ constant.
+  s_warm = ENV["TOY_WARMUP"] || ""
+  s_lmin = ENV["TOY_LR_MIN"] || ""
+  lr_max = LR
+  lr_min = s_lmin.length > 0 ? s_lmin.to_f : 0.00001
+  warmup = s_warm.length > 0 ? s_warm.to_i : 5
   corpus = ENV["CORPUS"] || "data/ts_seqs.bin"
 
   # FAIL LOUD on a missing corpus BEFORE realize (spinel-dev#17 class:
@@ -174,7 +224,7 @@ if RECIPE == "warm-start"
       config = Toy::Json::Builder.new
       config.add_num("context", CONTEXT)
       config.add_num("steps",   STEPS)
-      config.add_raw("lr",      "0.001")
+      config.add_raw("lr",      LR.to_s)
       config.add_num("seed",    SEED)
       rs.add_obj("config", config)
       TinyNN.tnn_events_emit(rs.dump)
@@ -330,14 +380,36 @@ while seq_ids.length < CONTEXT; seq_ids.push(0); end
 positions = [0]; positions.pop
 p = 0; while p < CONTEXT; positions.push(p); p = p + 1; end
 
+# VOCAB is settable now (TOY_VOCAB / --vocab), so the "known-good first
+# line" assumption below no longer holds on its own: a user-supplied vocab
+# smaller than the corpus's highest token id would index PAST the one-hot
+# row count. Checked BEFORE the labels are built and named + actionable —
+# never clamped, never silently truncated.
+max_tok = 0
+mt = 0
+while mt < seq_ids.length
+  if seq_ids[mt] > max_tok
+    max_tok = seq_ids[mt]
+  end
+  mt = mt + 1
+end
+if max_tok >= VOCAB
+  puts "toy-train: --vocab " + VOCAB.to_s + " is too small for this corpus"
+  puts "  data/ts_seqs.txt's first line contains token id " + max_tok.to_s + "."
+  puts "  --vocab must be at least " + (max_tok + 1).to_s + " (default 627)."
+  exit 1
+end
+
 # Labels: shift-by-one one-hot (target = next token, or self at last pos).
-# UNGUARDED (from-scratch seq_ids come from a known-good first line).
+# Guarded by the max-token check directly above.
 m_labels = Toy::Labels.next_token(seq_ids, VOCAB, CONTEXT, 1)
 
 # CONSTANT hyper-params via NAMED AdamW (NOT 06's per-step bias-corrected
 # hp; beta2=0.95 here, NOT 0.999; bias_correct=false → slots5/6=betas).
 # Using 06's lora-style hp breaks the byte gate. Built ONCE (constant).
-m_hp = Toy::AdamW.for_from_scratch.hp(0)
+adamw_fs = Toy::AdamW.for_from_scratch
+adamw_fs.lr = LR
+m_hp = adamw_fs.hp(0)
 
 # --- Events (EVENTS hoisted to top-level; cheap-when-off; FILE only). ---
 
@@ -372,7 +444,7 @@ if EVENTS.length > 0
     config = Toy::Json::Builder.new
     config.add_num("context", CONTEXT)
     config.add_num("steps",   STEPS)
-    config.add_raw("lr",      "0.001")
+    config.add_raw("lr",      LR.to_s)
     config.add_num("seed",    SEED)
     rs.add_obj("config", config)
     TinyNN.tnn_events_emit(rs.dump)
@@ -399,7 +471,7 @@ while step < STEPS
     es.add_num("t",       TinyNN.tnn_events_now_seconds)
     es.add_num("step",    step + 1)
     es.add_num("loss",    loss)
-    es.add_raw("lr",      "0.001")
+    es.add_raw("lr",      LR.to_s)
     es.add_num("tokens",  CONTEXT)
     es.add_num("wall_us", step_wall_us)
     TinyNN.tnn_events_emit(es.dump)

@@ -540,10 +540,22 @@ module Toy
                              "GGUF"  => (@model || "data/smollm2-135m-native.gguf"),
                              "RANK"  => (@rank || 8).to_s)
           elsif @recipe == "warm-start"
+            # Same promoted knobs as from-scratch, plus --warmup: warm-start
+            # is the arm that actually HAS a cosine schedule, which is why
+            # --warmup is gated to it and not to from-scratch (accepting it
+            # there would be a silent no-op).
             env = base.merge("STEPS"  => @steps.to_s,
                              "SEED"   => @seed.to_s,
                              "CORPUS" => (@corpus || "data/ts_seqs.bin"),
-                             "INIT"   => (@init || "scratch"))
+                             "INIT"   => (@init || "scratch"),
+                             "TOY_LR"       => (@lr || ""),
+                             "TOY_WARMUP"   => (@warmup ? @warmup.to_s : ""),
+                             "TOY_VOCAB"    => (@vocab ? @vocab.to_s : ""),
+                             "TOY_CONTEXT"  => (@context ? @context.to_s : ""),
+                             "TOY_D_MODEL"  => (@d_model ? @d_model.to_s : ""),
+                             "TOY_D_FF"     => (@d_ff ? @d_ff.to_s : ""),
+                             "TOY_N_HEADS"  => (@heads ? @heads.to_s : ""),
+                             "TOY_N_LAYERS" => (@mlp_layers ? @mlp_layers.to_s : ""))
           elsif @recipe == "vit-tiny"
             # CPU-only ViT from-scratch on the COMMITTED data/vit_smoke corpus.
             # Runner hard-codes 224/16/196/10 + AdamW hp; only STEPS/SEED vary.
@@ -900,8 +912,20 @@ module Toy
                              "FRANKEN_SCHEDULE" => (@schedule || ""),
                              "FRANKEN_CKPT_EVERY" => (@ckpt_every || 0).to_s)
           else
-            # from-scratch — byte-identical to today plus the harmless RECIPE key.
-            env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s)
+            # from-scratch. The promoted framework knobs are marshalled as
+            # "" when unset, and the runner LENGTH-GUARDS every read for
+            # exactly that reason — `"".to_i` is 0, so an unguarded read
+            # would build a zero-width model on the default path. Unset
+            # here means the runner's own defaults, which ARE the recorded
+            # gate config, so this stays byte-identical to today.
+            env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
+                             "TOY_LR"       => (@lr || ""),
+                             "TOY_VOCAB"    => (@vocab ? @vocab.to_s : ""),
+                             "TOY_CONTEXT"  => (@context ? @context.to_s : ""),
+                             "TOY_D_MODEL"  => (@d_model ? @d_model.to_s : ""),
+                             "TOY_D_FF"     => (@d_ff ? @d_ff.to_s : ""),
+                             "TOY_N_HEADS"  => (@heads ? @heads.to_s : ""),
+                             "TOY_N_LAYERS" => (@mlp_layers ? @mlp_layers.to_s : ""))
           end
           # Metal: disable ggml's residency-set optimization so the runner exits
           # cleanly. See lib/toy/core/cli/infer.rb for the full rationale — the
@@ -972,10 +996,18 @@ module Toy
           io.puts "Model:"
           io.puts "  --arch llama|gpt2    architecture (default llama; gpt2 is from-scratch)"
           io.puts "  --rank N             LoRA rank (default 8)"
+          io.puts "  --d-model N          model width (default 64)"
+          io.puts "  --layers N           layer count (default 2)"
+          io.puts "  --heads N            attention heads (default 4)"
+          io.puts "  --d-ff N             feed-forward width (default 128)"
+          io.puts "  --context N          sequence length (default 32)"
+          io.puts "  --vocab N            vocabulary size (default 627; must cover the corpus)"
           io.puts ""
           io.puts "Optimization:"
           io.puts "  --steps N            training steps (default 5)"
           io.puts "  --seed S             random-init seed (default 0)"
+          io.puts "  --lr F               learning rate (default 0.001)"
+          io.puts "  --warmup N           cosine warmup steps (warm-start only; default 5)"
           io.puts ""
           io.puts "Output:"
           io.puts "  --out DIR            run dir (default runs/<id>)"
@@ -2256,7 +2288,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
             # --dt-init name parts an LSTM has no counterpart for), so
             # those rows stay ssm-only rather than widening.
             ["--seq",           %w[ssm lstm],                       !@seq.nil?, " (toy#155/#157)"],
-            ["--d-model",       %w[ssm gtx ae difflm],                     !@d_model.nil?, " (toy#155/#160/#165)"],
+            ["--d-model",       %w[from-scratch warm-start ssm gtx ae difflm],                     !@d_model.nil?, " (toy#155/#160/#165)"],
             ["--d-inner/--conv-k", %w[ssm],
              (!@d_inner.nil? || !@conv_k.nil?), " (toy#155)"],
             ["--selection",     %w[ssm],                            !@selection.nil?, " (toy#155)"],
@@ -2264,7 +2296,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
             # the block output with BP intact inside it, `step` cuts the
             # gradient through the attention pattern itself.
             ["--dfa-cut",       %w[ssm lstm gtx],                   !@dfa_cut.nil?, " (toy#155/#157/#160)"],
-            ["--heads/--d-ff", %w[gtx ae difflm],
+            ["--heads/--d-ff", %w[from-scratch warm-start gtx ae difflm],
              (!@heads.nil? || !@d_ff.nil?), " (toy#160/#165)"],
             ["--types/--entities", %w[gtx],
              (!@types.nil? || !@entities.nil?), " (toy#160)"],
@@ -2313,11 +2345,24 @@ when /\A--dfa-feedback-lr=(.*)\z/
             # (--policy-tensors), never an overload of this one.
             ["--policy-scope",  %w[franken],                        !@policy_scope.nil?, " (toy#151; NOT accepted on 'mlp' — tao#18)"],
             ["--align-every",   %w[franken franken-moe mlp gnn diff], !@align_every.nil?, ""],
-            ["--lr/--warmup",   %w[franken franken-moe mlp ctr gnn ssm lstm gtx diff ae difflm], (!@lr.nil? || !@warmup.nil?), " (toy#126/#132)"],
+            # toy#174: --lr is an ORDINARY TRAINING KNOB and now works on the
+            # framework recipes too. Until this split it was fixture-only, so
+            # `toy train from-scratch --lr 3e-4` — the README's own quickstart
+            # recipe — was rejected, and the only way to set a learning rate
+            # was to pick a research lane. That was the clearest single symptom
+            # of generic capability having been built into fixtures instead of
+            # into the framework.
+            ["--lr",            %w[from-scratch warm-start franken franken-moe mlp ctr gnn ssm lstm gtx diff ae difflm], !@lr.nil?, " (toy#126/#132/#174)"],
+            # --warmup is NOT on from-scratch, deliberately. from-scratch
+            # trains with a CONSTANT hp and has no schedule to warm up, so
+            # accepting the flag would silently do nothing — the failure mode
+            # this repo refuses (never mask, fail loud). warm-start has the
+            # cosine schedule and takes it.
+            ["--warmup",        %w[warm-start franken franken-moe mlp ctr gnn ssm lstm gtx diff ae difflm], !@warmup.nil?, " (toy#126/#132/#174)"],
             ["--classes",       %w[mlp gnn ssm lstm],               !@classes.nil?, " (toy#152/#153/#155/#157)"],
             ["--features",      %w[mlp gnn lstm gtx],               !@features.nil?, " (toy#152/#153/#157/#160)"],
             ["--hidden",        %w[mlp ctr gnn lstm diff],          !@hidden.nil?, " (toy#152/#154/#153/#157/#156)"],
-            ["--layers",        %w[mlp ctr gnn ssm lstm gtx diff ae difflm], !@mlp_layers.nil?, " (toy#152/#154/#153/#155/#157/#160/#156/#165)"],
+            ["--layers",        %w[from-scratch warm-start mlp ctr gnn ssm lstm gtx diff ae difflm], !@mlp_layers.nil?, " (toy#152/#154/#153/#155/#157/#160/#156/#165)"],
             ["--task",          %w[mlp gnn ssm lstm gtx diff],      !@task.nil?, " (toy#152/#153/#155/#157/#160/#156)"],
             ["--teacher-dim",   %w[mlp gnn],                        !@teacher_dim.nil?, " (toy#152/#153)"],
             ["--task-seed",     %w[mlp ctr gnn ssm lstm gtx diff ae difflm], !@task_seed.nil?, " (toy#152/#154/#153/#155/#157/#160/#156/#165)"],
@@ -2331,8 +2376,8 @@ when /\A--dfa-feedback-lr=(.*)\z/
             # come with it — it means an INTEGER pack width on the franken
             # lanes, and letting `ae` take a string there would make one flag
             # mean two different types depending on the recipe.
-            ["--context",       %w[franken franken-moe ae difflm], !@context.nil?, " (toy#129/#165/#166)"],
-            ["--vocab",         %w[franken franken-moe gtx],       !@vocab.nil?, " (toy#129 names a headerless pack vocab; toy#170/P5 on gtx it is the NOMINAL HEAD WIDTH under --task bytelm. On the ae lane the head is byte-wide by construction, so there is no --vocab)"],
+            ["--context",       %w[from-scratch warm-start franken franken-moe ae difflm], !@context.nil?, " (toy#129/#165/#166)"],
+            ["--vocab",         %w[from-scratch warm-start franken franken-moe gtx],       !@vocab.nil?, " (toy#129 names a headerless pack vocab; toy#170/P5 on gtx it is the NOMINAL HEAD WIDTH under --task bytelm. On the ae lane the head is byte-wide by construction, so there is no --vocab)"],
             ["--batch",         %w[franken franken-moe mlp ctr ssm lstm gtx diff], !@batch.nil?, " (toy#133; on gtx it is the labelled PAIRS per step)"],
             ["--act",           %w[franken],                        !@act.nil?, " (toy#136/K1; MoE experts get their GLU in K4)"],
             ["--rope",          %w[franken],                        !@rope.nil?, " (toy#136/K1)"],
@@ -2384,8 +2429,13 @@ when /\A--dfa-feedback-lr=(.*)\z/
           # meaningless without `--corpus`. On gtx (toy#170/P5) the same
           # flag means the NOMINAL HEAD WIDTH and the data comes from
           # `--text`, so requiring `--corpus` there would refuse the one
-          # configuration the flag exists for.
-          if @vocab && @corpus.nil? && !%w[gtx].include?(@recipe)
+          # configuration the flag exists for. On the FRAMEWORK recipes
+          # (toy#174) it means the model's own vocabulary size — the flag's
+          # plain reading, needing no pack: from-scratch reads
+          # data/ts_seqs.txt and warm-start defaults its corpus. The runner
+          # FAILS LOUD when the value is below the corpus's highest token
+          # id rather than silently clamping or indexing out of bounds.
+          if @vocab && @corpus.nil? && !%w[gtx from-scratch warm-start].include?(@recipe)
             return bad_arg("--vocab needs --corpus (it names a headerless pack's vocab; TOYC packs declare their own)")
           end
           if @recipe == "franken-moe" && @context && @corpus.nil?

@@ -82,6 +82,38 @@ Defaults: `--steps 5`, `--seed 0`, `--arch llama`, `--device cpu`,
 [Run bundle layout](#run-bundle-layout)) and echoes the byte-deterministic
 loss curve to stdout.
 
+#### Shape and optimization flags
+
+These are ordinary training knobs and work on `from-scratch` and
+`warm-start`. Every default is the historical gate-fixed value, so **an
+invocation that sets none of them is byte-identical to before they
+existed** and every recorded run stays reproducible.
+
+| flag | meaning | default |
+| --- | --- | --- |
+| `--lr F` | learning rate | `0.001` |
+| `--d-model N` | model width | `64` |
+| `--layers N` | layer count | `2` |
+| `--heads N` | attention heads | `4` |
+| `--d-ff N` | feed-forward width | `128` |
+| `--context N` | sequence length | `32` |
+| `--vocab N` | vocabulary size | `627` |
+| `--warmup N` | cosine warmup steps — **`warm-start` only** | `5` |
+
+`--warmup` is rejected on `from-scratch` rather than ignored: that recipe
+trains with a constant hyper-parameter and has no schedule to warm up, so
+accepting the flag would silently do nothing.
+
+`--vocab` must cover the corpus. Setting it below the highest token id in
+the data fails with the offending id and the minimum that would work; it is
+never clamped and never allowed to index out of range.
+
+Two knobs that the fixture lanes have and the framework recipes do **not**:
+`--batch` and `--val-batches`. `from-scratch` trains on the first line of
+`data/ts_seqs.txt` repeated `--steps` times — there is no batch dimension to
+widen and no evaluation loop to size, so exposing them would be a lie. They
+need a real data pipeline, tracked as [tao#28](https://github.com/OriPekelman/tao/issues/28).
+
 `--arch gpt2` trains the from-scratch GPT-2 arch (`from-scratch` only).
 `--device cuda|metal` selects the per-device runner; `metal` is macOS-only.
 ViT-Tiny is CPU-only; GPT-2 has cuda + metal twins.
