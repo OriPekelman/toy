@@ -26,6 +26,7 @@ require_relative "cli/infer"
 require_relative "cli/train"
 require_relative "cli/eval"
 require_relative "cli/serve"
+require_relative "cli/research"
 require_relative "cli/manifest"
 
 module Toy
@@ -80,14 +81,20 @@ module Toy
         },
         "train" => {
           class: Train,
-          summary: "Train a model from scratch (records runs/<id>/ + loss curve)",
-          args:  [{ name: "recipe", required: true, desc: "'from-scratch'" }],
+          summary: "Train a model (records runs/<id>/ + loss curve)",
+          args:  [{ name: "recipe", required: true, desc: "from-scratch | lora | warm-start | vit-tiny" }],
           flags: [{ name: "--steps", desc: "training steps (default 5)" },
                   { name: "--seed", desc: "random-init seed (default 0)" },
                   { name: "--arch", desc: "llama (default) | gpt2 (from-scratch, CPU)" },
                   { name: "--device", desc: "cpu (default) | cuda | metal (macOS)" },
                   { name: "--out", desc: "run dir override (default runs/<id>)" },
                   { name: "--json", desc: "machine output" }]
+        },
+        "research" => {
+          class: Research,
+          summary: "Run a research fixture lane (toy's own capability tests)",
+          args:  [{ name: "subcommand", required: true, desc: "'train' | 'eval'" }],
+          flags: []
         },
         "eval" => {
           class: Eval,

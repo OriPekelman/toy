@@ -38,6 +38,29 @@ module Toy
       class Train
         FORMAT = "toy/train-v1"
 
+        # ---- the capability/fixture seam, in one place ----
+        #
+        # ONE SOURCE OF TRUTH, deliberately. These lists used to be inline
+        # and DUPLICATED — once as the membership check, once inside its own
+        # error message — and they had already drifted apart: `difflm` was in
+        # the check, missing from the message, and therefore missing from
+        # docs/cli.md, which quotes the message. Same "listed in one place,
+        # applied from another" shape as the ggml patch every fresh clone
+        # dropped and the CUDA mirrors make could never generate.
+        #
+        # FRAMEWORK_RECIPES are the product: what `toy train` offers, what
+        # `require "toy/compute"` loads, what the docs lead with.
+        #
+        # FIXTURE_RECIPES are synthetic task lanes that exist so toy can test
+        # its capabilities (credit rules, feedback matrices, optimizers,
+        # instruments) independently of any one research question. They are
+        # supported and gated; they reach the CLI through `toy research`.
+        # See docs/research/lanes.md.
+        FRAMEWORK_RECIPES = %w[from-scratch lora warm-start vit-tiny].freeze
+        FIXTURE_RECIPES   = %w[franken franken-moe mlp ctr gnn ssm lstm gtx
+                               diff ae difflm].freeze
+        ALL_RECIPES       = (FRAMEWORK_RECIPES + FIXTURE_RECIPES).freeze
+
         # NOTE: target name MUST equal the output path — ToyRoot.ensure_built
         # runs `make <RUNNER_TARGET>` and File.join(root, RUNNER_TARGET) is the
         # binary. `make libexec/toy-train` outputs libexec/toy-train.
@@ -129,8 +152,13 @@ module Toy
         # run_id_template. The runner hardcodes a llama-shape model.
         ARCH = "llama"
 
-        def initialize(argv)
+        # `research:` is set by `toy research train <lane>`. It suppresses the
+        # migration notice and nothing else — the seam is PRESENTATIONAL. No
+        # runner, no ENV var and no graph changes with it, so every recorded
+        # cell stays byte-reproducible through either entry point (tao#25).
+        def initialize(argv, research: false)
           @argv  = argv
+          @research = research
           @json  = false
           @recipe = nil
           @steps = DEFAULT_STEPS
@@ -337,6 +365,15 @@ module Toy
         end
 
         def run
+          # `toy train --help` used to answer `unknown flag "--help"`: the
+          # catch-all `when /\A-/` in parse_args swallowed it. With 146 flags
+          # and no per-command help, the only discovery path was to guess a
+          # bad recipe and read the rejection.
+          if @argv.include?("--help") || @argv.include?("-h")
+            print_help($stdout)
+            return EXIT_OK
+          end
+
           parsed = parse_args
           return parsed unless parsed == true
 
@@ -912,6 +949,42 @@ module Toy
           # harness instead.
           losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") || l.start_with?("val:") || l.start_with?("train:") || l.start_with?("graph:") || l.start_with?("stream:") || l.start_with?("gen:") || l.start_with?("corpus:") || l.start_with?("noise:") || l.start_with?("half_snr:") || l.start_with?("control:") || l.start_with?("latent_std:") || l.start_with?("converged:") || l.start_with?("stage1:") || l.start_with?("arm:") || l.start_with?("resid:") || l.start_with?("judge:") || l.start_with?("objective:") || l.start_with?("epsmse:") || l.start_with?("bytelm:") || l.start_with?("ndfa:") || l.start_with?("ldfa:") || l.start_with?("bcond") || l.start_with?("gtx: ") }.map(&:chomp)
           emit(run_id, run_dir, losses)
+        end
+
+        # Grouped by what a reader is deciding, not alphabetically. Only
+        # the FRAMEWORK surface is listed: the fixture lanes carry ~140
+        # further recipe-gated flags and have their own reference, and
+        # putting those here is what made the CLI unreadable.
+        def print_help(io)
+          io.puts "usage: toy train <recipe> [flags]"
+          io.puts ""
+          io.puts "Recipes:"
+          io.puts "  from-scratch   tiny Llama-shape model from random init"
+          io.puts "  lora           LoRA adapters over a frozen base GGUF"
+          io.puts "  warm-start     fine-tune from donor embeddings over a corpus"
+          io.puts "  vit-tiny       ViT-Tiny image classifier (CPU-only)"
+          io.puts ""
+          io.puts "Data:"
+          io.puts "  --corpus PATH        training corpus (warm-start)"
+          io.puts "  --model GGUF         base model to adapt (lora)"
+          io.puts "  --init MODE          donor-init mode (warm-start)"
+          io.puts ""
+          io.puts "Model:"
+          io.puts "  --arch llama|gpt2    architecture (default llama; gpt2 is from-scratch)"
+          io.puts "  --rank N             LoRA rank (default 8)"
+          io.puts ""
+          io.puts "Optimization:"
+          io.puts "  --steps N            training steps (default 5)"
+          io.puts "  --seed S             random-init seed (default 0)"
+          io.puts ""
+          io.puts "Output:"
+          io.puts "  --out DIR            run dir (default runs/<id>)"
+          io.puts "  --device cpu|cuda|metal   compute backend (default cpu)"
+          io.puts "  --json               machine-readable result"
+          io.puts ""
+          io.puts "Research fixtures (toy's own capability tests) live under"
+          io.puts "`toy research train <lane>` — see docs/research/lanes.md."
+          io.puts "Full reference: docs/cli.md"
         end
 
         private
@@ -2102,14 +2175,27 @@ when /\A--dfa-feedback-lr=(.*)\z/
           end
 
           if rest.empty?
-            return bad_arg("missing required argument <recipe> (only 'from-scratch' is supported in this slice)")
+            return bad_arg("missing required argument <recipe>; one of " +
+                           FRAMEWORK_RECIPES.map(&:inspect).join(", ") +
+                           " (research fixtures: `toy research train <lane>`)")
           end
           if rest.length > 1
             return bad_arg("unexpected extra arguments: #{rest[1..].join(' ')}")
           end
           @recipe = rest.first
-          unless %w[from-scratch lora warm-start vit-tiny franken franken-moe mlp ctr gnn ssm lstm gtx diff ae difflm].include?(@recipe)
-            return bad_arg("unknown recipe #{@recipe.inspect}; supported: 'from-scratch', 'lora', 'warm-start', 'vit-tiny', 'franken', 'franken-moe', 'mlp', 'ctr', 'gnn', 'ssm', 'lstm', 'gtx', 'diff', 'ae', 'difflm'")
+          unless ALL_RECIPES.include?(@recipe)
+            return bad_arg("unknown recipe #{@recipe.inspect}; supported: " +
+                           FRAMEWORK_RECIPES.map(&:inspect).join(", ") +
+                           "; research fixtures (`toy research train <lane>`): " +
+                           FIXTURE_RECIPES.map(&:inspect).join(", "))
+          end
+          # A fixture reached through `toy train` still runs — Tao's
+          # existing scripts must not break the day the seam lands — but
+          # it says where it is moving to. See tao#25 for the window.
+          if FIXTURE_RECIPES.include?(@recipe) && !@research
+            $stderr.puts "toy train: #{@recipe.inspect} is a research fixture; " \
+                         "prefer `toy research train #{@recipe}`. " \
+                         "The old form still works (tao#25)."
           end
           # ---- toy#132: the flag x recipe MATRIX ----
           # Four llama-first flags in a row tripped franken-moe at Tao
