@@ -315,6 +315,7 @@ help:
 	@echo "    make gates-framework               $(words $(GATES_FRAMEWORK)) framework legs only — fast iteration, NOT a sweep"
 	@echo "    make gates-research                $(words $(GATES_RESEARCH)) fixture-lane legs only — NOT a sweep"
 	@echo "    make gate-<name>                   one leg (e.g. make gate-mlp)"
+	@echo "    make runs-prune                    shrink runs/ back down (dry run; APPLY=1 to act)"
 	@echo ""
 	@echo "  COMMON MAKE FLAGS"
 	@echo "    DEVICE=cuda                        on example_train_from_scratch / example_finetune_cuda"
@@ -2875,15 +2876,16 @@ BUILD_JOBS ?= 10
 GATE_JOBS  ?= 4
 .PHONY: gates-fast
 gates-fast:
-	@echo "== phase 1/4: building $(words $(GATE_RUNNERS)) runners (-j$(BUILD_JOBS)) =="
-	@$(MAKE) -j$(BUILD_JOBS) $(GATE_RUNNERS)
-	@echo "== phase 2/4: $(words $(GATES_CPU)) CPU gate legs (-j$(GATE_JOBS)) =="
-	@$(MAKE) -j$(GATE_JOBS) $(GATES_CPU)
-	@echo "== phase 3/4: $(words $(GATES_CUDA)) CUDA gate legs (serial, one GPU) =="
-	@$(MAKE) -j1 $(GATES_CUDA)
-	@echo "== phase 4/4: $(words $(GATES_SERIAL)) leg(s) that must run ALONE =="
-	@$(MAKE) -j1 $(GATES_SERIAL)
-	@echo "ALL GATES PASS ($(words $(GATES)) legs)"
+	@start=$$(date +%s); \
+	 echo "== phase 1/4: building $(words $(GATE_RUNNERS)) runners (-j$(BUILD_JOBS)) =="; \
+	 $(MAKE) -j$(BUILD_JOBS) $(GATE_RUNNERS) && \
+	 echo "== phase 2/4: $(words $(GATES_CPU)) CPU gate legs (-j$(GATE_JOBS)) ==" && \
+	 $(MAKE) -j$(GATE_JOBS) $(GATES_CPU) && \
+	 echo "== phase 3/4: $(words $(GATES_CUDA)) CUDA gate legs (serial, one GPU) ==" && \
+	 $(MAKE) -j1 $(GATES_CUDA) && \
+	 echo "== phase 4/4: $(words $(GATES_SERIAL)) leg(s) that must run ALONE ==" && \
+	 $(MAKE) -j1 $(GATES_SERIAL) && \
+	 echo "ALL GATES PASS ($(words $(GATES)) legs, WALL $$(( $$(date +%s) - start ))s)"
 
 # ── the capability/fixture split, as SUBSETS ───────────────────────────
 #
@@ -2904,25 +2906,54 @@ FIXTURE_LANES := $(shell sed -n '/FIXTURE_RECIPES *= *%w\[/,/\]/p' lib/toy/core/
 GATES_RESEARCH  := $(sort $(foreach l,$(FIXTURE_LANES),$(filter gate-$(l) gate-$(l)-%,$(GATES))) $(filter gate-lmc,$(GATES)))
 GATES_FRAMEWORK := $(filter-out $(GATES_RESEARCH),$(GATES))
 
+# Each aggregate reports its own WALL time. Measured 2026-08-25 on an idle
+# gx10 with runners already built: gates-framework = 50s for 39 legs. That
+# number is the whole point of the split — a framework change is now
+# checkable in under a minute instead of behind the ~50-minute
+# gate-franken-moe-cli floor, which lives in the research half. Printing it
+# rather than leaving it to be re-measured by hand: the reason a subset
+# target exists is its cost, so the cost should be in the output.
+#
+# WARM vs COLD: these run whatever builds their prerequisites demand, so a
+# first run after touching a runner pays the compile. The 50s figure is the
+# warm, iterating case the target is for.
 .PHONY: gates-framework
 gates-framework:
-	@echo "== $(words $(GATES_FRAMEWORK)) FRAMEWORK legs (of $(words $(GATES)) total) =="
-	@$(MAKE) -j$(GATE_JOBS) $(filter-out $(GATES_CUDA) $(GATES_SERIAL),$(GATES_FRAMEWORK))
-	@$(MAKE) -j1 $(filter $(GATES_CUDA),$(GATES_FRAMEWORK))
-	@$(MAKE) -j1 $(filter $(GATES_SERIAL),$(GATES_FRAMEWORK))
-	@echo "FRAMEWORK GATES PASS ($(words $(GATES_FRAMEWORK)) legs) — NOT a full sweep; run 'make gates-fast' before shipping"
+	@start=$$(date +%s); \
+	 echo "== $(words $(GATES_FRAMEWORK)) FRAMEWORK legs (of $(words $(GATES)) total) =="; \
+	 $(MAKE) -j$(GATE_JOBS) $(filter-out $(GATES_CUDA) $(GATES_SERIAL),$(GATES_FRAMEWORK)) && \
+	 $(MAKE) -j1 $(filter $(GATES_CUDA),$(GATES_FRAMEWORK)) && \
+	 $(MAKE) -j1 $(filter $(GATES_SERIAL),$(GATES_FRAMEWORK)) && \
+	 echo "FRAMEWORK GATES PASS ($(words $(GATES_FRAMEWORK)) legs, WALL $$(( $$(date +%s) - start ))s) — NOT a full sweep; run 'make gates-fast' before shipping"
 
 .PHONY: gates-research
 gates-research:
-	@echo "== $(words $(GATES_RESEARCH)) RESEARCH FIXTURE legs (of $(words $(GATES)) total) =="
-	@$(MAKE) -j$(GATE_JOBS) $(filter-out $(GATES_CUDA) $(GATES_SERIAL),$(GATES_RESEARCH))
-	@$(MAKE) -j1 $(filter $(GATES_CUDA),$(GATES_RESEARCH))
-	@echo "RESEARCH GATES PASS ($(words $(GATES_RESEARCH)) legs) — NOT a full sweep; run 'make gates-fast' before shipping"
+	@start=$$(date +%s); \
+	 echo "== $(words $(GATES_RESEARCH)) RESEARCH FIXTURE legs (of $(words $(GATES)) total) =="; \
+	 $(MAKE) -j$(GATE_JOBS) $(filter-out $(GATES_CUDA) $(GATES_SERIAL),$(GATES_RESEARCH)) && \
+	 $(MAKE) -j1 $(filter $(GATES_CUDA),$(GATES_RESEARCH)) && \
+	 echo "RESEARCH GATES PASS ($(words $(GATES_RESEARCH)) legs, WALL $$(( $$(date +%s) - start ))s) — NOT a full sweep; run 'make gates-fast' before shipping"
 
 # Partition assertion: every leg lands in exactly one half. Cheap, and it
 # is what keeps the derived lane list honest — if the sed ever stops
 # matching, GATES_RESEARCH silently empties and `gates-framework` quietly
 # becomes the whole battery while still calling itself a subset.
+# runs/ regrows: the battery writes bundles (~49 per gates-framework run,
+# more for a full sweep), and gate-run-log scans the whole tree. That is
+# how it reached 15,842 bundles / 2.6 GB. So keeping it small is a target
+# rather than something someone remembers to do by hand.
+#
+# DRY RUN BY DEFAULT — deleting is irreversible (runs/ is gitignored, so
+# there is no git checkout back). APPLY=1 to act, ARCHIVE=dir to move
+# instead of delete, KEEP=n to change the per-prefix depth (default 3).
+#
+#   make runs-prune
+#   make runs-prune APPLY=1
+#   make runs-prune APPLY=1 ARCHIVE=/srv/data/scratch/toy-runs
+.PHONY: runs-prune
+runs-prune:
+	@ruby prep/prune_runs.rb $(if $(APPLY),--apply) $(if $(ARCHIVE),--archive $(ARCHIVE))
+
 .PHONY: gates-partition-check
 gates-partition-check:
 	@test $$(( $(words $(GATES_FRAMEWORK)) + $(words $(GATES_RESEARCH)) )) -eq $(words $(GATES)) \
