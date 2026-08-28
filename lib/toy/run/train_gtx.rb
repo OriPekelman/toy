@@ -222,6 +222,7 @@ LDFA_ETA_S   = ENV["GTX_LDFA_ETA"]  || ""
 LDFA_EVERY   = (ENV["GTX_LDFA_EVERY"] || "500").to_i
 LDFA_M       = (ENV["GTX_LDFA_M"] || "128").to_i
 LDFA_MAP     = ENV["GTX_LDFA_MAP"] || ""
+LDFA_CSUP    = ENV["GTX_LDFA_CSUP"] || ""
 LDFA_RANK    = (LDFA_RANK_S.length == 0 || LDFA_RANK_S == "full") ?
                  0 : LDFA_RANK_S.to_i
 LDFA_ADAPT   = LDFA_ADAPT_S == "oja" ? 1 : 0
@@ -429,6 +430,21 @@ end
 if LDFA_MAP.length > 0 && LDFA_ADAPT_S != "oracle"
   puts "toy-train-gtx: GTX_LDFA_MAP is meaningless without" +
        " GTX_DFA_ADAPT=oracle"
+  exit 1
+end
+# rev2026-08-28/D1b — the complement support. Only meaningful when the
+# oracle map has fewer base symbols than the requested rank; the engine
+# refuses that case without it rather than picking a default, because
+# `active` and `dead` are different experiments, not different defaults.
+if LDFA_CSUP.length > 0 && LDFA_ADAPT_S != "oracle"
+  puts "toy-train-gtx: GTX_LDFA_CSUP is meaningless without" +
+       " GTX_DFA_ADAPT=oracle"
+  exit 1
+end
+if LDFA_CSUP.length > 0 && LDFA_CSUP != "active" &&
+   LDFA_CSUP != "dead" && LDFA_CSUP != "full"
+  puts "toy-train-gtx: GTX_LDFA_CSUP " + LDFA_CSUP +
+       " unsupported (active|dead|full)"
   exit 1
 end
 if LDFA_ADAPT_S.length > 0 && LDFA_RANK == 0
@@ -1054,6 +1070,7 @@ recipe.gr_cache.gx_b_adapt = LDFA_ADAPT
 # reusing a tap's seed would make P a copy of that tap's Q rows.
 recipe.gr_cache.gx_b_pseed = B_SEED + 991
 recipe.gr_cache.gx_p_map   = LDFA_MAP
+recipe.gr_cache.gx_p_csup  = LDFA_CSUP
 recipe.realize!(D_FEAT, D_MODEL, N_HEADS, D_FF, N_BLOCKS, N_NODES,
                 N_PAIRS, N_CLASSES, SEED, 1.0, POLICY, DFA_CUT, B_SEED,
                 dist_code(B_DIST_S), scale_code(B_SCALE_S),
@@ -1677,7 +1694,9 @@ if IS_BYTELM
          " v=" + N_CLASSES.to_s +
          " adapt=" + (LDFA_ADAPT == 1 ?
                         (LDFA_ETA > 0.0 ? "oja" : "oja-frozen") :
-                        (LDFA_MAP.length > 0 ? "oracle" : "none")) +
+                        (LDFA_MAP.length > 0 ?
+                           ("oracle" + (LDFA_CSUP.length > 0 ?
+                              ("+" + LDFA_CSUP) : "")) : "none")) +
          " eta=" + (LDFA_ADAPT == 1 ? LDFA_ETA.to_s : "n/a") +
          " every=" + LDFA_EVERY.to_s +
          " m=" + ld_m_used.to_s + " m_req=" + LDFA_M.to_s +
