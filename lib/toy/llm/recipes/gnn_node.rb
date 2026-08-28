@@ -43,6 +43,13 @@ module Toy; module LLM; module Recipes
     # ONE full-graph step. is_first selects graph_reset vs
     # reset_grads_only, so the caller stays in control of the step == 0
     # branch (the gate's branch).
+    # D3b: the mask upload must land BEFORE the graph reset+compute,
+    # exactly like the graph's other persistent inputs.
+    def step_with_dropout!(m_hp, is_first, step, training)
+      @gn_cache.refresh_dropout!(step, training)
+      step!(m_hp, is_first)
+    end
+
     def step!(m_hp, is_first)
       s = @gn_cache.sess
       if is_first

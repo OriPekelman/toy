@@ -107,6 +107,8 @@ TASK_SEED   = (ENV["GNN_TASK_SEED"] || "7").to_i
 TPC_S       = ENV["GNN_TRAIN_PER_CLASS"] || ""
 LR_S        = ENV["GNN_LR"] || ""
 WD_S        = ENV["GNN_WD"] || ""
+DROP_S      = ENV["GNN_DROPOUT"] || ""
+DROP_SEED   = (ENV["GNN_DROPOUT_SEED"] || "20260828").to_i
 WARMUP      = (ENV["GNN_WARMUP"] || "0").to_i
 B_SEED      = (ENV["GNN_B_SEED"] || "1234").to_i
 B_DIST_S    = ENV["GNN_B_DIST"]  || ""
@@ -157,6 +159,12 @@ HOPS      = HOPS_S.length     > 0 ? HOPS_S.to_i     : 1
 # catches DFA, "DFA beats BP" was a statement about our unregularised BP
 # and not about credit assignment. See docs/roadmap/.
 WD        = WD_S.length       > 0 ? WD_S.to_f       : 0.0
+# D3b (review finding 5): the dropout half of the classic Cora recipe.
+DROPOUT   = DROP_S.length     > 0 ? DROP_S.to_f     : 0.0
+if DROPOUT < 0.0 || DROPOUT >= 1.0
+  puts "toy-train-gnn: GNN_DROPOUT " + DROP_S + " out of range [0,1)"
+  exit 1
+end
 
 # ---- fail loud on every out-of-range shape (never-mask). ----
 if STEPS < 1
@@ -431,6 +439,8 @@ while ti < N_TRAIN
 end
 
 recipe = Toy::LLM::Recipes::GnnNode.new
+recipe.gn_cache.gnn_drop_p    = DROPOUT
+recipe.gn_cache.gnn_drop_seed = DROP_SEED
 recipe.realize!(NODES, FEATS, D_HIDDEN, N_LAYERS, CLASSES, N_TRAIN,
                 SEED, 1.0,
                 task.propagated_features, task.adj_dense, train_idx,
@@ -499,6 +509,7 @@ if EVENTS.length > 0
     config.add_raw("feat_signal", SIGNAL.to_s)
     config.add_raw("lr",        LR.to_s)
     config.add_raw("weight_decay", WD.to_s)
+    config.add_raw("dropout", DROPOUT.to_s)
     config.add_num("warmup",    WARMUP)
     rs.add_obj("config", config)
     # The credit-assignment provenance. This lane is NOT franken, so it
@@ -552,7 +563,7 @@ while step < STEPS
   end
   m_hp = adamw.hp(step)
 
-  loss = recipe.step!(m_hp, step == 0)
+  loss = recipe.step_with_dropout!(m_hp, step == 0, step, 1)
   final_loss = loss
   puts "step " + (step + 1).to_s + ": loss=" + loss.to_s
 
@@ -638,7 +649,7 @@ val_hp.flat[3] = adamw.eps
 val_hp.flat[4] = 0.0
 val_hp.flat[5] = adamw.beta1
 val_hp.flat[6] = adamw.beta2
-recipe.step!(val_hp, false)
+recipe.step_with_dropout!(val_hp, false, STEPS, 0)
 rc_v = TinyNN.tnn_download_to_f64_array(recipe.gn_cache.sess,
          recipe.gn_cache.t_logits, logit_buf, NODES * CLASSES)
 if rc_v != 0

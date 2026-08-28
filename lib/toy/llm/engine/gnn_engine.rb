@@ -112,7 +112,8 @@ class GnnEngine
                 :gnn_align_wnames,
                 :gnn_b_handles, :gnn_b_seeds, :gnn_b_douts,
                 :gnn_b_dist, :gnn_b_scale, :gnn_b_sigma,
-                :gnn_dfa_wired, :gnn_frozen_count, :gnn_feedback_hops
+                :gnn_dfa_wired, :gnn_frozen_count, :gnn_feedback_hops,
+                :gnn_drop_p, :gnn_drop_seed
 
   def initialize
     @sess        = TinyNN.tnn_null_ptr
@@ -150,6 +151,12 @@ class GnnEngine
     @gnn_dfa_wired = 0
     @gnn_frozen_count = 0
     @gnn_feedback_hops = 0
+    # D3b — dropout. p = 0.0 is BYTE-NULL: no mask tensor is created
+    # and no multiply enters the graph, so the pre-D3b cells reproduce.
+    @gnn_drop_p    = 0.0
+    @gnn_drop_seed = 20260828
+    @gnn_drop_masks = [TinyNN.tnn_null_ptr]; @gnn_drop_masks.pop
+    @gnn_drop_ne    = [0]; @gnn_drop_ne.pop
   end
 
   # Allocate every PARAM + its Adam moments, every persistent input, and
@@ -188,6 +195,20 @@ class GnnEngine
     # so they are uploaded once below and never touched per step.
     @t_x = TinyNN.tnn_input_2d_f32_persistent(@sess, n_nodes, feat_dim)
     TinyNN.tnn_tensor_set_name(@t_x, "x")
+    if @gnn_drop_p > 0.0
+      dm0 = TinyNN.tnn_input_2d_f32_persistent(@sess, n_nodes, feat_dim)
+      TinyNN.tnn_tensor_set_name(dm0, "drop0")
+      @gnn_drop_masks.push(dm0)
+      @gnn_drop_ne.push(n_nodes * feat_dim)
+      dl = 1
+      while dl <= n_layers
+        dmh = TinyNN.tnn_input_2d_f32_persistent(@sess, n_nodes, d_hidden)
+        TinyNN.tnn_tensor_set_name(dmh, "drop" + dl.to_s)
+        @gnn_drop_masks.push(dmh)
+        @gnn_drop_ne.push(n_nodes * d_hidden)
+        dl = dl + 1
+      end
+    end
     @t_s = TinyNN.tnn_input_2d_f32_persistent(@sess, n_nodes, n_nodes)
     TinyNN.tnn_tensor_set_name(@t_s, "s_hat")
     @t_train_idx = TinyNN.tnn_input_1d_i32_persistent(@sess, n_train)
@@ -246,6 +267,7 @@ class GnnEngine
     t_tap = @t_x
     li = 0
     while li < @gnn_layers
+      t_tap = apply_dropout(t_tap, li)
       taps.push(t_tap)
       TinyNN.tnn_set_output(t_tap)
       t_z = TinyNN.tnn_matmul(@sess, @ft_weights[li], t_tap)
@@ -257,6 +279,7 @@ class GnnEngine
       TinyNN.tnn_set_output(t_tap)
       li = li + 1
     end
+    t_tap = apply_dropout(t_tap, @gnn_layers)
     taps.push(t_tap)
 
     @t_logits = TinyNN.tnn_matmul(@sess, @ft_weights[@gnn_layers], t_tap)
@@ -390,6 +413,63 @@ class GnnEngine
   # out = S-hat . h, for h laid out [dim, N]. ggml's mul_mat contracts
   # ne0 and the node axis is ne1, hence the transpose + cont: S-hat is
   # symmetric so no separate transposed copy is needed.
+  # D3b. Returns t unchanged when dropout is off, so the graph built at
+  # p = 0.0 is the pre-D3b graph node for node.
+  def apply_dropout(t, ix)
+    if @gnn_drop_p <= 0.0
+      return t
+    end
+    m = @gnn_drop_masks[ix]
+    # never-mask: a mask allocated at the wrong shape would broadcast or
+    # truncate silently and quietly turn dropout into a different
+    # experiment. Check it against the tap instead of trusting the mirror.
+    if TinyNN.tnn_tensor_ne0(m) != TinyNN.tnn_tensor_ne0(t) ||
+       TinyNN.tnn_tensor_ne1(m) != TinyNN.tnn_tensor_ne1(t)
+      puts "gnn_engine: dropout mask " + ix.to_s + " is [" +
+           TinyNN.tnn_tensor_ne0(m).to_s + "x" + TinyNN.tnn_tensor_ne1(m).to_s +
+           "] but the tap it masks is [" +
+           TinyNN.tnn_tensor_ne0(t).to_s + "x" + TinyNN.tnn_tensor_ne1(t).to_s + "]"
+      exit 1
+    end
+    TinyNN.tnn_mul(@sess, t, m)
+  end
+
+  # Re-uploaded EVERY step: a mask drawn once would be a fixed pruning,
+  # not dropout. training = 0 uploads ones, which is how the held-out
+  # pass stays deterministic and dropout-free (inverted dropout: the
+  # 1/(1-p) rescale is paid at train time).
+  def refresh_dropout!(step, training)
+    if @gnn_drop_p <= 0.0
+      return 0
+    end
+    keep = 1.0 - @gnn_drop_p
+    inv  = 1.0 / keep
+    i = 0
+    while i < @gnn_drop_masks.length
+      n = @gnn_drop_ne[i]
+      buf = Array.new(n, 1.0)
+      if training != 0
+        st = xorshift_seed_state(@gnn_drop_seed + step * 7919 + i * 104729)
+        k = 0
+        while k < n
+          s = st[0]
+          s = (s * 1103515245 + 12345) & 0x7FFFFFFF
+          st[0] = s
+          u = (s.to_f + 1.0) / 2147483648.0
+          if u < keep
+            buf[k] = inv
+          else
+            buf[k] = 0.0
+          end
+          k = k + 1
+        end
+      end
+      TinyNN.tnn_upload_from_float_array(@sess, @gnn_drop_masks[i], buf, n)
+      i = i + 1
+    end
+    0
+  end
+
   def propagate(t_h, dim)
     t_ht = TinyNN.tnn_cont_2d(@sess,
              TinyNN.tnn_transpose(@sess, t_h), @gnn_nodes, dim)
