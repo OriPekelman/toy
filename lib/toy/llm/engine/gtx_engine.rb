@@ -114,7 +114,7 @@ class GtxEngine
                 :gx_retrofit, :gx_freeze_backbone, :gx_adapter_policy,
                 :gx_adapter_site,
                 :gx_backbone_first, :gx_backbone_count, :gx_active_classes,
-                :gx_b_rank, :gx_b_adapt, :gx_b_pseed, :gx_p_map,
+                :gx_b_rank, :gx_b_adapt, :gx_b_pseed, :gx_p_map, :gx_p_csup,
                 :gx_ld_fro_eff, :gx_ld_fro_full, :gx_ld_rank_eff, :gx_ld_dout,
                 :gx_fwd_nodes, :gx_fwd_bytes, :gx_bwd_nodes, :gx_bwd_bytes,
                 :gx_b_bytes, :gx_act_retained
@@ -198,6 +198,7 @@ class GtxEngine
     @gx_b_adapt  = 0
     @gx_b_pseed  = 0
     @gx_p_map    = ""
+    @gx_p_csup   = ""
     @gx_p        = [0.0]; @gx_p.pop
     @gx_p_ready  = 0
     @gx_ld_tgt2  = [0.0]; @gx_ld_tgt2.pop
@@ -1367,10 +1368,17 @@ puts "ncost: fwd_nodes=" + @gx_fwd_nodes.to_s +
     end
     n_codes = hdr[0]
     n_base  = hdr[1]
-    if n_base != r
+    if n_base > r
       puts "gtx_engine: oracle P map has " + n_base.to_s +
            " base symbols but GTX_DFA_RANK is " + r.to_s +
-           " — rank must equal the map's base-symbol count"
+           " — rank must be at least the map's base-symbol count"
+      exit 1
+    end
+    if n_base < r && @gx_p_csup.length == 0
+      puts "gtx_engine: GTX_DFA_RANK " + r.to_s + " exceeds the map's " +
+           n_base.to_s + " base symbols — set GTX_LDFA_CSUP" +
+           " (active|dead|full) to say where the " + (r - n_base).to_s +
+           " random complement rows draw their support"
       exit 1
     end
     if n_codes > v
@@ -1386,11 +1394,11 @@ puts "ncost: fwd_nodes=" + @gx_fwd_nodes.to_s +
       exit 1
     end
     @gx_p = Array.new(r * v, 0.0)
-    counts = Array.new(r, 0)
+    counts = Array.new(n_base, 0)
     c = 0
     while c < n_codes
       b = map[c]
-      if b < 0 || b >= r
+      if b < 0 || b >= n_base
         puts "gtx_engine: oracle P map code " + c.to_s + " row " + b.to_s +
              " out of range"
         exit 1
@@ -1400,7 +1408,7 @@ puts "ncost: fwd_nodes=" + @gx_fwd_nodes.to_s +
       c = c + 1
     end
     i = 0
-    while i < r
+    while i < n_base
       if counts[i] < 1
         puts "gtx_engine: oracle P map leaves row " + i.to_s + " empty"
         exit 1
@@ -1414,6 +1422,76 @@ puts "ncost: fwd_nodes=" + @gx_fwd_nodes.to_s +
       end
       i = i + 1
     end
+    if r > n_base
+      fill_p_complement!(v, r, n_codes, n_base)
+    end
+    0
+  end
+
+  # rev2026-08-28/D1b — the RANK CONTROL for D1.
+  #
+  # D1's oracle P had exactly n_base = 65 rows, so rank(Q.P) = 65 < dout =
+  # d_model = 128: "perfect routing" was confounded with a rank
+  # restriction, which the LDFA literature independently predicts is
+  # harmful (spurious fixed points). This adds r - n_base random rows,
+  # orthonormalised against the pooling rows and each other, so the SAME
+  # oracle routing can be run at rank_eff = dout.
+  #
+  # WHERE THE COMPLEMENT DRAWS ITS SUPPORT IS THE WHOLE DESIGN, because on
+  # an inflation fixture the learnable error is only n_base-dimensional —
+  # you cannot have both full rank and a noise-free error stream:
+  #   active : columns [0, n_codes) — the extra directions are within-base
+  #            contrasts, i.e. the planted uniform noise. Rank is fully
+  #            lifted, at the price of re-admitting dilution.
+  #   dead   : columns [n_codes, v) — head classes that are never a target,
+  #            so the extra directions carry only softmax leak. Rank is
+  #            lifted formally with the signal left clean; the price is
+  #            that those directions see almost no error.
+  #   full   : columns [0, v) — the unconstrained draw, for completeness.
+  # Running `active` and `dead` brackets the confound from both sides.
+  def fill_p_complement!(v, r, n_codes, n_base)
+    c0 = 0
+    c1 = v
+    if @gx_p_csup == "active"
+      c0 = 0
+      c1 = n_codes
+    end
+    if @gx_p_csup == "dead"
+      c0 = n_codes
+      c1 = v
+    end
+    wid = c1 - c0
+    nrows = r - n_base
+    if wid < nrows
+      puts "gtx_engine: complement support " + @gx_p_csup + " spans " +
+           wid.to_s + " columns, too few for " + nrows.to_s +
+           " independent rows"
+      exit 1
+    end
+    # Same draw machinery and same P-seed as the plain random P, so a
+    # complement row is distributionally the row init_p! would have made.
+    # Sigma is irrelevant after MGS normalises, but keep it consistent.
+    sigp = Toy::Train::DfaB.sigma_for(@gx_b_scale, v, r, @gx_b_sigma)
+    fillv = Toy::Train::DfaB.fill(nrows * wid, @gx_b_pseed, @gx_b_dist, sigp)
+    i = n_base
+    while i < r
+      pb = i * v
+      k = 0
+      while k < wid
+        @gx_p[pb + c0 + k] = fillv[(i - n_base) * wid + k]
+        k = k + 1
+      end
+      i = i + 1
+    end
+    # Rows 0..n_base-1 are left bit-untouched: the oracle pooling rows have
+    # disjoint support, are already unit-norm, and must stay byte-identical
+    # to D1 so the D1 cells remain the reproduction gate for this branch.
+    if ortho_p_rows!(v, r, n_base) != 0
+      puts "gtx_engine: complement rows collapsed under MGS (support " +
+           @gx_p_csup + ", " + nrows.to_s + " rows in " + wid.to_s +
+           " columns)"
+      exit 1
+    end
     0
   end
 
@@ -1421,7 +1499,15 @@ puts "ncost: fwd_nodes=" + @gx_fwd_nodes.to_s +
   # a row collapses to zero (which at r << V means the draw or an Oja step
   # destroyed the basis, and it must not be silently renormalised).
   def ortho_p!(v, r)
-    i = 0
+    ortho_p_rows!(v, r, 0)
+  end
+
+  # MGS over rows i0..r-1 only, orthogonalising each against EVERY earlier
+  # row (including rows < i0, which are left bit-untouched). rev2026-08-28
+  # D1b needs exactly this: the oracle rows must survive unchanged while a
+  # random complement is orthogonalised into what is left.
+  def ortho_p_rows!(v, r, i0)
+    i = i0
     while i < r
       bi2 = i * v
       j = 0
