@@ -715,6 +715,63 @@ else
   puts failures.length == n0 ?
     "  ok: BYTE-LM (toy#170) — 4 arms score, the readout is per-position causal at vocab 256, the DFA arm TAPS THE EMBEDDING (chain does not), the two cuts are distinct wirings, no arm's knob is inert (curve differs from frozen's) and BP beats the frozen body so the task is not head-solvable, deterministic, 3 degenerate configs fail loud" :
     "  FAIL: bytelm"
+
+  # ── LEG 12b: BLOCK-SITE ADAPTERS ON THE BYTELM TAIL (toy#181 / B0b) ──
+  #
+  # `GTX_ADAPTER_SITE=block` puts one adapter per block, so trainable capacity
+  # sits BELOW the frozen top. That is the point: with adapters stacked on top
+  # of a frozen backbone neither arm backprops through it and DFA's structural
+  # saving vanishes (F12's conclusion — the win there was the FREEZING).
+  #
+  # THIS LEG EXISTS BECAUSE THE FAILURE MODE IS INVISIBLE. A zero-init adapter
+  # is EXACTLY THE IDENTITY, so adapters that never step produce arms that do
+  # not error, do not warn and do not look wrong — they come back BIT-IDENTICAL
+  # TO THE FROZEN CONTROL. That identity is the only tell.
+  #
+  # The assertions are two-sided and NEITHER SIDE IS OPTIONAL:
+  #   frozen adapters MUST equal the control -> the zero-init site is inert
+  #                                             when asked to be
+  #   chain/dfa MUST NOT equal the control   -> the adapters actually TRAIN.
+  #                                             This is the side that catches
+  #                                             the pinned-adapter bug.
+  # Asserting only the first passes with every adapter dead.
+  #
+  # Deliberately stated over OBSERVABLE behaviour rather than over any one
+  # gating branch: during review, the branch in build_bytelm_tail! carrying the
+  # explanatory comment turned out never to execute (0 hits under all three
+  # adapter policies, proved by instrumentation) while the arms still separated
+  # correctly. An assertion tied to that branch would have been testing code
+  # that does not run.
+  n0 = failures.length
+  ad = {}
+  [["control", {}],
+   ["frozen",  { "GTX_ADAPTER_SITE" => "block", "GTX_ADAPTER_POLICY" => "frozen" }],
+   ["chain",   { "GTX_ADAPTER_SITE" => "block", "GTX_ADAPTER_POLICY" => "chain" }],
+   ["dfa",     { "GTX_ADAPTER_SITE" => "block", "GTX_ADAPTER_POLICY" => "dfa" }]].each do |k, extra|
+    o = bl_run({ "GTX_POLICY" => "frozen,frozen", "GTX_DFA_CUT" => "layer" }.merge(extra))
+    ad[k] = [o[/bpb=([0-9.eE+-]+)/, 1], o[/taps=(\d+)/, 1].to_i]
+  end
+  ctl = ad["control"][0]
+  if ad.any? { |_, (b, _)| b.nil? }
+    failures << "adapters: an arm emitted no bpb= line (#{ad.map { |k, (b, _)| "#{k}=#{b.inspect}" }.join(' ')})"
+  else
+    failures << "adapters: frozen block-adapters are NOT bit-identical to the frozen control (#{ad['frozen'][0]} vs #{ctl}) — W_up is zero-init, so an untrained adapter must be exactly the identity" unless ad["frozen"][0] == ctl
+    %w[chain dfa].each do |arm|
+      failures << "adapters: the #{arm} adapter arm is BIT-IDENTICAL to the frozen control (#{ctl}) — the adapters never step, so this arm is not the arm under test (toy#181)" if ad[arm][0] == ctl
+    end
+    nb = BL["GTX_BLOCKS"].to_i
+    failures << "adapters: the dfa adapter arm reports taps=#{ad['dfa'][1]}, expected one per block (#{nb})" unless ad["dfa"][1] == nb
+    failures << "adapters: the frozen adapter arm pushed #{ad['frozen'][1]} taps, expected 0" unless ad["frozen"][1].zero?
+  end
+  po, pst = Open3.capture2e(BL.merge("STEPS" => "2", "GTX_ADAPTER_SITE" => "pair"), RUNNER, chdir: ROOT)
+  if pst.success?
+    failures << "adapters: GTX_ADAPTER_SITE=pair outside a retrofit exited 0"
+  elsif !po.include?("GTX_ADAPTER_SITE=pair is meaningless without")
+    failures << "adapters: GTX_ADAPTER_SITE=pair outside a retrofit was rejected for the WRONG REASON: #{po.lines.grep(/toy-train-gtx:/).first.to_s.strip[0, 120]}"
+  end
+  puts failures.length == n0 ?
+    "  ok: BLOCK-SITE ADAPTERS (toy#181) — frozen adapters are BIT-IDENTICAL to the frozen control so the zero-init site is provably the identity, chain AND dfa both MOVE OFF that value so the adapters demonstrably train, dfa pushes one tap per block, and `pair` outside a retrofit is refused for its own stated reason" :
+    "  FAIL: block-site adapters"
 end
 
 # ── LEG 13: THE NOMINAL HEAD WIDTH (toy#170 / spec P5) ──
