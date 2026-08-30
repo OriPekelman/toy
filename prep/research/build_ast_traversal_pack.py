@@ -54,8 +54,30 @@ from build_ast_pack import (PINNED_MODULES, LEAF_IDENT, LEAF_NUM, LEAF_STR,
 
 SEP = "<FN>"          # function boundary; the traversal is a stream of trees
 
+# rev2026-08-30 (B0a) — the HELD-OUT module set. Pinned for the same reason
+# PINNED_MODULES is: a globbed "everything else" would make the adaptation
+# corpus depend on the machine. These are stdlib modules deliberately NOT in
+# PINNED_MODULES, so a backbone pretrained on that corpus has never seen this
+# code. Same language, same representation, different program text — the shape
+# of real domain adaptation, and the label-scarce regime where F17's beat lives.
+HELDOUT_MODULES = [
+    "abc.py", "aifc.py", "base64.py", "bdb.py", "bz2.py", "cProfile.py",
+    "cgi.py", "cgitb.py", "chunk.py", "code.py", "codecs.py",
+    "compileall.py", "contextlib.py", "copyreg.py", "crypt.py", "dis.py",
+    "doctest.py", "fileinput.py", "ftplib.py", "functools.py",
+    "genericpath.py", "getpass.py", "graphlib.py", "hashlib.py",
+    "imghdr.py", "io.py", "lzma.py", "mailcap.py", "modulefinder.py",
+    "nntplib.py", "nturl2path.py", "opcode.py", "pdb.py", "pickletools.py",
+    "profile.py", "pstats.py", "pty.py", "py_compile.py", "pyclbr.py",
+    "pydoc.py", "reprlib.py", "rlcompleter.py", "runpy.py", "signal.py",
+    "site.py", "sndhdr.py", "socketserver.py", "stringprep.py",
+    "subprocess.py", "sunau.py", "symtable.py", "sysconfig.py",
+    "tracemalloc.py", "tty.py", "turtle.py", "uu.py", "webbrowser.py",
+    "xdrlib.py", "zipapp.py", "zipimport.py",
+]
 
-def gather(stdlib, max_fn_nodes, max_functions, unit):
+
+def gather(stdlib, max_fn_nodes, max_functions, unit, held_out):
     """Pre-order walks of every collected unit, plus the leaf-value counts.
     Deterministic: pinned module list, field-ordered walk.
 
@@ -66,12 +88,12 @@ def gather(stdlib, max_fn_nodes, max_functions, unit):
     fixture 4x shorter than the ae_shakespeare baseline it is read
     against and confound width with how often training wraps the corpus."""
     srcs, missing = [], []
-    for m in PINNED_MODULES:
+    for m in (HELDOUT_MODULES if held_out else PINNED_MODULES):
         fp = os.path.join(stdlib, m)
         (srcs if os.path.isfile(fp) else missing).append(fp if os.path.isfile(fp) else m)
     if len(srcs) < 20:
         sys.exit("build_ast_traversal_pack: only %d of %d pinned modules under %s"
-                 % (len(srcs), len(PINNED_MODULES), stdlib))
+                 % (len(srcs), len(HELDOUT_MODULES if held_out else PINNED_MODULES), stdlib))
 
     walks, leaf_counts, leaf_by_kind = [], Counter(), {LEAF_IDENT: set(), LEAF_NUM: set(), LEAF_STR: set()}
     def units():
@@ -115,8 +137,11 @@ def gather(stdlib, max_fn_nodes, max_functions, unit):
 
 
 def build(args):
+    vocab_from = args.vocab_from or None
+    vocab_union_heldout = bool(args.vocab_union_heldout)
     srcs, missing, walks, leaf_counts, leaf_by_kind = gather(
-        args.stdlib, args.max_fn_nodes, args.max_functions, args.unit)
+        args.stdlib, args.max_fn_nodes, args.max_functions, args.unit,
+        args.held_out)
 
     # THE LADDER RUNG. Top-K leaf VALUES by frequency become their own
     # classes; everything else falls back to its leaf TYPE. K is applied
@@ -133,8 +158,60 @@ def build(args):
     for seq in walks:
         for kind, raw in seq:
             (leaf_types if raw is not None else struct_types).add(kind)
+    # rev2026-08-30 (B0a) — --vocab-union-heldout. A pretrain corpus and an
+    # adaptation corpus that do not share a CLOSED vocabulary are not a
+    # pretrain->adapt fixture: the held-out stdlib uses four node types the
+    # pinned set never does (AsyncWith, Await, MatchOr, MatchValue), and a
+    # class with no output row cannot be predicted at all. Those positions
+    # would be pure unlearnable error — precisely the thing D5 identified as
+    # what destroys DFA — so leaving them out would confound the very
+    # comparison the fixture exists to make.
+    #
+    # So the pretrain pack may reserve the held-out set's structural types
+    # WITHOUT emitting any token for them. They cost four never-used classes
+    # under a head that is 4096 wide regardless, and they make the adaptation
+    # corpus fully representable.
+    if vocab_union_heldout:
+        extra = set()
+        for m in HELDOUT_MODULES:
+            fp = os.path.join(args.stdlib, m)
+            if not os.path.isfile(fp):
+                continue
+            try:
+                tree = ast.parse(open(fp, encoding="utf-8").read(), filename=fp)
+            except (SyntaxError, UnicodeDecodeError):
+                continue
+            for nd in ast.walk(tree):
+                if leaf_kind(nd)[0] is None:
+                    extra.add(type(nd).__name__)
+        struct_types = struct_types | extra
+
     vocab = [SEP] + sorted(struct_types) + sorted(leaf_types) + \
             [("V", k[0], k[1]) for k in sorted(top, key=lambda kv: (kv[0], repr(kv[1])))]
+
+    # rev2026-08-30 (B0a) — --vocab-from: emit this corpus against ANOTHER
+    # pack's class ids. Two phases that do not share a head are not a
+    # pretrain->adapt experiment, they are two unrelated runs, so the mapping
+    # is part of the fixture, not a convenience.
+    #
+    # Leaves absent from the source vocabulary fall back to their leaf TYPE —
+    # the same fallback every below-top-K leaf already takes, so the path is
+    # not new. A STRUCTURAL type absent from the source is a different matter:
+    # it would have no representable class at all, so it fails loud rather
+    # than being folded into something arbitrary.
+    if vocab_from:
+        src = json.load(open(vocab_from + ".json"))
+        if "vocab" not in src:
+            sys.exit("build_ast_traversal_pack: %s.json carries no vocab list; "
+                     "rebuild the source pack with this builder first" % vocab_from)
+        vocab = [tuple(v) if isinstance(v, list) else v for v in src["vocab"]]
+        known = set(vocab)
+        unseen = sorted(t for t in struct_types if t not in known)
+        if unseen:
+            sys.exit("build_ast_traversal_pack: %d structural node types are "
+                     "absent from %s's vocabulary and have no representable "
+                     "class: %s" % (len(unseen), vocab_from, ", ".join(unseen)))
+        top = set(k for k in top if ("V", k[0], k[1]) in known)
     vid = {t: i for i, t in enumerate(vocab)}
 
     toks = []
@@ -159,8 +236,11 @@ def build(args):
     if limit:
         toks = toks[:limit]
 
+    # Re-indexing drops classes this corpus never emits, which is right for a
+    # standalone pack and WRONG for either shared-vocabulary mode: it would
+    # delete the reserved held-out types, or renumber against the source pack.
     used = sorted(set(toks))
-    if len(used) != len(vocab):
+    if vocab_from is None and not vocab_union_heldout and len(used) != len(vocab):
         # Re-index to keep ids CONTIGUOUS and every class ACTIVE: a class
         # that never occurs is not part of this rung's width, and quoting
         # it as such would inflate the axis the ladder measures.
@@ -168,7 +248,13 @@ def build(args):
         toks = [remap[t] for t in toks]
         vocab = [vocab[o] for o in used]
 
-    n_tokens, alphabet = len(toks), len(vocab)
+    # meta.alphabet is a claim about THE TOKEN STREAM — the loader checks it
+    # against the distinct values actually present and refuses a mismatch. It
+    # is not the class-space size: ids are allowed to be sparse (ae_shakespeare
+    # declares 65 while its ids run to 122), which is exactly what the shared
+    # vocabulary modes produce. The class space goes in the sidecar as
+    # `vocab_size`, and that is what a second pack builds against.
+    n_tokens, alphabet = len(toks), len(set(toks))
     cnt = Counter(toks)
     ent = -sum((c / n_tokens) * (c / n_tokens and __import__("math").log2(c / n_tokens))
                for c in cnt.values())
@@ -195,8 +281,14 @@ def build(args):
         "unit": args.unit,
         "units": len(walks),
         "leaf_vocab_rung": args.leaf_vocab,
+        "held_out_modules": bool(args.held_out),
+        "vocab_from": vocab_from,
+        "vocab_union_heldout": vocab_union_heldout,
+        "vocab": [list(v) if isinstance(v, tuple) else v for v in vocab],
         "n_tokens": n_tokens,
         "alphabet": alphabet,
+        "vocab_size": len(vocab),
+        "max_id": int(max(toks)),
         "truncated_to_n_tokens": bool(truncated and limit),
         "entropy_bits": ent,
         "structural_types": len(struct_types),
@@ -206,7 +298,8 @@ def build(args):
     }
     with open(out + ".json", "w") as fh:
         json.dump(side, fh, indent=2, sort_keys=True)
-    print(f"{out}: n_tokens={n_tokens} alphabet={alphabet} "
+    print(f"{out}: n_tokens={n_tokens} distinct={alphabet} "
+          f"vocab_size={len(vocab)} max_id={max(toks)} "
           f"entropy={ent:.4f} bits  (structural={len(struct_types)}, "
           f"leaf_values_promoted={len(top)}, raw_leaf_vocab="
           f"{side['raw_leaf_vocab_total']})")
@@ -216,6 +309,17 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--stdlib", default=os.path.dirname(os.__file__))
     ap.add_argument("--out", required=True)
+    ap.add_argument("--held-out", action="store_true",
+                    help="use HELDOUT_MODULES (stdlib modules absent from "
+                         "PINNED_MODULES) — the adaptation corpus")
+    ap.add_argument("--vocab-union-heldout", action="store_true",
+                    help="reserve the held-out set's structural node types in "
+                         "the vocabulary without emitting them — makes a "
+                         "pretrain pack whose adaptation corpus is fully "
+                         "representable")
+    ap.add_argument("--vocab-from", default=None,
+                    help="emit against another pack's class ids (that pack's "
+                         ".json must carry a `vocab` list)")
     ap.add_argument("--leaf-vocab", type=int, default=0,
                     help="0 = leaves as TYPE; K = top-K leaf VALUES promoted to own classes")
     ap.add_argument("--n-tokens", type=int, default=0,
