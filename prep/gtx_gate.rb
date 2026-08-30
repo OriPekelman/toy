@@ -478,17 +478,46 @@ puts failures.length == n0 ?
 n0 = failures.length
 plain = run_gtx({ "STEPS" => "5" }, nil)
 failures << "retrofit: a NON-retrofit run changed — the retrofit capacity must be inert when it is not asked for" unless curve(plain) == base_curve
-[
-  [{ "GTX_ADAPTER_POLICY" => "dfa" },                              "GTX_ADAPTER_POLICY without GTX_RETROFIT"],
-  [{ "GTX_RETROFIT" => "1", "GTX_ADAPTER_POLICY" => "bogus" },     "unknown adapter policy"],
-  [{ "GTX_RETROFIT" => "1", "GTX_PRETRAIN_STEPS" => "0" },         "retrofit of an UNTRAINED backbone"],
-  [{ "GTX_RETROFIT" => "1", "GTX_ADAPTER_LAYERS" => "0" },         "zero adapter layers"],
-  [{ "GTX_RETROFIT" => "1", "GTX_ADAPTER_RANK" => "0" },           "zero adapter rank"],
-].each do |env, label|
+# EACH PROBE ASSERTS ITS OWN REASON, not merely a non-zero exit. The
+# third column is a fragment of the message this config MUST produce.
+#
+# Checking only `st.success?` is what let toy#179 rot a probe silently:
+# the `--load-ckpt without --retrofit` row below in 11c kept passing after
+# that guard was deliberately REMOVED, because the path it used does not
+# exist and the run then died on the file check instead. A rejection for
+# the wrong reason is indistinguishable from the right one under an
+# exit-code-only assertion, and the label goes on claiming otherwise.
+RETRO_GUARDS = [
+  [{ "GTX_ADAPTER_POLICY" => "dfa" },                          "GTX_ADAPTER_POLICY without GTX_RETROFIT",
+   "GTX_ADAPTER_POLICY is meaningless without GTX_RETROFIT=1"],
+  [{ "GTX_RETROFIT" => "1", "GTX_ADAPTER_POLICY" => "bogus" }, "unknown adapter policy",
+   "GTX_ADAPTER_POLICY bogus unsupported"],
+  [{ "GTX_RETROFIT" => "1", "GTX_PRETRAIN_STEPS" => "0" },     "retrofit of an UNTRAINED backbone",
+   "GTX_PRETRAIN_STEPS must be >= 1"],
+  [{ "GTX_RETROFIT" => "1", "GTX_ADAPTER_LAYERS" => "0" },     "zero adapter layers",
+   "GTX_ADAPTER_LAYERS must be >= 1"],
+  [{ "GTX_RETROFIT" => "1", "GTX_ADAPTER_RANK" => "0" },       "zero adapter rank",
+   "GTX_ADAPTER_RANK must be >= 1"],
+  # toy#180. build_training_step branches to the bytelm tail BEFORE the
+  # retrofit adapter graph, so this combination used to allocate adapters
+  # nothing consumed and then print a run that read like a retrofit while
+  # training a plain byte-LM — silent, on a lane where every other
+  # configuration trap fails loud. The message must also point at the
+  # route that DOES work, or the refusal just leaves the user stuck.
+  [{ "GTX_RETROFIT" => "1", "GTX_TASK" => "bytelm" },          "retrofit x bytelm (toy#180)",
+   "GTX_RETROFIT=1 is not supported with GTX_TASK=bytelm"],
+].freeze
+RETRO_GUARDS.each do |env, label, want|
   out, st = Open3.capture2e({ "STEPS" => "2" }.merge(env), RUNNER, chdir: ROOT)
-  failures << "fail-loud: #{label} exited 0 (silently did nothing)" if st.success?
+  if st.success?
+    failures << "fail-loud: #{label} exited 0 (silently did nothing)"
+  elsif !out.include?(want)
+    failures << "fail-loud: #{label} was rejected for the WRONG REASON — expected a message containing #{want.inspect}, got: #{out.lines.grep(/toy-train-gtx:/).first.to_s.strip[0, 120]}"
+  end
 end
-puts failures.length == n0 ? "  ok: the retrofit is INERT when unasked, and 5 degenerate retrofit configs fail loud" : "  FAIL: retrofit guards"
+failures << "fail-loud: the retrofit x bytelm refusal does not name the working alternative (GTX_CKPT_EVERY / GTX_LOAD_CKPT)" unless
+  Open3.capture2e({ "STEPS" => "2", "GTX_RETROFIT" => "1", "GTX_TASK" => "bytelm" }, RUNNER, chdir: ROOT).first =~ /GTX_CKPT_EVERY.*GTX_LOAD_CKPT/m
+puts failures.length == n0 ? "  ok: the retrofit is INERT when unasked, and #{RETRO_GUARDS.length} degenerate retrofit configs fail loud FOR THEIR OWN STATED REASON" : "  FAIL: retrofit guards"
 
 # ---- 11c. the CHECKPOINT round trip (toy#164) ----
 # One pretrain, many retrofit arms. The property that has to hold is
@@ -524,18 +553,57 @@ Dir.mktmpdir("gtx_ckpt") do |dir|
                                 "GTX_TYPES" => "5", "STEPS" => "2" }, RUNNER, chdir: ROOT)
     failures << "ckpt: a shape-MISMATCHED checkpoint loaded anyway (exit #{mst.exitstatus}) — a silently wrong backbone makes every downstream number look healthy" if mst.success?
     failures << "ckpt: the mismatch message does not name both sides" unless mm.include?("vs instrument")
+
+    # toy#179: A PLAIN RUN CAN LOAD. The checkpoint was always WRITTEN by
+    # plain runs but could only be READ by a retrofit, so `pretrain on
+    # corpus A -> adapt on corpus B` could not be expressed as two ordinary
+    # processes with the checkpoint as an auditable artifact between them.
+    # This is the positive half of that change, and nothing asserted it:
+    # the only probe that mentioned the pairing was a REJECTION probe for
+    # the guard that was removed, which kept passing on an unrelated error.
+    #
+    # bb_sig is compared as a STRING against the WRITE, exactly as the
+    # retrofit path above does — a load that is merely close is a load that
+    # lost bits, and every downstream cell would inherit the drift.
+    pl, plst = Open3.capture2e({ "GTX_LOAD_CKPT" => ck, "STEPS" => "5", "SEED" => "0" },
+                               RUNNER, chdir: ROOT)
+    if !plst.success?
+      failures << "ckpt: a PLAIN run (no GTX_RETROFIT) could not load a checkpoint (exit #{plst.exitstatus}) — toy#179 is the two-process pretrain->adapt shape: #{pl.lines.grep(/toy-train-gtx:/).first.to_s.strip[0, 120]}"
+    else
+      pll = pl.lines.find { |l| l.start_with?("loaded: ") }
+      plsig = pll ? pll[/bb_sig=([0-9.eE+-]+)/, 1] : nil
+      if plsig.nil?
+        failures << "ckpt: a plain load printed no `loaded: ... bb_sig=` line, so the load is unauditable"
+      elsif plsig != wsig
+        failures << "ckpt: the PLAIN-run round trip is not bit-exact — wrote bb_sig=#{wsig}, loaded bb_sig=#{plsig}"
+      end
+    end
   end
 end
-[
-  [{ "GTX_LOAD_CKPT" => "/nonexistent.gguf", "GTX_RETROFIT" => "1" }, "missing checkpoint file"],
-  [{ "GTX_LOAD_CKPT" => "/nonexistent.gguf" },                        "--load-ckpt without --retrofit"],
-  [{ "GTX_CKPT_EVERY" => "10" },                                      "--ckpt-every with no run dir"],
-].each do |env, label|
+CKPT_GUARDS = [
+  [{ "GTX_LOAD_CKPT" => "/nonexistent.gguf", "GTX_RETROFIT" => "1" }, "missing checkpoint file (retrofit)",
+   "no such checkpoint: /nonexistent.gguf"],
+  # This row USED to be labelled "--load-ckpt without --retrofit" and to
+  # exist for a guard that toy#179 deliberately removed. It kept passing
+  # anyway, on the missing-file check, because the harness only asked for
+  # a non-zero exit — so the gate went on advertising a refusal that no
+  # longer happened. The config is still worth probing; the LABEL and the
+  # expected message now say what it actually tests.
+  [{ "GTX_LOAD_CKPT" => "/nonexistent.gguf" },                        "missing checkpoint file (plain run)",
+   "no such checkpoint: /nonexistent.gguf"],
+  [{ "GTX_CKPT_EVERY" => "10" },                                      "--ckpt-every with no run dir",
+   "GTX_CKPT_EVERY needs RUN_DIR"],
+].freeze
+CKPT_GUARDS.each do |env, label, want|
   out, st = Open3.capture2e({ "STEPS" => "2" }.merge(env), RUNNER, chdir: ROOT)
-  failures << "fail-loud: #{label} exited 0 (silently did nothing)" if st.success?
+  if st.success?
+    failures << "fail-loud: #{label} exited 0 (silently did nothing)"
+  elsif !out.include?(want)
+    failures << "fail-loud: #{label} was rejected for the WRONG REASON — expected #{want.inspect}, got: #{out.lines.grep(/toy-train-gtx:/).first.to_s.strip[0, 120]}"
+  end
 end
 puts failures.length == n0 ?
-  "  ok: CHECKPOINT (toy#164) — the backbone round-trips BIT-EXACT, a load skips the pretrain phase, a shape mismatch is refused naming both sides, and 3 degenerate configs fail loud" :
+  "  ok: CHECKPOINT (toy#164/#179) — the backbone round-trips BIT-EXACT through BOTH the retrofit path and a PLAIN load, a retrofit load skips the pretrain phase, a shape mismatch is refused naming both sides, and #{CKPT_GUARDS.length} degenerate configs fail loud FOR THEIR OWN STATED REASON" :
   "  FAIL: checkpoint"
 
 # ── LEG 12: THE BYTE-LM TASK (toy#170 / capstone P3) ──
