@@ -793,10 +793,18 @@ class GtxEngine
          " dfa_wired=" + dfa_block_count(policy).to_s +
          " frozen=" + @gx_frozen_count.to_s +
          " taps=" + @gx_taps.to_s +
-         " adapters=" + @gx_adapters.to_s +
-         " adapter_site=" + (@gx_adapter_site == SITE_BLOCK ? "block" : "pair") +
-         " adapter_policy=" + (@gx_adapter_policy == POLICY_DFA ? "dfa" :
-                               (@gx_adapter_policy == POLICY_FROZEN ? "frozen" : "chain")) +
+         # Adapter provenance is emitted ONLY when adapters exist, exactly as
+         # the relational line above gates its block on @gx_retrofit. Emitted
+         # unconditionally it appended three fields to EVERY bytelm run,
+         # including every stored P3-P6 cell that has no adapters at all: the
+         # compute was untouched but the provenance line MOVED, and
+         # gate-gtx-cuda byte-compares that line. A knob defaults to changing
+         # nothing — a run without adapters prints what it always printed.
+         (@gx_adapters > 0 ?
+           (" adapters=" + @gx_adapters.to_s +
+            " adapter_site=" + (@gx_adapter_site == SITE_BLOCK ? "block" : "pair") +
+            " adapter_policy=" + (@gx_adapter_policy == POLICY_DFA ? "dfa" :
+                                  (@gx_adapter_policy == POLICY_FROZEN ? "frozen" : "chain"))) : "") +
          " emb_tapped=" + ((any_dfa && policy.length > 0 && policy[0] == POLICY_DFA) ? "1" : "0")
 
     TinyNN.tnn_pin_all_graph_b_nodes(@sess)
