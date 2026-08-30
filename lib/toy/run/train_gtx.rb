@@ -307,14 +307,33 @@ if CKPT_EVERY > 0 && RUN_DIR.length == 0
        " to write the checkpoint, and writing nowhere is not a silent no-op"
   exit 1
 end
-if LOAD_CKPT.length > 0 && !RETROFIT
-  puts "toy-train-gtx: GTX_LOAD_CKPT requires GTX_RETROFIT=1 — a loaded" +
-       " backbone on this lane exists to be retrofitted, and inventing a" +
-       " second meaning for it would make the flag ambiguous"
-  exit 1
-end
+# toy#179 — a checkpoint may be LOADED by a plain run, not only a retrofit.
+# write_backbone_ckpt already runs on plain runs and writes the whole
+# backbone span (for bytelm: emb, every block, lm_head) with d_model /
+# heads / d_ff / blocks / classes as metadata, and load_backbone_ckpt
+# validates against exactly that. Gating the read behind GTX_RETROFIT=1
+# meant a checkpoint could be written by a run that could not read it back,
+# which ruled out expressing `pretrain on corpus A -> adapt on corpus B` as
+# two ordinary runs with the checkpoint as the auditable artifact between
+# them. Inside a retrofit the meaning is unchanged: a loaded backbone
+# REPLACES the pretrain phase.
 if LOAD_CKPT.length > 0 && !File.exist?(LOAD_CKPT)
   puts "toy-train-gtx: no such checkpoint: " + LOAD_CKPT
+  exit 1
+end
+# toy#180 — REFUSE, do not silently ignore. build_training_step branches to
+# the bytelm tail BEFORE the retrofit adapter graph, so this combination
+# allocates adapters that nothing consumes and then runs PRE_STEPS + STEPS
+# of ordinary byte-LM training while printing a run that reads like a
+# retrofit. Every other configuration trap on this lane fails loud; so does
+# this one now.
+if RETROFIT && TASK_S == "bytelm"
+  puts "toy-train-gtx: GTX_RETROFIT=1 is not supported with GTX_TASK=bytelm" +
+       " — the bytelm tail returns before the adapter graph is built, so the" +
+       " adapters would be allocated and never consumed and the run would" +
+       " report a retrofit while training a plain byte-LM. For a bytelm" +
+       " pretrain->adapt, use GTX_CKPT_EVERY in phase 1 and GTX_LOAD_CKPT" +
+       " in phase 2 (toy#179)."
   exit 1
 end
 if RETROFIT && LOAD_CKPT.length == 0 && PRE_STEPS < 1
