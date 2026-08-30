@@ -244,6 +244,7 @@ RETROFIT    = (ENV["GTX_RETROFIT"] || "") == "1"
 PRE_STEPS   = (ENV["GTX_PRETRAIN_STEPS"] || "1500").to_i
 PRE_LR_S    = ENV["GTX_PRETRAIN_LR"] || ""
 AD_POLICY_S = ENV["GTX_ADAPTER_POLICY"] || ""
+AD_SITE_S   = ENV["GTX_ADAPTER_SITE"]   || ""
 AD_LAYERS   = (ENV["GTX_ADAPTER_LAYERS"] || "2").to_i
 AD_RANK     = (ENV["GTX_ADAPTER_RANK"] || "16").to_i
 FREEZE_BB   = (ENV["GTX_FREEZE_BACKBONE"] || "1") == "1"
@@ -353,7 +354,21 @@ if AD_POLICY_S.length > 0 && AD_POLICY_S != "chain" && AD_POLICY_S != "dfa" && A
   puts "toy-train-gtx: GTX_ADAPTER_POLICY " + AD_POLICY_S + " unsupported (chain|dfa|frozen)"
   exit 1
 end
-if AD_POLICY_S.length > 0 && !RETROFIT
+# rev2026-08-30 (B0b/W1) — block-site adapters work OUTSIDE a retrofit, which
+# is how a bytelm pretrain->adapt gets them: phase 1 writes a backbone
+# checkpoint with the adapters allocated but never consumed, phase 2 loads it
+# and trains them. So "adapters need GTX_RETROFIT" now has one exception, and
+# exactly one.
+if AD_SITE_S.length > 0 && AD_SITE_S != "pair" && AD_SITE_S != "block"
+  puts "toy-train-gtx: GTX_ADAPTER_SITE " + AD_SITE_S + " unsupported (pair|block)"
+  exit 1
+end
+if AD_SITE_S == "pair" && !RETROFIT
+  puts "toy-train-gtx: GTX_ADAPTER_SITE=pair is meaningless without" +
+       " GTX_RETROFIT=1 — the pair site only exists on the relational tail."
+  exit 1
+end
+if AD_POLICY_S.length > 0 && !RETROFIT && AD_SITE_S != "block"
   puts "toy-train-gtx: GTX_ADAPTER_POLICY is meaningless without GTX_RETROFIT=1" +
        " — there are no adapters outside a retrofit, so the token would silently do nothing"
   exit 1
@@ -498,7 +513,8 @@ RETRO_CLASSES = N_TYPES
 AD_POLICY = AD_POLICY_S == "dfa" ? Toy::LLM::Engine::GtxEngine::POLICY_DFA :
             (AD_POLICY_S == "frozen" ? Toy::LLM::Engine::GtxEngine::POLICY_FROZEN :
                                        Toy::LLM::Engine::GtxEngine::POLICY_CHAIN)
-N_ADAPTERS = RETROFIT ? AD_LAYERS : 0
+# Block-site adapters are one per block; the pair site keeps its stack.
+N_ADAPTERS = AD_SITE_S == "block" ? N_BLOCKS : (RETROFIT ? AD_LAYERS : 0)
 # degree == TY is not a tunable: one attribute of EACH type per
 # neighbourhood is what makes mean-pooling provably uninformative, which
 # is what lets the frozen control lose. See toy_gtx_task.rb.
@@ -1058,6 +1074,14 @@ recipe.gr_cache.gx_b_adapt = LDFA_ADAPT
 # (the compression is a property of the error stream, not of the tap), so
 # reusing a tap's seed would make P a copy of that tap's Q rows.
 recipe.gr_cache.gx_b_pseed = B_SEED + 991
+# W1: the site and the adapter policy must be set BEFORE realize!, which
+# is where the adapters are allocated and the graph over them is built.
+recipe.gr_cache.gx_adapter_site = AD_SITE_S == "block" ?
+  Toy::LLM::Engine::GtxEngine::SITE_BLOCK :
+  Toy::LLM::Engine::GtxEngine::SITE_PAIR
+if AD_SITE_S == "block"
+  recipe.gr_cache.gx_adapter_policy = AD_POLICY
+end
 recipe.realize!(D_FEAT, D_MODEL, N_HEADS, D_FF, N_BLOCKS, N_NODES,
                 N_PAIRS, N_CLASSES, SEED, 1.0, POLICY, DFA_CUT, B_SEED,
                 dist_code(B_DIST_S), scale_code(B_SCALE_S),
