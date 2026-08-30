@@ -350,7 +350,20 @@ if File.file?(FIXTURE)
     o, _ = run(CPU_BIN, env)
     # The corpus: line names the pack's own token count, which belongs to
     # the data rather than to the code under test.
-    o.lines.reject { |l| l.start_with?("corpus: ") }.join
+    #
+    # ncost: (toy#182) is filtered for the SAME reason, and it matters that
+    # the reason is the same. This leg's claim is that the CPU byte-LM CURVE
+    # did not move. It compares whole stdout to get there, so ANY new
+    # diagnostic line fails it while the curve is provably unchanged — the
+    # `step ` lines are byte-identical here, merely shifted down one.
+    # Filtering the non-curve line restores what the leg actually asserts.
+    #
+    # Filtering is NOT licence to re-record. Re-recording the fixture would
+    # have accepted whatever moved, including a real curve change. If a
+    # `step ` line ever differs, that is a regression and this leg must
+    # still catch it — which is why the filter names two exact prefixes
+    # rather than dropping anything that fails to match.
+    o.lines.reject { |l| l.start_with?("corpus: ", "ncost: ") }.join
   end
   if blocks.length != 2
     failures << "cpu byte-null: #{FIXTURE} does not parse into 2 arm blocks (got #{blocks.length}) — the fixture is malformed and this leg is measuring nothing"
