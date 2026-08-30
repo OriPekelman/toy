@@ -303,6 +303,11 @@ module TinyNNMetal
   ffi_func :tnn_tensor_name,      [:ptr],                   :str
   ffi_func :tnn_graph_n_nodes,    [:ptr],                   :int
   ffi_func :tnn_graph_node,       [:ptr, :int],             :ptr
+  # toy#182: the backward graph. tnn_graph_n_nodes walks graph_a only, so
+  # without these a snapshot either side of tnn_build_backward measures a
+  # delta of ZERO and reads as 'no backward chain' when nothing was measured.
+  ffi_func :tnn_graph_b_n_nodes,  [:ptr],                   :int
+  ffi_func :tnn_graph_b_node,     [:ptr, :int],             :ptr
   ffi_func :tnn_gguf_w_init,      [],                       :ptr
   ffi_func :tnn_gguf_w_set_str,   [:ptr, :str, :str],       :void
   ffi_func :tnn_gguf_w_set_u32,   [:ptr, :str, :int],       :void

@@ -115,7 +115,9 @@ class GtxEngine
                 :gx_adapter_site,
                 :gx_backbone_first, :gx_backbone_count, :gx_active_classes,
                 :gx_b_rank, :gx_b_adapt, :gx_b_pseed,
-                :gx_ld_fro_eff, :gx_ld_fro_full, :gx_ld_rank_eff, :gx_ld_dout
+                :gx_ld_fro_eff, :gx_ld_fro_full, :gx_ld_rank_eff, :gx_ld_dout,
+                :gx_fwd_nodes, :gx_fwd_bytes, :gx_bwd_nodes, :gx_bwd_bytes,
+                :gx_b_bytes
 
   def initialize
     @sess       = TinyNN.tnn_null_ptr
@@ -157,6 +159,19 @@ class GtxEngine
     @gx_taps         = 0
     @gx_graph_nodes  = 0
     @gx_graph_bytes  = 0
+    # toy#182 N-cost. `graph: bytes` is the WHOLE session graph — forward,
+    # backward, the DFA surrogate and its storage in one number — so a DFA arm
+    # that genuinely avoided a backward chain still reports MORE when its
+    # surrogate costs more to store. That is exactly what B0b saw (78.4 MB dfa
+    # vs 65.8 MB bp) and why that cost number was uninterpretable. These split
+    # the total so the backward pass is visible on its own, and so B — which
+    # DFA's premise says is regenerated from a seed and never stored — can be
+    # excluded rather than silently charged to the method.
+    @gx_fwd_nodes    = 0
+    @gx_fwd_bytes    = 0
+    @gx_bwd_nodes    = 0
+    @gx_bwd_bytes    = 0
+    @gx_b_bytes      = 0
     @gx_retro_classes   = 0
     @gx_bytelm  = 0
     @gx_gnorm   = 0
@@ -559,6 +574,8 @@ class GtxEngine
         dout = tapd[ti]
         on_pairs = dout == 2 * @gx_d_model && @gx_retrofit == 1
         t_b = TinyNN.tnn_input_2d_f32(@sess, dout, active_classes)  # ne=[C, dout]
+        # toy#182: charged separately — see the note on @gx_b_bytes.
+        @gx_b_bytes = @gx_b_bytes + TinyNN.tnn_tensor_nbytes(t_b)
         TinyNN.tnn_set_output(t_b)
         @gx_b_handles.push(t_b)
         @gx_b_seeds.push(b_seed + 77 + ti)
@@ -597,7 +614,9 @@ class GtxEngine
       TinyNN.tnn_build_forward_only(@sess, @t_loss)
     end
     # toy#150: every extend_backward_graph below MUST come after this.
+    snapshot_forward!   # toy#182: forward graph, before any backward node exists
     TinyNN.tnn_build_backward(@sess)
+    snapshot_backward!  # toy#182: delta = the backward pass alone
 
     wk = 0
     while wk < @ft_weights.length
@@ -662,6 +681,22 @@ class GtxEngine
                                   (@gx_adapter_policy == POLICY_FROZEN ? "frozen" : "chain")) +
             " freeze_backbone=" + @gx_freeze_backbone.to_s +
             " retro_classes=" + @gx_retro_classes.to_s) : "")
+# toy#182 N-cost. Reported on its OWN line: appending to the wiring line
+# above would move it for every stored cell, which is the byte-nullity
+# defect fixed in toy#181. Read it as:
+#   fwd/bwd  — the graph split at tnn_build_backward, so "DFA removes the
+#              backward chain" is visible instead of being netted off
+#              against the surrogate's own storage (B0b reported dfa as
+#              LARGER on the combined number and could not say why).
+#   b_bytes  — the materialised B. DFA's premise is that B is regenerated
+#              from a seed and never stored, so charging it to the method
+#              measures this implementation, not the claim. Reported
+#              separately so the counterfactual is computable.
+puts "ncost: fwd_nodes=" + @gx_fwd_nodes.to_s +
+             " fwd_bytes=" + @gx_fwd_bytes.to_s +
+             " bwd_nodes=" + @gx_bwd_nodes.to_s +
+             " bwd_bytes=" + @gx_bwd_bytes.to_s +
+             " b_bytes=" + @gx_b_bytes.to_s
 
     TinyNN.tnn_pin_all_graph_b_nodes(@sess)
     TinyNN.tnn_realize_backward(@sess)
@@ -714,6 +749,8 @@ class GtxEngine
         # from @gx_active_classes, so this MUST be that same number — a
         # literal here would upload a differently-shaped B in silence.
         t_b = TinyNN.tnn_input_2d_f32(@sess, dout, @gx_active_classes)
+        # toy#182: charged separately — see the note on @gx_b_bytes.
+        @gx_b_bytes = @gx_b_bytes + TinyNN.tnn_tensor_nbytes(t_b)
         TinyNN.tnn_set_output(t_b)
         @gx_b_handles.push(t_b)
         @gx_b_seeds.push(b_seed + 77 + ti)
@@ -740,7 +777,9 @@ class GtxEngine
       TinyNN.tnn_set_loss(@t_loss)
       TinyNN.tnn_build_forward_only(@sess, @t_loss)
     end
+    snapshot_forward!   # toy#182: forward graph, before any backward node exists
     TinyNN.tnn_build_backward(@sess)
+    snapshot_backward!  # toy#182: delta = the backward pass alone
 
     wk = 0
     while wk < @ft_weights.length
@@ -806,6 +845,22 @@ class GtxEngine
             " adapter_policy=" + (@gx_adapter_policy == POLICY_DFA ? "dfa" :
                                   (@gx_adapter_policy == POLICY_FROZEN ? "frozen" : "chain"))) : "") +
          " emb_tapped=" + ((any_dfa && policy.length > 0 && policy[0] == POLICY_DFA) ? "1" : "0")
+# toy#182 N-cost. Reported on its OWN line: appending to the wiring line
+# above would move it for every stored cell, which is the byte-nullity
+# defect fixed in toy#181. Read it as:
+#   fwd/bwd  — the graph split at tnn_build_backward, so "DFA removes the
+#              backward chain" is visible instead of being netted off
+#              against the surrogate's own storage (B0b reported dfa as
+#              LARGER on the combined number and could not say why).
+#   b_bytes  — the materialised B. DFA's premise is that B is regenerated
+#              from a seed and never stored, so charging it to the method
+#              measures this implementation, not the claim. Reported
+#              separately so the counterfactual is computable.
+puts "ncost: fwd_nodes=" + @gx_fwd_nodes.to_s +
+          " fwd_bytes=" + @gx_fwd_bytes.to_s +
+          " bwd_nodes=" + @gx_bwd_nodes.to_s +
+          " bwd_bytes=" + @gx_bwd_bytes.to_s +
+          " b_bytes=" + @gx_b_bytes.to_s
 
     TinyNN.tnn_pin_all_graph_b_nodes(@sess)
     TinyNN.tnn_realize_backward(@sess)
@@ -956,6 +1011,58 @@ class GtxEngine
       i = i + 1
     end
     acc
+  end
+
+  # Called immediately BEFORE tnn_build_backward. ggml APPENDS backward nodes,
+  # so the count and byte total here are the forward graph, and whatever the
+  # next snapshot adds is attributable to the backward pass. No new FFI: the
+  # delta IS the measurement.
+  # ── toy#182 N-cost instrument ────────────────────────────────────────
+  # `graph: bytes` is the WHOLE session graph — forward, backward, the DFA
+  # surrogate and its storage in one number — so an arm that genuinely
+  # avoided a backward chain still reports MORE when its surrogate costs
+  # more to store. B0b hit exactly that (78.4 MB dfa vs 65.8 MB bp) and
+  # could not say why. These split it.
+  def reset_ncost!
+    @gx_b_bytes = 0
+    nil
+  end
+
+  # The forward graph, taken before tnn_build_backward.
+  def snapshot_forward!
+    @gx_fwd_nodes = TinyNN.tnn_graph_n_nodes(@sess)
+    t = 0
+    i = 0
+    while i < @gx_fwd_nodes
+      t = t + TinyNN.tnn_tensor_nbytes(TinyNN.tnn_graph_node(@sess, i))
+      i = i + 1
+    end
+    @gx_fwd_bytes = t
+    nil
+  end
+
+  # Walks graph_b — the dup-with-grads tnn_build_backward creates — via the
+  # accessors added for toy#182. The first version of this snapshotted
+  # tnn_graph_n_nodes either side of that call and always reported ZERO,
+  # because that walks graph_a only. A zero backward delta reads exactly
+  # like "DFA removed the backward chain" while having measured nothing,
+  # which is the failure this instrument exists to prevent.
+  def snapshot_backward!
+    n = TinyNN.tnn_graph_b_n_nodes(@sess)
+    t = 0
+    i = 0
+    while i < n
+      t = t + TinyNN.tnn_tensor_nbytes(TinyNN.tnn_graph_b_node(@sess, i))
+      i = i + 1
+    end
+    # graph_b is a DUP of the forward graph (ggml_graph_dup, SHARING tensor
+    # pointers) plus the backward expansion — so its raw totals contain the
+    # whole forward graph again. Subtracting the forward snapshot is what
+    # isolates the backward part; reporting n and t directly would overstate
+    # backward cost by the entire forward graph, on every arm.
+    @gx_bwd_nodes = n - @gx_fwd_nodes
+    @gx_bwd_bytes = t - @gx_fwd_bytes
+    nil
   end
 
   def measure_graph!

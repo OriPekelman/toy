@@ -716,6 +716,49 @@ else
     "  ok: BYTE-LM (toy#170) — 4 arms score, the readout is per-position causal at vocab 256, the DFA arm TAPS THE EMBEDDING (chain does not), the two cuts are distinct wirings, no arm's knob is inert (curve differs from frozen's) and BP beats the frozen body so the task is not head-solvable, deterministic, 3 degenerate configs fail loud" :
     "  FAIL: bytelm"
 
+  # ── LEG 12c: THE N-COST INSTRUMENT (toy#182) ──
+  #
+  # `graph: bytes` is the whole session graph in one number, so an arm that
+  # genuinely avoided a backward chain still reports MORE if its surrogate
+  # costs more to store — B0b saw exactly that and could not interpret it.
+  # The `ncost:` line splits it.
+  #
+  # THE LOAD-BEARING ASSERTION IS bwd_nodes > 0. graph_b is reachable only
+  # through tnn_graph_b_n_nodes / tnn_graph_b_node, which did not exist until
+  # toy#182 — the shim's own comment referred to them for months while they
+  # were absent. The first version of this instrument snapshotted
+  # tnn_graph_n_nodes (graph_a) either side of tnn_build_backward and reported
+  # bwd_nodes=0 on EVERY arm. Zero is not a neutral reading here: it is
+  # indistinguishable from "DFA removed the entire backward chain", which is
+  # the programme's headline claim. An instrument that fails silently toward
+  # the conclusion you are hoping for is worse than no instrument, so a zero
+  # backward count is a FAILURE, not a datum.
+  n0 = failures.length
+  nc = {}
+  [["chain", "chain"], ["dfa", "dfa"], ["frozen", "frozen"]].each do |k, pol|
+    o = bl_run("GTX_POLICY" => ([pol] * 2).join(","), "GTX_DFA_CUT" => "layer")
+    l = o.lines.find { |x| x.start_with?("ncost: ") }
+    nc[k] = l ? Hash[l.scan(/(\w+)=(\d+)/).map { |a, b| [a, b.to_i] }] : nil
+  end
+  if nc.any? { |_, v| v.nil? }
+    failures << "ncost: an arm emitted no `ncost:` line (#{nc.map { |k, v| "#{k}=#{v ? 'ok' : 'MISSING'}" }.join(' ')})"
+  else
+    nc.each do |k, v|
+      failures << "ncost: #{k} reports fwd_nodes=0 — the forward graph cannot be empty" if v["fwd_nodes"].to_i.zero?
+      failures << "ncost: #{k} reports bwd_nodes=0. The backward graph is only reachable via tnn_graph_b_n_nodes/tnn_graph_b_node (toy#182); if those are missing or graph_b is unbuilt the walk silently returns nothing, and a zero backward count reads exactly like 'DFA removed the backward chain' while having measured NOTHING" if v["bwd_nodes"].to_i.zero?
+    end
+    # B is materialised per tap, so it must be charged to the DFA arm and to
+    # nothing else. If chain reports b_bytes > 0 the separation is broken and
+    # the seed-regenerated counterfactual cannot be computed.
+    failures << "ncost: the dfa arm reports b_bytes=0 — B is materialised per tap, so it must be counted" if nc["dfa"]["b_bytes"].to_i.zero?
+    %w[chain frozen].each do |k|
+      failures << "ncost: the #{k} arm reports b_bytes=#{nc[k]['b_bytes']}, expected 0 — only DFA allocates B" unless nc[k]["b_bytes"].to_i.zero?
+    end
+  end
+  puts failures.length == n0 ?
+    "  ok: N-COST (toy#182) — the `ncost:` line splits forward from backward (via the graph_b accessors this issue added) and charges the materialised B separately, so the cost claim is computable instead of netted into one number; a ZERO backward count is a failure, not a DFA win" :
+    "  FAIL: n-cost"
+
   # ── LEG 12b: BLOCK-SITE ADAPTERS ON THE BYTELM TAIL (toy#181 / B0b) ──
   #
   # `GTX_ADAPTER_SITE=block` puts one adapter per block, so trainable capacity

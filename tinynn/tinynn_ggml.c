@@ -2658,6 +2658,30 @@ void *tnn_graph_node(void *sess, int i) {
     if (i >= ggml_graph_n_nodes(s->graph)) return NULL;
     return (void *)ggml_graph_node(s->graph, i);
 }
+/* Backward-graph walk (toy#182). The comment above has pointed at these
+ * two since the forward pair was written, but they did not exist — not
+ * here, not in a header, not in the FFI. Without them the backward pass
+ * cannot be measured at all: tnn_graph_n_nodes walks graph_a only, so a
+ * Ruby-side snapshot either side of tnn_build_backward reports a delta of
+ * ZERO and looks like "DFA removed the backward chain" when it has in fact
+ * measured nothing.
+ *
+ * graph_b is the dup-with-grads built by tnn_build_backward, so it is only
+ * populated after that call; before it these return 0/NULL rather than
+ * failing, matching the forward pair's behaviour on an unbuilt graph. */
+int tnn_graph_b_n_nodes(void *sess) {
+    if (!sess) return 0;
+    tnn_session *s = (tnn_session *)sess;
+    if (!s->graph_b) return 0;
+    return ggml_graph_n_nodes(s->graph_b);
+}
+void *tnn_graph_b_node(void *sess, int i) {
+    if (!sess || i < 0) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    if (!s->graph_b) return NULL;
+    if (i >= ggml_graph_n_nodes(s->graph_b)) return NULL;
+    return (void *)ggml_graph_node(s->graph_b, i);
+}
 /* No tnn_graph_n_leafs / tnn_graph_leaf: ggml's cgraph leafs[] is
  * private (no public accessor). The describe_flow walker discovers
  * leaves from the Ruby side by scanning node srcs that aren't
