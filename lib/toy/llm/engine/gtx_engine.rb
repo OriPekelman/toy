@@ -79,6 +79,22 @@ class GtxEngine
   POLICY_DFA    = 1
   POLICY_FROZEN = 2
 
+  # rev2026-08-30 (B0b/W1) — WHERE the retrofit adapters sit.
+  #   SITE_PAIR  the toy#161 placement: a stack on concat(h_a, h_b), forced
+  #              by the relational label being a modular sum that exists
+  #              nowhere else in the network.
+  #   SITE_BLOCK one adapter per block, on the block's own output, at
+  #              d_model width. This is the placement Design B needs, and
+  #              F12's own conclusion is why: with adapters on TOP of a
+  #              frozen stack neither arm backprops through the backbone, so
+  #              DFA's structural saving vanishes and the cost win is the
+  #              freezing. Distributed adapters put trainable capacity BELOW
+  #              the frozen top, where a BP adapter must propagate the error
+  #              down through every block to reach the lowest one and a DFA
+  #              adapter does not.
+  SITE_PAIR  = 0
+  SITE_BLOCK = 1
+
   CUT_LAYER = 0
   CUT_STEP  = 1
 
@@ -96,6 +112,7 @@ class GtxEngine
                 :gx_retro_classes, :gx_adapters, :gx_adapter_rank,
                 :gx_bytelm, :t_tokens, :ix_emb, :ix_lmhead, :gx_gnorm, :t_gnorm, :gx_gnorm_built,
                 :gx_retrofit, :gx_freeze_backbone, :gx_adapter_policy,
+                :gx_adapter_site,
                 :gx_backbone_first, :gx_backbone_count, :gx_active_classes,
                 :gx_b_rank, :gx_b_adapt, :gx_b_pseed,
                 :gx_ld_fro_eff, :gx_ld_fro_full, :gx_ld_rank_eff, :gx_ld_dout
@@ -153,6 +170,7 @@ class GtxEngine
     @gx_retrofit        = 0
     @gx_freeze_backbone = 0
     @gx_adapter_policy  = POLICY_CHAIN
+    @gx_adapter_site    = SITE_PAIR
     @gx_backbone_first  = 0
     @gx_backbone_count  = 0
     @gx_active_classes  = 0
@@ -261,10 +279,18 @@ class GtxEngine
     # "the frozen backbone plus a retrained head" — the control the bar
     # is stated against.
     @gx_backbone_first = @ft_weights.length
+    # W1: a block-site adapter is d_model wide (it sits on one block's
+    # output); a pair-site adapter is 2*d_model (it sits on the concat).
+    ad_w = @gx_adapter_site == SITE_BLOCK ? d_model : 2 * d_model
     ai = 0
     while ai < @gx_adapters
-      add_w(@gx_adapter_rank, 2 * d_model, "ad" + ai.to_s + ".down", n_blocks + 1)
-      add_w(2 * d_model, @gx_adapter_rank, "ad" + ai.to_s + ".up",   n_blocks + 1)
+      # The layer index stays n_blocks+1 for BOTH sites, deliberately. It is
+      # what the per-weight step gate reads, and tagging a block-site adapter
+      # with its own block index would make the gate resolve the BLOCK's
+      # policy for it — so an adapter under a `frozen` block would be frozen
+      # too, silently, and the arm under test would not be the arm that ran.
+      add_w(@gx_adapter_rank, ad_w, "ad" + ai.to_s + ".down", n_blocks + 1)
+      add_w(ad_w, @gx_adapter_rank, "ad" + ai.to_s + ".up",   n_blocks + 1)
       ai = ai + 1
     end
     add_w(@gx_retro_classes, 2 * d_model, "retro_head", n_blocks + 2)
@@ -407,6 +433,32 @@ class GtxEngine
       if is_dfa
         TinyNN.tnn_set_output(t_h)
         taps.push(t_h); tapd.push(@gx_d_model)
+      end
+
+      # W2 — the BLOCK-SITE adapter, after the block's own tap so that tap
+      # still means "this block's output". Residual bottleneck with W_up
+      # zero-initialised, so an untrained adapter is exactly the identity and
+      # `frozen` means the backbone unchanged plus a retrained head.
+      if @gx_adapter_site == SITE_BLOCK && bj < @gx_adapters
+        ad_dfa = @gx_adapter_policy == POLICY_DFA
+        w_dn = @ft_weights[@gx_backbone_first + bj * 2]
+        w_up = @ft_weights[@gx_backbone_first + bj * 2 + 1]
+        a_in = t_h
+        if ad_dfa
+          # A dfa adapter detaches its INPUT: its credit comes from the
+          # random projection of the output error and never from the layer
+          # above. That detach IS the cost argument — it is what stops a
+          # backward chain existing between adapters at all.
+          a_in = TinyNN.tnn_detach(@sess, a_in)
+        end
+        t_h = TinyNN.tnn_add(@sess, a_in,
+                TinyNN.tnn_matmul(@sess, w_up,
+                  TinyNN.tnn_silu(@sess, TinyNN.tnn_matmul(@sess, w_dn, a_in))))
+        if ad_dfa
+          TinyNN.tnn_set_output(t_h)
+          taps.push(t_h); tapd.push(@gx_d_model)
+          any_dfa = true
+        end
       end
       bj = bj + 1
     end
@@ -571,6 +623,13 @@ class GtxEngine
       elsif lyr < @gx_blocks && mode == POLICY_FROZEN
         # No optimizer step: the block stays at init.
         step_it = false
+      elsif @gx_adapters > 0 && @gx_adapter_site == SITE_BLOCK &&
+            wk >= @gx_backbone_first &&
+            wk < @gx_backbone_first + 2 * @gx_adapters
+        # W1: adapters OUTSIDE a retrofit obey the ADAPTER policy, never the
+        # block policy under them — a `frozen` block carrying a trainable
+        # adapter is the whole point of the arrangement.
+        step_it = @gx_adapter_policy != POLICY_FROZEN
       elsif wk >= @gx_backbone_count
         # Pretrain never touches the retrofit capacity — and it must not,
         # or a "pretrained backbone" would quietly carry trained adapters
@@ -693,6 +752,19 @@ class GtxEngine
       step_it = true
       if lyr < @gx_blocks && mode == POLICY_FROZEN
         step_it = false
+      elsif @gx_adapters > 0 && @gx_adapter_site == SITE_BLOCK &&
+            wk >= @gx_backbone_first &&
+            wk < @gx_backbone_first + 2 * @gx_adapters
+        # W1: BLOCK-SITE adapters DO train in a bytelm run — that is the
+        # whole point of Design B, and this branch is the reason the arms
+        # differ at all. It must sit ABOVE the blanket "retrofit capacity is
+        # never touched" rule below, which was written when the only
+        # adapters were the relational pair-site stack and which otherwise
+        # silently pins every adapter at its zero init. That failure is
+        # invisible in every signal except the one that matters: the arms
+        # come back BIT-IDENTICAL to the frozen control, which is exactly
+        # how it was caught.
+        step_it = @gx_adapter_policy != POLICY_FROZEN
       elsif wk >= @gx_backbone_count && wk != @ix_emb && wk != @ix_lmhead
         # retrofit capacity is never touched by a bytelm run
         step_it = false
@@ -721,6 +793,10 @@ class GtxEngine
          " dfa_wired=" + dfa_block_count(policy).to_s +
          " frozen=" + @gx_frozen_count.to_s +
          " taps=" + @gx_taps.to_s +
+         " adapters=" + @gx_adapters.to_s +
+         " adapter_site=" + (@gx_adapter_site == SITE_BLOCK ? "block" : "pair") +
+         " adapter_policy=" + (@gx_adapter_policy == POLICY_DFA ? "dfa" :
+                               (@gx_adapter_policy == POLICY_FROZEN ? "frozen" : "chain")) +
          " emb_tapped=" + ((any_dfa && policy.length > 0 && policy[0] == POLICY_DFA) ? "1" : "0")
 
     TinyNN.tnn_pin_all_graph_b_nodes(@sess)
