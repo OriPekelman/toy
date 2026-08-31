@@ -117,7 +117,7 @@ class GtxEngine
                 :gx_b_rank, :gx_b_adapt, :gx_b_pseed,
                 :gx_ld_fro_eff, :gx_ld_fro_full, :gx_ld_rank_eff, :gx_ld_dout,
                 :gx_fwd_nodes, :gx_fwd_bytes, :gx_bwd_nodes, :gx_bwd_bytes,
-                :gx_b_bytes
+                :gx_b_bytes, :gx_act_retained
 
   def initialize
     @sess       = TinyNN.tnn_null_ptr
@@ -172,6 +172,7 @@ class GtxEngine
     @gx_bwd_nodes    = 0
     @gx_bwd_bytes    = 0
     @gx_b_bytes      = 0
+    @gx_act_retained = 0
     @gx_retro_classes   = 0
     @gx_bytelm  = 0
     @gx_gnorm   = 0
@@ -696,7 +697,8 @@ puts "ncost: fwd_nodes=" + @gx_fwd_nodes.to_s +
              " fwd_bytes=" + @gx_fwd_bytes.to_s +
              " bwd_nodes=" + @gx_bwd_nodes.to_s +
              " bwd_bytes=" + @gx_bwd_bytes.to_s +
-             " b_bytes=" + @gx_b_bytes.to_s
+             " b_bytes=" + @gx_b_bytes.to_s +
+         " act_retained=" + @gx_act_retained.to_s
 
     TinyNN.tnn_pin_all_graph_b_nodes(@sess)
     TinyNN.tnn_realize_backward(@sess)
@@ -860,7 +862,8 @@ puts "ncost: fwd_nodes=" + @gx_fwd_nodes.to_s +
           " fwd_bytes=" + @gx_fwd_bytes.to_s +
           " bwd_nodes=" + @gx_bwd_nodes.to_s +
           " bwd_bytes=" + @gx_bwd_bytes.to_s +
-          " b_bytes=" + @gx_b_bytes.to_s
+          " b_bytes=" + @gx_b_bytes.to_s +
+         " act_retained=" + @gx_act_retained.to_s
 
     TinyNN.tnn_pin_all_graph_b_nodes(@sess)
     TinyNN.tnn_realize_backward(@sess)
@@ -1060,6 +1063,10 @@ puts "ncost: fwd_nodes=" + @gx_fwd_nodes.to_s +
     # whole forward graph again. Subtracting the forward snapshot is what
     # isolates the backward part; reporting n and t directly would overstate
     # backward cost by the entire forward graph, on every arm.
+    # toy#182: forward activations a backward node names as a source — the
+    # quantity the cost claim is actually about. ~0 below a detach if DFA
+    # is doing what it claims; scales with depth x context for chain.
+    @gx_act_retained = TinyNN.tnn_graph_b_retained_bytes(@sess)
     @gx_bwd_nodes = n - @gx_fwd_nodes
     @gx_bwd_bytes = t - @gx_fwd_bytes
     nil

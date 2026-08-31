@@ -755,6 +755,29 @@ else
       failures << "ncost: the #{k} arm reports b_bytes=#{nc[k]['b_bytes']}, expected 0 — only DFA allocates B" unless nc[k]["b_bytes"].to_i.zero?
     end
   end
+  # act_retained: the forward activations a backward node names as a source —
+  # the number the cost claim is ACTUALLY about ("a block below a detach needs
+  # none of its forward activations kept alive").
+  #
+  # ASSERTED HERE: the instrument is live and discriminating. NOT asserted:
+  # that dfa retains less than chain. That is the programme's HYPOTHESIS, and
+  # as measured it is false (dfa retains slightly MORE at both depths). A gate
+  # that encoded the hoped-for direction would fail on correct code and would
+  # have to be "fixed" by whoever later makes the claim true — the opposite of
+  # a control that can lose.
+  #
+  # The depth check is what separates a working walk from a plausible constant:
+  # a stub returning some fixed number passes "> 0" and fails this.
+  deep = bl_run("GTX_POLICY" => (["chain"] * 8).join(","), "GTX_BLOCKS" => "8",
+                "GTX_DFA_CUT" => "layer")
+  dl = deep.lines.find { |x| x.start_with?("ncost: ") }
+  deep_ret = dl ? dl[/act_retained=(\d+)/, 1].to_i : 0
+  nc.each do |k, v|
+    failures << "ncost: #{k} reports act_retained=0 — the retained-activation walk returned nothing. Zero here reads as 'this arm keeps no activations alive for backward', which is the cost claim itself; an instrument that fails silently toward the hoped-for answer is worse than none (toy#182)" if v["act_retained"].to_i.zero?
+  end
+  shallow_ret = nc["chain"]["act_retained"].to_i
+  failures << "ncost: act_retained does not grow with depth (#{shallow_ret} at 2 blocks vs #{deep_ret} at 8) — retained activations must scale with depth, so a flat value means the walk is returning a constant rather than measuring the graph" unless deep_ret > shallow_ret
+
   puts failures.length == n0 ?
     "  ok: N-COST (toy#182) — the `ncost:` line splits forward from backward (via the graph_b accessors this issue added) and charges the materialised B separately, so the cost claim is computable instead of netted into one number; a ZERO backward count is a failure, not a DFA win" :
     "  FAIL: n-cost"

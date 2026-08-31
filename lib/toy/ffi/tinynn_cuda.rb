@@ -317,6 +317,10 @@ module TinyNNCuda
   # delta of ZERO and reads as 'no backward chain' when nothing was measured.
   ffi_func :tnn_graph_b_n_nodes,  [:ptr],                   :int
   ffi_func :tnn_graph_b_node,     [:ptr, :int],             :ptr
+  # toy#182: forward-activation bytes a backward node names as a source —
+  # the quantity DFA's cost claim is about. Walked in C: it needs pointer
+  # identity over ~600x900x10 comparisons with dedup.
+  ffi_func :tnn_graph_b_retained_bytes, [:ptr],             :size_t
   # tao#gguf-checkpoint-writer
   ffi_func :tnn_tensor_set_name,  [:ptr, :str],             :void
   ffi_func :tnn_gguf_w_init,      [],                       :ptr

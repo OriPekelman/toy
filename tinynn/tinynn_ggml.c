@@ -2682,6 +2682,50 @@ void *tnn_graph_b_node(void *sess, int i) {
     if (i >= ggml_graph_n_nodes(s->graph_b)) return NULL;
     return (void *)ggml_graph_node(s->graph_b, i);
 }
+/* Retained activation bytes (toy#182). THE number DFA's cost claim is
+ * actually about: a block below a `detach` needs none of its forward
+ * activations kept alive for the backward pass, and that saving is what
+ * scales with depth and sequence length.
+ *
+ * Measured, not modelled. graph_b is dup(graph_a) + backward expansion, so
+ * nodes [0, n_a) are the dup'd forward prefix and [n_a, n_b) are the
+ * backward nodes. A forward node is RETAINED exactly when some backward
+ * node names it as a source. Summing the distinct such nodes' nbytes is
+ * the answer; the dedup matters because one activation feeding several
+ * backward ops is stored once, and counting it twice would inflate the
+ * arm with the most reuse.
+ *
+ * Done in C rather than Ruby deliberately: the walk needs pointer identity
+ * across ~600x900x10 comparisons, and Spinel's semantics for FFI pointer
+ * equality are not something this measurement should rest on. */
+size_t tnn_graph_b_retained_bytes(void *sess) {
+    if (!sess) return 0;
+    tnn_session *s = (tnn_session *)sess;
+    if (!s->graph || !s->graph_b) return 0;
+    int na = ggml_graph_n_nodes(s->graph);
+    int nb = ggml_graph_n_nodes(s->graph_b);
+    if (na <= 0 || nb <= na) return 0;
+    char *seen = (char *)calloc((size_t)na, 1);
+    if (!seen) return 0;
+    for (int j = na; j < nb; j++) {
+        struct ggml_tensor *bn = ggml_graph_node(s->graph_b, j);
+        if (!bn) continue;
+        for (int k = 0; k < GGML_MAX_SRC; k++) {
+            struct ggml_tensor *src = bn->src[k];
+            if (!src) continue;
+            for (int i = 0; i < na; i++) {
+                if (seen[i]) continue;
+                if (ggml_graph_node(s->graph, i) == src) { seen[i] = 1; break; }
+            }
+        }
+    }
+    size_t total = 0;
+    for (int i = 0; i < na; i++) {
+        if (seen[i]) total += ggml_nbytes(ggml_graph_node(s->graph, i));
+    }
+    free(seen);
+    return total;
+}
 /* No tnn_graph_n_leafs / tnn_graph_leaf: ggml's cgraph leafs[] is
  * private (no public accessor). The describe_flow walker discovers
  * leaves from the Ruby side by scanning node srcs that aren't
