@@ -28,14 +28,54 @@
 # cost (at context 64, a 16384-class one-hot label Mat is ~4.2 MB per step),
 # not an oversight to route around here.
 #
-# ── SHARED VOCABULARY ───────────────────────────────────────────────────
+# ── SHARED VOCABULARY, AND WHY A LADDER NEEDS --rungs ───────────────────
 # A ladder read against a common baseline, or a pretrain/adapt pair, MUST be
 # emitted against a shared vocabulary or the same class id means different
 # things in different packs. `--vocab-from <prefix>` reuses another pack's
 # id assignment and FAILS LOUD on any token the source vocabulary does not
-# contain, naming them. That is D5's lesson carried over rather than
-# rediscovered: a 4k rung's ids are NOT a prefix of a 16k rung's unless it
-# is built that way.
+# contain, naming them.
+#
+# BUT BPE RUNGS DO NOT NEST, and this is stronger than D5's caution rather
+# than the same shape. D5's worry was a held-out corpus using node types the
+# pretrain corpus lacked — a subset relation that holds if you build the
+# bigger side first. Here, on ONE corpus, NEITHER rung's vocabulary contains
+# the other's:
+#
+#   at 4000 merges a word tokenises as "rou" + "nd"
+#   at 8000 merges that pair is itself merged, giving "round"
+#
+# so "rou" exists ONLY in the smaller rung. Measured on tinyshakespeare:
+# 4k-from-8k is missing 71 tokens, 8k-from-4k is missing 2000. Building the
+# largest rung first does NOT give a superset — that was the obvious guess
+# and it is false.
+#
+# So a shared head across a ladder needs ONE id assignment covering every
+# token ANY rung produces: tokenise per rung, union the tokens, assign ids
+# once, emit every rung against them.
+#
+# THAT IS NOT IMPLEMENTED HERE, deliberately. VOCAB_MAX is 4096 and only the
+# 4k rung is loadable, so a 4k/8k/16k ladder cannot be trained today and a
+# flag to build one could not be exercised — an unexercised builder for an
+# untrainable ladder is a liability, not a feature. When the ceiling moves,
+# this is the shape to add, and the union must be over the RUNGS (one
+# corpus, several merge counts), not over corpora as D5 needed.
+#
+# Until then `--vocab-from` covers the case that IS reachable: two corpora
+# at the SAME merge count sharing a head.
+#
+# ── WITH --vocab-from, ids MAY BE SPARSE, AND `alphabet` IS NOT THE HEAD ─
+# Without it, ids are contiguous 0..alphabet-1 by construction. WITH it the
+# ids come from the source pack's map, so a corpus that uses only some of
+# those tokens gets GAPS: `alphabet` counts distinct values PRESENT, while
+# the head must cover `max_id + 1`.
+#
+# The two coincide only when the borrowing corpus happens to use a
+# first-appearance prefix of the source's tokens — which is exactly what a
+# leading slice of the same text does, and is why a naive test of this path
+# looks contiguous and proves nothing about the general case.
+#
+# `max_id` is in the sidecar for this reason. Size the lane's head from
+# max_id + 1, never from alphabet, on any pack built with --vocab-from.
 require "json"
 require "digest"
 
@@ -61,7 +101,24 @@ while i < ARGV.length
 end
 die("--text, --merges and --out are all required") unless opts[:text] && opts[:merges] && opts[:out]
 die("--merges must be >= 1, got #{opts[:merges]}") if opts[:merges] < 1
-die("no such corpus: #{opts[:text]}") unless File.file?(opts[:text])
+
+# --text takes EITHER a plain file or an existing character-level pack
+# prefix. The repo ships its corpora packed, not as .txt — ae_shakespeare
+# exists only as .meta/.tok/.json — and the natural first rung is exactly
+# that corpus, so that a BPE ladder can be read directly against every
+# character-level number the programme already has on the same text.
+#
+# A character pack's ids ARE raw byte values (ae_shakespeare declares
+# alphabet 65 while its ids run past 100, and floor_id 32 is ASCII space),
+# so reconstructing the bytes is an unpack, not a decode.
+if File.file?(opts[:text])
+  src_kind = "file"
+elsif File.file?("#{opts[:text]}.tok.i32")
+  src_kind = "pack"
+else
+  die("no such corpus: #{opts[:text]} (looked for the file, and for " \
+      "#{opts[:text]}.tok.i32 as a character pack)")
+end
 
 %w[vocab merges bytechars].each do |t|
   p_ = "#{opts[:tables]}-#{t}.tsv"
@@ -98,9 +155,20 @@ die("asked for #{opts[:merges]} merges, table only had #{nm}") if nm < opts[:mer
 # vocabulary at all.
 PAT = /'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+/
 
-raw = File.binread(opts[:text])
+if src_kind == "pack"
+  ids = File.binread("#{opts[:text]}.tok.i32").unpack("l<*")
+  bad = ids.reject { |v| v >= 0 && v <= 255 }
+  unless bad.empty?
+    die("#{opts[:text]} is not a CHARACTER pack — #{bad.size} id(s) fall " \
+        "outside 0..255 (e.g. #{bad.first(4).inspect}). BPE runs over bytes, " \
+        "so a pack whose ids are already subword tokens cannot be re-tokenised.")
+  end
+  raw = ids.pack("C*")
+else
+  raw = File.binread(opts[:text])
+end
 sha = Digest::SHA256.hexdigest(raw)
-text = raw.force_encoding("UTF-8")
+text = raw.dup.force_encoding("UTF-8")
 text = raw.force_encoding("BINARY").encode("UTF-8", invalid: :replace, undef: :replace) unless text.valid_encoding?
 
 def bpe(word, ranks)
@@ -174,6 +242,7 @@ File.binwrite("#{opts[:out]}.meta.i32", [toks.size, distinct].pack("l<*"))
 File.binwrite("#{opts[:out]}.tok.i32",  toks.pack("l<*"))
 File.write("#{opts[:out]}.json", JSON.pretty_generate(
   "corpus"        => File.basename(opts[:text]),
+  "corpus_kind"   => src_kind,
   "source_sha256" => sha,
   "tokeniser"     => "gpt2-bpe",
   "tokeniser_tables" => opts[:tables],
@@ -183,6 +252,20 @@ File.write("#{opts[:out]}.json", JSON.pretty_generate(
   "alphabet"      => distinct,
   "max_id"        => maxid,
   "entropy_bits"  => ent.round(6),
+  # ── READ THIS BEFORE COMPARING TO A CHARACTER-LEVEL NUMBER ──────────
+  # The lane reports bpb PER TOKEN. A BPE token is several characters, so
+  # a BPE bpb and a character bpb on the SAME text are not on the same
+  # scale and must not be compared directly. On tinyshakespeare at 4000
+  # merges the raw figures are 11.94 (BPE) against 4.43 (character) —
+  # which reads as a catastrophic regression and is not one: divide by
+  # chars_per_token and it is 4.54 against 4.43.
+  #
+  # N4 exists to read BPE rungs against the character-level numbers this
+  # programme already has on this text, so the conversion is recorded
+  # here rather than left to be rederived (or forgotten) per comparison.
+  "n_source_bytes"   => raw.bytesize,
+  "chars_per_token"  => (raw.bytesize / toks.size.to_f).round(6),
+  "bpb_per_char_from_per_token" => "divide the lane's bpb by chars_per_token",
   "unigram_floor" => (floor_c / n).round(6),
   "floor_id"      => floor_id,
   # The id map is what makes --vocab-from possible at all. It is the pack's
