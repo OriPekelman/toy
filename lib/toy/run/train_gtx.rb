@@ -175,6 +175,14 @@ VOCAB       = (ENV["GTX_VOCAB"] || "256").to_i
 # of letting it move with V.
 INSTRUMENT   = (ENV["GTX_INSTRUMENT"] || "0").to_i
 INSTRUMENT_N = (ENV["GTX_INSTRUMENT_N"] || "1024").to_i
+# toy#183 / N3: the same statistics E1 computes over the ERROR covariance,
+# computed instead over the BODY's hidden activations. The hypothesis it
+# exists to decide is that faithful feedback collapses representational
+# diversity while near-orthogonal feedback preserves it — so the quantity
+# has to be the body's, not the error's. Opt-in and byte-null when off,
+# same discipline as GTX_INSTRUMENT.
+ACTRANK   = (ENV["GTX_ACTRANK"] || "0").to_i
+ACTRANK_N = (ENV["GTX_ACTRANK_N"] || "1024").to_i
 # toy#172 (E1 Phase 1.2) — the nDFA ERROR-SIDE PRECONDITIONER.
 #
 # Left-multiplies the broadcast error by lambda(C_E + lambda I)^-1, which
@@ -733,6 +741,24 @@ def bc_fill_err!(ebuf, slot, buf, m_labels, n_pos, classes, want)
     i = i + 1
   end
   s
+end
+
+def ar_fill_act!(abuf, slot, buf, n_pos, d, want)
+  # Append this batch's per-position activation vectors. Unlike
+  # bc_fill_err! there is nothing to derive — the downloaded tensor IS the
+  # quantity — so this only copies and counts.
+  sl = slot
+  i = 0
+  while i < n_pos && sl < want
+    j = 0
+    while j < d
+      abuf[sl * d + j] = buf[i * d + j]
+      j = j + 1
+    end
+    sl = sl + 1
+    i = i + 1
+  end
+  sl
 end
 
 def bc_trace(ebuf, n, classes)
@@ -1591,8 +1617,16 @@ if IS_BYTELM
   bc_buf  = Array.new(bc_want * N_CLASSES, 0.0)
   bc_n    = 0
   bc_batches = 0
+  # toy#183: the activation buffer, sized like the error buffer but over
+  # d_model rather than the vocabulary.
+  ar_want = ACTRANK == 1 ? ACTRANK_N : 0
+  ar_buf  = Array.new(ar_want * D_MODEL, 0.0)
+  act_buf = Array.new(ACTRANK == 1 ? N_NODES * D_MODEL : 0, 0.0)
+  ar_n    = 0
+  ar_batches = 0
   vb = 0
-  while vb < VAL_BATCHES || (INSTRUMENT == 1 && bc_n < bc_want)
+  while vb < VAL_BATCHES || (INSTRUMENT == 1 && bc_n < bc_want) ||
+        (ACTRANK == 1 && ar_n < ar_want)
     bi = vb % VAL_BATCHES
     bl_fill!(bl_task, bl_tokens, m_labels, bl_starts[bi], N_NODES, N_CLASSES)
     recipe.step_bytelm!(bl_tokens, m_labels, val_hp, false)
@@ -1611,6 +1645,16 @@ if IS_BYTELM
     if INSTRUMENT == 1 && bc_n < bc_want
       bc_n = bc_fill_err!(bc_buf, bc_n, logit_buf, m_labels, N_NODES, N_CLASSES, bc_want)
       bc_batches = bc_batches + 1
+    end
+    if ACTRANK == 1 && ar_n < ar_want
+      rca = TinyNN.tnn_download_to_f64_array(recipe.gr_cache.sess,
+              recipe.gr_cache.t_body_out, act_buf, N_NODES * D_MODEL)
+      if rca != 0
+        puts "toy-train-gtx: body activation download failed: rc=" + rca.to_s
+        exit 1
+      end
+      ar_n = ar_fill_act!(ar_buf, ar_n, act_buf, N_NODES, D_MODEL, ar_want)
+      ar_batches = ar_batches + 1
     end
     vb = vb + 1
     if vb > 4096
@@ -1758,6 +1802,39 @@ if IS_BYTELM
     # should be constant across rungs. If it is not, the draw or the
     # scale rule is wrong and every conditioning number above is suspect.
     puts "bcond_control: " + recipe.gr_cache.b_stable_rank_report
+  end
+  if ACTRANK == 1
+    # toy#183 / N3. The SAME statistics as bcond above, over the BODY's
+    # activations instead of the error covariance. Reusing bc_gram! /
+    # bc_trace / bc_fro2 / bc_lambda_max rather than writing a second
+    # implementation: they take the vector dimension as a parameter, so
+    # passing D_MODEL is the whole change — and the two lines stay
+    # comparable precisely because they are computed the same way.
+    ar_g   = Array.new(ar_n * ar_n, 0.0)
+    bc_gram!(ar_g, ar_buf, ar_n, D_MODEL)
+    ar_tr  = bc_trace(ar_buf, ar_n, D_MODEL)
+    ar_tr2 = bc_fro2(ar_g, ar_n)
+    ar_lm  = bc_lambda_max(ar_g, ar_n, 64)
+    ar_pr  = ar_tr2 > 0.0 ? (ar_tr * ar_tr / ar_tr2) : 0.0
+    ar_sr  = ar_lm  > 0.0 ? (ar_tr / ar_lm) : 0.0
+    # Same ceiling caveat as E1, and it bites HARDER here. rank <= min(n,
+    # d_model), and d_model is usually far below the vocabulary, so a
+    # participation ratio near d_model is capped by the WIDTH, not by the
+    # sample count. That matters for the direction of the N3 hypothesis:
+    # the claim is about rank COLLAPSE, and a ceiling reads as HIGH rank —
+    # i.e. it would look like the hypothesis failing. Both bounds are
+    # reported so neither can be mistaken for a measurement.
+    ar_ceil = ar_n < D_MODEL ? ar_n : D_MODEL
+    ar_cap  = (ar_pr > 0.9 * ar_ceil.to_f || ar_sr > 0.9 * ar_ceil.to_f) ?
+              "CEILING-CAPPED" : "ok"
+    puts "actrank: n=" + ar_n.to_s + " d=" + D_MODEL.to_s +
+         " batches=" + ar_batches.to_s +
+         " trace=" + ar_tr.to_s +
+         " lambda_max=" + ar_lm.to_s +
+         " participation_ratio=" + ar_pr.to_s +
+         " stable_rank=" + ar_sr.to_s +
+         " ceiling=" + ar_ceil.to_s +
+         " capped=" + ar_cap
   end
   puts "graph: nodes=" + recipe.gr_cache.gx_graph_nodes.to_s +
        " bytes=" + recipe.gr_cache.gx_graph_bytes.to_s

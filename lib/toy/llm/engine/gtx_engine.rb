@@ -104,7 +104,7 @@ class GtxEngine
                 :ft_weights, :ft_m, :ft_v, :ft_din, :ft_dout, :ft_names,
                 :ft_layer,
                 :t_x, :t_mask, :t_idx_a, :t_idx_b, :t_inc,
-                :t_labels, :t_hp, :t_logits, :t_loss,
+                :t_labels, :t_hp, :t_logits, :t_loss, :t_body_out,
                 :gx_b_handles, :gx_b_seeds, :gx_b_douts,
                 :gx_b_dist, :gx_b_scale, :gx_b_sigma,
                 :gx_dfa_wired, :gx_frozen_count, :gx_taps,
@@ -146,6 +146,7 @@ class GtxEngine
     @t_labels = TinyNN.tnn_null_ptr
     @t_hp     = TinyNN.tnn_null_ptr
     @t_logits = TinyNN.tnn_null_ptr
+    @t_body_out = TinyNN.tnn_null_ptr
     @t_loss   = TinyNN.tnn_null_ptr
     @gx_b_handles = [TinyNN.tnn_null_ptr]; @gx_b_handles.pop
     @gx_b_seeds   = [0]; @gx_b_seeds.pop
@@ -495,6 +496,12 @@ class GtxEngine
       # gather, so the head is [n_classes, d_model] and the error is
       # already per position — the incidence routing below becomes the
       # identity.
+      # toy#183: the BODY's hidden state, exposed for the representation-rank
+      # instrument. This is the tensor the head consumes, taken AFTER the
+      # detach — detach changes graph edges, not values, so these are the
+      # body's activations either way, and taking them here means the
+      # instrument measures exactly what the head is given.
+      @t_body_out = t_h
       @t_logits = TinyNN.tnn_matmul(@sess, @ft_weights[@ix_lmhead], t_h)
       TinyNN.tnn_set_output(@t_logits)
       # Must match the lm_head's output dim: cross_entropy_loss asserts

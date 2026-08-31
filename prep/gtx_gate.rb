@@ -716,6 +716,49 @@ else
     "  ok: BYTE-LM (toy#170) — 4 arms score, the readout is per-position causal at vocab 256, the DFA arm TAPS THE EMBEDDING (chain does not), the two cuts are distinct wirings, no arm's knob is inert (curve differs from frozen's) and BP beats the frozen body so the task is not head-solvable, deterministic, 3 degenerate configs fail loud" :
     "  FAIL: bytelm"
 
+  # ── LEG 12d: THE ACTIVATION-RANK INSTRUMENT (toy#183 / N3) ──
+  #
+  # E1's statistics over the BODY's hidden activations instead of the error
+  # covariance. N3 asks why FAITHFUL feedback hurts; the pre-registered
+  # hypothesis is that it collapses representational diversity.
+  #
+  # ASSERTED: the instrument is byte-null when off, live when on, and — the
+  # load-bearing one — DOES NOT MOVE THE bpb IT SITS BESIDE. An instrument
+  # that perturbs its own cell cannot be left on, and every arm it is meant
+  # to compare would then be measured on a different run than the one that
+  # produced the number.
+  #
+  # NOT ASSERTED: any direction of rank across arms. That is the hypothesis
+  # under test, and the arm it names (oracle) is not on main at all.
+  n0 = failures.length
+  ar_off = bl_run("GTX_POLICY" => "chain,chain", "GTX_DFA_CUT" => "layer")
+  ar_on  = bl_run("GTX_POLICY" => "chain,chain", "GTX_DFA_CUT" => "layer",
+                  "GTX_ACTRANK" => "1", "GTX_ACTRANK_N" => "256")
+  failures << "actrank: the instrument emitted a line while OFF — it must be byte-null unless GTX_ACTRANK=1" if ar_off.include?("actrank:")
+  al = ar_on.lines.find { |x| x.start_with?("actrank: ") }
+  if al.nil?
+    failures << "actrank: GTX_ACTRANK=1 emitted no `actrank:` line"
+  else
+    a = Hash[al.scan(/(\w+)=([0-9.A-Za-z-]+)/)]
+    failures << "actrank: n=#{a['n']} — no activation samples were collected" if a["n"].to_i.zero?
+    %w[trace lambda_max participation_ratio stable_rank].each do |k|
+      failures << "actrank: #{k}=#{a[k]} — a zero statistic means the Gram matrix is empty, so the walk read nothing" if a[k].to_f <= 0.0
+    end
+    # rank <= min(n, d_model). At this cell the ceiling is d_model=64 and the
+    # measured values are ~1-3, so `ok` is the expected reading; CEILING-CAPPED
+    # here would mean the statistic is reporting the model's WIDTH rather than
+    # its representation, and — because the hypothesis is about COLLAPSE — a
+    # ceiling reads as high rank, i.e. it looks like the hypothesis failing.
+    failures << "actrank: capped=#{a['capped']} at d_model=64 with n=256 — the statistic is bounded by the ceiling rather than measured, and a ceiling reads as HIGH rank, the direction that would look like N3's hypothesis being refuted" unless a["capped"] == "ok"
+  end
+  # THE ONE THAT MATTERS: the measurement must not perturb the measured cell.
+  off_bpb = ar_off[/bpb=([0-9.eE+-]+)/, 1]
+  on_bpb  = ar_on[/bpb=([0-9.eE+-]+)/, 1]
+  failures << "actrank: turning the instrument on MOVED the bpb (#{off_bpb} -> #{on_bpb}). The instrument must be byte-null on the number it sits beside, or no arm it compares is measured on the run that produced its score" unless off_bpb == on_bpb
+  puts failures.length == n0 ?
+    "  ok: ACTIVATION RANK (toy#183) — byte-null when off, live and uncapped when on, and the bpb is BIT-IDENTICAL with the instrument on, so it can be left enabled without invalidating the cell it measures" :
+    "  FAIL: activation rank"
+
   # ── LEG 12c: THE N-COST INSTRUMENT (toy#182) ──
   #
   # `graph: bytes` is the whole session graph in one number, so an arm that
