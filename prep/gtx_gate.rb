@@ -759,6 +759,69 @@ else
     "  ok: ACTIVATION RANK (toy#183) — byte-null when off, live and uncapped when on, and the bpb is BIT-IDENTICAL with the instrument on, so it can be left enabled without invalidating the cell it measures" :
     "  FAIL: activation rank"
 
+  # ── LEG 12e: THE ORACLE-B PATH (toy#176 / D1 + D1b) ──
+  #
+  # GTX_DFA_ADAPT=oracle builds a pooling P from a map pack; GTX_LDFA_CSUP
+  # fills the rank above n_base with an orthonormal complement. ~200 lines of
+  # engine and runner carrying the programme's most striking result — perfect
+  # routing performing exactly like never training the body — and until this
+  # leg NOTHING asserted any of it.
+  #
+  # WHAT THIS LEG CANNOT DO, stated so nobody reads it as more than it is:
+  # it does not reproduce D1's cells. Those need the pooling MAP PACK, which
+  # is not committed — `data/` has token packs, and the engine correctly
+  # refuses one ("map covers N codes but the head has only C classes"). So
+  # the oracle's BEHAVIOUR is ungated here; only its contract is.
+  # Committing a small map fixture is what would close that, and it is the
+  # one thing this path still needs.
+  n0 = failures.length
+  # 1. INERT unless asked for. This is the whole basis on which the path is
+  #    safe to carry on main, so it is asserted first and on a real curve.
+  orc_off = bl_run("GTX_POLICY" => "dfa,dfa", "GTX_DFA_CUT" => "layer")
+  failures << "oracle: a default run mentions the oracle path — it must be byte-null unless GTX_DFA_ADAPT=oracle" if orc_off.include?("oracle P map")
+  # 2. Every guard refuses FOR ITS OWN STATED REASON, not merely non-zero.
+  #    Six of them, and the last two are the interesting ones: they refuse
+  #    configurations that would otherwise RUN TO COMPLETION and print a
+  #    plausible number for an oracle that never adapted or never matched
+  #    the head.
+  [[{ "GTX_LDFA_CSUP" => "active" },
+    "GTX_LDFA_CSUP is meaningless without"],
+   [{ "GTX_DFA_ADAPT" => "oracle" },
+    "needs GTX_LDFA_MAP"],
+   [{ "GTX_DFA_ADAPT" => "oracle", "GTX_LDFA_MAP" => "data/ae_shak_a65",
+      "GTX_DFA_RANK" => "65", "GTX_LDFA_CSUP" => "bogus" },
+    "GTX_LDFA_CSUP bogus unsupported"],
+   [{ "GTX_DFA_ADAPT" => "oracle", "GTX_LDFA_MAP" => "data/ae_shak_a65",
+      "GTX_DFA_RANK" => "full" },
+    "meaningless at GTX_DFA_RANK=full"],
+   [{ "GTX_DFA_ADAPT" => "oracle", "GTX_LDFA_MAP" => "data/ae_shak_a65",
+      "GTX_DFA_RANK" => "65", "GTX_LDFA_EVERY" => "500", "STEPS" => "20" },
+    "is never reached in STEPS"]].each do |env, want|
+    o, st = Open3.capture2e(BL.merge("STEPS" => "20", "GTX_POLICY" => "dfa,dfa").merge(env),
+                            RUNNER, chdir: ROOT)
+    if st.success? && !o.include?(want)
+      failures << "oracle: #{env.inspect} was ACCEPTED — it must be refused (#{want.inspect})"
+    elsif !o.include?(want)
+      failures << "oracle: #{env.inspect} was refused for the WRONG REASON — expected #{want.inspect}, got: #{o.lines.grep(/toy-train-gtx:|gtx_engine:/).first.to_s.strip[0, 110]}"
+    end
+  end
+  # 3. A mismatched map is refused NAMING BOTH SIDES, so a wrong pack cannot
+  #    be diagnosed by guesswork. This is also what stops a token pack being
+  #    silently accepted as a pooling map.
+  # GTX_LDFA_EVERY must be reachable within STEPS or the "never adapted"
+  # guard fires FIRST and preempts the map check — which is what happened
+  # when this probe was written, and the leg caught it.
+  mo, _ = Open3.capture2e(BL.merge("STEPS" => "40", "GTX_POLICY" => "dfa,dfa",
+                                   "GTX_DFA_RANK" => "65", "GTX_DFA_ADAPT" => "oracle",
+                                   "GTX_LDFA_EVERY" => "10",
+                                   "GTX_LDFA_MAP" => "data/ae_shak_a65"),
+                          RUNNER, chdir: ROOT)
+  failures << "oracle: a map/head class mismatch is not refused naming both sides — a token pack would be accepted as a pooling map" unless
+    mo =~ /map covers \d+ codes but the head has only \d+ classes/
+  puts failures.length == n0 ?
+    "  ok: ORACLE-B PATH (toy#176) — inert unless GTX_DFA_ADAPT=oracle, six degenerate configs refused each for its OWN stated reason, and a map/head mismatch named on both sides. NOTE: the oracle's behaviour is NOT gated — that needs a committed map pack" :
+    "  FAIL: oracle-B path"
+
   # ── LEG 12c: THE N-COST INSTRUMENT (toy#182) ──
   #
   # `graph: bytes` is the whole session graph in one number, so an arm that
