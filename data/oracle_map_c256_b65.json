@@ -1,0 +1,12 @@
+{
+  "kind": "oracle-pooling-map",
+  "n_codes": 256,
+  "n_base": 65,
+  "strategy": "modulo",
+  "codes_per_base": {
+    "min": 3,
+    "max": 4
+  },
+  "note": "FIXTURE for gating GTX_DFA_ADAPT=oracle (toy#176/#183). The pooling is arbitrary by design: a gate wants predictable structure, not a hypothesis about which codes belong together.",
+  "requires": "GTX_DFA_RANK >= 65; head classes >= 256"
+}

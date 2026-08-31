@@ -818,6 +818,50 @@ else
                           RUNNER, chdir: ROOT)
   failures << "oracle: a map/head class mismatch is not refused naming both sides — a token pack would be accepted as a pooling map" unless
     mo =~ /map covers \d+ codes but the head has only \d+ classes/
+  # BEHAVIOUR, now that a map fixture exists (toy#183a). Leg 12e previously
+  # gated the oracle's CONTRACT only — every guard refusing for its own
+  # reason — because no pooling map was committed and `data/` held only
+  # token packs. data/oracle_map_c256_b65 closes that.
+  #
+  # THE FIXTURE IS ARBITRARY ON PURPOSE. `modulo` pooling routes ~0.24 of
+  # the error energy, not D1's 0.99999: it is a mechanics fixture, and a
+  # gate wants structure that is trivially predictable rather than a pooling
+  # that smuggles in a hypothesis about which codes belong together. So this
+  # asserts that the oracle path WORKS — P is built, orthonormal, and moves
+  # the arm — and asserts NOTHING about faithful routing, which needs an
+  # inflation-fixture map and belongs to the research side.
+  om = "data/oracle_map_c256_b65"
+  if !File.file?(om + ".meta.i32")
+    puts "  skip: ORACLE BEHAVIOUR — #{om} absent (run prep/build_oracle_map.rb)"
+  else
+    orc = bl_run("GTX_POLICY" => "dfa,dfa", "GTX_DFA_CUT" => "layer",
+                 "GTX_DFA_RANK" => "65", "GTX_DFA_ADAPT" => "oracle",
+                 "GTX_LDFA_EVERY" => "10", "GTX_LDFA_MAP" => om)
+    ob = orc[/bpb=([0-9.eE+-]+)/, 1]
+    pe = orc[/p_energy=([0-9.eE+-]+)/, 1]
+    if ob.nil?
+      failures << "oracle: the oracle arm emitted no bpb — the path builds P but does not train"
+    end
+    if pe.nil?
+      failures << "oracle: no p_energy reported — the routed-energy fraction is how a pooling P is read, and without it an oracle arm cannot be interpreted"
+    elsif pe.to_f <= 0.0 || pe.to_f > 1.0
+      failures << "oracle: p_energy=#{pe} is outside (0,1] — it is a fraction of error energy, so a value outside that range means the projection is not what the arm thinks it is"
+    end
+    # The arm must MOVE off the random-B arm at the same rank. If it does
+    # not, P is being built and then ignored — which would look like a
+    # legitimate null result rather than a wiring failure.
+    # GTX_LDFA_EVERY must match the oracle probe's: at GTX_DFA_RANK the
+    # "never adapted" guard fires on the DEFAULT 500 within STEPS=40, and
+    # run_gtx aborts the whole gate on a non-zero exit. The comparison is
+    # only meaningful if both arms run the same schedule anyway.
+    rnd = bl_run("GTX_POLICY" => "dfa,dfa", "GTX_DFA_CUT" => "layer",
+                 "GTX_DFA_RANK" => "65", "GTX_LDFA_EVERY" => "10")
+    rb = rnd[/bpb=([0-9.eE+-]+)/, 1]
+    if ob && rb && ob == rb
+      failures << "oracle: the oracle arm is BIT-IDENTICAL to random B at the same rank (#{ob}) — P is built from the map and then not used, so an oracle result here would be a random-B result wearing its name"
+    end
+  end
+
   puts failures.length == n0 ?
     "  ok: ORACLE-B PATH (toy#176) — inert unless GTX_DFA_ADAPT=oracle, six degenerate configs refused each for its OWN stated reason, and a map/head mismatch named on both sides. NOTE: the oracle's behaviour is NOT gated — that needs a committed map pack" :
     "  FAIL: oracle-B path"
