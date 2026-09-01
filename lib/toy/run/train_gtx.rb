@@ -1609,7 +1609,27 @@ while step < TOTAL_STEPS
   # contrast a clean B-test rather than nDFA's by-construction one.
   if LDFA_RANK > 0
     ld_pos = step % LDFA_EVERY
-    if ld_pos >= LDFA_EVERY - LDFA_NEED
+    # toy#185: the decorrelation arms are driven HERE, on the cadence, and
+    # NOT from refresh_b_lowrank! — that refresh only recurs under Oja
+    # (adapt_p! calls it when apply==1 && eta>0), so a flip applied there
+    # fires exactly once at init and the cadence axis measures nothing while
+    # every arm still prints a plausible bpb. The gate caught that as
+    # cadence 1 and cadence 10 coming back bit-identical.
+    if (LDFA_FLIP == 1 || LDFA_RESAMPLE == 1) && ld_pos == LDFA_EVERY - 1
+      recipe.gr_cache.decorrelate_p!
+      # Counted as a refresh, because it IS one: P changed and B_eff was
+      # rebuilt. The end-of-run check exists so that an arm whose P never
+      # moved cannot be filed as one that worked — "an inert knob that
+      # reports itself on is the most expensive failure mode this program
+      # has" — and a decorrelation arm that skipped adapt_p! would trip it
+      # while having decorrelated correctly on every cadence boundary.
+      ld_refreshes = ld_refreshes + 1
+    end
+    # The Oja COLLECTION is skipped for those modes: they sample no error
+    # vectors, so the logits download is pure cost — and at a short cadence
+    # LDFA_NEED can exceed LDFA_EVERY, making the window fire every step.
+    if LDFA_FLIP == 0 && LDFA_RESAMPLE == 0 &&
+       ld_pos >= LDFA_EVERY - LDFA_NEED
       rc_ld = TinyNN.tnn_download_to_f64_array(recipe.gr_cache.sess,
                 recipe.gr_cache.t_logits, logit_buf, N_NODES * N_CLASSES)
       if rc_ld != 0
@@ -1620,7 +1640,12 @@ while step < TOTAL_STEPS
       ld_n = bc_fill_err!(ld_buf, ld_n, logit_buf, m_labels, N_NODES,
                           N_CLASSES, LDFA_M)
     end
-    if ld_pos == LDFA_EVERY - 1
+    # toy#185: adapt_p! is Oja's update AND its measurement, and it refuses a
+    # refresh with nothing to factorise. The decorrelation modes collect no
+    # error vectors by design, so calling it here would abort the run at the
+    # first cadence boundary — which is what happened once the collection was
+    # correctly skipped.
+    if LDFA_FLIP == 0 && LDFA_RESAMPLE == 0 && ld_pos == LDFA_EVERY - 1
       ld_t0 = TinyNN.tnn_events_now_seconds
       ld_r = recipe.gr_cache.adapt_p!(ld_buf, ld_n, LDFA_ETA, LDFA_ADAPT)
       ld_wall_us = ld_wall_us +

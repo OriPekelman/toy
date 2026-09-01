@@ -866,6 +866,70 @@ else
     "  ok: ORACLE-B PATH (toy#176) — inert unless GTX_DFA_ADAPT=oracle, six degenerate configs refused each for its OWN stated reason, and a map/head mismatch named on both sides. NOTE: the oracle's behaviour is NOT gated — that needs a committed map pack" :
     "  FAIL: oracle-B path"
 
+  # ── LEG 12f: THE CONSISTENCY AXIS (toy#185 / N3b) ──
+  #
+  # N3 killed the representational-diversity explanation — oracle and random
+  # arms at identical stable rank while 0.208 bpb apart — leaving CONSISTENCY
+  # OVER TRAINING as the surviving candidate. SIGNFLIP re-signs a fixed P per
+  # row at each refresh; RESAMPLE redraws it. Both decorrelate WITHOUT
+  # touching routing structure.
+  #
+  # ASSERTED: the arms are WIRED and DISTINCT, and the guards refuse the
+  # combinations that would misreport themselves. NOT asserted: any direction
+  # of the 2x2 — that is the pre-registered experiment, and on this fixture
+  # the oracle is not even faithful (p_energy ~0.24 against D1's 0.99999).
+  #
+  # THE LOAD-BEARING ONE is that a decorrelated arm must not be bit-identical
+  # to its consistent counterpart. If the flip never reached the feedback,
+  # the arm would print the fixed-P number — which is exactly the
+  # pre-registered "neither moves" outcome, and would be read as a RESULT
+  # rather than as a wiring failure.
+  n0 = failures.length
+  om = "data/oracle_map_c256_b65"
+  sf = { "GTX_POLICY" => "dfa,dfa", "GTX_DFA_CUT" => "layer",
+         "GTX_DFA_RANK" => "65", "GTX_LDFA_EVERY" => "10" }
+  rnd_fixed = bl_run(sf)
+  rnd_resmp = bl_run(sf.merge("GTX_LDFA_RESAMPLE" => "1"))
+  rf = rnd_fixed[/bpb=([0-9.eE+-]+)/, 1]
+  rr = rnd_resmp[/bpb=([0-9.eE+-]+)/, 1]
+  failures << "consistency: GTX_LDFA_RESAMPLE leaves the arm BIT-IDENTICAL to fixed P (#{rf}) — P is not being redrawn, and an unwired control reads as the pre-registered 'neither moves' outcome rather than as a bug (toy#185)" if rf && rr && rf == rr
+  if File.file?(om + ".meta.i32")
+    orc_fixed = bl_run(sf.merge("GTX_DFA_ADAPT" => "oracle", "GTX_LDFA_MAP" => om))
+    orc_flip  = bl_run(sf.merge("GTX_DFA_ADAPT" => "oracle", "GTX_LDFA_MAP" => om,
+                                "GTX_LDFA_SIGNFLIP" => "1"))
+    of = orc_fixed[/bpb=([0-9.eE+-]+)/, 1]
+    ofl = orc_flip[/bpb=([0-9.eE+-]+)/, 1]
+    failures << "consistency: GTX_LDFA_SIGNFLIP leaves the oracle arm BIT-IDENTICAL to fixed P (#{of}) — the signs are not reaching the feedback (toy#185)" if of && ofl && of == ofl
+  end
+  # The cadence axis must be live: a shorter cadence decorrelates more, so
+  # cadence 1 and cadence 10 cannot agree. This is also the assertion that
+  # the LDFA_NEED floor stays lifted for a mode that samples nothing —
+  # cadence 1 is below the Oja collection window and must still run.
+  c1 = bl_run(sf.merge("GTX_LDFA_EVERY" => "1", "GTX_LDFA_SIGNFLIP" => "1"))
+  c10 = bl_run(sf.merge("GTX_LDFA_SIGNFLIP" => "1"))
+  a1 = c1[/bpb=([0-9.eE+-]+)/, 1]
+  a10 = c10[/bpb=([0-9.eE+-]+)/, 1]
+  if a1.nil?
+    failures << "consistency: GTX_LDFA_EVERY=1 with SIGNFLIP produced no bpb — the LDFA_NEED floor exists to gather Oja samples and must not bind on a mode that samples nothing, or the short end of the cadence sweep is unreachable"
+  elsif a1 == a10
+    failures << "consistency: cadence 1 and cadence 10 are BIT-IDENTICAL (#{a1}) — the refresh cadence is not driving the flip, so the sweep axis N3b is built on measures nothing"
+  end
+  # The two guards that stop an arm misreporting itself.
+  [[{ "GTX_LDFA_SIGNFLIP" => "1", "GTX_LDFA_RESAMPLE" => "1" },
+    "are the two ARMS"],
+   [{ "GTX_DFA_ADAPT" => "oracle", "GTX_LDFA_MAP" => om, "GTX_LDFA_RESAMPLE" => "1" },
+    "would DISCARD the pooling"]].each do |env, want|
+    o, st = Open3.capture2e(BL.merge(sf).merge("STEPS" => "20").merge(env), RUNNER, chdir: ROOT)
+    if st.success?
+      failures << "consistency: #{env.keys.join('+')} was accepted — it must be refused (#{want.inspect})"
+    elsif !o.include?(want)
+      failures << "consistency: #{env.keys.join('+')} refused for the WRONG REASON: #{o.lines.grep(/toy-train-gtx:/).first.to_s.strip[0, 110]}"
+    end
+  end
+  puts failures.length == n0 ?
+    "  ok: CONSISTENCY AXIS (toy#185) — SIGNFLIP and RESAMPLE both provably move their arms off fixed P (an unwired one would read as the pre-registered 'neither moves'), the cadence axis is live down to 1 with the Oja-only floor correctly lifted, and both self-misreporting combinations are refused" :
+    "  FAIL: consistency axis"
+
   # ── LEG 12c: THE N-COST INSTRUMENT (toy#182) ──
   #
   # `graph: bytes` is the whole session graph in one number, so an arm that

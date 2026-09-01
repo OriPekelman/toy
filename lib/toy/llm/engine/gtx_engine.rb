@@ -1244,11 +1244,6 @@ puts "ncost: fwd_nodes=" + @gx_fwd_nodes.to_s +
         @gx_p_base = @gx_p.dup
       end
     end
-    if @gx_p_flip == 1
-      flip_p_signs!(v, r)
-    elsif @gx_p_resample == 1
-      resample_p!(v, r)
-    end
     @gx_b_sr = ""
     eff2  = 0.0
     full2 = 0.0
@@ -1368,6 +1363,32 @@ puts "ncost: fwd_nodes=" + @gx_fwd_nodes.to_s +
   # Its seed is separate from every tap's, because P is SHARED across taps
   # — the compression is a property of the error stream, not of the tap,
   # which is the whole structure LDFA proposes.
+  # toy#185 / N3b: the CADENCE ENTRY POINT, driven from the runner's
+  # per-step loop.
+  #
+  # It is here and not inside refresh_b_lowrank! because that refresh does
+  # NOT recur on a cadence: it has two call sites, once at graph build and
+  # once inside adapt_p! under `apply == 1 && eta > 0.0` — i.e. only under
+  # Oja. The issue's premise that "GTX_LDFA_EVERY already controls that
+  # cadence" holds for Oja alone. Applied in the refresh, the flip fired
+  # exactly ONCE at init and the cadence axis measured nothing, while every
+  # arm still produced a plausible bpb. The gate caught it as cadence 1 and
+  # cadence 10 coming back bit-identical.
+  def decorrelate_p!
+    v = @gx_active_classes
+    r = @gx_b_rank
+    return 0 if @gx_p_ready == 0
+    if @gx_p_flip == 1
+      flip_p_signs!(v, r)
+    elsif @gx_p_resample == 1
+      resample_p!(v, r)
+    else
+      return 0
+    end
+    refresh_b_lowrank!
+    1
+  end
+
   # toy#185 / N3b: a fresh random sign per ROW, applied to the SAVED base.
   # Row i is scaled by s_i in {-1,+1}, so P's routing structure, its
   # magnitudes and its orthonormality are all untouched — a signed
