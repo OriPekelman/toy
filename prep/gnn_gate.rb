@@ -414,6 +414,35 @@ Dir.mktmpdir("gnn_gate_cli") do |dir|
 end
 puts failures.length == n0 ? "  ok: CLI reproduces the curve; lane-foreign flags and --device cuda are rejected" : "  FAIL: CLI"
 
+# ── DROPOUT (toy#178 / D3b) ──
+#
+# The regularisation knob the F17 lane lacked. It arrived with no gate at
+# all, which is the shape every review branch in this series has had: real
+# work, real measurements, nothing asserting them.
+#
+# TWO-SIDED, because each side alone passes with a broken knob:
+#   p=0 MUST be bit-identical to the default -> the knob is byte-null when
+#       unasked, so every F17/D3 number stated before it existed still holds
+#   p>0 MUST move the curve -> the knob is not silently inert. A dropout
+#       that never masks anything looks EXACTLY like a well-behaved default,
+#       and asserting only byte-nullity would certify it.
+n0 = failures.length
+base = run_gnn({ "STEPS" => "6", "SEED" => "0" }, nil)
+zero = run_gnn({ "STEPS" => "6", "SEED" => "0", "GNN_DROPOUT" => "0.0" }, nil)
+on   = run_gnn({ "STEPS" => "6", "SEED" => "0", "GNN_DROPOUT" => "0.3" }, nil)
+failures << "dropout: GNN_DROPOUT=0.0 is not bit-identical to the default — p=0 must create no mask tensor at all, or every number stated before this knob existed is in question" unless curve(zero) == curve(base)
+failures << "dropout: GNN_DROPOUT=0.3 leaves the curve BIT-IDENTICAL to p=0 — the knob is inert, which is indistinguishable from a well-behaved default on every other signal" if curve(on) == curve(base)
+# The range guard, asserted on its own reason rather than a non-zero exit.
+o, st = Open3.capture2e({ "STEPS" => "2", "GNN_DROPOUT" => "1.0" }, RUNNER, chdir: ROOT)
+if st.success?
+  failures << "dropout: GNN_DROPOUT=1.0 was accepted — p=1 masks everything, so it must be refused"
+elsif !o.include?("out of range [0,1)")
+  failures << "dropout: GNN_DROPOUT=1.0 was refused for the WRONG REASON: #{o.lines.grep(/toy-train-gnn:/).first.to_s.strip[0, 110]}"
+end
+puts failures.length == n0 ?
+  "  ok: DROPOUT (toy#178) — p=0 is BIT-IDENTICAL to the default so the knob is byte-null when unasked, p>0 provably moves the curve so it is not inert, and p=1 is refused for its own stated reason" :
+  "  FAIL: dropout"
+
 if failures.empty?
   puts "GATE PASS [gnn]: message passing + per-layer policy — byte fixture + chain byte-null, determinism, wiring, align/wname bundle, the structure route pinned by the edgeless identity, the MANDATORY success bar on Cora, and the seeded graph's own measured limit (toy#153)"
   exit 0
