@@ -115,6 +115,7 @@ class GtxEngine
                 :gx_adapter_site,
                 :gx_backbone_first, :gx_backbone_count, :gx_active_classes,
                 :gx_b_rank, :gx_b_adapt, :gx_b_pseed, :gx_p_map, :gx_p_csup,
+                :gx_p_flip, :gx_p_resample,
                 :gx_ld_fro_eff, :gx_ld_fro_full, :gx_ld_rank_eff, :gx_ld_dout,
                 :gx_fwd_nodes, :gx_fwd_bytes, :gx_bwd_nodes, :gx_bwd_bytes,
                 :gx_b_bytes, :gx_act_retained
@@ -201,6 +202,18 @@ class GtxEngine
     @gx_p_csup   = ""
     @gx_p        = [0.0]; @gx_p.pop
     @gx_p_ready  = 0
+    # toy#185 / N3b. N3 refuted the representational-diversity explanation
+    # (oracle and random arms at identical stable rank, t=0.00, while 0.208
+    # bpb apart), leaving CONSISTENCY OVER TRAINING as the surviving
+    # candidate. Both of these decorrelate a fixed P over time WITHOUT
+    # touching its routing:
+    #   flip     — fresh random sign per row at each refresh (oracle side)
+    #   resample — a fresh i.i.d. P at each refresh (random-side control)
+    # Together they make the 2x2 the issue pre-registers.
+    @gx_p_flip     = 0
+    @gx_p_resample = 0
+    @gx_p_base     = [0.0]; @gx_p_base.pop
+    @gx_p_epoch    = 0
     @gx_ld_tgt2  = [0.0]; @gx_ld_tgt2.pop
     @gx_ld_fro_eff  = 0.0
     @gx_ld_fro_full = 0.0
@@ -1221,6 +1234,20 @@ puts "ncost: fwd_nodes=" + @gx_fwd_nodes.to_s +
     if @gx_p_ready == 0
       init_p!(v, r)
       @gx_p_ready = 1
+      if @gx_p_flip == 1
+        # The UNSIGNED rows are kept, because each flip must be applied to
+        # the BASE. Flipping @gx_p in place would compound signs across
+        # refreshes — after two flips a row is as likely to be back where it
+        # started as not, which is a random walk over sign patterns rather
+        # than a fresh draw. It would decorrelate at half the intended rate
+        # while looking entirely correct.
+        @gx_p_base = @gx_p.dup
+      end
+    end
+    if @gx_p_flip == 1
+      flip_p_signs!(v, r)
+    elsif @gx_p_resample == 1
+      resample_p!(v, r)
     end
     @gx_b_sr = ""
     eff2  = 0.0
@@ -1341,6 +1368,43 @@ puts "ncost: fwd_nodes=" + @gx_fwd_nodes.to_s +
   # Its seed is separate from every tap's, because P is SHARED across taps
   # — the compression is a property of the error stream, not of the tap,
   # which is the whole structure LDFA proposes.
+  # toy#185 / N3b: a fresh random sign per ROW, applied to the SAVED base.
+  # Row i is scaled by s_i in {-1,+1}, so P's routing structure, its
+  # magnitudes and its orthonormality are all untouched — a signed
+  # orthonormal row set is still orthonormal. What breaks is the correlation
+  # of the feedback direction WITH ITSELF over training, which is exactly the
+  # variable N3b isolates after N3 eliminated representational diversity.
+  def flip_p_signs!(v, r)
+    @gx_p_epoch = @gx_p_epoch + 1
+    sg = Toy::Train::DfaB.fill(r, @gx_b_pseed + 7717 * @gx_p_epoch,
+                               @gx_b_dist, 1.0)
+    i = 0
+    while i < r
+      sgn = sg[i] < 0.0 ? -1.0 : 1.0
+      pb = i * v
+      c = 0
+      while c < v
+        @gx_p[pb + c] = @gx_p_base[pb + c] * sgn
+        c = c + 1
+      end
+      i = i + 1
+    end
+    nil
+  end
+
+  # toy#185 / N3b: a fresh i.i.d. P at each refresh — the random-side control
+  # that completes the 2x2. Refused alongside a map by the runner: resampling
+  # a POOLING P would discard the pooling, so the arm would silently stop
+  # being an oracle arm while still reporting itself as one.
+  def resample_p!(v, r)
+    @gx_p_epoch = @gx_p_epoch + 1
+    sigp = Toy::Train::DfaB.sigma_for(@gx_b_scale, v, r, @gx_b_sigma)
+    @gx_p = Toy::Train::DfaB.fill(r * v, @gx_b_pseed + 4441 * @gx_p_epoch,
+                                  @gx_b_dist, sigp)
+    ortho_p!(v, r)
+    nil
+  end
+
   def init_p!(v, r)
     if @gx_p_map.length > 0
       init_p_from_map!(v, r)

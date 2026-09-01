@@ -231,6 +231,10 @@ LDFA_EVERY   = (ENV["GTX_LDFA_EVERY"] || "500").to_i
 LDFA_M       = (ENV["GTX_LDFA_M"] || "128").to_i
 LDFA_MAP     = ENV["GTX_LDFA_MAP"] || ""
 LDFA_CSUP    = ENV["GTX_LDFA_CSUP"] || ""
+# toy#185 / N3b — the consistency axis. Both decorrelate a FIXED P over
+# training without touching its routing structure.
+LDFA_FLIP     = (ENV["GTX_LDFA_SIGNFLIP"] || "0").to_i
+LDFA_RESAMPLE = (ENV["GTX_LDFA_RESAMPLE"] || "0").to_i
 LDFA_RANK    = (LDFA_RANK_S.length == 0 || LDFA_RANK_S == "full") ?
                  0 : LDFA_RANK_S.to_i
 LDFA_ADAPT   = LDFA_ADAPT_S == "oja" ? 1 : 0
@@ -478,6 +482,26 @@ end
 # oracle map has fewer base symbols than the requested rank; the engine
 # refuses that case without it rather than picking a default, because
 # `active` and `dead` are different experiments, not different defaults.
+if LDFA_FLIP == 1 && LDFA_RESAMPLE == 1
+  puts "toy-train-gtx: GTX_LDFA_SIGNFLIP and GTX_LDFA_RESAMPLE are the two" +
+       " ARMS of the N3b 2x2, not a combination. Flipping the signs of a P" +
+       " that is resampled every refresh decorrelates nothing extra and" +
+       " would report itself as both arms at once (toy#185)."
+  exit 1
+end
+if (LDFA_FLIP == 1 || LDFA_RESAMPLE == 1) && LDFA_RANK < 1
+  puts "toy-train-gtx: GTX_LDFA_SIGNFLIP/GTX_LDFA_RESAMPLE act on the" +
+       " low-rank P, so they need GTX_DFA_RANK — without it there is no P" +
+       " to decorrelate and the flag would run and change nothing."
+  exit 1
+end
+if LDFA_RESAMPLE == 1 && LDFA_MAP.length > 0
+  puts "toy-train-gtx: GTX_LDFA_RESAMPLE draws a fresh i.i.d. P, which" +
+       " would DISCARD the pooling read from GTX_LDFA_MAP — the arm would" +
+       " stop being an oracle arm while still reporting itself as one. The" +
+       " oracle-side decorrelation is GTX_LDFA_SIGNFLIP (toy#185)."
+  exit 1
+end
 if LDFA_CSUP.length > 0 && LDFA_ADAPT_S != "oracle"
   puts "toy-train-gtx: GTX_LDFA_CSUP is meaningless without" +
        " GTX_DFA_ADAPT=oracle"
@@ -1057,7 +1081,13 @@ if LDFA_RANK > 0 && NDFA_DFA_BLOCKS == 0
   exit 1
 end
 LDFA_NEED = LDFA_RANK > 0 ? ((LDFA_M + N_NODES - 1) / N_NODES) : 0
-if LDFA_RANK > 0 && LDFA_EVERY < LDFA_NEED
+# toy#185: this floor exists so Oja has GTX_LDFA_M error vectors to fit
+# from. SIGNFLIP and RESAMPLE sample NOTHING — they re-sign or redraw a P
+# that is already present — so the collection window does not apply to them,
+# and letting it bind would forbid exactly the short cadences the N3b sweep
+# is about (GTX_LDFA_EVERY=1 is a genuine per-step flip).
+if LDFA_RANK > 0 && LDFA_EVERY < LDFA_NEED &&
+   LDFA_FLIP == 0 && LDFA_RESAMPLE == 0
   puts "toy-train-gtx: GTX_LDFA_EVERY " + LDFA_EVERY.to_s +
        " is shorter than the collection window it needs (" +
        LDFA_NEED.to_s + " steps to gather GTX_LDFA_M=" + LDFA_M.to_s +
@@ -1139,6 +1169,8 @@ if AD_SITE_S == "block"
   recipe.gr_cache.gx_adapter_policy = AD_POLICY
 end
 recipe.gr_cache.gx_p_map   = LDFA_MAP
+recipe.gr_cache.gx_p_flip     = LDFA_FLIP
+recipe.gr_cache.gx_p_resample = LDFA_RESAMPLE
 recipe.gr_cache.gx_p_csup  = LDFA_CSUP
 recipe.realize!(D_FEAT, D_MODEL, N_HEADS, D_FF, N_BLOCKS, N_NODES,
                 N_PAIRS, N_CLASSES, SEED, 1.0, POLICY, DFA_CUT, B_SEED,
