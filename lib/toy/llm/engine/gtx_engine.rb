@@ -116,6 +116,7 @@ class GtxEngine
                 :gx_backbone_first, :gx_backbone_count, :gx_active_classes,
                 :gx_b_rank, :gx_b_adapt, :gx_b_pseed, :gx_p_map, :gx_p_csup,
                 :gx_p_flip, :gx_p_resample,
+                :gx_stale_k, :t_e_stale,
                 :gx_ld_fro_eff, :gx_ld_fro_full, :gx_ld_rank_eff, :gx_ld_dout,
                 :gx_fwd_nodes, :gx_fwd_bytes, :gx_bwd_nodes, :gx_bwd_bytes,
                 :gx_b_bytes, :gx_act_retained
@@ -210,6 +211,10 @@ class GtxEngine
     #   flip     — fresh random sign per row at each refresh (oracle side)
     #   resample — a fresh i.i.d. P at each refresh (random-side control)
     # Together they make the 2x2 the issue pre-registers.
+    # toy#186: DFA feedback delay, in steps. 0 is the default and leaves
+    # the surrogate reading this step's error, adding no tensor at all.
+    @gx_stale_k    = 0
+    @t_e_stale     = TinyNN.tnn_null_ptr
     @gx_p_flip     = 0
     @gx_p_resample = 0
     @gx_p_base     = [0.0]; @gx_p_base.pop
@@ -764,6 +769,21 @@ puts "ncost: fwd_nodes=" + @gx_fwd_nodes.to_s +
       e_det = TinyNN.tnn_detach(@sess,
                 TinyNN.tnn_scale(@sess,
                   TinyNN.tnn_sub(@sess, t_p, @t_labels), 1.0 / @gx_nodes.to_f))
+      # toy#186 / evo phase-3 premise: the surrogate may consume the error
+      # from k steps ago instead of this step's. k=0 leaves e_det in place
+      # and adds NO tensor, so the default graph is byte-identical.
+      #
+      # It has to be an UPLOADED input rather than a delayed copy inside the
+      # graph: the graph is static and executes in one pass, so there is no
+      # way to have the surrogate read a buffer before that same pass writes
+      # it. The runner holds the ring and uploads the k-old error before each
+      # step.
+      if @gx_stale_k > 0
+        @t_e_stale = TinyNN.tnn_input_2d_f32(@sess, @gx_active_classes,
+                                             @gx_nodes)
+        TinyNN.tnn_set_output(@t_e_stale)
+        e_det = @t_e_stale
+      end
       t_sur = TinyNN.tnn_null_ptr
       started = false
       ti = 0
@@ -863,6 +883,13 @@ puts "ncost: fwd_nodes=" + @gx_fwd_nodes.to_s +
          # compute was untouched but the provenance line MOVED, and
          # gate-gtx-cuda byte-compares that line. A knob defaults to changing
          # nothing — a run without adapters prints what it always printed.
+         # toy#186: emitted ONLY when the delay is on, so every stored cell
+         # keeps its line. warmup= states what the first k steps ran on —
+         # step 0 has no history and consumes a ZERO error, steps 1..k-1
+         # hold the oldest available. Left unstated, a run that trained on
+         # zeros for its first k steps reads as a mild quality hit.
+         (@gx_stale_k > 0 ?
+           (" stale=" + @gx_stale_k.to_s + " warmup=zero_then_hold") : "") +
          (@gx_adapters > 0 ?
            (" adapters=" + @gx_adapters.to_s +
             " adapter_site=" + (@gx_adapter_site == SITE_BLOCK ? "block" : "pair") +

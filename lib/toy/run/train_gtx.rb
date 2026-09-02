@@ -235,6 +235,10 @@ LDFA_CSUP    = ENV["GTX_LDFA_CSUP"] || ""
 # training without touching its routing structure.
 LDFA_FLIP     = (ENV["GTX_LDFA_SIGNFLIP"] || "0").to_i
 LDFA_RESAMPLE = (ENV["GTX_LDFA_RESAMPLE"] || "0").to_i
+# toy#186 / evo phase-3 premise: the DFA surrogate consumes the error from
+# k steps ago. Everything else is unchanged — same forward, same B, same
+# update, same taps. k=0 is byte-null and adds no tensor to the graph.
+STALE_K = (ENV["GTX_DFA_STALE"] || "0").to_i
 LDFA_RANK    = (LDFA_RANK_S.length == 0 || LDFA_RANK_S == "full") ?
                  0 : LDFA_RANK_S.to_i
 LDFA_ADAPT   = LDFA_ADAPT_S == "oja" ? 1 : 0
@@ -482,6 +486,29 @@ end
 # oracle map has fewer base symbols than the requested rank; the engine
 # refuses that case without it rather than picking a default, because
 # `active` and `dead` are different experiments, not different defaults.
+if STALE_K < 0
+  puts "toy-train-gtx: GTX_DFA_STALE must be >= 0, got " + STALE_K.to_s
+  exit 1
+end
+if STALE_K > 0 && !IS_BYTELM
+  puts "toy-train-gtx: GTX_DFA_STALE is wired on the bytelm tail only —" +
+       " it is the evo phase-3 premise, and that leg is the byte-LM one."
+  exit 1
+end
+if STALE_K > 0 && POLICY.index("dfa").nil?
+  puts "toy-train-gtx: GTX_DFA_STALE delays the DFA SURROGATE's error, so" +
+       " it needs a dfa block in GTX_POLICY. Without one there is no" +
+       " surrogate and the flag would run, report itself on, and change" +
+       " nothing."
+  exit 1
+end
+if STALE_K > 0 && STALE_K >= STEPS
+  puts "toy-train-gtx: GTX_DFA_STALE " + STALE_K.to_s + " >= STEPS " +
+       STEPS.to_s + " — every step would run on the warmup error and the" +
+       " delay would never take effect, which looks like a mild quality" +
+       " hit rather than an unrun experiment."
+  exit 1
+end
 if LDFA_FLIP == 1 && LDFA_RESAMPLE == 1
   puts "toy-train-gtx: GTX_LDFA_SIGNFLIP and GTX_LDFA_RESAMPLE are the two" +
        " ARMS of the N3b 2x2, not a combination. Flipping the signs of a P" +
@@ -1169,6 +1196,7 @@ if AD_SITE_S == "block"
   recipe.gr_cache.gx_adapter_policy = AD_POLICY
 end
 recipe.gr_cache.gx_p_map   = LDFA_MAP
+recipe.gr_cache.gx_stale_k    = STALE_K
 recipe.gr_cache.gx_p_flip     = LDFA_FLIP
 recipe.gr_cache.gx_p_resample = LDFA_RESAMPLE
 recipe.gr_cache.gx_p_csup  = LDFA_CSUP
@@ -1431,6 +1459,19 @@ nd_m_used     = 0
 ld_buf = Array.new(LDFA_RANK > 0 ? LDFA_M * N_CLASSES : 0, 0.0)
 ld_n   = 0
 ld_refreshes  = 0
+# toy#186: the staleness ring. k slots of [classes x N] error, consumed
+# oldest-first. Zero-filled, so step 0 — which has no history — runs on a
+# zero error, and that is reported rather than left to be noticed.
+stale_ring = []
+if STALE_K > 0
+  i_sr = 0
+  while i_sr < STALE_K
+    stale_ring.push(Array.new(N_CLASSES * N_NODES, 0.0))
+    i_sr = i_sr + 1
+  end
+end
+stale_pos = 0
+stale_warm = 0
 ld_wall_us    = 0
 ld_first_step = 0
 ld_m_used     = 0
@@ -1504,11 +1545,77 @@ while step < TOTAL_STEPS
     b = b + 1
   end
 
+  # toy#186: feed the surrogate the error from k steps ago. The upload must
+  # happen BEFORE the step — the graph reads @t_e_stale during the forward,
+  # so writing it afterwards would deliver the error one step later than
+  # intended and quietly make every cell k+1 stale.
+  #
+  # WARMUP, stated rather than inferred (toy#186 asked for exactly this):
+  # the first k steps have no k-old error to consume. Step 0 has NO history
+  # at all and runs on a ZERO error — one step with no learning signal —
+  # and steps 1..k-1 HOLD the oldest error available. Both facts are on the
+  # provenance line, because a run that silently trained on zeros for its
+  # first k steps would read as a mild quality hit rather than a bug.
+  if STALE_K > 0
+    src = stale_ring[stale_pos]
+    rc_up = TinyNN.tnn_upload_from_float_array(recipe.gr_cache.sess,
+              recipe.gr_cache.t_e_stale, src, N_CLASSES * N_NODES)
+    if rc_up != 0
+      puts "toy-train-gtx: stale-error upload failed at step " +
+           (step + 1).to_s + " rc=" + rc_up.to_s
+      exit 1
+    end
+  end
   is_first = step == 0 || (RETROFIT && step == PRE_STEPS_EFF)
   loss = IS_BYTELM ?
            recipe.step_bytelm!(bl_tokens, m_labels, m_hp, is_first) :
            recipe.step!(idx_a, idx_b, inc_flat, m_cur, m_hp, is_first)
   final_loss = loss
+  # toy#186: this step's error goes into the slot just consumed, so the ring
+  # advances by exactly one step per step. e = (softmax(logits) - labels)/N,
+  # recomputed here rather than read from the graph: the engine's e_det is
+  # an interior node with no handle, and the logits download is the same one
+  # the events path already makes.
+  if STALE_K > 0
+    rc_st = TinyNN.tnn_download_to_f64_array(recipe.gr_cache.sess,
+              recipe.gr_cache.t_logits, logit_buf, N_NODES * N_CLASSES)
+    if rc_st != 0
+      puts "toy-train-gtx: stale-error logits download failed at step " +
+           (step + 1).to_s + " rc=" + rc_st.to_s
+      exit 1
+    end
+    dst = stale_ring[stale_pos]
+    inv_n = 1.0 / N_NODES.to_f
+    p_i = 0
+    while p_i < N_NODES
+      base = p_i * N_CLASSES
+      mx = logit_buf[base]
+      c_i = 1
+      while c_i < N_CLASSES
+        if logit_buf[base + c_i] > mx
+          mx = logit_buf[base + c_i]
+        end
+        c_i = c_i + 1
+      end
+      sm = 0.0
+      c_i = 0
+      while c_i < N_CLASSES
+        sm = sm + Math.exp(logit_buf[base + c_i] - mx)
+        c_i = c_i + 1
+      end
+      c_i = 0
+      while c_i < N_CLASSES
+        pv = Math.exp(logit_buf[base + c_i] - mx) / sm
+        dst[base + c_i] = (pv - m_labels.flat[base + c_i]) * inv_n
+        c_i = c_i + 1
+      end
+      p_i = p_i + 1
+    end
+    stale_pos = (stale_pos + 1) % STALE_K
+    if stale_warm < STALE_K
+      stale_warm = stale_warm + 1
+    end
+  end
   puts "step " + (step + 1).to_s + ": loss=" + loss.to_s
 
   if EVENTS.length > 0
