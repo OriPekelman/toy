@@ -779,8 +779,15 @@ puts "ncost: fwd_nodes=" + @gx_fwd_nodes.to_s +
       # it. The runner holds the ring and uploads the k-old error before each
       # step.
       if @gx_stale_k > 0
-        @t_e_stale = TinyNN.tnn_input_2d_f32(@sess, @gx_active_classes,
-                                             @gx_nodes)
+        # Argument order mirrors t_b below, which is built as
+        # (dout, active_classes) and yields ne = [classes, dout] — so
+        # tnn_input_2d_f32(a, b) gives ne = [b, a]. e_det must be
+        # [classes, N] for matmul(t_b, e_det), hence (nodes, classes).
+        # Reversed, this passes every Ruby-level check and dies in
+        # ggml_can_mul_mat at graph build — loudly, which is why it cost
+        # one build rather than a wrong number.
+        @t_e_stale = TinyNN.tnn_input_2d_f32(@sess, @gx_nodes,
+                                             @gx_active_classes)
         TinyNN.tnn_set_output(@t_e_stale)
         e_det = @t_e_stale
       end

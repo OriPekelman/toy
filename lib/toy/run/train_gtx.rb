@@ -490,18 +490,6 @@ if STALE_K < 0
   puts "toy-train-gtx: GTX_DFA_STALE must be >= 0, got " + STALE_K.to_s
   exit 1
 end
-if STALE_K > 0 && !IS_BYTELM
-  puts "toy-train-gtx: GTX_DFA_STALE is wired on the bytelm tail only —" +
-       " it is the evo phase-3 premise, and that leg is the byte-LM one."
-  exit 1
-end
-if STALE_K > 0 && POLICY.index("dfa").nil?
-  puts "toy-train-gtx: GTX_DFA_STALE delays the DFA SURROGATE's error, so" +
-       " it needs a dfa block in GTX_POLICY. Without one there is no" +
-       " surrogate and the flag would run, report itself on, and change" +
-       " nothing."
-  exit 1
-end
 if STALE_K > 0 && STALE_K >= STEPS
   puts "toy-train-gtx: GTX_DFA_STALE " + STALE_K.to_s + " >= STEPS " +
        STEPS.to_s + " — every step would run on the warmup error and the" +
@@ -1050,6 +1038,24 @@ POLICY = parse_gtx_policy(POLICY_S, N_BLOCKS)
 task = GtxTask.new(TASK_KIND, D_FEAT, N_ENTITIES, N_TYPES, DEGREE,
                    TASK_SEED, NOISE)
 N_NODES = IS_BYTELM ? CONTEXT : task.gt_nodes
+
+  # toy#186: these two must come AFTER IS_BYTELM and POLICY exist. Placed
+# earlier they read undefined constants, which Spinel evaluates as falsy
+# rather than raising — the bytelm guard then refused a valid bytelm run.
+# It failed LOUD, which is the safe direction, but a guard whose
+# condition is always-true is one edit away from being always-false.
+if STALE_K > 0 && !IS_BYTELM
+    puts "toy-train-gtx: GTX_DFA_STALE is wired on the bytelm tail only —" +
+       " it is the evo phase-3 premise, and that leg is the byte-LM one."
+  exit 1
+end
+if STALE_K > 0 && POLICY_S.index("dfa").nil?
+    puts "toy-train-gtx: GTX_DFA_STALE delays the DFA SURROGATE's error, so" +
+       " it needs a dfa block in GTX_POLICY. Without one there is no" +
+       " surrogate and the flag would run, report itself on, and change" +
+       " nothing."
+  exit 1
+end
 
 # toy#172 (E1 Phase 1.2) — the two nDFA checks that need the parsed
 # policy and the node count.

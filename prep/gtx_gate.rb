@@ -930,6 +930,45 @@ else
     "  ok: CONSISTENCY AXIS (toy#185) — SIGNFLIP and RESAMPLE both provably move their arms off fixed P (an unwired one would read as the pre-registered 'neither moves'), the cadence axis is live down to 1 with the Oja-only floor correctly lifted, and both self-misreporting combinations are refused" :
     "  FAIL: consistency axis"
 
+  # ── LEG 12g: STALE DFA FEEDBACK (toy#186 / evo phase-3 premise) ──
+  #
+  # GTX_DFA_STALE=k feeds the surrogate the error from k steps ago. It is the
+  # load-bearing assumption of the evo leg: if DFA cannot tolerate a stale
+  # error, heterogeneous training does not work however good the plumbing is.
+  #
+  # ASSERTED: k=0 is byte-null in BOTH senses (same curve, no provenance),
+  # k>0 provably reaches the surrogate, and the degenerate configs are
+  # refused. NOT asserted: any direction in k — that is the experiment, and
+  # this cell cannot discriminate anyway (n=1, 40 steps, scatter ~0.3 bpb).
+  n0 = failures.length
+  st_base = bl_run("GTX_POLICY" => "dfa,dfa", "GTX_DFA_CUT" => "layer")
+  st_k0   = bl_run("GTX_POLICY" => "dfa,dfa", "GTX_DFA_CUT" => "layer",
+                   "GTX_DFA_STALE" => "0")
+  st_k2   = bl_run("GTX_POLICY" => "dfa,dfa", "GTX_DFA_CUT" => "layer",
+                   "GTX_DFA_STALE" => "2")
+  failures << "stale: GTX_DFA_STALE=0 is not bit-identical to the flag being absent — k=0 must add no tensor and touch no cell, or every stored bytelm number is in question" unless curve(st_k0) == curve(st_base)
+  failures << "stale: k=0 emitted a `stale=` provenance field — it must appear only when the delay is on, or every stored cell's wiring line moves (the toy#181 defect)" if st_k0.include?("stale=")
+  # The wiring check. A ring that never reaches the surrogate leaves the arm
+  # at its k=0 value — which reads as "DFA is perfectly stale-tolerant",
+  # i.e. the issue's pre-registered reading 1 and the answer the evo leg
+  # wants. An unwired knob here does not look broken, it looks like a result.
+  failures << "stale: k=2 is BIT-IDENTICAL to k=0 — the delayed error never reaches the surrogate, and that reads as perfect staleness tolerance rather than as a bug (toy#186)" if curve(st_k2) == curve(st_base)
+  failures << "stale: k=2 did not report `stale=2 warmup=zero_then_hold` — the warmup is what the first k steps ran on, and a run that trained on zeros unremarked reads as a mild quality hit" unless st_k2.include?("stale=2 warmup=zero_then_hold")
+  [[{ "GTX_DFA_STALE" => "3", "STEPS" => "3" }, "the delay would never take effect"],
+   [{ "GTX_DFA_STALE" => "2", "GTX_POLICY" => "chain,chain" }, "needs a dfa block"],
+   [{ "GTX_DFA_STALE" => "-1" }, "must be >= 0"]].each do |env, want|
+    o, stx = Open3.capture2e(BL.merge("STEPS" => "40", "GTX_POLICY" => "dfa,dfa").merge(env),
+                             RUNNER, chdir: ROOT)
+    if stx.success?
+      failures << "stale: #{env.inspect} was accepted — it must be refused (#{want.inspect})"
+    elsif !o.include?(want)
+      failures << "stale: #{env.inspect} refused for the WRONG REASON: #{o.lines.grep(/toy-train-gtx:/).first.to_s.strip[0, 110]}"
+    end
+  end
+  puts failures.length == n0 ?
+    "  ok: STALE FEEDBACK (toy#186) — k=0 is byte-null in curve AND provenance, k>0 provably reaches the surrogate (an unwired ring would read as perfect stale-tolerance, the answer the evo leg wants), the warmup is stated not inferred, and three degenerate configs are refused for their own reasons" :
+    "  FAIL: stale feedback"
+
   # ── LEG 12c: THE N-COST INSTRUMENT (toy#182) ──
   #
   # `graph: bytes` is the whole session graph in one number, so an arm that
