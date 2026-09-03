@@ -151,14 +151,14 @@
 #                     which basin a seed lands in, so an arm can be
 #                     bimodal rather than converged.
 #   TRUCK_BUDGET    — PLANT-STEP budget; 0 = unlimited (default 0)
-#   TRUCK_LOSS      — terminal (default) | best. WHICH STEP THE ARMS
+#   TRUCK_LOSS      — best (default) | terminal. WHICH STEP THE ARMS
 #                     DESCEND, as distinct from the step they are
 #                     SCORED at, which is always the nearest approach.
 #
-#                     `best` descends exactly what it scores and was
-#                     toy#189's original reading. IT CANNOT TRAIN THE
-#                     PAPER'S SINGLE-POINT START AT ALL, and the reason
-#                     is structural rather than a tuning problem: from (20, 10, -2) backing
+#                     `best` is the DEFAULT and descends exactly what it
+#                     scores. IT CANNOT TRAIN THE PAPER'S SINGLE-POINT
+#                     START AT ALL, and the reason is structural rather
+#                     than a tuning problem: from (20, 10, -2) backing
 #                     up INCREASES x, so an untrained policy never gets
 #                     closer to the dock than its start, the nearest
 #                     approach IS the start, and d^2 at the start is a
@@ -169,11 +169,14 @@
 #                     measured, 0/10 seeds, all four arms.
 #
 #                     `terminal` grades where the episode ENDED, which
-#                     always has a gradient, and is THE DEFAULT as of
-#                     toy#189's resolution. It descends something other
-#                     than the score — toy#188's landmine 2 — so the
-#                     difference is made VISIBLE rather than hidden: the
-#                     provenance carries `loss=`, and every step line
+#                     always has a gradient. It removes the plateau but
+#                     DOES NOT RECOVER THE SINGLE POINT (measured: still
+#                     exactly 504.0, 0/10 seeds, all four arms) and costs
+#                     the ensemble (bptt dock5 0.911 -> 0.311), which is
+#                     why it is not the default. It descends something
+#                     other than the score — toy#188's landmine 2 — so
+#                     whenever it is selected the difference is VISIBLE:
+#                     the provenance carries `loss=`, and every step line
 #                     prints the descended `loss=` beside the scored
 #                     `score_d2=`.
 #   TRUCK_DFA_SUM   — episode (default) | to_best. Which steps the DFA
@@ -335,15 +338,17 @@ ACT_TANH    = 1
 ACT = ACT_S == "tanh" ? ACT_TANH : ACT_SIGMOID
 
 SUM_TO_BEST = DFA_SUM_S == "to_best"
-# DEFAULT `terminal`, decided on toy#189 after `best` was measured
-# unable to train the paper's single-point start at all.
+# DEFAULT `best` — it descends exactly what it scores.
 #
-# THIS DEFAULT DESCENDS SOMETHING OTHER THAN THE SCORE, which is
-# toy#188's landmine 2 promoted to a default, so it is made loud rather
-# than quiet: the provenance line carries `loss=`, and every step line
-# prints the descended `loss=` AND the scored `score_d2=` side by side.
-# `best` remains available and descends exactly what it scores.
-LOSS_TERMINAL = LOSS_S.length > 0 ? (LOSS_S == "terminal") : true
+# `terminal` was briefly the default (toy#189) on the reasoning that
+# `best` cannot train the paper's single-point start at all. MEASUREMENT
+# WITHDREW THAT: `terminal` removes the plateau but does NOT recover the
+# single point (still exactly 504.0, 0/10 seeds, all four arms, at every
+# LR in {3,6,12,24}), while costing the ceiling arm two thirds of its
+# docking rate (bptt ensemble dock5 0.911 -> 0.311). So the default is
+# the one that keeps the descended and reported objectives IDENTICAL,
+# which is also toy#188's landmine 2 not repeated.
+LOSS_TERMINAL = LOSS_S == "terminal"
 
 # ---- fail loud on every out-of-range knob (never-mask). ----
 if ARM_S.length > 0 && ARM_S != "ga" && ARM_S != "bptt" && ARM_S != "frozen" &&

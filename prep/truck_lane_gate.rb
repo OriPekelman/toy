@@ -406,10 +406,10 @@ n0 = failures.length
 # EACH ARM AT ITS OWN CELL, UNDER THE DEFAULT LOSS. Running both at one
 # LR is how toy#160 nearly published "attention is DFA-hostile" from
 # BP's learning rate. Measured over lr in {0.003 .. 48} x {best,
-# terminal} x 3 seeds at 5000 updates: under loss=terminal (the default
-# since toy#189's resolution) bptt peaks at 6.0 and frozen at 3.0, both
-# interior. Reading the pair at a shared lr=1.0 reported a 7% margin for
-# a pair whose real separation is three orders of magnitude.
+# terminal} x 3 seeds at 5000 updates: under the default loss=best, bptt
+# peaks at 6.0 (interior — 12.0 collapses) and frozen at 0.1. Reading
+# the pair at a shared lr=1.0 reported a 7% margin for a pair whose real
+# separation is three orders of magnitude.
 bl = []
 fl = []
 bd = []
@@ -418,7 +418,7 @@ fd = []
   b, = run_truck({ "TRUCK_ARM" => "bptt", "SEED" => seed.to_s,
                    "STEPS" => "2000", "TRUCK_LR" => "6.0" })
   f, = run_truck({ "TRUCK_ARM" => "frozen", "SEED" => seed.to_s,
-                   "STEPS" => "2000", "TRUCK_LR" => "3.0" })
+                   "STEPS" => "2000", "TRUCK_LR" => "0.1" })
   bl << ensemble_mean(b)
   fl << ensemble_mean(f)
   bd << dock5(b)
@@ -449,7 +449,7 @@ else
               "FROZEN NOT BEATEN — if this holds at the research budget, every DFA row on this fixture is uninterpretable (C-FIXTURE)"
             end
   puts "cfixture: bptt(lr6) mean_d2 #{bm.round(1)} dock5 #{bdm.round(3)} vs " \
-       "frozen(lr3) mean_d2 #{fm.round(1)} dock5 #{fdm.round(3)}, " \
+       "frozen(lr0.1) mean_d2 #{fm.round(1)} dock5 #{fdm.round(3)}, " \
        "3 paired seeds — #{verdict}"
   puts "GATE ok [cfixture]: the comparison ran on 3 paired seeds; the reading " \
        "above is research output, deliberately not a pass/fail condition"

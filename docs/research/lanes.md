@@ -485,7 +485,7 @@ fixture cannot discriminate and every DFA row on it is void — read that row fi
 | `--plant-r R` / `--step-cap N` | the paper's `r = 3` and 300-step episodes (defaults) |
 | `--lr R` / `--clip-grad R` | **per arm.** See the note below |
 | `--budget N` | the **matched-work** budget, in plant steps — the only comparable currency between a GA and a gradient arm |
-| `--loss terminal\|best` | which step the arms **descend**, as distinct from the nearest approach they are **scored** at. `terminal` is the default (toy#189) |
+| `--loss best\|terminal` | which step the arms **descend**, as distinct from the nearest approach they are **scored** at. `best` is the default and descends exactly what it scores |
 | `--load PATH` / `--trace PATH` | roll a trained controller out headless to a `tbu-traces/1` bundle (toy#190) |
 | `--trace-scheme` / `--trace-n` / `--trace-seed` / `--stride` | which starts to roll, how many, from which seed, and how much of each trace to keep |
 | `--ga-pop/--ga-gens/--ga-agg` | the paper's pole. `--ga-agg mean\|min`, both of which it reports as acceptable |
@@ -518,11 +518,13 @@ projected error lands on is a pre-registered question.
   the evaluated result is **still** exactly `504.0`, 0/10 seeds, all four arms,
   at every LR tried. Only `ga` reaches `d² < 5` there (5/5 seeds), which is the
   paper's own claim about why gradient methods are a poor fit on this plant.
-- **`terminal` costs the ensemble.** `bptt` under `best`: mean `d²` 2.5, docking
-  0.911. Under `terminal`: 2798.7 and 0.311, optimum interior at `lr 6.0`. The
-  default is `terminal` by decision on toy#189, because `best` cannot train the
-  single-point case at all; `--loss best` is one flag away and is the stronger
-  arm on the ensemble.
+- **`terminal` costs the ensemble and buys nothing measurable.** `bptt` under
+  `best`: mean `d²` 2.5, docking 0.911. Under `terminal`: 2798.7 and 0.311,
+  optimum interior at `lr 6.0`. It was briefly the default on toy#189 — on the
+  reasoning that `best` cannot train the single point at all — and the
+  measurement above withdrew that: it removes the plateau without recovering the
+  single point. `best` is the default again, and it is also the one that keeps
+  the descended and reported objectives identical.
 
 The GA's fitness carries `fitness=reconstructed` in its provenance: the paper's
 *amended* fitness is a bitmap figure the scan did not preserve, and the form used
