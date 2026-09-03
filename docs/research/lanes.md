@@ -478,7 +478,7 @@ fixture cannot discriminate and every DFA row on it is void — read that row fi
 | flag | |
 |---|---|
 | `--arm ga\|bptt\|frozen\|dfa_tb\|dfa_rx` | which credit-rule pair (default `bptt`) |
-| `--start-scheme ensemble\|point\|yard\|lesson` | `ensemble` = the paper's 15 fixed starts (default) |
+| `--start-scheme ensemble\|point\|yard\|lesson\|half_yard\|half_yard_neg` | `ensemble` = the paper's 15 fixed starts (default). The two half-yard schemes are C2b's sign test (toy#192) |
 | `--obs 4\|3\|8` | the paper's three input sets; `8` is its rescaled-duplicate trick |
 | `--hidden N` | hidden width (default 9 — with `--obs 4` that is the paper's 55 weights) |
 | `--act sigmoid\|tanh` | the paper's logistic (default) or the frontend's tanh. Also selects the output→steering map: `2σ−1` vs identity |
@@ -490,6 +490,15 @@ fixture cannot discriminate and every DFA row on it is void — read that row fi
 | `--trace-scheme` / `--trace-n` / `--trace-seed` / `--stride` | which starts to roll, how many, from which seed, and how much of each trace to keep |
 | `--ga-pop/--ga-gens/--ga-agg` | the paper's pole. `--ga-agg mean\|min`, both of which it reports as acceptable |
 | `--export PATH` | the controller in the frontend's format (`[layer][unit][w…, bias]`, bias **last**) plus a provenance sidecar |
+
+Each `eval:` line also carries `mean_abs_signal`, `frac_sat` (|signal| > 0.99),
+`frac_clamped_runs` and `median_path_len` (toy#192). They exist because
+`mean_d2`/`dock5` cannot separate **two different routes into the same absorbing
+state**: bang-bang steering with the wrong sign, and an under-actuated passive
+jack-knife, both end a few metres from where they started with the clamp touched
+in nearly every rollout. Measured on the far set, `dfa_tb` runs at |signal| ~1.0
+with most steps saturated while `dfa_rx` sits at ~0.04 and never saturates — the
+same `mean_d2`, opposite failures.
 
 **The score is the NEAREST APPROACH over the episode**, `d² = x² + y² +
 min(θs², (θs−2π)², (θs+2π)²)` — the GA scored the best point on the trajectory,
@@ -562,3 +571,28 @@ would leave the tail of the net at init and read as a slightly worse arm.
 
 There is no gzip step in the runner — it has no zlib. Pipe it:
 `gzip -9 bundle.json`.
+
+#### `half_yard` — C2b's sign test (toy#192)
+
+The candidate mechanism for `dfa_tb` failing while `dfa_rx` lands exactly on
+`frozen`: a **fixed** `B` cannot carry a **state-dependent sign**. From `y > 0`
+the correcting steering has one sign and from `y < 0` the other, the error's `dy`
+component flips with it, so a fixed random map from error to weight direction is
+right on one half of the yard and wrong on the other — and over a symmetric
+start distribution the two halves cancel into a constant push.
+
+`--start-scheme half_yard` draws the usual yard restricted to `y ≥ 0`;
+`half_yard_neg` is its mirror. Same seeded LCG and the same x/angle bounds, so a
+half-yard bundle reproduces from its seed exactly as the full yard does.
+
+**Measured, and it is not the mechanism.** By the test's own criterion — dock
+something on a half and nothing on the full yard, or it isn't the sign problem —
+`dfa_tb` docks nothing on either half at any LR in {0.003 … 2.0}, 3 seeds, 4000
+updates. What it does instead is collapse to a **constant, fully saturated,
+single-sign policy**: steering `< 0` on 100% of 18,000 traced steps, whichever
+half it trained on and whichever half the run starts in. That is stronger than
+the cancellation story and not the same claim — cancellation would have been
+cured by training on one half.
+
+At `lr = 0.003` it does *not* saturate (`frac_sat` 0.000) and still docks
+nothing, so saturation is a symptom rather than the cause.

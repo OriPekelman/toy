@@ -44,6 +44,13 @@
 #  11  STRIDE       the two things the frontend depends on: yard starts
 #                   reproducible from the seed alone, and a stride that
 #                   never drops the last or best-approach row.
+#  12  HALF_YARD    toy#192's C2b sign test: each half draws only its own
+#                   side, the full yard spans both, unknown schemes are
+#                   refused, and the scheme reaches TRAINING too.
+#  13  METRICS      the four behaviour metrics are present, in range,
+#                   and DISCRIMINATING — they must separate dfa_tb's
+#                   bang-bang from dfa_rx's passive jack-knife, which
+#                   mean_d2/dock5 cannot.
 #   9  C-FIXTURE    bptt vs frozen, REPORTED not asserted — see the leg.
 
 ROOT   = File.expand_path("..", __dir__)
@@ -394,6 +401,91 @@ puts(failures.length == n0 ?
   "GATE ok [stride]: yard starts reproduce from the seed alone (and a different seed moves them), and the stride keeps the last and best-approach rows" :
   "GATE FAIL [stride]: #{failures[n0..].join('; ')}")
 
+# ----------------------------------------------------------------- 12
+# toy#192 — the half-yard start schemes (C2b's sign test) and the four
+# behaviour metrics on the eval line.
+#
+# The half-yard legs are TWO-SIDED by necessity: a scheme that silently
+# fell through to a full-yard draw would still produce a plausible
+# bundle labelled `half_yard`, which is what the first cut of the trace
+# writer did — its dispatch chain's `else` swallowed both half modes.
+n0 = failures.length
+Dir.mktmpdir("truck-half") do |dir|
+  ctrl = File.join(dir, "c.json")
+  run_truck({ "TRUCK_ARM" => "bptt", "STEPS" => "50", "TRUCK_EXPORT" => ctrl })
+  ys = {}
+  %w[yard half_yard half_yard_neg].each do |sch|
+    path = File.join(dir, "#{sch}.json")
+    run_truck({ "TRUCK_LOAD" => ctrl, "TRUCK_TRACE" => path,
+                "TRUCK_TRACE_SCHEME" => sch, "TRUCK_TRACE_N" => "120",
+                "TRUCK_TRACE_SEED" => "7", "TRUCK_STRIDE" => "99" })
+    ys[sch] = File.exist?(path) ? JSON.parse(File.read(path))["runs"].map { |r| r["start"]["y"] } : nil
+  end
+  if ys.values.any?(&:nil?)
+    failures << "half_yard: a bundle was not written"
+  else
+    failures << "half_yard: drew y < 0" if ys["half_yard"].any?(&:negative?)
+    failures << "half_yard_neg: drew y > 0" if ys["half_yard_neg"].any?(&:positive?)
+    # The other side: `yard` must span BOTH signs, or "restricted to one
+    # side" is not a restriction of anything.
+    unless ys["yard"].any?(&:negative?) && ys["yard"].any?(&:positive?)
+      failures << "half_yard: the full yard did not span both signs, so the halves restrict nothing"
+    end
+    # x and the angle axis are untouched by the restriction.
+    unless ys["half_yard"].length == 120 && ys["half_yard_neg"].length == 120
+      failures << "half_yard: expected 120 draws per half"
+    end
+  end
+  # An unknown scheme is refused rather than silently becoming a yard draw.
+  _, ok = run_truck({ "TRUCK_LOAD" => ctrl, "TRUCK_TRACE" => File.join(dir, "x.json"),
+                      "TRUCK_TRACE_SCHEME" => "sideways" })
+  failures << "half_yard: an unknown trace scheme was accepted" if ok.success?
+  # And as a TRAINING scheme, not only a trace scheme.
+  ho, hok = run_truck({ "TRUCK_ARM" => "dfa_tb", "TRUCK_START" => "half_yard", "STEPS" => "20" })
+  failures << "half_yard: not accepted as a training start scheme" unless hok.success?
+  failures << "half_yard: provenance does not name the scheme" unless prov_field(ho, "start") == "half_yard"
+end
+puts(failures.length == n0 ?
+  "GATE ok [half_yard]: each half draws only its own side, the full yard spans both, an unknown scheme is refused, and the scheme reaches training as well as tracing" :
+  "GATE FAIL [half_yard]: #{failures[n0..].join('; ')}")
+
+# ----------------------------------------------------------------- 13
+# The four metrics must be PRESENT, in range, and DISCRIMINATING. The
+# last is the point of them: mean_d2/dock5 cannot separate bang-bang
+# steering with the wrong sign from an under-actuated passive
+# jack-knife, and a metric that reads the same for both would be no
+# better. dfa_tb saturates (|signal| ~ 1.0) and dfa_rx barely steers
+# (~0.04), so if those two come back equal the metric is not wired.
+n0 = failures.length
+mv = {}
+%w[dfa_tb dfa_rx].each do |arm|
+  out, = run_truck({ "TRUCK_ARM" => arm, "STEPS" => "400", "TRUCK_LR" => "0.2",
+                     "TRUCK_EVAL_N" => "16" })
+  line = out.lines.find { |l| l.start_with?("eval: set=far ") }
+  if line.nil?
+    failures << "metrics: no far eval line for #{arm}"
+    next
+  end
+  h = line.scan(/(\w+)=(\S+)/).to_h
+  %w[mean_abs_signal frac_sat frac_clamped_runs median_path_len].each do |k|
+    failures << "metrics: #{arm} eval line missing #{k}" unless h.key?(k)
+  end
+  mv[arm] = h
+  next unless h["frac_sat"]
+  failures << "metrics: #{arm} frac_sat out of [0,1]" unless h["frac_sat"].to_f.between?(0, 1)
+  failures << "metrics: #{arm} frac_clamped_runs out of [0,1]" unless h["frac_clamped_runs"].to_f.between?(0, 1)
+  failures << "metrics: #{arm} mean_abs_signal out of [0,1]" unless h["mean_abs_signal"].to_f.between?(0, 1)
+  failures << "metrics: #{arm} median_path_len is not positive" unless h["median_path_len"].to_f > 0.0
+end
+if mv["dfa_tb"] && mv["dfa_rx"]
+  a = mv["dfa_tb"]["mean_abs_signal"].to_f
+  b = mv["dfa_rx"]["mean_abs_signal"].to_f
+  failures << "metrics: dfa_tb and dfa_rx report the same mean_abs_signal (#{a}) — not measuring the arm" if (a - b).abs < 1e-9
+end
+puts(failures.length == n0 ?
+  "GATE ok [metrics]: all four present and in range, and they separate dfa_tb (#{mv.dig('dfa_tb', 'mean_abs_signal')}) from dfa_rx (#{mv.dig('dfa_rx', 'mean_abs_signal')})" :
+  "GATE FAIL [metrics]: #{failures[n0..].join('; ')}")
+
 # ------------------------------------------------------------------ 9
 # C-FIXTURE, REPORTED AND NOT ASSERTED. The programme's rule is that
 # `bptt` must beat `frozen` with margin or no DFA reading on this
@@ -457,7 +549,7 @@ end
 
 # ----------------------------------------------------------------------
 if failures.empty?
-  puts "GATE PASS [truck-lane]: 10 legs (gradcheck, arms, frozen, b-reaches, budget, zero_grad, export, repro, trace, stride)"
+  puts "GATE PASS [truck-lane]: 12 legs (gradcheck, arms, frozen, b-reaches, budget, zero_grad, export, repro, trace, stride, half_yard, metrics)"
 else
   puts "GATE FAIL [truck-lane]: #{failures.length} failure(s)"
   failures.each { |f| puts "  - #{f}" }

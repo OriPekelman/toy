@@ -373,8 +373,10 @@ if GA_AGG_S.length > 0 && GA_AGG_S != "mean" && GA_AGG_S != "min"
   exit 1
 end
 if START_S.length > 0 && START_S != "ensemble" && START_S != "point" &&
-   START_S != "yard" && START_S != "lesson"
-  puts "toy-train-truck: TRUCK_START must be ensemble|point|yard|lesson, got " + START_S
+   START_S != "yard" && START_S != "lesson" &&
+   START_S != "half_yard" && START_S != "half_yard_neg"
+  puts "toy-train-truck: TRUCK_START must be " +
+       "ensemble|point|yard|lesson|half_yard|half_yard_neg, got " + START_S
   exit 1
 end
 if OBS_N != 3 && OBS_N != 4 && OBS_N != 8
@@ -874,9 +876,96 @@ ST_ENSEMBLE = 0
 ST_POINT    = 1
 ST_YARD     = 2
 ST_LESSON   = 3
+# toy#192 / C2b — THE SIGN TEST. The yard draw restricted to ONE SIDE,
+# plus its mirror. The candidate mechanism is that a FIXED B cannot
+# carry a STATE-DEPENDENT SIGN: from y > 0 the correcting steering has
+# one sign and from y < 0 the other, the error's dy component flips with
+# it, so a fixed random map from error to weight direction is right on
+# one half of the yard and wrong on the other — and over a SYMMETRIC
+# start distribution the two halves cancel into a constant push.
+#
+# Same seeded LCG and the same bounds as `yard` on the x and angle axes,
+# so a half-yard bundle is reproducible from its seed exactly as the
+# full yard is and the frontend can overlay both.
+ST_HALF_YARD     = 4
+ST_HALF_YARD_NEG = 5
 START_MODE = START_S == "point" ? ST_POINT :
              START_S == "yard"  ? ST_YARD :
-             START_S == "lesson" ? ST_LESSON : ST_ENSEMBLE
+             START_S == "lesson" ? ST_LESSON :
+             START_S == "half_yard" ? ST_HALF_YARD :
+             START_S == "half_yard_neg" ? ST_HALF_YARD_NEG : ST_ENSEMBLE
+
+# Path length over the TRAILER point. ONE implementation, called by both
+# the eval line and the trace bundle: two copies of this would be two
+# numbers to keep in parity for no reason, and the bundle's `path_len`
+# and the eval line's `median_path_len` are meant to be the same
+# quantity. rs_x/rs_y hold the state BEFORE each step, so the final
+# state comes from the plant.
+def tk_path_len(pl_plant, pl_x, pl_y, pl_T, pl_sx, pl_sy)
+  pl_acc = 0.0
+  pl_px = pl_sx
+  pl_py = pl_sy
+  pl_k = 1
+  while pl_k <= pl_T
+    pl_nx = pl_k < pl_T ? pl_x[pl_k] : pl_plant.tt_x
+    pl_ny = pl_k < pl_T ? pl_y[pl_k] : pl_plant.tt_y
+    pl_dx = pl_nx - pl_px
+    pl_dy = pl_ny - pl_py
+    pl_acc = pl_acc + Math.sqrt(pl_dx * pl_dx + pl_dy * pl_dy)
+    pl_px = pl_nx
+    pl_py = pl_ny
+    pl_k = pl_k + 1
+  end
+  pl_acc
+end
+
+# Median of the first `md_n` entries of `md_a`. Insertion sort: n is the
+# eval-set size (<= a few hundred), and a partial sort would be more
+# code than the whole function.
+def tk_median(md_a, md_n)
+  if md_n < 1; return 0.0; end
+  md_i = 1
+  while md_i < md_n
+    md_v = md_a[md_i]
+    md_j = md_i - 1
+    while md_j >= 0 && md_a[md_j] > md_v
+      md_a[md_j + 1] = md_a[md_j]
+      md_j = md_j - 1
+    end
+    md_a[md_j + 1] = md_v
+    md_i = md_i + 1
+  end
+  if md_n % 2 == 1
+    return md_a[md_n / 2]
+  end
+  0.5 * (md_a[md_n / 2 - 1] + md_a[md_n / 2])
+end
+
+# Name -> mode. The inverse of tk_scheme_name, so the rollout can reuse
+# tk_set_start! instead of dispatching on the scheme STRING itself.
+# The trace writer used to carry its own if/elsif chain and its `else`
+# swallowed `half_yard` and `half_yard_neg` into a full-yard draw — the
+# bundle then said `scheme: "half_yard"` over starts spanning the whole
+# yard, which is a wrong number that looks right. Returns -1 for an
+# unknown name so the caller can refuse it.
+def tk_scheme_mode(sm_name)
+  if sm_name == "point";         return 1; end
+  if sm_name == "yard";          return 2; end
+  if sm_name == "lesson";        return 3; end
+  if sm_name == "half_yard";     return 4; end
+  if sm_name == "half_yard_neg"; return 5; end
+  if sm_name == "ensemble";      return 0; end
+  -1
+end
+
+def tk_scheme_name(sn_mode)
+  if sn_mode == 1; return "point"; end
+  if sn_mode == 2; return "yard"; end
+  if sn_mode == 3; return "lesson"; end
+  if sn_mode == 4; return "half_yard"; end
+  if sn_mode == 5; return "half_yard_neg"; end
+  "ensemble"
+end
 
 def tk_set_start!(sp_plant, sp_mode, sp_k, sp_lesson)
   if sp_mode == 1
@@ -889,6 +978,22 @@ def tk_set_start!(sp_plant, sp_mode, sp_k, sp_lesson)
   end
   if sp_mode == 3
     sp_plant.sample_lesson!(sp_lesson, 64)
+    return nil
+  end
+  if sp_mode == 4 || sp_mode == 5
+    # Half-yard: the y bounds are narrowed AROUND the draw and put back,
+    # so the caller's bounds (which the eval sets also move) survive and
+    # only this one draw is restricted.
+    sp_lo = sp_plant.tt_y_min
+    sp_hi = sp_plant.tt_y_max
+    if sp_mode == 4
+      sp_plant.tt_y_min = 0.0
+    else
+      sp_plant.tt_y_max = 0.0
+    end
+    sp_plant.sample_yard!(64)
+    sp_plant.tt_y_min = sp_lo
+    sp_plant.tt_y_max = sp_hi
     return nil
   end
   sp_plant.ensemble_start!(sp_k % 15)
@@ -1466,12 +1571,16 @@ end
 # sqrt(5) m linear), so `dock5` is its success rate, not a threshold of
 # ours.
 
-ev = tk_zeros(4)
+ev = tk_zeros(8)
+# Sized for the largest eval set: the yard/near sets draw TRUCK_EVAL_N,
+# the ensemble 15.
+ev_paths = tk_zeros(EVAL_N > 15 ? EVAL_N : 15)
 
 def tk_eval(evp_plant, evp_w, evp_set, evp_n, evp_cap, evp_nin, evp_hid,
             evp_ow1, evp_ob1, evp_ow2, evp_ob2, evp_kind,
             evp_x, evp_y, evp_oc, evp_os, evp_clamp, evp_sig, evp_o, evp_yout,
-            evp_a, evp_h, evp_obs, evp_fw, evp_ro, evp_seed, evp_out)
+            evp_a, evp_h, evp_obs, evp_fw, evp_ro, evp_seed, evp_paths,
+            evp_out)
   # evp_set: 0 ensemble (15 fixed), 1 point, 2 far yard, 3 near field
   evp_plant.seed!(evp_seed)
   evp_xmin = evp_plant.tt_x_min
@@ -1490,6 +1599,16 @@ def tk_eval(evp_plant, evp_w, evp_set, evp_n, evp_cap, evp_nin, evp_hid,
   evp_sum = 0.0
   evp_min = 1.0e18
   evp_dock = 0
+  # toy#192: mean_d2 and dock5 cannot tell two different routes into the
+  # same absorbing state apart — bang-bang steering with the wrong sign,
+  # and an under-actuated passive jack-knife, both end ~5 m from where
+  # they started with the clamp touched in nearly every rollout. These
+  # four separate them, and they are on the eval LINE so a reader of
+  # stdout.log sees them without opening the traces.
+  evp_sig_sum = 0.0
+  evp_sig_n = 0
+  evp_sat_n = 0
+  evp_clamped_runs = 0
   evp_i = 0
   while evp_i < evp_count
     if evp_set == 0
@@ -1499,6 +1618,8 @@ def tk_eval(evp_plant, evp_w, evp_set, evp_n, evp_cap, evp_nin, evp_hid,
     else
       evp_plant.sample_yard!(64)
     end
+    evp_sx0 = evp_plant.tt_x
+    evp_sy0 = evp_plant.tt_y
     tk_rollout(evp_plant, evp_w, evp_cap, evp_nin, evp_hid,
                evp_ow1, evp_ob1, evp_ow2, evp_ob2, evp_kind,
                evp_x, evp_y, evp_oc, evp_os, evp_clamp, evp_sig, evp_o,
@@ -1507,6 +1628,22 @@ def tk_eval(evp_plant, evp_w, evp_set, evp_n, evp_cap, evp_nin, evp_hid,
     evp_sum = evp_sum + evp_d2
     if evp_d2 < evp_min; evp_min = evp_d2; end
     if evp_d2 < 5.0; evp_dock = evp_dock + 1; end
+
+    evp_T = evp_ro[0].to_i
+    evp_st = 0
+    while evp_st < evp_T
+      evp_as = evp_sig[evp_st]
+      if evp_as < 0.0; evp_as = -evp_as; end
+      evp_sig_sum = evp_sig_sum + evp_as
+      if evp_as > 0.99; evp_sat_n = evp_sat_n + 1; end
+      evp_sig_n = evp_sig_n + 1
+      evp_st = evp_st + 1
+    end
+    if evp_plant.tt_clamp_count > 0
+      evp_clamped_runs = evp_clamped_runs + 1
+    end
+    evp_paths[evp_i] = tk_path_len(evp_plant, evp_x, evp_y, evp_T,
+                                   evp_sx0, evp_sy0)
     evp_i = evp_i + 1
   end
   evp_plant.tt_x_min = evp_xmin
@@ -1517,6 +1654,10 @@ def tk_eval(evp_plant, evp_w, evp_set, evp_n, evp_cap, evp_nin, evp_hid,
   evp_out[1] = evp_min
   evp_out[2] = evp_dock.to_f / evp_count.to_f
   evp_out[3] = evp_count.to_f
+  evp_out[4] = evp_sig_n > 0 ? evp_sig_sum / evp_sig_n.to_f : 0.0
+  evp_out[5] = evp_sig_n > 0 ? evp_sat_n.to_f / evp_sig_n.to_f : 0.0
+  evp_out[6] = evp_clamped_runs.to_f / evp_count.to_f
+  evp_out[7] = tk_median(evp_paths, evp_count)
   nil
 end
 
@@ -1527,12 +1668,15 @@ es = 0
 while es < 4
   tk_eval(plant, w, es, EVAL_N, STEP_CAP, N_IN, HIDDEN, OFF_W1, OFF_B1,
           OFF_W2, OFF_B2, ACT, rs_x, rs_y, rs_oc, rs_os, rs_clamp, rs_sig,
-          rs_o, rs_yout, rs_a, rs_h, rs_obs, fw_out, ro, EVAL_SEED, ev)
+          rs_o, rs_yout, rs_a, rs_h, rs_obs, fw_out, ro, EVAL_SEED,
+          ev_paths, ev)
   ev_mean[es] = ev[0]
   ev_dock[es] = ev[2]
   puts "eval: set=" + EV_NAMES[es] + " n=" + ev[3].to_i.to_s +
        " mean_d2=" + ev[0].to_s + " best_d2=" + ev[1].to_s +
-       " dock5=" + ev[2].to_s
+       " dock5=" + ev[2].to_s +
+       " mean_abs_signal=" + ev[4].to_s + " frac_sat=" + ev[5].to_s +
+       " frac_clamped_runs=" + ev[6].to_s + " median_path_len=" + ev[7].to_s
   es = es + 1
 end
 
@@ -1553,12 +1697,15 @@ end
 # would be self-inconsistent in exactly the direction nobody checks.
 
 if TRACE.length > 0
-  tr_scheme = TRACE_SCH_S.length > 0 ? TRACE_SCH_S :
-              (START_MODE == ST_POINT ? "point" :
-               START_MODE == ST_YARD ? "yard" :
-               START_MODE == ST_LESSON ? "lesson" : "ensemble")
+  tr_scheme = TRACE_SCH_S.length > 0 ? TRACE_SCH_S : tk_scheme_name(START_MODE)
   tr_seed = TRACE_SD_S.length > 0 ? TRACE_SD_S.to_i : EVAL_SEED
-  tr_n = tr_scheme == "ensemble" ? 15 : (tr_scheme == "point" ? 1 : TRACE_N)
+  tr_mode = tk_scheme_mode(tr_scheme)
+  if tr_mode < 0
+    puts "toy-train-truck: TRUCK_TRACE_SCHEME must be " +
+         "ensemble|point|yard|lesson|half_yard|half_yard_neg, got " + tr_scheme
+    exit 1
+  end
+  tr_n = tr_mode == 0 ? 15 : (tr_mode == 1 ? 1 : TRACE_N)
   tr_stride = STRIDE < 1 ? 1 : STRIDE
 
   tf = File.open(TRACE, "w")
@@ -1603,15 +1750,7 @@ if TRACE.length > 0
   plant.seed!(tr_seed)
   tr_i = 0
   while tr_i < tr_n
-    if tr_scheme == "ensemble"
-      plant.ensemble_start!(tr_i)
-    elsif tr_scheme == "point"
-      plant.point_start!
-    elsif tr_scheme == "lesson"
-      plant.sample_lesson!(19, 64)
-    else
-      plant.sample_yard!(64)
-    end
+    tk_set_start!(plant, tr_mode, tr_i, 19)
     tr_sx = plant.tt_x
     tr_sy = plant.tt_y
     tr_sc = plant.tt_oc
@@ -1639,21 +1778,7 @@ if TRACE.length > 0
       end
     end
 
-    # Path length over the TRAILER point, from the stored trajectory.
-    tr_plen = 0.0
-    tr_px = tr_sx
-    tr_py = tr_sy
-    tr_k = 1
-    while tr_k <= tr_T
-      tr_nx = tr_k < tr_T ? rs_x[tr_k] : plant.tt_x
-      tr_ny = tr_k < tr_T ? rs_y[tr_k] : plant.tt_y
-      tr_dx = tr_nx - tr_px
-      tr_dy = tr_ny - tr_py
-      tr_plen = tr_plen + Math.sqrt(tr_dx * tr_dx + tr_dy * tr_dy)
-      tr_px = tr_nx
-      tr_py = tr_ny
-      tr_k = tr_k + 1
-    end
+    tr_plen = tk_path_len(plant, rs_x, rs_y, tr_T, tr_sx, tr_sy)
 
     # The run object is emitted FIELD BY FIELD rather than built with
     # Json::Builder and then reopened. The first version did
@@ -1721,9 +1846,7 @@ prov = prov + " act=" + (ACT == ACT_TANH ? "tanh" : "sigmoid")
 prov = prov + " outmap=" + (ACT == ACT_TANH ? "identity" : "2sigma-1")
 prov = prov + " r=" + PLANT_R.to_s
 prov = prov + " cap=" + STEP_CAP.to_s
-prov = prov + " start=" + (START_MODE == ST_POINT ? "point" :
-                           START_MODE == ST_YARD ? "yard" :
-                           START_MODE == ST_LESSON ? "lesson" : "ensemble")
+prov = prov + " start=" + tk_scheme_name(START_MODE)
 prov = prov + " seed=" + SEED.to_s
 prov = prov + " lr=" + LR.to_s
 prov = prov + " clip=" + CLIP.to_s
