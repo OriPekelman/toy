@@ -824,6 +824,11 @@ module Toy
                              "TRUCK_EXPORT"     => @export_path.to_s,
                              "TRUCK_E"          => @error_mode.to_s,
                              "TRUCK_E_DECAY"    => @e_decay.to_s,
+                             "TRUCK_EXPERT"     => @expert.to_s,
+                             "TRUCK_DEMOS"      => @demos.to_s,
+                             "TRUCK_DEMO_N"     => @demo_n.to_s,
+                             "TRUCK_DEMO_BATCH" => @demo_batch.to_s,
+                             "TRUCK_WD"         => @weight_decay.to_s,
                              "TRUCK_LOAD"       => @load_ctrl.to_s,
                              "TRUCK_TRACE"      => @trace_path.to_s,
                              "TRUCK_TRACE_SCHEME"  => @trace_scheme.to_s,
@@ -1021,7 +1026,7 @@ module Toy
           # reports neither its result nor its provenance — which is
           # exactly how every cell ended up driven through the env
           # harness instead.
-          losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") || l.start_with?("val:") || l.start_with?("train:") || l.start_with?("graph:") || l.start_with?("stream:") || l.start_with?("gen:") || l.start_with?("corpus:") || l.start_with?("noise:") || l.start_with?("half_snr:") || l.start_with?("control:") || l.start_with?("latent_std:") || l.start_with?("converged:") || l.start_with?("stage1:") || l.start_with?("arm:") || l.start_with?("resid:") || l.start_with?("judge:") || l.start_with?("objective:") || l.start_with?("epsmse:") || l.start_with?("bytelm:") || l.start_with?("ndfa:") || l.start_with?("ldfa:") || l.start_with?("bcond") || l.start_with?("gtx: ") || l.start_with?("truck: ") || l.start_with?("eval: ") || l.start_with?("trace: ") || l.start_with?("export: ") || l.start_with?("selftest: ") }.map(&:chomp)
+          losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") || l.start_with?("val:") || l.start_with?("train:") || l.start_with?("graph:") || l.start_with?("stream:") || l.start_with?("gen:") || l.start_with?("corpus:") || l.start_with?("noise:") || l.start_with?("half_snr:") || l.start_with?("control:") || l.start_with?("latent_std:") || l.start_with?("converged:") || l.start_with?("stage1:") || l.start_with?("arm:") || l.start_with?("resid:") || l.start_with?("judge:") || l.start_with?("objective:") || l.start_with?("epsmse:") || l.start_with?("bytelm:") || l.start_with?("ndfa:") || l.start_with?("ldfa:") || l.start_with?("bcond") || l.start_with?("gtx: ") || l.start_with?("truck: ") || l.start_with?("eval: ") || l.start_with?("trace: ") || l.start_with?("demos: ") || l.start_with?("export: ") || l.start_with?("selftest: ") }.map(&:chomp)
           emit(run_id, run_dir, losses)
         end
 
@@ -1072,7 +1077,8 @@ module Toy
         private
 
         DIFFLM_ARMS = %w[ar-baseline diff-selfcond diff-plain prior-floor].freeze
-        TRUCK_ARMS  = %w[ga bptt frozen dfa_tb dfa_rx].freeze
+        TRUCK_ARMS  = %w[ga bptt frozen dfa_tb dfa_rx
+                         imit_bp imit_dfa imit_frozen].freeze
         # Per-recipe value sets for flags TWO LANES SHARE. Keyed by
         # recipe so neither lane's vocabulary can silently accept the
         # other's — see check_recipe_enums!.
@@ -1128,6 +1134,10 @@ module Toy
           allowed = @recipe == "truck"  ? TRUCK_ARMS :
                     @recipe == "difflm" ? DIFFLM_ARMS : (DIFFLM_ARMS + TRUCK_ARMS)
           return nil if allowed.include?(val)
+          # @recipe is nil during the flag loop (it is resolved from the
+          # positional afterwards), so name the union rather than a nil
+          # recipe — "unsupported for recipe nil" reads like a bug.
+          return bad_arg("--arm #{val.inspect} unsupported (#{allowed.join('|')})") if @recipe.nil?
           bad_arg("--arm #{val.inspect} unsupported for recipe #{@recipe.inspect} (#{allowed.join('|')})")
         end
 
@@ -1260,7 +1270,7 @@ module Toy
             when "--start-scheme", "--loss", "--dfa-sum",
                  "--ga-agg", "--plant-r", "--export",
                  "--load", "--trace", "--trace-scheme",
-                 "--error-mode", "--e-decay"
+                 "--error-mode", "--e-decay", "--expert", "--demos"
               key = @argv[i]
               i += 1
               val = @argv[i]
@@ -1277,6 +1287,8 @@ module Toy
               when "--trace-scheme" then @trace_scheme = val
               when "--error-mode"   then @error_mode = val
               when "--e-decay"      then @e_decay = val
+              when "--expert"       then @expert = val
+              when "--demos"        then @demos = val
               end
             when /\A--start-scheme=(.*)\z/m then @start_scheme = $1
             when /\A--loss=(.*)\z/m         then @loss = $1
@@ -1289,8 +1301,11 @@ module Toy
             when /\A--trace-scheme=(.*)\z/m then @trace_scheme = $1
             when /\A--error-mode=(.*)\z/m   then @error_mode = $1
             when /\A--e-decay=(.*)\z/m      then @e_decay = $1
+            when /\A--expert=(.*)\z/m       then @expert = $1
+            when /\A--demos=(.*)\z/m        then @demos = $1
             when "--obs", "--step-cap", "--budget", "--ga-pop", "--ga-gens",
-                 "--trace-n", "--trace-seed", "--stride"
+                 "--trace-n", "--trace-seed", "--stride",
+                 "--demo-n", "--demo-batch"
               key = @argv[i]
               i += 1
               val = @argv[i]
@@ -1305,6 +1320,8 @@ module Toy
               when "--trace-n"    then @trace_n = val.to_i
               when "--trace-seed" then @trace_seed = val.to_i
               when "--stride"     then @stride = val.to_i
+              when "--demo-n"     then @demo_n = val.to_i
+              when "--demo-batch" then @demo_batch = val.to_i
               end
             when /\A--obs=(\d+)\z/       then @obs = $1.to_i
             when /\A--step-cap=(\d+)\z/  then @step_cap = $1.to_i
@@ -1314,6 +1331,8 @@ module Toy
             when /\A--trace-n=(\d+)\z/    then @trace_n = $1.to_i
             when /\A--trace-seed=(\d+)\z/ then @trace_seed = $1.to_i
             when /\A--stride=(\d+)\z/     then @stride = $1.to_i
+            when /\A--demo-n=(\d+)\z/     then @demo_n = $1.to_i
+            when /\A--demo-batch=(\d+)\z/ then @demo_batch = $1.to_i
             when /\A--eval-n=(\d+)\z/    then @eval_n = $1.to_i
 
             # ---- toy#153 (gnn): the graph lane's own knobs ----
@@ -2473,6 +2492,9 @@ when /\A--dfa-feedback-lr=(.*)\z/
             ["--budget",        %w[truck],                          !@budget.nil?, " (toy#189: the MATCHED-WORK budget, in plant steps)"],
             ["--loss",          %w[truck],                          !@loss.nil?, " (toy#189: which step the arms DESCEND, as distinct from the nearest approach they are SCORED at)"],
             ["--dfa-sum",       %w[truck],                          !@dfa_sum.nil?, " (toy#189)"],
+            ["--expert/--demos/--demo-n/--demo-batch", %w[truck],
+             (!@expert.nil? || !@demos.nil? || !@demo_n.nil? || !@demo_batch.nil?),
+             " (toy#194: the imitation leg — a manufactured expert, and scarce vs abundant demonstrations)"],
             ["--error-mode/--e-decay", %w[truck],
              (!@error_mode.nil? || !@e_decay.nil?),
              " (toy#193/C2d: what the DFA broadcast projects — the always-positive dx component is what locks the readout to one sign)"],
@@ -2487,7 +2509,10 @@ when /\A--dfa-feedback-lr=(.*)\z/
              (!@nodes.nil? || !@degree.nil? || !@homophily.nil? || !@feat_signal.nil?), " (toy#153)"],
             ["--train-per-class", %w[gnn],                          !@train_per_class.nil?, " (toy#153)"],
             ["--feedback-route/--feedback-hops", %w[gnn],           (!@feedback_route.nil? || !@feedback_hops.nil?), " (toy#153)"],
-            ["--weight-decay",  %w[gnn],                            !@weight_decay.nil?, " (toy#153)"],
+            # toy#194: the imitation arms need the regularisation F17's
+            # comparison had, or a DFA "win" on scarce data is a win
+            # against a strawman.
+            ["--weight-decay",  %w[gnn truck],                      !@weight_decay.nil?, " (toy#153/#194)"],
             # toy#155 (ssm). --dfa-cut is NOT --dfa-granularity:
             # franken's granularity picks matmul-vs-block in DEPTH, this
             # picks layer-vs-step in TIME. Different axis, different name.

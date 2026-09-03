@@ -53,6 +53,10 @@
 #                   mean_d2/dock5 cannot.
 #  14  E-MODE       toy#193's TRUCK_E: xyt byte-null, every mode reaches
 #                   the runner, yt resizes B, and no mode is a rename.
+#  15  IMIT         toy#194's imitation leg: the expert is required, the
+#                   frozen body stays at init while its readout moves,
+#                   B_SEED moves imit_dfa and not imit_bp, and the
+#                   imitation loss actually falls.
 #   9  C-FIXTURE    bptt vs frozen, REPORTED not asserted — see the leg.
 
 ROOT   = File.expand_path("..", __dir__)
@@ -527,6 +531,81 @@ puts(failures.length == n0 ?
   "GATE ok [e-mode]: xyt is byte-null, all four modes reach the runner and name themselves, yt resizes B to e_dim 2, and every mode changes the result" :
   "GATE FAIL [e-mode]: #{failures[n0..].join('; ')}")
 
+# ----------------------------------------------------------------- 15
+# toy#194 — the imitation leg. The arms differ ONLY in what the hidden
+# layer is told, so the legs that matter are the ones proving that: a
+# frozen body that stays at init, a B that reaches the weights, and a
+# BP body that is not secretly frozen.
+n0 = failures.length
+Dir.mktmpdir("truck-imit") do |dir|
+  expert = File.join(dir, "expert.json")
+  run_truck({ "TRUCK_ARM" => "bptt", "STEPS" => "3000", "TRUCK_LR" => "6.0",
+              "TRUCK_EXPERT" => "", "TRUCK_EXPORT" => expert })
+  # The imitation arms REQUIRE an expert and say so.
+  _, noexp = run_truck({ "TRUCK_ARM" => "imit_dfa", "STEPS" => "5" })
+  failures << "imit: imit_dfa ran without TRUCK_EXPERT" if noexp.success?
+
+  base = { "TRUCK_EXPERT" => expert, "STEPS" => "600", "TRUCK_LR" => "2.0",
+           "TRUCK_EVAL_N" => "8" }
+  outs = {}
+  %w[imit_bp imit_dfa imit_frozen].each do |arm|
+    out, ok = run_truck(base.merge("TRUCK_ARM" => arm))
+    failures << "imit: #{arm} exited non-zero" unless ok.success?
+    failures << "imit: #{arm} printed no demos line" unless out.include?("demos: ")
+    failures << "imit: #{arm} mislabelled" unless prov_field(out, "arm") == arm
+    %w[demos demo_pairs wd imit_mse expert_mean_d2].each do |k|
+      failures << "imit: #{arm} provenance missing #{k}" if prov_field(out, k).nil?
+    end
+    outs[arm] = out
+  end
+
+  # scarce and abundant must actually differ in how much data they make.
+  sc, = run_truck(base.merge("TRUCK_ARM" => "imit_bp", "TRUCK_DEMOS" => "scarce"))
+  ab, = run_truck(base.merge("TRUCK_ARM" => "imit_bp", "TRUCK_DEMOS" => "abundant",
+                             "TRUCK_DEMO_N" => "60"))
+  np_s = prov_field(sc, "demo_pairs").to_i
+  np_a = prov_field(ab, "demo_pairs").to_i
+  failures << "imit: scarce produced #{np_s} pairs, expected some" unless np_s > 0
+  failures << "imit: abundant (#{np_a}) is not larger than scarce (#{np_s})" unless np_a > np_s
+
+  # THE FROZEN BODY. Same leg as the closed-loop `frozen` arm and for
+  # the same reason: if READOUT-only training silently trained the body
+  # too, imit_frozen would be imit_bp under another name and the
+  # C-FIXTURE control would be vacuous.
+  init = File.join(dir, "i.json")
+  fz   = File.join(dir, "f.json")
+  bp   = File.join(dir, "b.json")
+  run_truck(base.merge("TRUCK_ARM" => "imit_bp", "TRUCK_LR" => "0", "TRUCK_EXPORT" => init))
+  run_truck(base.merge("TRUCK_ARM" => "imit_frozen", "TRUCK_EXPORT" => fz))
+  run_truck(base.merge("TRUCK_ARM" => "imit_bp", "TRUCK_EXPORT" => bp))
+  if [init, fz, bp].all? { |f| File.exist?(f) }
+    i = JSON.parse(File.read(init)); f = JSON.parse(File.read(fz)); b = JSON.parse(File.read(bp))
+    failures << "imit: imit_frozen moved its hidden layer" unless f[0] == i[0]
+    failures << "imit: imit_frozen did not move its readout" if f[1] == i[1]
+    failures << "imit: imit_bp did not move its hidden layer" if b[0] == i[0]
+  else
+    failures << "imit: export files missing"
+  end
+
+  # B REACHES THE WEIGHTS — and only the arm that uses it. toy#194 asks
+  # for >= 2 draws because every C0 cell shared one.
+  d1, = run_truck(base.merge("TRUCK_ARM" => "imit_dfa", "TRUCK_B_SEED" => "1234"))
+  d2, = run_truck(base.merge("TRUCK_ARM" => "imit_dfa", "TRUCK_B_SEED" => "777"))
+  failures << "imit: B_SEED does not move imit_dfa" if ensemble_mean(d1) == ensemble_mean(d2)
+  p1, = run_truck(base.merge("TRUCK_ARM" => "imit_bp", "TRUCK_B_SEED" => "1234"))
+  p2, = run_truck(base.merge("TRUCK_ARM" => "imit_bp", "TRUCK_B_SEED" => "777"))
+  failures << "imit: B_SEED moved imit_bp, which has no B" if ensemble_mean(p1) != ensemble_mean(p2)
+
+  # The student must FIT better than it started: imitation loss falls.
+  first = outs["imit_bp"].lines.find { |l| l.start_with?("step 1: ") }
+  fmse  = first && first[/loss=(\S+)/, 1].to_f
+  lmse  = prov_field(outs["imit_bp"], "imit_mse").to_f
+  failures << "imit: imit_bp's imitation loss did not fall (#{fmse} -> #{lmse})" unless fmse && lmse < fmse
+end
+puts(failures.length == n0 ?
+  "GATE ok [imit]: expert required, demos generated, scarce < abundant, imit_frozen's body stays at init while its readout moves, B_SEED moves imit_dfa only, and the imitation loss falls" :
+  "GATE FAIL [imit]: #{failures[n0..].join('; ')}")
+
 # ------------------------------------------------------------------ 9
 # C-FIXTURE, REPORTED AND NOT ASSERTED. The programme's rule is that
 # `bptt` must beat `frozen` with margin or no DFA reading on this
@@ -590,7 +669,7 @@ end
 
 # ----------------------------------------------------------------------
 if failures.empty?
-  puts "GATE PASS [truck-lane]: 13 legs (gradcheck, arms, frozen, b-reaches, budget, zero_grad, export, repro, trace, stride, half_yard, metrics, e-mode)"
+  puts "GATE PASS [truck-lane]: 14 legs (gradcheck, arms, frozen, b-reaches, budget, zero_grad, export, repro, trace, stride, half_yard, metrics, e-mode, imit)"
 else
   puts "GATE FAIL [truck-lane]: #{failures.length} failure(s)"
   failures.each { |f| puts "  - #{f}" }

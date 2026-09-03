@@ -287,6 +287,7 @@ BUDGET      = BUDGET_S.length > 0 ? BUDGET_S.to_i : 0
 E_MODE_S    = ENV["TRUCK_E"] || ""
 E_DECAY_S   = ENV["TRUCK_E_DECAY"] || ""
 E_DECAY     = E_DECAY_S.length > 0 ? E_DECAY_S.to_f : 0.99
+E_NORM_S    = ENV["TRUCK_E_NORM"] || ""
 LOSS_S      = ENV["TRUCK_LOSS"] || ""
 DFA_SUM_S   = ENV["TRUCK_DFA_SUM"] || ""
 B_SEED_S    = ENV["TRUCK_B_SEED"] || ""
@@ -308,6 +309,14 @@ EVAL_SEED_S = ENV["TRUCK_EVAL_SEED"] || ""
 EVAL_SEED   = EVAL_SEED_S.length > 0 ? EVAL_SEED_S.to_i : 4242
 EXPORT      = ENV["TRUCK_EXPORT"] || ""
 LOAD_PATH   = ENV["TRUCK_LOAD"] || ""
+EXPERT      = ENV["TRUCK_EXPERT"] || ""
+DEMOS_S     = ENV["TRUCK_DEMOS"] || ""
+DEMO_N_S    = ENV["TRUCK_DEMO_N"] || ""
+DEMO_N      = DEMO_N_S.length > 0 ? DEMO_N_S.to_i : 500
+DEMO_B_S    = ENV["TRUCK_DEMO_BATCH"] || ""
+DEMO_BATCH  = DEMO_B_S.length > 0 ? DEMO_B_S.to_i : 64
+WD_S        = ENV["TRUCK_WD"] || ""
+WD          = WD_S.length > 0 ? WD_S.to_f : 0.0
 TRACE       = ENV["TRUCK_TRACE"] || ""
 TRACE_SCH_S = ENV["TRUCK_TRACE_SCHEME"] || ""
 TRACE_N_S   = ENV["TRUCK_TRACE_N"] || ""
@@ -324,17 +333,39 @@ SELFTEST    = (ENV["TRUCK_SELFTEST"] || "") == "1"
 # Declared WITH the arm codes, not down in the provenance section: the
 # toy#190 rollout block reads it and runs earlier in the file, where a
 # constant defined later is simply nil.
-ARM_NAMES  = ["ga", "bptt", "frozen", "dfa_tb", "dfa_rx"]
+ARM_NAMES  = ["ga", "bptt", "frozen", "dfa_tb", "dfa_rx",
+              "imit_bp", "imit_dfa", "imit_frozen"]
 ARM_GA     = 0
 ARM_BPTT   = 1
 ARM_FROZEN = 2
 ARM_DFA_TB = 3
 ARM_DFA_RX = 4
+# toy#194 — THE IMITATION LEG. A manufactured expert (a `ga` or `bptt`
+# controller that docks) is rolled out, and a fresh net is trained on
+# its PER-STEP action with a per-step, state-local error
+# e_t = u*_t - u_t in SIGNAL units.
+#
+# WHY THIS IS A DIFFERENT EXPERIMENT FROM dfa_tb, and why the rank-1
+# objection does not apply: C-SIGNAL-c objected that a scalar error
+# gives B1 in R^{9x1} and therefore a rank-1 update. That objection was
+# about BROADCASTING one scalar over a whole episode, where every step
+# gets the same direction. Here the error is PER STEP and STATE-LOCAL:
+# e_t differs at every step, so the accumulated update is a sum of
+# rank-1 terms with different coefficients, which is not rank-1. This
+# is also the regime every inherited DFA positive lives in (F16, F17).
+ARM_IMIT_BP     = 5
+ARM_IMIT_DFA    = 6
+ARM_IMIT_FROZEN = 7
 
 ARM = ARM_S == "ga"     ? ARM_GA :
       ARM_S == "frozen" ? ARM_FROZEN :
       ARM_S == "dfa_tb" ? ARM_DFA_TB :
-      ARM_S == "dfa_rx" ? ARM_DFA_RX : ARM_BPTT
+      ARM_S == "dfa_rx" ? ARM_DFA_RX :
+      ARM_S == "imit_bp" ? ARM_IMIT_BP :
+      ARM_S == "imit_dfa" ? ARM_IMIT_DFA :
+      ARM_S == "imit_frozen" ? ARM_IMIT_FROZEN : ARM_BPTT
+IS_IMIT = ARM == ARM_IMIT_BP || ARM == ARM_IMIT_DFA || ARM == ARM_IMIT_FROZEN
+DEMOS_SCARCE = DEMOS_S == "abundant" ? false : true
 
 ACT_SIGMOID = 0
 ACT_TANH    = 1
@@ -355,12 +386,22 @@ LOSS_TERMINAL = LOSS_S == "terminal"
 
 # ---- fail loud on every out-of-range knob (never-mask). ----
 if ARM_S.length > 0 && ARM_S != "ga" && ARM_S != "bptt" && ARM_S != "frozen" &&
-   ARM_S != "dfa_tb" && ARM_S != "dfa_rx"
-  puts "toy-train-truck: TRUCK_ARM must be ga|bptt|frozen|dfa_tb|dfa_rx, got " + ARM_S
+   ARM_S != "dfa_tb" && ARM_S != "dfa_rx" && ARM_S != "imit_bp" &&
+   ARM_S != "imit_dfa" && ARM_S != "imit_frozen"
+  puts "toy-train-truck: TRUCK_ARM must be " +
+       "ga|bptt|frozen|dfa_tb|dfa_rx|imit_bp|imit_dfa|imit_frozen, got " + ARM_S
+  exit 1
+end
+if DEMOS_S.length > 0 && DEMOS_S != "scarce" && DEMOS_S != "abundant"
+  puts "toy-train-truck: TRUCK_DEMOS must be scarce|abundant, got " + DEMOS_S
   exit 1
 end
 if ACT_S.length > 0 && ACT_S != "sigmoid" && ACT_S != "tanh"
   puts "toy-train-truck: TRUCK_ACT must be sigmoid|tanh, got " + ACT_S
+  exit 1
+end
+if E_NORM_S.length > 0 && E_NORM_S != "none" && E_NORM_S != "unit"
+  puts "toy-train-truck: TRUCK_E_NORM must be none|unit, got " + E_NORM_S
   exit 1
 end
 if E_MODE_S.length > 0 && E_MODE_S != "xyt" && E_MODE_S != "yt" &&
@@ -441,6 +482,21 @@ E_MODE = E_MODE_S == "yt" ? E_YT :
          E_MODE_S == "centered" ? E_CENTERED :
          E_MODE_S == "signed_x" ? E_SIGNED_X : E_XYT
 E_DIM = E_MODE == E_YT ? 2 : 3
+
+# toy#193 follow-up — DIRECTION-ONLY BROADCAST. Orthogonal to E_MODE on
+# purpose: E_MODE picks WHICH components the error carries, this picks
+# whether its MAGNITUDE reaches the weights at all. Composed, they
+# separate "the sign is locked" from "the size is uninformative".
+#
+# What it tests: the per-episode update scales with ||e|| at the graded
+# step. For an arm that never improves, ||e|| stays large and roughly
+# constant, so the readout integrates a same-size push every episode.
+# `unit` removes the size and leaves only the direction.
+#
+# NOT a claim that this shrinks the signal as the policy improves —
+# e already would, if the policy ever improved. It removes magnitude
+# INFORMATION, which is a different and cleanly testable thing.
+E_NORM = E_NORM_S == "unit" ? 1 : 0
 
 def tk_zeros(z_n)
   z_a = [0.0]; z_a.pop
@@ -847,7 +903,7 @@ def tk_dfa!(df_w, df_gr, df_ex, df_ey, df_eang, df_gstep, df_b1, df_b2,
             df_ow1, df_ob1, df_ow2, df_ob2, df_kind,
             df_a, df_h, df_yout, df_obs, df_e, df_d1,
             df_hidden_only, df_to_best, df_T,
-            df_emode, df_edim, df_mean, df_decay)
+            df_emode, df_edim, df_mean, df_decay, df_enorm)
   # toy#193: the error the broadcast projects. LANDMINE 5 of toy#189
   # still holds in every mode — e is an ERROR, so it is normalised as
   # one (dx/50), never through the observation's (x-50)/50, which would
@@ -870,6 +926,9 @@ def tk_dfa!(df_w, df_gr, df_ex, df_ey, df_eang, df_gstep, df_b1, df_b2,
     df_e[2] = df_eang / Math::PI
   end
 
+  # (centering first, then normalisation: normalising a vector whose
+  # mean has not been removed would just rescale the same locked
+  # direction.)
   # `centered` subtracts a running mean, so a component that is always
   # positive averages to zero. The mean is an EMA updated AFTER this
   # episode's projection: subtracting a mean that already contains this
@@ -881,6 +940,27 @@ def tk_dfa!(df_w, df_gr, df_ex, df_ey, df_eang, df_gstep, df_b1, df_b2,
       df_e[df_ci] = df_raw - df_mean[df_ci]
       df_mean[df_ci] = df_decay * df_mean[df_ci] + (1.0 - df_decay) * df_raw
       df_ci = df_ci + 1
+    end
+  end
+
+  # Direction only: divide by ||e||. A near-zero error is left alone —
+  # dividing it would AMPLIFY the one episode that went well into the
+  # largest update of the run, which is the opposite of what this is
+  # testing.
+  if df_enorm == 1
+    df_nn = 0.0
+    df_ni = 0
+    while df_ni < df_edim
+      df_nn = df_nn + df_e[df_ni] * df_e[df_ni]
+      df_ni = df_ni + 1
+    end
+    df_nn = Math.sqrt(df_nn)
+    if df_nn > 1.0e-9
+      df_nj = 0
+      while df_nj < df_edim
+        df_e[df_nj] = df_e[df_nj] / df_nn
+        df_nj = df_nj + 1
+      end
     end
   end
 
@@ -1095,37 +1175,55 @@ b2m = Toy::Train::DfaB.fill(E_DIM, B_SEED + 7919, B_DIST, B_SIGMA2)
 # skipped. Done after the init draw rather than instead of it so the
 # init RNG stream is identical either way — an arm that loads and one
 # that trains must not diverge in what else the seed drives.
+# Loads a controller in the TRUCK_EXPORT format into `lc_w`. Returns 1
+# on success, 0 on a count mismatch (which the caller reports and dies
+# on). ONE implementation, used by both TRUCK_LOAD (replay a trained
+# controller) and TRUCK_EXPERT (toy#194's teacher) — a second copy is a
+# second thing to keep in parity with the exporter.
+def tk_load_ctrl!(lc_path, lc_w, lc_nin, lc_hid, lc_ow1, lc_ob1, lc_ow2,
+                  lc_ob2, lc_nparam, lc_buf)
+  lc_raw = File.read(lc_path)
+  lc_n = tk_scan_floats(lc_raw, lc_buf, lc_nparam + 8)
+  if lc_n != lc_nparam
+    puts "toy-train-truck: " + lc_path + " holds " + lc_n.to_s +
+         " numbers, expected " + lc_nparam.to_s + " for a " + lc_nin.to_s +
+         "-" + lc_hid.to_s + "-1 net (check --obs and --hidden against the sidecar)"
+    return 0
+  end
+  lc_k = 0
+  lc_j = 0
+  while lc_j < lc_hid
+    lc_c = 0
+    while lc_c < lc_nin
+      lc_w[lc_ow1 + lc_j * lc_nin + lc_c] = lc_buf[lc_k]
+      lc_k = lc_k + 1
+      lc_c = lc_c + 1
+    end
+    lc_w[lc_ob1 + lc_j] = lc_buf[lc_k]
+    lc_k = lc_k + 1
+    lc_j = lc_j + 1
+  end
+  lc_j2 = 0
+  while lc_j2 < lc_hid
+    lc_w[lc_ow2 + lc_j2] = lc_buf[lc_k]
+    lc_k = lc_k + 1
+    lc_j2 = lc_j2 + 1
+  end
+  lc_w[lc_ob2] = lc_buf[lc_k]
+  1
+end
+
+ld_buf = tk_zeros(N_PARAM + 8)
+
+# toy#190: a loaded controller REPLACES the init and training is
+# skipped. Done after the init draw rather than instead of it so the
+# init RNG stream is identical either way.
 SKIP_TRAIN = LOAD_PATH.length > 0
 if SKIP_TRAIN
-  ld_raw = File.read(LOAD_PATH)
-  ld_buf = tk_zeros(N_PARAM + 8)
-  ld_n = tk_scan_floats(ld_raw, ld_buf, N_PARAM + 8)
-  if ld_n != N_PARAM
-    puts "toy-train-truck: TRUCK_LOAD " + LOAD_PATH + " holds " + ld_n.to_s +
-         " numbers, expected " + N_PARAM.to_s + " for a " + N_IN.to_s + "-" +
-         HIDDEN.to_s + "-1 net (check --obs and --hidden against the sidecar)"
+  if tk_load_ctrl!(LOAD_PATH, w, N_IN, HIDDEN, OFF_W1, OFF_B1, OFF_W2,
+                   OFF_B2, N_PARAM, ld_buf) == 0
     exit 1
   end
-  ld_k = 0
-  ld_j = 0
-  while ld_j < HIDDEN
-    ld_c = 0
-    while ld_c < N_IN
-      w[OFF_W1 + ld_j * N_IN + ld_c] = ld_buf[ld_k]
-      ld_k = ld_k + 1
-      ld_c = ld_c + 1
-    end
-    w[OFF_B1 + ld_j] = ld_buf[ld_k]
-    ld_k = ld_k + 1
-    ld_j = ld_j + 1
-  end
-  ld_j2 = 0
-  while ld_j2 < HIDDEN
-    w[OFF_W2 + ld_j2] = ld_buf[ld_k]
-    ld_k = ld_k + 1
-    ld_j2 = ld_j2 + 1
-  end
-  w[OFF_B2] = ld_buf[ld_k]
 end
 
 gs   = tk_zeros(4)
@@ -1308,6 +1406,84 @@ if SELFTEST
 end
 
 # ======================================================================
+# toy#194 — DEMONSTRATIONS, and the imitation training loop.
+# ======================================================================
+
+wx      = tk_zeros(N_PARAM)      # the expert
+dm_obs  = [0.0]; dm_obs.pop      # (state, action) pairs
+dm_u    = [0.0]; dm_u.pop
+dm_n    = 0
+expert_d2 = 0.0
+
+# B1 for the imitation arms is HIDDEN x 1: the error is a SCALAR here,
+# not a 3-vector, because it is per-step rather than a broadcast.
+B_SIGMA_I = Toy::Train::DfaB.sigma_for(B_SCALE, 1, HIDDEN, 1.0)
+b1i = Toy::Train::DfaB.fill(HIDDEN, B_SEED + 104729, B_DIST, B_SIGMA_I)
+
+if IS_IMIT
+  if EXPERT.length == 0
+    puts "toy-train-truck: TRUCK_ARM=" + ARM_S + " requires TRUCK_EXPERT=<controller.json>"
+    exit 1
+  end
+  if tk_load_ctrl!(EXPERT, wx, N_IN, HIDDEN, OFF_W1, OFF_B1, OFF_W2,
+                   OFF_B2, N_PARAM, ld_buf) == 0
+    exit 1
+  end
+
+  # THE TWO REGIMES.
+  #   scarce   — the paper's 15 ensemble starts and nothing else. Highly
+  #              correlated, ~15 x cap pairs. This is the regime the arc
+  #              exists to find (F17/D3b), and it is the paper's own
+  #              training set, so "the GA was provably efficient here"
+  #              holds by construction.
+  #   abundant — TRUCK_DEMO_N yard starts: tens of thousands of pairs.
+  dm_starts = DEMOS_SCARCE ? 15 : DEMO_N
+  plant.seed!(EVAL_SEED + 77)
+  dm_i = 0
+  while dm_i < dm_starts
+    if DEMOS_SCARCE
+      plant.ensemble_start!(dm_i)
+    else
+      plant.sample_yard!(64)
+    end
+    tk_rollout(plant, wx, STEP_CAP, N_IN, HIDDEN, OFF_W1, OFF_B1, OFF_W2,
+               OFF_B2, ACT, rs_x, rs_y, rs_oc, rs_os, rs_clamp, rs_sig,
+               rs_o, rs_yout, rs_a, rs_h, rs_obs, fw_out, ro)
+    expert_d2 = expert_d2 + ro[1]
+    dm_t = 0
+    while dm_t < ro[0].to_i
+      dm_k = 0
+      while dm_k < N_IN
+        dm_obs.push(rs_obs[dm_t * N_IN + dm_k])
+        dm_k = dm_k + 1
+      end
+      dm_u.push(rs_sig[dm_t])
+      dm_n = dm_n + 1
+      dm_t = dm_t + 1
+    end
+    dm_i = dm_i + 1
+  end
+  expert_d2 = expert_d2 / dm_starts.to_f
+  puts "demos: n_pairs=" + dm_n.to_s + " starts=" + dm_starts.to_s +
+       " regime=" + (DEMOS_SCARCE ? "scarce" : "abundant") +
+       " expert=" + EXPERT + " expert_mean_d2=" + expert_d2.to_s
+
+  # THE EXPERT MUST BE ABLE TO DRIVE. A student cannot be better than
+  # its teacher's data, so an expert that does not dock makes every
+  # imitation number uninterpretable — said loudly rather than left in
+  # the provenance for a reader to notice.
+  if dm_n < 1
+    puts "toy-train-truck: the expert produced no demonstration pairs"
+    exit 1
+  end
+  if expert_d2 > 5.0
+    puts "warning: the expert's own mean d2 is " + expert_d2.to_s +
+         " (> 5); it does not dock its own start set, so the imitation" +
+         " arms are fitting a policy that cannot drive"
+  end
+end
+
+# ======================================================================
 # TRAINING
 # ======================================================================
 
@@ -1350,6 +1526,7 @@ plant_steps = 0
 updates     = 0
 zero_grad   = 0
 final_loss  = 0.0
+imit_mse    = -1.0
 ga_best_fit = 0.0
 ga_best_d2  = 0.0
 
@@ -1400,7 +1577,89 @@ GA_AGG_MIN = GA_AGG_S == "min" ? 1 : 0
 # have silently become `bptt`.
 READOUT_ONLY = ARM == ARM_FROZEN ? 1 : 0
 
-if SKIP_TRAIN
+if IS_IMIT && !SKIP_TRAIN
+  # ---- imitation: per-step supervised regression on the expert's
+  # action, with NO PLANT IN THE LOOP during training. The closed-loop
+  # score afterwards is what says whether the student can DRIVE, which
+  # is a different question from whether it FITS (compounding error).
+  im_state = [tk_seed_state(SEED + 991)]
+  im_gr = tk_zeros(N_PARAM)
+  im_fw = tk_zeros(2)
+  im_a = tk_zeros(HIDDEN)
+  im_h = tk_zeros(HIDDEN)
+  im_last = 0.0
+  im_upd = 0
+  while im_upd < STEPS
+    gi3 = 0
+    while gi3 < N_PARAM
+      im_gr[gi3] = 0.0
+      gi3 = gi3 + 1
+    end
+    im_sse = 0.0
+    im_b = 0
+    while im_b < DEMO_BATCH
+      im_p = tk_next_int(im_state, dm_n)
+      im_sig = tk_forward(w, dm_obs, im_p * N_IN, im_a, im_h, 0,
+                          N_IN, HIDDEN, OFF_W1, OFF_B1, OFF_W2, OFF_B2,
+                          ACT, im_fw)
+      im_e = dm_u[im_p] - im_sig
+      im_sse = im_sse + im_e * im_e
+
+      # d(0.5 e^2)/d(out) — the readout is EXACT on all three arms; they
+      # differ only in what the HIDDEN layer is told.
+      im_do = (0.0 - im_e) * tk_dsignal_dout(im_fw[1], ACT)
+      im_j = 0
+      while im_j < HIDDEN
+        im_hv = im_h[im_j]
+        im_gr[OFF_W2 + im_j] = im_gr[OFF_W2 + im_j] + im_do * im_hv
+        if ARM == ARM_IMIT_BP
+          im_da = im_do * w[OFF_W2 + im_j] * tk_dact(im_hv, ACT)
+        elsif ARM == ARM_IMIT_DFA
+          # Textbook DFA: the hidden layer sees a FIXED RANDOM
+          # projection of the same per-step error the readout sees.
+          im_da = (0.0 - b1i[im_j] * im_e) * tk_dact(im_hv, ACT)
+        else
+          im_da = 0.0
+        end
+        if ARM != ARM_IMIT_FROZEN
+          im_gr[OFF_B1 + im_j] = im_gr[OFF_B1 + im_j] + im_da
+          im_k3 = 0
+          while im_k3 < N_IN
+            im_gr[OFF_W1 + im_j * N_IN + im_k3] =
+              im_gr[OFF_W1 + im_j * N_IN + im_k3] +
+              im_da * dm_obs[im_p * N_IN + im_k3]
+            im_k3 = im_k3 + 1
+          end
+        end
+        im_j = im_j + 1
+      end
+      im_gr[OFF_B2] = im_gr[OFF_B2] + im_do
+      im_b = im_b + 1
+    end
+
+    im_sc = LR / DEMO_BATCH.to_f
+    im_z = 0
+    while im_z < N_PARAM
+      # WEIGHT DECAY applies to every imitation arm, not just imit_bp:
+      # a DFA "win" on scarce data against an unregularised BP would be
+      # a win against a strawman (F17's comparison was against a fully
+      # regularised BP), and giving it to only one arm would be the
+      # same asymmetry pointing the other way.
+      im_gr[im_z] = im_gr[im_z] + WD * w[im_z]
+      w[im_z] = w[im_z] - im_sc * im_gr[im_z]
+      im_z = im_z + 1
+    end
+    im_last = im_sse / DEMO_BATCH.to_f
+    im_upd = im_upd + 1
+    updates = updates + 1
+    # `loss=` only, like every other arm. The step line used to repeat
+    # the same number as `imit_mse=`, which made a reader (and a regex)
+    # find step 1's value where they wanted the final one.
+    puts "step " + updates.to_s + ": loss=" + im_last.to_s
+  end
+  final_loss = im_last
+  imit_mse = im_last
+elsif SKIP_TRAIN
   # A loaded controller is rolled out as-is. `updates` stays 0 and the
   # provenance says so, so a trace bundle can never be mistaken for one
   # produced by a run that also trained.
@@ -1538,7 +1797,7 @@ else
         tk_dfa!(w, gr, g_x, g_y, g_ang, g_step, b1m, b2m, N_IN, HIDDEN,
                 OFF_W1, OFF_B1, OFF_W2, OFF_B2, ACT, rs_a, rs_h, rs_yout,
                 rs_obs, e3, d1v, 0, SUM_TO_BEST ? 1 : 0, ro[0].to_i,
-                E_MODE, E_DIM, e_mean, E_DECAY)
+                E_MODE, E_DIM, e_mean, E_DECAY, E_NORM)
         # A BROADCAST arm's update is non-zero whenever the episode took
         # a step: its error is the graded STATE, not a difference, so it
         # does not vanish when the graded step is 0. Counting this arm by
@@ -1553,7 +1812,7 @@ else
         tk_dfa!(w, gr, g_x, g_y, g_ang, g_step, b1m, b2m, N_IN, HIDDEN,
                 OFF_W1, OFF_B1, OFF_W2, OFF_B2, ACT, rs_a, rs_h, rs_yout,
                 rs_obs, e3, d1v, 1, SUM_TO_BEST ? 1 : 0, ro[0].to_i,
-                E_MODE, E_DIM, e_mean, E_DECAY)
+                E_MODE, E_DIM, e_mean, E_DECAY, E_NORM)
         tk_bptt!(jplant, w, gr, g_step, g_x, g_y, g_ang,
                  N_IN, HIDDEN, OFF_W1, OFF_B1, OFF_W2,
                  OFF_B2, ACT, rs_x, rs_y, rs_oc, rs_os, rs_clamp, rs_sig,
@@ -1923,6 +2182,7 @@ prov = prov + " e=" + (E_MODE == E_YT ? "yt" :
                        E_MODE == E_CENTERED ? "centered" :
                        E_MODE == E_SIGNED_X ? "signed_x" : "xyt")
 prov = prov + " e_dim=" + E_DIM.to_s
+prov = prov + " e_norm=" + (E_NORM == 1 ? "unit" : "none")
 prov = prov + " objective=nearest_approach"
 prov = prov + " loss=" + (LOSS_TERMINAL ? "terminal" : "best")
 prov = prov + " fitness=reconstructed"
@@ -1937,6 +2197,17 @@ prov = prov + " budget=" + BUDGET.to_s
 prov = prov + " plant_steps=" + plant_steps.to_s
 prov = prov + " updates=" + updates.to_s
 prov = prov + " zero_grad=" + zero_grad.to_s
+if IS_IMIT
+  prov = prov + " demos=" + (DEMOS_SCARCE ? "scarce" : "abundant")
+  prov = prov + " demo_pairs=" + dm_n.to_s
+  prov = prov + " demo_batch=" + DEMO_BATCH.to_s
+  prov = prov + " wd=" + WD.to_s
+  prov = prov + " imit_mse=" + imit_mse.to_s
+  # The teacher's own number, beside the student's: a student cannot be
+  # better than its teacher's data and the reader needs both.
+  prov = prov + " expert=" + EXPERT
+  prov = prov + " expert_mean_d2=" + expert_d2.to_s
+end
 prov = prov + " eval_seed=" + EVAL_SEED.to_s
 prov = prov + " " + plant.provenance
 puts prov
@@ -2040,6 +2311,7 @@ if EVENTS.length > 0
     cf.add_str("b_scale", B_SCALE_S.length > 0 ? B_SCALE_S : "inv_sqrt_fan")
     cf.add_str("e_mode", E_MODE_S.length > 0 ? E_MODE_S : "xyt")
     cf.add_num("e_dim", E_DIM)
+    cf.add_str("e_norm", E_NORM == 1 ? "unit" : "none")
     cf.add_str("objective", "nearest_approach_d2")
     cf.add_str("loss", LOSS_TERMINAL ? "terminal" : "best")
     cf.add_str("fitness", "reconstructed")

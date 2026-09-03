@@ -489,6 +489,8 @@ fixture cannot discriminate and every DFA row on it is void — read that row fi
 | `--load PATH` / `--trace PATH` | roll a trained controller out headless to a `tbu-traces/1` bundle (toy#190) |
 | `--trace-scheme` / `--trace-n` / `--trace-seed` / `--stride` | which starts to roll, how many, from which seed, and how much of each trace to keep |
 | `--error-mode xyt\|yt\|centered\|signed_x` | what the DFA broadcast projects (toy#193). `xyt` is the default and byte-null |
+| `--arm imit_bp\|imit_dfa\|imit_frozen` + `--expert PATH` | the imitation leg (toy#194): train a fresh net on a docking expert's per-step action |
+| `--demos scarce\|abundant` / `--demo-n` / `--demo-batch` / `--weight-decay` | the paper's 15 starts, or `N` yard starts; and the regularisation F17's comparison had |
 | `--ga-pop/--ga-gens/--ga-agg` | the paper's pole. `--ga-agg mean\|min`, both of which it reports as acceptable |
 | `--export PATH` | the controller in the frontend's format (`[layer][unit][w…, bias]`, bias **last**) plus a provenance sidecar |
 
@@ -633,3 +635,48 @@ of the yard the run starts in:
 updates, on either the ensemble or the far set. So the constant component *is*
 what locks the sign, and a state-dependent sign is *not sufficient* for the arm
 to work. The mechanism is confirmed and the arm is still dead.
+
+#### The imitation leg (toy#194) — where a DFA-trained controller finally drives
+
+Every broadcast design failed on this plant (`dfa_tb`, `dfa_rx`: `dock5` 0.000
+everywhere, across error modes, halves, LRs and normalisations). The imitation
+arms change the *signal*, not the plant: an expert that docks is rolled out, and
+a fresh 4-9-1 is trained on its **per-step** action with `e_t = u*_t − u_t` in
+signal units — the per-step, state-local regime every inherited DFA positive
+lives in (F16, F17).
+
+The **rank-1 objection does not apply here** and it is worth saying why, because
+it will be raised again: a scalar error does give `B₁ ∈ ℝ^{9×1}`, but the
+objection was about *broadcasting* one scalar over a whole episode, where every
+step gets the same direction. Here `e_t` differs at every step, so the
+accumulated update is a sum of rank-1 terms with different coefficients — which
+is not rank-1.
+
+**Measured**, expert `mean_d2` 0.822 docking 15/15, 40 000 updates × batch 64,
+5 seeds, and **5 `B` draws** for `imit_dfa` (a single draw would have been
+misleading in either direction — the range is wide):
+
+| regime | arm | ensemble dock5 | far dock5 |
+|---|---|---|---|
+| abundant | `imit_bp` | 0.947 | **0.444** |
+| abundant | `imit_dfa` | 0.440 – 0.733 | **0.250 – 0.394** |
+| abundant | `imit_frozen` | 0.160 | 0.100 |
+| scarce | `imit_bp` | 0.827 | **0.400** |
+| scarce | `imit_dfa` | 0.240 – 0.680 | **0.144 – 0.306** |
+| scarce | `imit_frozen` | 0.400 | 0.250 |
+
+Two readings, one positive and one negative:
+
+- **In the abundant regime DFA drives, and clearly beats its frozen control**
+  (far 0.351 mean vs 0.100) on every `B` draw. That is the first DFA-trained
+  controller to dock anything on this plant. It does not match BP (0.444).
+- **In the scarce regime the arc's own prediction fails.** F17/D3b predicted
+  `imit_dfa` would generalise *better* than a memorising `imit_bp`; BP wins
+  (0.400 vs 0.248). Worse, `imit_frozen` reaches 0.250 there — statistically on
+  top of `imit_dfa` — so by C-FIXTURE the scarce DFA number is **not
+  interpretable at all**, whichever way it had come out.
+
+Note `scarce` trains on the 15 ensemble starts and is *scored* on them too, so
+**far/near are its only honest columns**. And matched budgets matter: at 2 000
+updates `scarce` gets 96 epochs and `abundant` 1.4, which makes any comparison
+at that budget a comparison of training lengths.
