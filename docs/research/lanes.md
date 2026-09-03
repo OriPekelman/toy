@@ -485,7 +485,9 @@ fixture cannot discriminate and every DFA row on it is void — read that row fi
 | `--plant-r R` / `--step-cap N` | the paper's `r = 3` and 300-step episodes (defaults) |
 | `--lr R` / `--clip-grad R` | **per arm.** See the note below |
 | `--budget N` | the **matched-work** budget, in plant steps — the only comparable currency between a GA and a gradient arm |
-| `--loss best\|terminal` | which step the arms **descend**, as distinct from the nearest approach they are **scored** at |
+| `--loss terminal\|best` | which step the arms **descend**, as distinct from the nearest approach they are **scored** at. `terminal` is the default (toy#189) |
+| `--load PATH` / `--trace PATH` | roll a trained controller out headless to a `tbu-traces/1` bundle (toy#190) |
+| `--trace-scheme` / `--trace-n` / `--trace-seed` / `--stride` | which starts to roll, how many, from which seed, and how much of each trace to keep |
 | `--ga-pop/--ga-gens/--ga-agg` | the paper's pole. `--ga-agg mean\|min`, both of which it reports as acceptable |
 | `--export PATH` | the controller in the frontend's format (`[layer][unit][w…, bias]`, bias **last**) plus a provenance sidecar |
 
@@ -507,14 +509,20 @@ projected error lands on is a pre-registered question.
   *physical* `d²` of order 10⁴ chained through ~30 plant steps, so one unclipped
   update saturates the steering and every later episode ends at step 0 — a flat
   loss curve, not an error.
-- **`--loss best` cannot train the paper's single-point start at all**, and the
-  reason is structural. From `(20, 10, −2)` backing up *increases* x, so an
-  untrained policy never gets closer than its start; the nearest approach IS the
-  start; and `d²` at the start is a **constant** no weight can move. The gradient
-  is then identically zero and every arm sits on a plateau reporting exactly
-  `504.0` — measured, 0/10 seeds, all four arms. `ga` reaches `d² < 5` on 5/5
-  seeds from the same start, which is the paper's own claim about why gradient
-  methods are a poor fit here.
+- **Neither loss recovers the paper's single-point start; `best` cannot even
+  train on it.** From `(20, 10, −2)` backing up *increases* x, so an untrained
+  policy never gets closer than its start. Under `best` the nearest approach IS
+  the start, `d²` there is a **constant** no weight can move, the gradient is
+  identically zero, and every arm sits on a plateau at exactly `504.0` (0/10
+  seeds, all four arms). `terminal` removes the plateau — the loss moves — and
+  the evaluated result is **still** exactly `504.0`, 0/10 seeds, all four arms,
+  at every LR tried. Only `ga` reaches `d² < 5` there (5/5 seeds), which is the
+  paper's own claim about why gradient methods are a poor fit on this plant.
+- **`terminal` costs the ensemble.** `bptt` under `best`: mean `d²` 2.5, docking
+  0.911. Under `terminal`: 2798.7 and 0.311, optimum interior at `lr 6.0`. The
+  default is `terminal` by decision on toy#189, because `best` cannot train the
+  single-point case at all; `--loss best` is one flag away and is the stronger
+  arm on the ensemble.
 
 The GA's fitness carries `fitness=reconstructed` in its provenance: the paper's
 *amended* fitness is a bitmap figure the scan did not preserve, and the form used
@@ -524,3 +532,31 @@ citation. `d²` itself is cited and unaffected.
 Gates: `gate-truck-plant` (the plant's parity against a golden trajectory from
 the frontend, and its analytic Jacobian against finite differences) and
 `gate-truck-lane` (the lane's own BPTT gradient, self-checked the same way).
+
+#### `--trace` — the `tbu-traces/1` bundle (toy#190)
+
+`--load` a controller (the `--export` format plus its sidecar) and roll it out
+headless over the single point, the 15-start ensemble, or `N` seeded yard draws;
+`--trace` writes one bundle the frontend overlays. The frontend never runs a
+forward pass, so there is no second controller implementation to keep in
+parity — **and the rollout shares `tk_rollout` with the training loop for the
+same reason**, rather than re-deriving a trajectory.
+
+Per-run summaries are carried **and recomputable from the trace**, which
+`gate-truck-lane` asserts by recomputing `best_d2`, `terminal_d2` and every `u`
+from the rows. Two consequences worth knowing:
+
+- `--stride k` keeps every k-th row **plus the last row and the best-approach
+  row, always**. Those are the two rows every summary is computed from; a stride
+  that dropped them would leave a bundle whose own numbers cannot be recovered
+  from its own trace. At `k=10` a 300-step run keeps 32 rows, ~9x smaller.
+- Yard starts are reproducible **from the seed alone** (the plant's own
+  `sample_yard!`), so a bundle from this engine and one from the frontend's CLI
+  overlay on identical states. `start.seed` and `start.idx` are recorded per run.
+
+`--load` is checked against the net shape: a 4-9-1 controller loaded into a
+3-input net is refused naming both counts, because a silently half-applied load
+would leave the tail of the net at init and read as a slightly worse arm.
+
+There is no gzip step in the runner — it has no zlib. Pipe it:
+`gzip -9 bundle.json`.

@@ -812,6 +812,12 @@ module Toy
                              "TRUCK_GA_AGG"    => (@ga_agg || ""),
                              "TRUCK_EVAL_N"    => (@eval_n ? @eval_n.to_s : ""),
                              "TRUCK_EXPORT"    => (@export_path || ""),
+                             "TRUCK_LOAD"      => (@load_ctrl || ""),
+                             "TRUCK_TRACE"     => (@trace_path || ""),
+                             "TRUCK_TRACE_SCHEME" => (@trace_scheme || ""),
+                             "TRUCK_TRACE_N"   => (@trace_n ? @trace_n.to_s : ""),
+                             "TRUCK_TRACE_SEED" => (@trace_seed ? @trace_seed.to_s : ""),
+                             "TRUCK_STRIDE"    => (@stride ? @stride.to_s : ""),
                              "TRUCK_B_SEED"    => (@dfa_b_seed || 1234).to_s,
                              "TRUCK_B_DIST"    => (@dfa_b_dist || ""),
                              "TRUCK_B_SCALE"   => (@dfa_b_scale || ""))
@@ -1003,7 +1009,7 @@ module Toy
           # reports neither its result nor its provenance — which is
           # exactly how every cell ended up driven through the env
           # harness instead.
-          losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") || l.start_with?("val:") || l.start_with?("train:") || l.start_with?("graph:") || l.start_with?("stream:") || l.start_with?("gen:") || l.start_with?("corpus:") || l.start_with?("noise:") || l.start_with?("half_snr:") || l.start_with?("control:") || l.start_with?("latent_std:") || l.start_with?("converged:") || l.start_with?("stage1:") || l.start_with?("arm:") || l.start_with?("resid:") || l.start_with?("judge:") || l.start_with?("objective:") || l.start_with?("epsmse:") || l.start_with?("bytelm:") || l.start_with?("ndfa:") || l.start_with?("ldfa:") || l.start_with?("bcond") || l.start_with?("gtx: ") || l.start_with?("truck: ") || l.start_with?("eval: ") || l.start_with?("export: ") || l.start_with?("selftest: ") }.map(&:chomp)
+          losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") || l.start_with?("val:") || l.start_with?("train:") || l.start_with?("graph:") || l.start_with?("stream:") || l.start_with?("gen:") || l.start_with?("corpus:") || l.start_with?("noise:") || l.start_with?("half_snr:") || l.start_with?("control:") || l.start_with?("latent_std:") || l.start_with?("converged:") || l.start_with?("stage1:") || l.start_with?("arm:") || l.start_with?("resid:") || l.start_with?("judge:") || l.start_with?("objective:") || l.start_with?("epsmse:") || l.start_with?("bytelm:") || l.start_with?("ndfa:") || l.start_with?("ldfa:") || l.start_with?("bcond") || l.start_with?("gtx: ") || l.start_with?("truck: ") || l.start_with?("eval: ") || l.start_with?("trace: ") || l.start_with?("export: ") || l.start_with?("selftest: ") }.map(&:chomp)
           emit(run_id, run_dir, losses)
         end
 
@@ -1197,7 +1203,8 @@ module Toy
               @fm_branch = true
             # ---- toy#189 (truck): the control lane's own knobs ----
             when "--start-scheme", "--loss", "--dfa-sum",
-                 "--ga-agg", "--plant-r", "--export"
+                 "--ga-agg", "--plant-r", "--export",
+                 "--load", "--trace", "--trace-scheme"
               key = @argv[i]
               i += 1
               val = @argv[i]
@@ -1209,6 +1216,9 @@ module Toy
               when "--ga-agg"       then @ga_agg = val
               when "--plant-r"      then @plant_r = val
               when "--export"       then @export_path = val
+              when "--load"         then @load_ctrl = val
+              when "--trace"        then @trace_path = val
+              when "--trace-scheme" then @trace_scheme = val
               end
             when /\A--start-scheme=(.*)\z/m then @start_scheme = $1
             when /\A--loss=(.*)\z/m         then @loss = $1
@@ -1216,7 +1226,11 @@ module Toy
             when /\A--ga-agg=(.*)\z/m       then @ga_agg = $1
             when /\A--plant-r=(.*)\z/m      then @plant_r = $1
             when /\A--export=(.*)\z/m       then @export_path = $1
-            when "--obs", "--step-cap", "--budget", "--ga-pop", "--ga-gens"
+            when /\A--load=(.*)\z/m         then @load_ctrl = $1
+            when /\A--trace=(.*)\z/m        then @trace_path = $1
+            when /\A--trace-scheme=(.*)\z/m then @trace_scheme = $1
+            when "--obs", "--step-cap", "--budget", "--ga-pop", "--ga-gens",
+                 "--trace-n", "--trace-seed", "--stride"
               key = @argv[i]
               i += 1
               val = @argv[i]
@@ -1228,12 +1242,18 @@ module Toy
               when "--budget"    then @budget = val.to_i
               when "--ga-pop"    then @ga_pop = val.to_i
               when "--ga-gens"   then @ga_gens = val.to_i
+              when "--trace-n"    then @trace_n = val.to_i
+              when "--trace-seed" then @trace_seed = val.to_i
+              when "--stride"     then @stride = val.to_i
               end
             when /\A--obs=(\d+)\z/       then @obs = $1.to_i
             when /\A--step-cap=(\d+)\z/  then @step_cap = $1.to_i
             when /\A--budget=(\d+)\z/    then @budget = $1.to_i
             when /\A--ga-pop=(\d+)\z/    then @ga_pop = $1.to_i
             when /\A--ga-gens=(\d+)\z/   then @ga_gens = $1.to_i
+            when /\A--trace-n=(\d+)\z/    then @trace_n = $1.to_i
+            when /\A--trace-seed=(\d+)\z/ then @trace_seed = $1.to_i
+            when /\A--stride=(\d+)\z/     then @stride = $1.to_i
             when /\A--eval-n=(\d+)\z/    then @eval_n = $1.to_i
 
             # ---- toy#153 (gnn): the graph lane's own knobs ----
@@ -2377,6 +2397,10 @@ when /\A--dfa-feedback-lr=(.*)\z/
             ["--dfa-sum",       %w[truck],                          !@dfa_sum.nil?, " (toy#189)"],
             ["--ga-pop/--ga-gens/--ga-agg", %w[truck],              (!@ga_pop.nil? || !@ga_gens.nil? || !@ga_agg.nil?), " (toy#189: the paper's pole)"],
             ["--export",        %w[truck],                          !@export_path.nil?, " (toy#189: the frontend's controller format)"],
+            ["--load/--trace/--trace-scheme/--trace-n/--trace-seed/--stride", %w[truck],
+             (!@load_ctrl.nil? || !@trace_path.nil? || !@trace_scheme.nil? ||
+              !@trace_n.nil? || !@trace_seed.nil? || !@stride.nil?),
+             " (toy#190: headless rollout of a trained controller to a tbu-traces/1 bundle)"],
             ["--graph",         %w[gnn],                            !@graph.nil?, " (toy#153)"],
             ["--nodes/--degree/--homophily/--feat-signal", %w[gnn],
              (!@nodes.nil? || !@degree.nil? || !@homophily.nil? || !@feat_signal.nil?), " (toy#153)"],

@@ -151,14 +151,14 @@
 #                     which basin a seed lands in, so an arm can be
 #                     bimodal rather than converged.
 #   TRUCK_BUDGET    — PLANT-STEP budget; 0 = unlimited (default 0)
-#   TRUCK_LOSS      — best (default) | terminal. WHICH STEP THE ARMS
+#   TRUCK_LOSS      — terminal (default) | best. WHICH STEP THE ARMS
 #                     DESCEND, as distinct from the step they are
 #                     SCORED at, which is always the nearest approach.
 #
-#                     `best` is toy#189's reading and descends what it
-#                     scores. IT CANNOT TRAIN THE PAPER'S SINGLE-POINT
-#                     START AT ALL, and the reason is structural rather
-#                     than a tuning problem: from (20, 10, -2) backing
+#                     `best` descends exactly what it scores and was
+#                     toy#189's original reading. IT CANNOT TRAIN THE
+#                     PAPER'S SINGLE-POINT START AT ALL, and the reason
+#                     is structural rather than a tuning problem: from (20, 10, -2) backing
 #                     up INCREASES x, so an untrained policy never gets
 #                     closer to the dock than its start, the nearest
 #                     approach IS the start, and d^2 at the start is a
@@ -169,13 +169,13 @@
 #                     measured, 0/10 seeds, all four arms.
 #
 #                     `terminal` grades where the episode ENDED, which
-#                     always has a gradient. It descends something other
-#                     than the score, so it is NOT the default and the
-#                     provenance line names it: this is toy#188's
-#                     landmine 2 (reporting one objective while
-#                     descending another) and the way not to repeat it
-#                     is to make the difference visible, not to hide it
-#                     behind a fallback.
+#                     always has a gradient, and is THE DEFAULT as of
+#                     toy#189's resolution. It descends something other
+#                     than the score — toy#188's landmine 2 — so the
+#                     difference is made VISIBLE rather than hidden: the
+#                     provenance carries `loss=`, and every step line
+#                     prints the descended `loss=` beside the scored
+#                     `score_d2=`.
 #   TRUCK_DFA_SUM   — episode (default) | to_best. Which steps the DFA
 #                     broadcast accumulates over. toy#189 writes
 #                     "Sum_t ... during the episode" while the gradient
@@ -202,6 +202,32 @@
 #                     constants (defaults 0.1 / 0.001, the paper's).
 #   TRUCK_SELFTEST  — 1 => finite-difference the analytic gradient and
 #                     exit. Landmine 1.
+#
+#   toy#190 — HEADLESS ROLLOUT to a `tbu-traces/1` bundle:
+#   TRUCK_LOAD      — a controller in the TRUCK_EXPORT format. Present =>
+#                     TRAINING IS SKIPPED and the loaded weights are
+#                     rolled out as-is.
+#   TRUCK_TRACE     — write the trace bundle here. Also works WITHOUT
+#                     TRUCK_LOAD, in which case the just-trained
+#                     controller is rolled out with no round trip.
+#   TRUCK_TRACE_SCHEME — point | ensemble | yard (default: TRUCK_START)
+#   TRUCK_TRACE_N   — yard draws (default 64)
+#   TRUCK_TRACE_SEED — the yard stream (default TRUCK_EVAL_SEED). Yard
+#                     starts are reproducible FROM THE SEED ALONE, via
+#                     the plant's own sample_yard!, so a bundle from
+#                     this engine and one from the frontend's CLI
+#                     overlay on identical states.
+#   TRUCK_STRIDE    — keep every k-th trace row. The LAST row and the
+#                     BEST-APPROACH row are ALWAYS kept whatever the
+#                     stride: they are the two rows every summary is
+#                     computed from, and a stride that dropped them
+#                     would leave a bundle whose own numbers cannot be
+#                     recomputed from its own trace.
+#
+#   THE ROLLOUT SHARES tk_rollout WITH TRAINING. It is not a second
+#   implementation to keep in parity — that is the whole point of the
+#   frontend consuming traces rather than running its own forward pass,
+#   and it applies just as much inside this file.
 #
 # STDOUT (byte-gated): "step <N>: loss=<float>" per update, then
 # "eval: set=<s> ..." per start set, "truck: <provenance>", and
@@ -275,12 +301,24 @@ EVAL_N      = EVAL_N_S.length > 0 ? EVAL_N_S.to_i : 64
 EVAL_SEED_S = ENV["TRUCK_EVAL_SEED"] || ""
 EVAL_SEED   = EVAL_SEED_S.length > 0 ? EVAL_SEED_S.to_i : 4242
 EXPORT      = ENV["TRUCK_EXPORT"] || ""
+LOAD_PATH   = ENV["TRUCK_LOAD"] || ""
+TRACE       = ENV["TRUCK_TRACE"] || ""
+TRACE_SCH_S = ENV["TRUCK_TRACE_SCHEME"] || ""
+TRACE_N_S   = ENV["TRUCK_TRACE_N"] || ""
+TRACE_N     = TRACE_N_S.length > 0 ? TRACE_N_S.to_i : 64
+TRACE_SD_S  = ENV["TRUCK_TRACE_SEED"] || ""
+STRIDE_S    = ENV["TRUCK_STRIDE"] || ""
+STRIDE      = STRIDE_S.length > 0 ? STRIDE_S.to_i : 1
 FIT_EPS_S   = ENV["TRUCK_FIT_EPS"] || ""
 FIT_EPS     = FIT_EPS_S.length > 0 ? FIT_EPS_S.to_f : 0.1
 FIT_GAM_S   = ENV["TRUCK_FIT_GAMMA"] || ""
 FIT_GAMMA   = FIT_GAM_S.length > 0 ? FIT_GAM_S.to_f : 0.001
 SELFTEST    = (ENV["TRUCK_SELFTEST"] || "") == "1"
 
+# Declared WITH the arm codes, not down in the provenance section: the
+# toy#190 rollout block reads it and runs earlier in the file, where a
+# constant defined later is simply nil.
+ARM_NAMES  = ["ga", "bptt", "frozen", "dfa_tb", "dfa_rx"]
 ARM_GA     = 0
 ARM_BPTT   = 1
 ARM_FROZEN = 2
@@ -297,7 +335,15 @@ ACT_TANH    = 1
 ACT = ACT_S == "tanh" ? ACT_TANH : ACT_SIGMOID
 
 SUM_TO_BEST = DFA_SUM_S == "to_best"
-LOSS_TERMINAL = LOSS_S == "terminal"
+# DEFAULT `terminal`, decided on toy#189 after `best` was measured
+# unable to train the paper's single-point start at all.
+#
+# THIS DEFAULT DESCENDS SOMETHING OTHER THAN THE SCORE, which is
+# toy#188's landmine 2 promoted to a default, so it is made loud rather
+# than quiet: the provenance line carries `loss=`, and every step line
+# prints the descended `loss=` AND the scored `score_d2=` side by side.
+# `best` remains available and descends exactly what it scores.
+LOSS_TERMINAL = LOSS_S.length > 0 ? (LOSS_S == "terminal") : true
 
 # ---- fail loud on every out-of-range knob (never-mask). ----
 if ARM_S.length > 0 && ARM_S != "ga" && ARM_S != "bptt" && ARM_S != "frozen" &&
@@ -486,6 +532,47 @@ def tk_forward(fw_w, fw_obs, fw_ob, fw_a, fw_h, fw_ab, fw_nin, fw_hid,
   fw_out[0] = fw_o
   fw_out[1] = fw_y
   tk_signal_of(fw_y, fw_kind)
+end
+
+# ---- loading a controller (toy#190) ----
+#
+# The export is a nested JSON array of numbers whose SHAPE is fully
+# determined by (hidden, n_in): hidden rows of (n_in weights + bias),
+# then one row of (hidden weights + bias). So the loader scans the
+# numbers IN DOCUMENT ORDER and checks the count, rather than carrying a
+# nested-array JSON parser for one known shape. A count mismatch is
+# fatal and names both sides — silently accepting a short file would
+# leave the tail of the net at whatever init produced, which reads as a
+# slightly worse arm rather than as a broken load.
+def tk_scan_floats(sf_str, sf_out, sf_max)
+  sf_n = 0
+  sf_i = 0
+  sf_len = sf_str.length
+  while sf_i < sf_len && sf_n < sf_max
+    sf_c = sf_str[sf_i]
+    if sf_c == "-" || sf_c == "+" || (sf_c >= "0" && sf_c <= "9")
+      sf_j = sf_i
+      sf_tok = ""
+      while sf_j < sf_len
+        sf_d = sf_str[sf_j]
+        if sf_d == "-" || sf_d == "+" || sf_d == "." || sf_d == "e" ||
+           sf_d == "E" || (sf_d >= "0" && sf_d <= "9")
+          sf_tok = sf_tok + sf_d
+          sf_j = sf_j + 1
+        else
+          sf_j = sf_len
+        end
+      end
+      sf_out[sf_n] = sf_tok.to_f
+      sf_n = sf_n + 1
+      # Resume past the token. Recomputing its length from the string is
+      # cheaper than tracking two cursors through the branch above.
+      sf_i = sf_i + sf_tok.length
+    else
+      sf_i = sf_i + 1
+    end
+  end
+  sf_n
 end
 
 # ---- the plant, and the second instance used for Jacobians ----
@@ -832,6 +919,43 @@ B_SIGMA2 = Toy::Train::DfaB.sigma_for(B_SCALE, E_DIM, 1, 1.0)
 b1m = Toy::Train::DfaB.fill(HIDDEN * E_DIM, B_SEED, B_DIST, B_SIGMA1)
 b2m = Toy::Train::DfaB.fill(E_DIM, B_SEED + 7919, B_DIST, B_SIGMA2)
 
+# toy#190: a loaded controller REPLACES the init and training is
+# skipped. Done after the init draw rather than instead of it so the
+# init RNG stream is identical either way — an arm that loads and one
+# that trains must not diverge in what else the seed drives.
+SKIP_TRAIN = LOAD_PATH.length > 0
+if SKIP_TRAIN
+  ld_raw = File.read(LOAD_PATH)
+  ld_buf = tk_zeros(N_PARAM + 8)
+  ld_n = tk_scan_floats(ld_raw, ld_buf, N_PARAM + 8)
+  if ld_n != N_PARAM
+    puts "toy-train-truck: TRUCK_LOAD " + LOAD_PATH + " holds " + ld_n.to_s +
+         " numbers, expected " + N_PARAM.to_s + " for a " + N_IN.to_s + "-" +
+         HIDDEN.to_s + "-1 net (check --obs and --hidden against the sidecar)"
+    exit 1
+  end
+  ld_k = 0
+  ld_j = 0
+  while ld_j < HIDDEN
+    ld_c = 0
+    while ld_c < N_IN
+      w[OFF_W1 + ld_j * N_IN + ld_c] = ld_buf[ld_k]
+      ld_k = ld_k + 1
+      ld_c = ld_c + 1
+    end
+    w[OFF_B1 + ld_j] = ld_buf[ld_k]
+    ld_k = ld_k + 1
+    ld_j = ld_j + 1
+  end
+  ld_j2 = 0
+  while ld_j2 < HIDDEN
+    w[OFF_W2 + ld_j2] = ld_buf[ld_k]
+    ld_k = ld_k + 1
+    ld_j2 = ld_j2 + 1
+  end
+  w[OFF_B2] = ld_buf[ld_k]
+end
+
 gs   = tk_zeros(4)
 gsn  = tk_zeros(4)
 dobs = tk_zeros(N_IN)
@@ -1103,7 +1227,12 @@ GA_AGG_MIN = GA_AGG_S == "min" ? 1 : 0
 # have silently become `bptt`.
 READOUT_ONLY = ARM == ARM_FROZEN ? 1 : 0
 
-if ARM == ARM_GA
+if SKIP_TRAIN
+  # A loaded controller is rolled out as-is. `updates` stays 0 and the
+  # provenance says so, so a trace bundle can never be mistaken for one
+  # produced by a run that also trained.
+  final_loss = 0.0
+elsif ARM == ARM_GA
   # ---- the GA: tournament selection, BLX-0.5 crossover, gaussian
   # mutation, elitism. THE OPERATORS ARE OURS AND SAID TO BE OURS: the
   # paper specifies a real-valued chromosome and "hybridised" and
@@ -1402,9 +1531,183 @@ while es < 4
   es = es + 1
 end
 
+# ======================================================================
+# toy#190 — the headless rollout, written as a `tbu-traces/1` bundle.
+# ======================================================================
+#
+# The frontend overlays what THE ENGINE drew, so it never runs a forward
+# pass and there is no second controller to keep in parity. That
+# argument applies inside this file too, which is why the rollout below
+# calls the SAME tk_rollout the training loop calls rather than
+# re-deriving a trajectory.
+#
+# Per-run summaries are carried AND recomputable from the trace, so a
+# reader can cross-check this engine's arithmetic against its own. That
+# is also why the stride never drops the last row or the best-approach
+# row: a bundle whose own summary cannot be recovered from its own trace
+# would be self-inconsistent in exactly the direction nobody checks.
+
+if TRACE.length > 0
+  tr_scheme = TRACE_SCH_S.length > 0 ? TRACE_SCH_S :
+              (START_MODE == ST_POINT ? "point" :
+               START_MODE == ST_YARD ? "yard" :
+               START_MODE == ST_LESSON ? "lesson" : "ensemble")
+  tr_seed = TRACE_SD_S.length > 0 ? TRACE_SD_S.to_i : EVAL_SEED
+  tr_n = tr_scheme == "ensemble" ? 15 : (tr_scheme == "point" ? 1 : TRACE_N)
+  tr_stride = STRIDE < 1 ? 1 : STRIDE
+
+  tf = File.open(TRACE, "w")
+  tf.write("{\"format\":\"tbu-traces/1\",\"provenance\":")
+  pb = Toy::Json::Builder.new
+  pb.add_str("arm",    ARM_NAMES[ARM])
+  pb.add_str("engine", "toy")
+  tr_gp = SpinelKit::Git.read
+  pb.add_str("engine_git", tr_gp.sha)
+  pb.add_str("weights", LOAD_PATH.length > 0 ? LOAD_PATH :
+                        (EXPORT.length > 0 ? EXPORT : "in-process"))
+  pb.add_num("train_seed", SEED)
+  nb = Toy::Json::Builder.new
+  nb.add_raw("shape", "[" + N_IN.to_s + "," + HIDDEN.to_s + ",1]")
+  nb.add_str("activation", ACT == ACT_TANH ? "tanh" : "logistic")
+  nb.add_str("output_map", ACT == ACT_TANH ? "identity" : "2s-1")
+  nb.add_num("obs", N_IN)
+  pb.add_obj("net", nb)
+  pb.add_str("objective", "d2_best_approach")
+  # Not decoration: a bundle from a run that only LOADED weights and one
+  # from a run that trained are otherwise indistinguishable.
+  pb.add_num("updates", updates)
+  pb.add_num("stride", tr_stride)
+  tf.write(pb.dump)
+
+  tf.write(",\"plant\":")
+  qb = Toy::Json::Builder.new
+  qb.add_raw("ls", plant.tt_ls.to_s)
+  qb.add_raw("lc", plant.tt_lc.to_s)
+  qb.add_raw("u_max_deg", (plant.tt_umax * 180.0 / Math::PI).to_s)
+  qb.add_raw("r", plant.tt_r.to_s)
+  qb.add_num("step_cap", STEP_CAP)
+  qb.add_str("dock_ref", plant.tt_dock == TruckTask::DOCK_MIDRIG ? "midrig" : "trailer")
+  qb.add_str("wrap", plant.tt_wrap == TruckTask::WRAP_NONE ? "none" : "pi")
+  tf.write(qb.dump)
+
+  tf.write(",\"columns\":[\"signal\",\"u\",\"x\",\"y\",\"tc\",\"ts\",\"clamped\"]")
+  tf.write(",\"runs\":[")
+
+  # The yard stream is seeded ONCE and drawn in sequence, so run `idx` is
+  # the draw index and the whole set is reproducible from the seed alone.
+  plant.seed!(tr_seed)
+  tr_i = 0
+  while tr_i < tr_n
+    if tr_scheme == "ensemble"
+      plant.ensemble_start!(tr_i)
+    elsif tr_scheme == "point"
+      plant.point_start!
+    elsif tr_scheme == "lesson"
+      plant.sample_lesson!(19, 64)
+    else
+      plant.sample_yard!(64)
+    end
+    tr_sx = plant.tt_x
+    tr_sy = plant.tt_y
+    tr_sc = plant.tt_oc
+    tr_ss = plant.tt_os
+
+    tk_rollout(plant, w, STEP_CAP, N_IN, HIDDEN, OFF_W1, OFF_B1, OFF_W2,
+               OFF_B2, ACT, rs_x, rs_y, rs_oc, rs_os, rs_clamp, rs_sig,
+               rs_o, rs_yout, rs_a, rs_h, rs_obs, fw_out, ro)
+    tr_T = ro[0].to_i
+    tr_best_step = ro[2].to_i
+
+    # How the episode ENDED, distinguished rather than lumped into
+    # "stopped": a policy that drives through the dock wall and one that
+    # runs out of steps are different failures, and the overlay colours
+    # them differently.
+    tr_end = "cap"
+    if plant.at_dock?
+      tr_end = "docked"
+    elsif tr_T < STEP_CAP
+      tr_end = "bound"
+      if !plant.above_dock?(plant.tt_x, plant.tt_y) ||
+         !plant.above_dock?(plant.coupling_x, plant.coupling_y) ||
+         !plant.above_dock?(plant.cab_front_x, plant.cab_front_y)
+        tr_end = "wall"
+      end
+    end
+
+    # Path length over the TRAILER point, from the stored trajectory.
+    tr_plen = 0.0
+    tr_px = tr_sx
+    tr_py = tr_sy
+    tr_k = 1
+    while tr_k <= tr_T
+      tr_nx = tr_k < tr_T ? rs_x[tr_k] : plant.tt_x
+      tr_ny = tr_k < tr_T ? rs_y[tr_k] : plant.tt_y
+      tr_dx = tr_nx - tr_px
+      tr_dy = tr_ny - tr_py
+      tr_plen = tr_plen + Math.sqrt(tr_dx * tr_dx + tr_dy * tr_dy)
+      tr_px = tr_nx
+      tr_py = tr_ny
+      tr_k = tr_k + 1
+    end
+
+    # The run object is emitted FIELD BY FIELD rather than built with
+    # Json::Builder and then reopened. The first version did
+    # `rb.dump.sub("}", ",\"trace\":[")`, which splices at the FIRST
+    # closing brace — the nested `start` object's, not the run's — and
+    # produced a bundle that parsed as far as run 0 before dying.
+    if tr_i > 0; tf.write(","); end
+    sb = Toy::Json::Builder.new
+    sb.add_raw("x",  tr_sx.to_s)
+    sb.add_raw("y",  tr_sy.to_s)
+    sb.add_raw("ts", tr_ss.to_s)
+    sb.add_raw("tc", tr_sc.to_s)
+    sb.add_str("scheme", tr_scheme)
+    sb.add_num("idx", tr_i)
+    sb.add_num("seed", tr_seed)
+    tf.write("{\"id\":" + tr_i.to_s)
+    tf.write(",\"start\":" + sb.dump)
+    tf.write(",\"end\":\"" + tr_end + "\"")
+    tf.write(",\"steps\":" + tr_T.to_s)
+    tf.write(",\"best_d2\":" + ro[1].to_s)
+    tf.write(",\"best_step\":" + tr_best_step.to_s)
+    tf.write(",\"terminal_d2\":" + ro[6].to_s)
+    tf.write(",\"clamp_count\":" + plant.tt_clamp_count.to_s)
+    tf.write(",\"path_len\":" + tr_plen.to_s)
+    tf.write(",\"trace\":[")
+
+    tr_wrote = 0
+    tr_t = 0
+    while tr_t < tr_T
+      # ALWAYS the last row and the row that produced the best approach,
+      # whatever the stride.
+      tr_keep = (tr_t % tr_stride) == 0 || tr_t == tr_T - 1 ||
+                (tr_best_step >= 1 && tr_t == tr_best_step - 1)
+      if tr_keep
+        tr_ax = tr_t + 1 < tr_T ? rs_x[tr_t + 1] : plant.tt_x
+        tr_ay = tr_t + 1 < tr_T ? rs_y[tr_t + 1] : plant.tt_y
+        tr_ac = tr_t + 1 < tr_T ? rs_oc[tr_t + 1] : plant.tt_oc
+        tr_as = tr_t + 1 < tr_T ? rs_os[tr_t + 1] : plant.tt_os
+        if tr_wrote > 0; tf.write(","); end
+        tf.write("[" + rs_sig[tr_t].to_s + "," +
+                 plant.steer_angle(rs_sig[tr_t]).to_s + "," +
+                 tr_ax.to_s + "," + tr_ay.to_s + "," +
+                 tr_ac.to_s + "," + tr_as.to_s + "," +
+                 rs_clamp[tr_t].to_s + "]")
+        tr_wrote = tr_wrote + 1
+      end
+      tr_t = tr_t + 1
+    end
+    tf.write("]}")
+    tr_i = tr_i + 1
+  end
+  tf.write("]}")
+  tf.close
+  puts "trace: " + TRACE + " runs=" + tr_n.to_s + " scheme=" + tr_scheme +
+       " seed=" + tr_seed.to_s + " stride=" + tr_stride.to_s
+end
+
 # ---- provenance ----
 
-ARM_NAMES = ["ga", "bptt", "frozen", "dfa_tb", "dfa_rx"]
 prov = "truck: arm=" + ARM_NAMES[ARM]
 prov = prov + " obs=" + N_IN.to_s
 prov = prov + " hidden=" + HIDDEN.to_s

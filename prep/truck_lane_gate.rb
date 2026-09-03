@@ -37,6 +37,13 @@
 #                   the frontend's shipped nets are tanh and ours are
 #                   logistic.
 #   8  REPRO        two identical runs, identical stdout.
+#  10  TRACE        toy#190's tbu-traces/1 bundle: every per-run summary
+#                   and every `u` recomputed FROM THE TRACE, the
+#                   export->load round trip exact, a wrong-shape
+#                   controller refused.
+#  11  STRIDE       the two things the frontend depends on: yard starts
+#                   reproducible from the seed alone, and a stride that
+#                   never drops the last or best-approach row.
 #   9  C-FIXTURE    bptt vs frozen, REPORTED not asserted — see the leg.
 
 ROOT   = File.expand_path("..", __dir__)
@@ -195,17 +202,31 @@ n0 = failures.length
 # never improves on, so its best approach IS step 0 and the episode
 # contributes no gradient. That must be COUNTED (landmine 4), not
 # silently treated as a converged update.
-zg, = run_truck({ "TRUCK_ARM" => "bptt", "TRUCK_START" => "point", "STEPS" => "1" })
+# TRUCK_LOSS=best is PINNED here: the vanishing gradient is a property
+# of THAT loss (the graded step can be 0), and the default is now
+# `terminal`, where the graded step is the episode length and can never
+# be 0. Leaving this leg on the default made it assert something the
+# default cannot produce.
+zg, = run_truck({ "TRUCK_ARM" => "bptt", "TRUCK_START" => "point",
+                  "TRUCK_LOSS" => "best", "STEPS" => "1" })
 zc = prov_field(zg, "zero_grad").to_i
 failures << "zero_grad not reported" if prov_field(zg, "zero_grad").nil?
-failures << "zero_grad=#{zc}: a no-contribution episode was not counted" if zc != 1
+failures << "zero_grad=#{zc} under loss=best: a no-contribution episode was not counted" if zc != 1
+# And the other side, which is exactly what the loss choice buys: under
+# `terminal` the same start always contributes.
+zt, = run_truck({ "TRUCK_ARM" => "bptt", "TRUCK_START" => "point",
+                  "TRUCK_LOSS" => "terminal", "STEPS" => "1" })
+if prov_field(zt, "zero_grad").to_i != 0
+  failures << "zero_grad under loss=terminal should be 0 (the graded step is the episode length)"
+end
 # And the other side: a healthy ensemble run must NOT be all-zero-grad,
 # or the arm never trained while printing a loss curve.
-he, = run_truck({ "TRUCK_ARM" => "bptt", "STEPS" => "50", "TRUCK_LR" => "1.0" })
+he, = run_truck({ "TRUCK_ARM" => "bptt", "STEPS" => "50", "TRUCK_LR" => "1.0",
+                  "TRUCK_LOSS" => "best" })
 hz = prov_field(he, "zero_grad").to_i
 failures << "zero_grad=#{hz}/50 on the ensemble: no update ever contributed" if hz >= 50
 puts(failures.length == n0 ?
-  "GATE ok [zero_grad]: a no-contribution episode is counted (1), and the ensemble run is not all-zero (#{hz}/50)" :
+  "GATE ok [zero_grad]: under loss=best a no-contribution episode is counted (1) and the ensemble run is not all-zero (#{hz}/50); under loss=terminal it is always 0" :
   "GATE FAIL [zero_grad]: #{failures[n0..].join('; ')}")
 
 # ------------------------------------------------------------------ 7
@@ -253,6 +274,126 @@ puts(failures.length == n0 ?
   "GATE ok [repro]: dfa_tb and ga are byte-reproducible at a fixed seed" :
   "GATE FAIL [repro]: #{failures[n0..].join('; ')}")
 
+# ----------------------------------------------------------------- 10
+# toy#190 — the trace bundle. The frontend overlays what THIS engine
+# drew, so the bundle's own numbers must be recoverable from its own
+# trace: that is the property the format promises and the one nobody
+# would notice breaking.
+n0 = failures.length
+Dir.mktmpdir("truck-trace") do |dir|
+  ctrl  = File.join(dir, "ctrl.json")
+  trace = File.join(dir, "traces.json")
+  trained, = run_truck({ "TRUCK_ARM" => "bptt", "STEPS" => "200",
+                         "TRUCK_LR" => "6.0", "TRUCK_EXPORT" => ctrl })
+  out, ok = run_truck({ "TRUCK_LOAD" => ctrl, "TRUCK_TRACE" => trace,
+                        "TRUCK_TRACE_SCHEME" => "ensemble" })
+  failures << "trace: rollout exited non-zero" unless ok.success?
+  failures << "trace: no trace line on stdout" unless out.include?("trace: ")
+
+  # A LOADED controller must reproduce the run that exported it, exactly.
+  # Anything less means the export or the loader is lossy, and a lossy
+  # controller reads as a slightly worse arm rather than as an error.
+  if ensemble_mean(trained) != ensemble_mean(out)
+    failures << "trace: reloaded controller scores #{ensemble_mean(out)} vs " \
+                "#{ensemble_mean(trained)} when exported — the round trip is lossy"
+  end
+
+  if File.exist?(trace)
+    b = JSON.parse(File.read(trace))
+    failures << "trace: wrong format tag #{b['format']}" unless b["format"] == "tbu-traces/1"
+    cols = %w[signal u x y tc ts clamped]
+    failures << "trace: columns #{b['columns']}" unless b["columns"] == cols
+    %w[arm engine engine_git weights train_seed net objective].each do |k|
+      failures << "trace: provenance missing #{k}" unless b.dig("provenance", k)
+    end
+    %w[ls lc u_max_deg r step_cap dock_ref wrap].each do |k|
+      failures << "trace: plant missing #{k}" if b.dig("plant", k).nil?
+    end
+    failures << "trace: expected 15 ensemble runs, got #{b['runs']&.length}" unless b["runs"]&.length == 15
+
+    # Recompute every per-run summary from the trace itself.
+    umax = b.dig("plant", "u_max_deg").to_f * Math::PI / 180.0
+    (b["runs"] || []).each do |r|
+      t = r["trace"]
+      if t.length != r["steps"]
+        failures << "trace: run #{r['id']} has #{t.length} rows for #{r['steps']} steps"
+        next
+      end
+      d2 = lambda do |row|
+        x, y, ts = row[2], row[3], row[5]
+        x * x + y * y + [ts**2, (ts - 2 * Math::PI)**2, (ts + 2 * Math::PI)**2].min
+      end
+      if r["best_step"] >= 1 && (d2.call(t[r["best_step"] - 1]) - r["best_d2"]).abs > 1e-9
+        failures << "trace: run #{r['id']} best_d2 does not match its own best_step row"
+      end
+      if (d2.call(t[-1]) - r["terminal_d2"]).abs > 1e-9
+        failures << "trace: run #{r['id']} terminal_d2 does not match its last row"
+      end
+      bad_u = t.find { |row| (row[1] - [[row[0], -1.0].max, 1.0].min * umax).abs > 1e-12 }
+      failures << "trace: run #{r['id']} has a u that is not signal*u_max" if bad_u
+      unless %w[docked wall bound cap].include?(r["end"])
+        failures << "trace: run #{r['id']} end=#{r['end'].inspect}"
+      end
+    end
+  else
+    failures << "trace: #{trace} not written"
+  end
+
+  # The other side of the loader: a controller of the wrong SHAPE must be
+  # REFUSED, not silently half-applied leaving the tail at init.
+  _, bad_ok = run_truck({ "TRUCK_LOAD" => ctrl, "TRUCK_OBS" => "3",
+                          "TRUCK_TRACE" => File.join(dir, "no.json") })
+  failures << "trace: a 4-9-1 controller loaded into a 3-input net was accepted" if bad_ok.success?
+end
+puts(failures.length == n0 ?
+  "GATE ok [trace]: tbu-traces/1 bundle parses, every per-run summary and every u recomputes from its own trace, the load round-trip is exact, and a wrong-shape controller is refused" :
+  "GATE FAIL [trace]: #{failures[n0..].join('; ')}")
+
+# ----------------------------------------------------------------- 11
+# The two properties the frontend actually depends on: yard starts
+# reproducible FROM THE SEED ALONE (so bundles from different engines
+# overlay on identical states), and a stride that never drops the two
+# rows every summary is computed from.
+n0 = failures.length
+Dir.mktmpdir("truck-stride") do |dir|
+  ctrl = File.join(dir, "ctrl.json")
+  run_truck({ "TRUCK_ARM" => "bptt", "STEPS" => "100", "TRUCK_LR" => "6.0",
+              "TRUCK_EXPORT" => ctrl })
+  mk = lambda do |name, seed, stride|
+    path = File.join(dir, name)
+    run_truck({ "TRUCK_LOAD" => ctrl, "TRUCK_TRACE" => path,
+                "TRUCK_TRACE_SCHEME" => "yard", "TRUCK_TRACE_N" => "12",
+                "TRUCK_TRACE_SEED" => seed.to_s, "TRUCK_STRIDE" => stride.to_s })
+    File.exist?(path) ? JSON.parse(File.read(path)) : nil
+  end
+  a  = mk.call("a.json", 1234, 1)
+  a2 = mk.call("a2.json", 1234, 1)
+  c  = mk.call("c.json", 4321, 1)
+  k  = mk.call("k.json", 1234, 10)
+  if [a, a2, c, k].any?(&:nil?)
+    failures << "stride: a bundle was not written"
+  else
+    starts = ->(b) { b["runs"].map { |r| r["start"].slice("x", "y", "ts", "tc") } }
+    failures << "stride: same seed gave different yard starts" unless starts.call(a) == starts.call(a2)
+    # Two-sided: if a DIFFERENT seed also gave the same starts, the seed
+    # is not driving the draw and "reproducible from the seed" is vacuous.
+    failures << "stride: a different seed gave identical starts — the seed is not wired" if starts.call(a) == starts.call(c)
+    failures << "stride: yard x left [50,100]" unless a["runs"].all? { |r| r["start"]["x"].between?(50, 100) }
+    a["runs"].each_with_index do |r, i|
+      kr = k["runs"][i]
+      failures << "stride: run #{i} kept #{kr['trace'].length} of #{r['steps']} rows (stride did nothing)" if r["steps"] > 30 && kr["trace"].length >= r["steps"]
+      failures << "stride: run #{i} dropped the LAST row" unless kr["trace"].last == r["trace"][r["steps"] - 1]
+      bs = r["best_step"]
+      if bs >= 1 && !kr["trace"].include?(r["trace"][bs - 1])
+        failures << "stride: run #{i} dropped the BEST-APPROACH row, so its own best_d2 is unrecoverable"
+      end
+    end
+  end
+end
+puts(failures.length == n0 ?
+  "GATE ok [stride]: yard starts reproduce from the seed alone (and a different seed moves them), and the stride keeps the last and best-approach rows" :
+  "GATE FAIL [stride]: #{failures[n0..].join('; ')}")
+
 # ------------------------------------------------------------------ 9
 # C-FIXTURE, REPORTED AND NOT ASSERTED. The programme's rule is that
 # `bptt` must beat `frozen` with margin or no DFA reading on this
@@ -262,13 +403,13 @@ puts(failures.length == n0 ?
 # every run instead, so the row cannot be skipped by accident.
 n0 = failures.length
 #
-# EACH ARM AT ITS OWN CELL. Running both at one LR is how toy#160 nearly
-# published "attention is DFA-hostile" from BP's learning rate. Measured
-# here over lr in {0.003 .. 30} x {best, terminal} x 3 seeds at 5000
-# updates: bptt peaks at 6.0 (interior — 12.0 collapses to 1513) and
-# frozen peaks at 0.1. Reading the pair at a shared lr=1.0 reported
-# 4999.7 vs 5399.8, a 7% margin, for a pair whose real separation is
-# three orders of magnitude.
+# EACH ARM AT ITS OWN CELL, UNDER THE DEFAULT LOSS. Running both at one
+# LR is how toy#160 nearly published "attention is DFA-hostile" from
+# BP's learning rate. Measured over lr in {0.003 .. 48} x {best,
+# terminal} x 3 seeds at 5000 updates: under loss=terminal (the default
+# since toy#189's resolution) bptt peaks at 6.0 and frozen at 3.0, both
+# interior. Reading the pair at a shared lr=1.0 reported a 7% margin for
+# a pair whose real separation is three orders of magnitude.
 bl = []
 fl = []
 bd = []
@@ -277,7 +418,7 @@ fd = []
   b, = run_truck({ "TRUCK_ARM" => "bptt", "SEED" => seed.to_s,
                    "STEPS" => "2000", "TRUCK_LR" => "6.0" })
   f, = run_truck({ "TRUCK_ARM" => "frozen", "SEED" => seed.to_s,
-                   "STEPS" => "2000", "TRUCK_LR" => "0.1" })
+                   "STEPS" => "2000", "TRUCK_LR" => "3.0" })
   bl << ensemble_mean(b)
   fl << ensemble_mean(f)
   bd << dock5(b)
@@ -292,17 +433,31 @@ else
   wins = bl.zip(fl).count { |b, f| b < f }
   bdm = bd.compact.sum / [bd.compact.length, 1].max
   fdm = fd.compact.sum / [fd.compact.length, 1].max
+  # "bptt ahead" needs BOTH a margin and a majority of PAIRED seeds.
+  # The first version said "the fixture DISCRIMINATES" off `bm < fm`
+  # alone, and duly said it for a 0.3% mean difference that bptt won on
+  # 1 of 3 seeds. Arms sharing a controlled factor are read paired
+  # (B0a's verdict flipped on exactly that), and a margin inside seed
+  # noise is not a margin.
+  margin = fm > 0.0 ? (fm - bm) / fm : 0.0
+  verdict = if wins >= 2 && margin > 0.1
+              "bptt ahead by #{(margin * 100).round(1)}% on #{wins}/3 — the fixture DISCRIMINATES"
+            elsif bm < fm
+              "bptt ahead by only #{(margin * 100).round(1)}% on #{wins}/3 — INSIDE SEED NOISE at this smoke budget; " \
+              "the research reading is 5000 updates at each arm's own cell, not 2000 here"
+            else
+              "FROZEN NOT BEATEN — if this holds at the research budget, every DFA row on this fixture is uninterpretable (C-FIXTURE)"
+            end
   puts "cfixture: bptt(lr6) mean_d2 #{bm.round(1)} dock5 #{bdm.round(3)} vs " \
-       "frozen(lr0.1) mean_d2 #{fm.round(1)} dock5 #{fdm.round(3)}, " \
-       "3 paired seeds (bptt lower on #{wins}/3) — " \
-       "#{bm < fm ? 'bptt ahead, the fixture DISCRIMINATES' : 'FROZEN NOT BEATEN — every DFA row on this fixture is uninterpretable (C-FIXTURE)'}"
+       "frozen(lr3) mean_d2 #{fm.round(1)} dock5 #{fdm.round(3)}, " \
+       "3 paired seeds — #{verdict}"
   puts "GATE ok [cfixture]: the comparison ran on 3 paired seeds; the reading " \
        "above is research output, deliberately not a pass/fail condition"
 end
 
 # ----------------------------------------------------------------------
 if failures.empty?
-  puts "GATE PASS [truck-lane]: 8 legs (gradcheck, arms, frozen, b-reaches, budget, zero_grad, export, repro)"
+  puts "GATE PASS [truck-lane]: 10 legs (gradcheck, arms, frozen, b-reaches, budget, zero_grad, export, repro, trace, stride)"
 else
   puts "GATE FAIL [truck-lane]: #{failures.length} failure(s)"
   failures.each { |f| puts "  - #{f}" }
