@@ -824,6 +824,8 @@ module Toy
                              "TRUCK_EXPORT"     => @export_path.to_s,
                              "TRUCK_E"          => @error_mode.to_s,
                              "TRUCK_E_DECAY"    => @e_decay.to_s,
+                             "TRUCK_CAR"        => (@car ? "1" : ""),
+                             "TRUCK_LESSON"     => @lesson.to_s,
                              "TRUCK_EXPERT"     => @expert.to_s,
                              "TRUCK_DEMOS"      => @demos.to_s,
                              "TRUCK_DEMO_N"     => @demo_n.to_s,
@@ -1264,6 +1266,8 @@ module Toy
               val = $2
               return bad_arg("--#{key} must be a float in (0, 1], got #{val.inspect}") unless val =~ /\A\d*\.?\d+\z/ && val.to_f > 0.0 && val.to_f <= 1.0
               key == "base-rate" ? @base_rate = val.to_f : @lin_scale = val.to_f
+            when "--car"
+              @car = true
             when "--fm-branch"
               @fm_branch = true
             # ---- toy#189 (truck): the control lane's own knobs ----
@@ -1305,7 +1309,7 @@ module Toy
             when /\A--demos=(.*)\z/m        then @demos = $1
             when "--obs", "--step-cap", "--budget", "--ga-pop", "--ga-gens",
                  "--trace-n", "--trace-seed", "--stride",
-                 "--demo-n", "--demo-batch"
+                 "--demo-n", "--demo-batch", "--lesson"
               key = @argv[i]
               i += 1
               val = @argv[i]
@@ -1322,6 +1326,7 @@ module Toy
               when "--stride"     then @stride = val.to_i
               when "--demo-n"     then @demo_n = val.to_i
               when "--demo-batch" then @demo_batch = val.to_i
+              when "--lesson"     then @lesson = val.to_i
               end
             when /\A--obs=(\d+)\z/       then @obs = $1.to_i
             when /\A--step-cap=(\d+)\z/  then @step_cap = $1.to_i
@@ -1333,6 +1338,7 @@ module Toy
             when /\A--stride=(\d+)\z/     then @stride = $1.to_i
             when /\A--demo-n=(\d+)\z/     then @demo_n = $1.to_i
             when /\A--demo-batch=(\d+)\z/ then @demo_batch = $1.to_i
+            when /\A--lesson=(\d+)\z/     then @lesson = $1.to_i
             when /\A--eval-n=(\d+)\z/    then @eval_n = $1.to_i
 
             # ---- toy#153 (gnn): the graph lane's own knobs ----
@@ -2492,6 +2498,8 @@ when /\A--dfa-feedback-lr=(.*)\z/
             ["--budget",        %w[truck],                          !@budget.nil?, " (toy#189: the MATCHED-WORK budget, in plant steps)"],
             ["--loss",          %w[truck],                          !@loss.nil?, " (toy#189: which step the arms DESCEND, as distinct from the nearest approach they are SCORED at)"],
             ["--dfa-sum",       %w[truck],                          !@dfa_sum.nil?, " (toy#189)"],
+            ["--car/--lesson",  %w[truck],                      (@car || !@lesson.nil?),
+             " (toy#195: the regime search — the no-trailer body, and the curriculum index as a difficulty axis)"],
             ["--expert/--demos/--demo-n/--demo-batch", %w[truck],
              (!@expert.nil? || !@demos.nil? || !@demo_n.nil? || !@demo_batch.nil?),
              " (toy#194: the imitation leg — a manufactured expert, and scarce vs abundant demonstrations)"],

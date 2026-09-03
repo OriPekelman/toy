@@ -121,6 +121,17 @@
 #   STEPS / SEED / RUN_DIR / TOY_RUN_ID   — as every other runner.
 #                     STEPS is the UPDATE cap (generations, for `ga`).
 #   TRUCK_ARM       — ga | bptt | frozen | dfa_tb | dfa_rx (default bptt)
+#   TRUCK_CAR       — 1 => the CAR regime (toy#195): no trailer, no
+#                     jack-knife, one heading. A docking policy on a car
+#                     is near-linear in (y, theta) — the regime a fixed
+#                     linear feedback law could work in. Set on BOTH
+#                     plant instances so bptt's Jacobian models the body
+#                     the rollout uses.
+#   TRUCK_LESSON    — 0..19, the curriculum index for
+#                     TRUCK_START=lesson (default 19, the full yard).
+#                     Lesson 0 is x in (4,10) m, y in +/-2 m, straight
+#                     trailer: the NEAR field where a proportional law
+#                     docks. The index is a DIFFICULTY AXIS.
 #   TRUCK_START     — ensemble (default) | point | yard | lesson
 #   TRUCK_OBS       — 4 (default) | 3 | 8   [see toy_truck_task.rb]
 #   TRUCK_HIDDEN    — hidden width (default 9, the paper's)
@@ -317,6 +328,9 @@ DEMO_B_S    = ENV["TRUCK_DEMO_BATCH"] || ""
 DEMO_BATCH  = DEMO_B_S.length > 0 ? DEMO_B_S.to_i : 64
 WD_S        = ENV["TRUCK_WD"] || ""
 WD          = WD_S.length > 0 ? WD_S.to_f : 0.0
+CAR         = (ENV["TRUCK_CAR"] || "") == "1"
+LESSON_S    = ENV["TRUCK_LESSON"] || ""
+LESSON      = LESSON_S.length > 0 ? LESSON_S.to_i : 19
 TRACE       = ENV["TRUCK_TRACE"] || ""
 TRACE_SCH_S = ENV["TRUCK_TRACE_SCHEME"] || ""
 TRACE_N_S   = ENV["TRUCK_TRACE_N"] || ""
@@ -426,6 +440,10 @@ if START_S.length > 0 && START_S != "ensemble" && START_S != "point" &&
    START_S != "half_yard" && START_S != "half_yard_neg"
   puts "toy-train-truck: TRUCK_START must be " +
        "ensemble|point|yard|lesson|half_yard|half_yard_neg, got " + START_S
+  exit 1
+end
+if LESSON < 0 || LESSON > 19
+  puts "toy-train-truck: TRUCK_LESSON must be 0..19, got " + LESSON.to_s
   exit 1
 end
 if OBS_N != 3 && OBS_N != 4 && OBS_N != 8
@@ -674,12 +692,21 @@ plant.paper_defaults!
 plant.tt_r = PLANT_R
 plant.tt_max_steps = STEP_CAP
 plant.tt_obs = OBS_N == 3 ? TruckTask::OBS3 : (OBS_N == 8 ? TruckTask::OBS8 : TruckTask::OBS4)
+# toy#195: the CAR regime, set on BOTH instances — the Jacobian plant
+# must model the same body the rollout plant does, or bptt descends a
+# truck's derivatives along a car's trajectory.
+if CAR
+  plant.tt_car = 1
+end
 
 jplant = TruckTask.new
 jplant.paper_defaults!
 jplant.tt_r = PLANT_R
 jplant.tt_max_steps = STEP_CAP
 jplant.tt_obs = plant.tt_obs
+if CAR
+  jplant.tt_car = 1
+end
 
 # ---- rollout storage, allocated once ----
 
@@ -1535,7 +1562,7 @@ ga_best_d2  = 0.0
 # steps_used, min_d2].
 sc = tk_zeros(4)
 
-def tk_score(scp_plant, scp_w, scp_state, scp_mode, scp_nstart, scp_cap,
+def tk_score(scp_plant, scp_w, scp_state, scp_mode, scp_nstart, scp_cap, scp_lesson,
              scp_nin, scp_hid, scp_ow1, scp_ob1, scp_ow2, scp_ob2, scp_kind,
              scp_x, scp_y, scp_oc, scp_os, scp_clamp, scp_sig, scp_o, scp_yout,
              scp_a, scp_h, scp_obs, scp_fw, scp_ro, scp_agg_min,
@@ -1547,7 +1574,7 @@ def tk_score(scp_plant, scp_w, scp_state, scp_mode, scp_nstart, scp_cap,
   scp_steps = 0
   scp_k = 0
   while scp_k < scp_nstart
-    tk_set_start!(scp_plant, scp_mode, scp_k, 19)
+    tk_set_start!(scp_plant, scp_mode, scp_k, scp_lesson)
     tk_rollout(scp_plant, scp_w, scp_cap, scp_nin, scp_hid,
                scp_ow1, scp_ob1, scp_ow2, scp_ob2, scp_kind,
                scp_x, scp_y, scp_oc, scp_os, scp_clamp, scp_sig, scp_o,
@@ -1686,7 +1713,7 @@ elsif ARM == ARM_GA
         pw.push(pop[pi2 * N_PARAM + pz])
         pz = pz + 1
       end
-      tk_score(plant, pw, train_state, START_MODE, N_START, STEP_CAP,
+      tk_score(plant, pw, train_state, START_MODE, N_START, STEP_CAP, LESSON,
                N_IN, HIDDEN, OFF_W1, OFF_B1, OFF_W2, OFF_B2, ACT,
                rs_x, rs_y, rs_oc, rs_os, rs_clamp, rs_sig, rs_o, rs_yout,
                rs_a, rs_h, rs_obs, fw_out, ro, GA_AGG_MIN,
@@ -1779,7 +1806,7 @@ else
     contributed = 0
     ks = 0
     while ks < N_START
-      tk_set_start!(plant, START_MODE, ks, 19)
+      tk_set_start!(plant, START_MODE, ks, LESSON)
       tk_rollout(plant, w, STEP_CAP, N_IN, HIDDEN, OFF_W1, OFF_B1, OFF_W2,
                  OFF_B2, ACT, rs_x, rs_y, rs_oc, rs_os, rs_clamp, rs_sig,
                  rs_o, rs_yout, rs_a, rs_h, rs_obs, fw_out, ro)
@@ -1904,8 +1931,15 @@ def tk_eval(evp_plant, evp_w, evp_set, evp_n, evp_cap, evp_nin, evp_hid,
             evp_ow1, evp_ob1, evp_ow2, evp_ob2, evp_kind,
             evp_x, evp_y, evp_oc, evp_os, evp_clamp, evp_sig, evp_o, evp_yout,
             evp_a, evp_h, evp_obs, evp_fw, evp_ro, evp_seed, evp_paths,
-            evp_out)
-  # evp_set: 0 ensemble (15 fixed), 1 point, 2 far yard, 3 near field
+            evp_mode, evp_lesson, evp_out)
+  # evp_set: 0 ensemble (15 fixed), 1 point, 2 far yard, 3 near field,
+  #          4 TRAIN — the run's OWN start scheme (toy#195).
+  #
+  # Set 4 exists because the regime search asks "at what lesson does
+  # this arm stop docking", and none of the four fixed sets IS a lesson.
+  # Scoring a lesson-0 policy on the far yard answers a generalisation
+  # question instead of the regime question. With TRUCK_START=ensemble
+  # it duplicates set 0, which is the honest degenerate case.
   evp_plant.seed!(evp_seed)
   evp_xmin = evp_plant.tt_x_min
   evp_xmax = evp_plant.tt_x_max
@@ -1920,6 +1954,9 @@ def tk_eval(evp_plant, evp_w, evp_set, evp_n, evp_cap, evp_nin, evp_hid,
     evp_plant.tt_y_max = 25.0
   end
   evp_count = evp_set == 0 ? 15 : (evp_set == 1 ? 1 : evp_n)
+  if evp_set == 4
+    evp_count = evp_mode == 0 ? 15 : (evp_mode == 1 ? 1 : evp_n)
+  end
   evp_sum = 0.0
   evp_min = 1.0e18
   evp_dock = 0
@@ -1935,7 +1972,9 @@ def tk_eval(evp_plant, evp_w, evp_set, evp_n, evp_cap, evp_nin, evp_hid,
   evp_clamped_runs = 0
   evp_i = 0
   while evp_i < evp_count
-    if evp_set == 0
+    if evp_set == 4
+      tk_set_start!(evp_plant, evp_mode, evp_i, evp_lesson)
+    elsif evp_set == 0
       evp_plant.ensemble_start!(evp_i)
     elsif evp_set == 1
       evp_plant.point_start!
@@ -1985,15 +2024,15 @@ def tk_eval(evp_plant, evp_w, evp_set, evp_n, evp_cap, evp_nin, evp_hid,
   nil
 end
 
-EV_NAMES = ["ensemble", "point", "far", "near"]
-ev_mean = tk_zeros(4)
-ev_dock = tk_zeros(4)
+EV_NAMES = ["ensemble", "point", "far", "near", "train"]
+ev_mean = tk_zeros(5)
+ev_dock = tk_zeros(5)
 es = 0
-while es < 4
+while es < 5
   tk_eval(plant, w, es, EVAL_N, STEP_CAP, N_IN, HIDDEN, OFF_W1, OFF_B1,
           OFF_W2, OFF_B2, ACT, rs_x, rs_y, rs_oc, rs_os, rs_clamp, rs_sig,
           rs_o, rs_yout, rs_a, rs_h, rs_obs, fw_out, ro, EVAL_SEED,
-          ev_paths, ev)
+          ev_paths, START_MODE, LESSON, ev)
   ev_mean[es] = ev[0]
   ev_dock[es] = ev[2]
   puts "eval: set=" + EV_NAMES[es] + " n=" + ev[3].to_i.to_s +
@@ -2074,7 +2113,7 @@ if TRACE.length > 0
   plant.seed!(tr_seed)
   tr_i = 0
   while tr_i < tr_n
-    tk_set_start!(plant, tr_mode, tr_i, 19)
+    tk_set_start!(plant, tr_mode, tr_i, LESSON)
     tr_sx = plant.tt_x
     tr_sy = plant.tt_y
     tr_sc = plant.tt_oc
@@ -2171,6 +2210,9 @@ prov = prov + " outmap=" + (ACT == ACT_TANH ? "identity" : "2sigma-1")
 prov = prov + " r=" + PLANT_R.to_s
 prov = prov + " cap=" + STEP_CAP.to_s
 prov = prov + " start=" + tk_scheme_name(START_MODE)
+if START_MODE == ST_LESSON
+  prov = prov + " lesson=" + LESSON.to_s
+end
 prov = prov + " seed=" + SEED.to_s
 prov = prov + " lr=" + LR.to_s
 prov = prov + " clip=" + CLIP.to_s
@@ -2322,7 +2364,7 @@ if EVENTS.length > 0
     TinyNN.tnn_events_emit(rs.dump)
 
     ei = 0
-    while ei < 4
+    while ei < 5
       eb = Toy::Json::Builder.new
       eb.add_str("kind",  "eval")
       eb.add_str("phase", "eval")

@@ -489,6 +489,7 @@ fixture cannot discriminate and every DFA row on it is void — read that row fi
 | `--load PATH` / `--trace PATH` | roll a trained controller out headless to a `tbu-traces/1` bundle (toy#190) |
 | `--trace-scheme` / `--trace-n` / `--trace-seed` / `--stride` | which starts to roll, how many, from which seed, and how much of each trace to keep |
 | `--error-mode xyt\|yt\|centered\|signed_x` | what the DFA broadcast projects (toy#193). `xyt` is the default and byte-null |
+| `--car` / `--lesson i` | the regime search (toy#195): the no-trailer body, and the curriculum index 0..19 as a difficulty axis |
 | `--arm imit_bp\|imit_dfa\|imit_frozen` + `--expert PATH` | the imitation leg (toy#194): train a fresh net on a docking expert's per-step action |
 | `--demos scarce\|abundant` / `--demo-n` / `--demo-batch` / `--weight-decay` | the paper's 15 starts, or `N` yard starts; and the regularisation F17's comparison had |
 | `--ga-pop/--ga-gens/--ga-agg` | the paper's pole. `--ga-agg mean\|min`, both of which it reports as acceptable |
@@ -680,3 +681,45 @@ Note `scarce` trains on the 15 ensemble starts and is *scored* on them too, so
 **far/near are its only honest columns**. And matched budgets matter: at 2 000
 updates `scarce` gets 96 epochs and `abundant` 1.4, which makes any comparison
 at that budget a comparison of training lengths.
+
+#### The regime search (toy#195) — and why there is no regime for a broadcast
+
+`dfa_tb` is a fixed linear feedback law on the terminal error. The natural next
+question is whether there is a corner of this plant where such a law *is* a good
+controller. Three knobs make those corners reachable: `--lesson i` (the demo's
+curriculum as a difficulty axis, 0 = near field, 19 = full yard), `--car` (the
+no-trailer body — no jack-knife, no hitch instability, a docking policy that is
+near-linear in `(y, θ)`), and `--error-mode`/`TRUCK_E_NORM`.
+
+Every regime is scored on the **`train` eval set** — the run's own start scheme —
+because scoring a lesson-0 policy on the far yard answers a generalisation
+question instead of the regime question.
+
+Best over `lr ∈ {0.2, 2.0, 6.0}`, 3 seeds, 4000 updates, `train` dock5:
+
+| regime | `bptt` | `frozen` | `dfa_tb` | `dfa_rx` |
+|---|---|---|---|---|
+| lesson 0 (near) | 0.969 | **0.969** | 0.990 | 0.979 |
+| lesson 5 | 0.688 | 0.292 | 0.260 | 0.115 |
+| lesson 10 | 0.552 | 0.167 | 0.000 | 0.010 |
+| lesson 15 | 0.906 | 0.417 | 0.000 | 0.000 |
+| lesson 19 (yard) | 0.885 | 0.333 | 0.000 | 0.000 |
+| car + ensemble | 1.000 | 0.422 | 0.000 | 0.400 |
+| car + yard | 0.979 | 0.073 | 0.000 | 0.000 |
+
+**There is no regime on either axis where the broadcast beats its own control**,
+and the reason is structural rather than a gap in the search:
+
+- **At lesson 0 everything docks, `frozen` included (0.969).** Per C-FIXTURE that
+  is a trivial task, not a regime, so `dfa_tb`'s 0.990 there is uninterpretable.
+- **At lesson 5 `dfa_tb` (0.260) is level with `frozen` (0.292)**; from lesson 10
+  on it is at zero while `frozen` still docks 0.17–0.42.
+- **The car is not the boundary.** `dfa_tb` docks nothing on a car either, in a
+  regime where `bptt` docks 100% and `frozen` 42%. So the trailer is not what
+  stops it.
+
+The general statement this supports: **the regime where a fixed linear feedback
+law docks is the same regime where a frozen random body with a trained readout
+docks.** A broadcast-DFA positive cannot exist there by construction — there is
+nothing for the body to learn that freezing does not already give you, which is
+`dfa-vs-bp`'s own F9d/N1b rule arriving from a new direction.

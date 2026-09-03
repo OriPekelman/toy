@@ -621,6 +621,115 @@ end
 # ----------------------------------------------------------------------
 
 puts ""
+# --------------------------------------------------------------- leg 13
+# CAR MODE (toy#195). A car is not a truck with Ls = 0 — the trailer
+# update divides by Ls — so it is its own branch, and its own branch
+# needs its own gate. bptt reads the car's Jacobian, so a sign error
+# there would flatter or damn every arm on the car regime silently.
+
+tc2 = TruckTask.new
+tc2.paper_defaults!
+tc2.tt_car = 1
+tc2.tt_wrap = TruckTask::WRAP_NONE
+
+tc2.reset_state!(60.0, 10.0, 0.3, -0.9)
+mirror_ok = fabs(tc2.tt_os - tc2.tt_oc) < 1.0e-15
+n = 0
+while n < 40
+  tc2.step!(n % 7 == 0 ? 1.0 : -0.35)
+  if fabs(tc2.tt_os - tc2.tt_oc) > 1.0e-15; mirror_ok = false; end
+  n = n + 1
+end
+car_clamps = tc2.tt_clamp_count
+
+tc2.reset_state!(60.0, 0.0, 0.7, 0.7)
+tc2.step!(0.0)
+straight_ok = fabs(tc2.tt_oc - 0.7) < 1.0e-15 &&
+              fabs(tc2.tt_x - (60.0 - 3.0 * Math.cos(0.7))) < 1.0e-12 &&
+              fabs(tc2.tt_y - (0.0 - 3.0 * Math.sin(0.7))) < 1.0e-12
+
+tc2.reset_state!(60.0, 0.0, 0.0, 0.0)
+tc2.step!(1.0)
+turn_pos = tc2.tt_oc
+tc2.reset_state!(60.0, 0.0, 0.0, 0.0)
+tc2.step!(-1.0)
+turn_neg = tc2.tt_oc
+turn_ok = turn_pos > 0.0 && turn_neg < 0.0 && fabs(turn_pos + turn_neg) < 1.0e-15
+
+if mirror_ok && car_clamps == 0 && straight_ok && turn_ok
+  puts "truck CAR ok — one heading (Os mirrors Oc), 0 clamps in 40 steps, " +
+       "u=0 backs along the heading without turning, +/-u turn symmetrically"
+else
+  puts "truck CAR FAIL — mirror " + mirror_ok.to_s + " clamps " + car_clamps.to_s +
+       " straight " + straight_ok.to_s + " turn " + turn_ok.to_s
+  fails = fails + 1
+end
+
+# --------------------------------------------------------------- leg 14
+# The car's Jacobian against a central difference of the car itself.
+# The Os column is EXCLUDED from the comparison and asserted zero
+# separately: Os mirrors Oc on a car, so perturbing Os alone is not a
+# state the car can be in, and the Jacobian deliberately carries the
+# whole angle dependence in the Oc column.
+
+CAR_X  = [60.0, 40.0, 75.0]
+CAR_Y  = [10.0, -20.0, 5.0]
+CAR_TH = [0.3, -0.7, 1.1]
+CAR_U  = [0.4, -0.9, 0.15]
+
+tj2 = TruckTask.new
+tj2.paper_defaults!
+tj2.tt_car = 1
+tj2.tt_wrap = TruckTask::WRAP_NONE
+
+car_worst = 0.0
+car_worst_i = 0
+car_os_col_ok = true
+ci = 0
+while ci < 3
+  cx = CAR_X[ci]
+  cy = CAR_Y[ci]
+  cth = CAR_TH[ci]
+  cu = CAR_U[ci]
+  col = 0
+  while col < 5
+    probe(tj2, cx, cy, cth, cth, cu, col, h, hi)
+    probe(tj2, cx, cy, cth, cth, cu, col, -h, lo)
+    row = 0
+    while row < 4
+      fd[row * 5 + col] = (hi[row] - lo[row]) / (2.0 * h)
+      row = row + 1
+    end
+    col = col + 1
+  end
+  tj2.reset_state!(cx, cy, cth, cth)
+  tj2.jacobian!(cu)
+  k = 0
+  while k < 20
+    ccol = k % 5
+    if ccol == 3
+      if fabs(tj2.tt_jac[k]) > 0.0; car_os_col_ok = false; end
+    else
+      d = fabs(tj2.tt_jac[k] - fd[k])
+      if d > car_worst
+        car_worst = d
+        car_worst_i = k
+      end
+    end
+    k = k + 1
+  end
+  ci = ci + 1
+end
+
+if car_worst <= TOL_FD && car_os_col_ok
+  puts "truck CAR-JACOBIAN ok — 48 entries over 3 states, worst dev " +
+       car_worst.to_s + "; the Os column is exactly zero (one heading)"
+else
+  puts "truck CAR-JACOBIAN FAIL — worst dev " + car_worst.to_s +
+       " at entry " + car_worst_i.to_s + " os_col_zero " + car_os_col_ok.to_s
+  fails = fails + 1
+end
+
 puts "provenance: " + TruckTask.new.provenance
 if fails == 0
   puts "truck-plant: PASS"

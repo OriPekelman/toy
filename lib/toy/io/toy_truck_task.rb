@@ -175,6 +175,7 @@ class TruckTask
                 :tt_x_min, :tt_x_max, :tt_y_min, :tt_y_max,
                 :tt_yard_x_min, :tt_yard_x_max,
                 :tt_world_x_max, :tt_world_y_min, :tt_world_y_max,
+                :tt_car,
                 :tt_dock_x, :tt_dock_y,
                 :tt_x, :tt_y, :tt_oc, :tt_os,
                 :tt_steps, :tt_clamped, :tt_clamp_count,
@@ -219,6 +220,24 @@ class TruckTask
     @tt_world_x_max = 200.0
     @tt_world_y_min = -100.0
     @tt_world_y_max = 100.0
+
+    # toy#195 — CAR MODE (no trailer). Schoenauer & Ronald trained a car
+    # before the truck (their '93 paper, cited in ICEC'94 as the origin
+    # of the fitness). A car has NO jack-knife absorbing state, no
+    # hitch-angle instability, and a docking policy that is near-linear
+    # in (y, theta) — which is exactly the regime a fixed linear
+    # feedback law could work in.
+    #
+    # A MODE, NOT Ls = 0: the trailer update divides by Ls, so passing
+    # zero is a division by zero rather than a car.
+    #
+    # THE KINEMATICS ARE OURS. The '93 paper is not to hand, so this is
+    # the standard reverse bicycle model written to match this plant's
+    # conventions (back along the heading; steering turns the heading),
+    # NOT a transcription. Os is held EQUAL to Oc throughout, so the
+    # observation, the score, the dock test and the export format all
+    # work unchanged and a car controller is the same 4-9-1 shape.
+    @tt_car = 0
 
     @tt_dock_x = 0.0
     @tt_dock_y = 0.0
@@ -294,6 +313,11 @@ class TruckTask
       @tt_oc = wrap_pi(@tt_oc)
       @tt_os = wrap_pi(@tt_os)
     end
+    # In car mode there is one heading, so a start that sets them apart
+    # would silently be a truck start on a car.
+    if @tt_car == 1
+      @tt_os = @tt_oc
+    end
     @tt_steps       = 0
     @tt_clamped     = 0
     @tt_clamp_count = 0
@@ -356,6 +380,35 @@ class TruckTask
     lc = @tt_lc
     os = @tt_os
     oc = @tt_oc
+
+    if @tt_car == 1
+      # ---- car: one rigid body, heading Oc, wheelbase Lc ----
+      ca = r * Math.cos(u)
+      ch = r * Math.sin(u) / lc
+      if ch > 1.0 || ch < -1.0
+        @tt_asin_sat = @tt_asin_sat + 1
+      end
+      if ch > 1.0;  ch = 1.0;  end
+      if ch < -1.0; ch = -1.0; end
+      @tt_x = @tt_x - ca * Math.cos(oc)
+      @tt_y = @tt_y - ca * Math.sin(oc)
+      @tt_oc = oc + Math.asin(ch)
+      @tt_os = @tt_oc
+      # No hitch, so no jack-knife: the flag is reported as never firing
+      # rather than left stale from a previous truck step.
+      @tt_clamped = 0
+      if @tt_wrap == WRAP_PI
+        @tt_oc = wrap_pi(@tt_oc)
+        @tt_os = @tt_oc
+      end
+      @tt_steps = @tt_steps + 1
+      cd2 = sr_d2
+      if cd2 < @tt_best_d2
+        @tt_best_d2 = cd2
+        mark_best!
+      end
+      return nil
+    end
 
     a = r * Math.cos(u)
     d = oc - os
@@ -435,8 +488,11 @@ class TruckTask
   # ---- rig geometry ----
 
   # The coupling device: Ls along the trailer from the centre rear.
-  def coupling_x; @tt_x + @tt_ls * Math.cos(@tt_os); end
-  def coupling_y; @tt_y + @tt_ls * Math.sin(@tt_os); end
+  # In car mode there is no trailer, so the "coupling" is the body
+  # itself: Ls collapses to 0 for geometry (never for the update, which
+  # divides by it — see tt_car).
+  def coupling_x; @tt_x + (@tt_car == 1 ? 0.0 : @tt_ls) * Math.cos(@tt_os); end
+  def coupling_y; @tt_y + (@tt_car == 1 ? 0.0 : @tt_ls) * Math.sin(@tt_os); end
 
   # The cab's front axle: Lc further along the cab heading.
   def cab_front_x; coupling_x + @tt_lc * Math.cos(@tt_oc); end
@@ -669,6 +725,47 @@ class TruckTask
   # It is also finite-difference gated (prep/smokes/smoke_truck_plant.rb):
   # a sign error here would hide in the direction of a plausible result.
   def jacobian!(u)
+    if @tt_car == 1
+      # d(x', y', Oc', Os')/d(x, y, Oc, Os, u) for the car. Os is a
+      # MIRROR of Oc here, so the whole angle dependence sits in the Oc
+      # column and the Os column is zero — otherwise the chain would
+      # count the same heading twice.
+      cth = @tt_oc
+      cca = @tt_r * Math.cos(u)
+      csu = Math.sin(u)
+      chh = @tt_r * csu / @tt_lc
+      if chh > 1.0;  chh = 1.0;  end
+      if chh < -1.0; chh = -1.0; end
+      cq = 1.0 - chh * chh
+      if cq < 1.0e-12; cq = 1.0e-12; end
+      cih = 1.0 / Math.sqrt(cq)
+      cdu = @tt_r * Math.cos(u) * cih / @tt_lc
+
+      @tt_jac[0] = 1.0
+      @tt_jac[1] = 0.0
+      @tt_jac[2] = cca * Math.sin(cth)
+      @tt_jac[3] = 0.0
+      @tt_jac[4] = @tt_r * csu * Math.cos(cth)
+
+      @tt_jac[5] = 0.0
+      @tt_jac[6] = 1.0
+      @tt_jac[7] = 0.0 - cca * Math.cos(cth)
+      @tt_jac[8] = 0.0
+      @tt_jac[9] = @tt_r * csu * Math.sin(cth)
+
+      @tt_jac[10] = 0.0
+      @tt_jac[11] = 0.0
+      @tt_jac[12] = 1.0
+      @tt_jac[13] = 0.0
+      @tt_jac[14] = cdu
+
+      @tt_jac[15] = 0.0
+      @tt_jac[16] = 0.0
+      @tt_jac[17] = 1.0
+      @tt_jac[18] = 0.0
+      @tt_jac[19] = cdu
+      return nil
+    end
     ls = @tt_ls
     lc = @tt_lc
     r  = @tt_r
@@ -857,6 +954,7 @@ class TruckTask
     s = s + " obs=" + obs_dim.to_s
     s = s + " max_steps=" + @tt_max_steps.to_s
     s = s + " asin=saturate"
+    s = s + " body=" + (@tt_car == 1 ? "car" : "truck")
     s
   end
 

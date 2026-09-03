@@ -606,6 +606,63 @@ puts(failures.length == n0 ?
   "GATE ok [imit]: expert required, demos generated, scarce < abundant, imit_frozen's body stays at init while its readout moves, B_SEED moves imit_dfa only, and the imitation loss falls" :
   "GATE FAIL [imit]: #{failures[n0..].join('; ')}")
 
+# ----------------------------------------------------------------- 16
+# toy#195 — the regime knobs: TRUCK_CAR, TRUCK_LESSON, and the `train`
+# eval set that makes a regime self-scoring.
+n0 = failures.length
+car, ok = run_truck({ "TRUCK_ARM" => "bptt", "STEPS" => "300", "TRUCK_CAR" => "1",
+                      "TRUCK_LR" => "6.0" })
+failures << "regime: car mode exited non-zero" unless ok.success?
+failures << "regime: provenance does not say body=car" unless car.include?("body=car")
+trk, = run_truck({ "TRUCK_ARM" => "bptt", "STEPS" => "300", "TRUCK_LR" => "6.0" })
+failures << "regime: truck provenance does not say body=truck" unless trk.include?("body=truck")
+
+# A car has no hitch, so no rollout can clamp. The truck's rollouts do.
+# Both sides asserted: a frac_clamped_runs of 0 on the truck would mean
+# the metric stopped working rather than that the car has no hitch.
+clamped = lambda do |out, set|
+  line = out.lines.find { |l| l.start_with?("eval: set=#{set} ") }
+  line && line[/frac_clamped_runs=(\S+)/, 1].to_f
+end
+failures << "regime: a car rollout clamped (#{clamped.call(car, 'far')})" unless clamped.call(car, "far") == 0.0
+failures << "regime: no truck rollout clamped, so the flag is not being read" unless clamped.call(trk, "far").to_f > 0.0
+
+# The lesson index reaches the runner and IS a difficulty axis: lesson 0
+# is the near field and lesson 19 the full yard, so the same arm at the
+# same budget must not score them the same.
+l0, = run_truck({ "TRUCK_ARM" => "bptt", "STEPS" => "800", "TRUCK_LR" => "6.0",
+                  "TRUCK_START" => "lesson", "TRUCK_LESSON" => "0", "TRUCK_EVAL_N" => "16" })
+l19, = run_truck({ "TRUCK_ARM" => "bptt", "STEPS" => "800", "TRUCK_LR" => "6.0",
+                   "TRUCK_START" => "lesson", "TRUCK_LESSON" => "19", "TRUCK_EVAL_N" => "16" })
+failures << "regime: lesson index missing from provenance" unless prov_field(l0, "lesson") == "0"
+failures << "regime: lesson 19 not named" unless prov_field(l19, "lesson") == "19"
+tmean = lambda do |out|
+  line = out.lines.find { |l| l.start_with?("eval: set=train ") }
+  line && line[/mean_d2=(\S+)/, 1].to_f
+end
+if tmean.call(l0).nil? || tmean.call(l19).nil?
+  failures << "regime: no train eval line"
+elsif tmean.call(l0) >= tmean.call(l19)
+  failures << "regime: lesson 0 (#{tmean.call(l0)}) is not easier than lesson 19 (#{tmean.call(l19)}) — the index is not a difficulty axis"
+end
+_, bad = run_truck({ "TRUCK_ARM" => "bptt", "STEPS" => "5", "TRUCK_LESSON" => "25" })
+failures << "regime: TRUCK_LESSON=25 was accepted" if bad.success?
+
+# The `train` set must BE the training scheme: under the default
+# ensemble it is set 0 by construction, which is the honest degenerate
+# case and the cheapest proof it is wired to the scheme at all.
+ens, = run_truck({ "TRUCK_ARM" => "bptt", "STEPS" => "200", "TRUCK_EVAL_N" => "8" })
+e0 = ens.lines.find { |l| l.start_with?("eval: set=ensemble ") }
+e4 = ens.lines.find { |l| l.start_with?("eval: set=train ") }
+if e0.nil? || e4.nil?
+  failures << "regime: missing ensemble or train eval line"
+elsif e0.sub("set=ensemble", "") != e4.sub("set=train", "")
+  failures << "regime: `train` differs from `ensemble` under TRUCK_START=ensemble"
+end
+puts(failures.length == n0 ?
+  "GATE ok [regime]: car mode never clamps while the truck does, the lesson index is a measured difficulty axis and is range-checked, and `train` is the run's own scheme" :
+  "GATE FAIL [regime]: #{failures[n0..].join('; ')}")
+
 # ------------------------------------------------------------------ 9
 # C-FIXTURE, REPORTED AND NOT ASSERTED. The programme's rule is that
 # `bptt` must beat `frozen` with margin or no DFA reading on this
@@ -669,7 +726,7 @@ end
 
 # ----------------------------------------------------------------------
 if failures.empty?
-  puts "GATE PASS [truck-lane]: 14 legs (gradcheck, arms, frozen, b-reaches, budget, zero_grad, export, repro, trace, stride, half_yard, metrics, e-mode, imit)"
+  puts "GATE PASS [truck-lane]: 15 legs (gradcheck, arms, frozen, b-reaches, budget, zero_grad, export, repro, trace, stride, half_yard, metrics, e-mode, imit, regime)"
 else
   puts "GATE FAIL [truck-lane]: #{failures.length} failure(s)"
   failures.each { |f| puts "  - #{f}" }
