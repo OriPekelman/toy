@@ -1,6 +1,6 @@
 # Research fixtures — the task lanes
 
-toy ships eleven **fixture** recipes: synthetic task lanes that exist so toy can
+toy ships twelve **fixture** recipes: synthetic task lanes that exist so toy can
 test its credit-assignment capabilities *independently of any one research
 question*. They are supported, gated, and reproducible — they are simply not the
 product path, and a newcomer never needs them.
@@ -10,7 +10,7 @@ product path, and a newcomer never needs them.
 | **Capability** — credit rules (`--policy chain\|dfa\|frozen`), feedback matrices (`DfaB`, Kolen–Pollack, nDFA, LDFA), optimizers, LR schedules, checkpointing, instruments | framework features, documented in [`cli.md`](../cli.md) |
 | **Fixture** — the lanes below | this document |
 
-The lanes are `mlp ctr gnn ssm lstm gtx diff difflm ae franken franken-moe`. Each is
+The lanes are `mlp ctr gnn ssm lstm gtx diff difflm ae franken franken-moe truck`. Each is
 its own compiled binary (`libexec/toy-train-<lane>`), driven by the CLI as a pure
 ENV-marshalling shim, and pinned by its own gate.
 
@@ -441,3 +441,86 @@ full held-out CE on the `val:` line stays the authoritative matched quantity;
 both are printed.
 
 Off by default and byte-null when off.
+
+---
+
+### `truck` — the truck backer-upper, the first CLOSED-LOOP lane (toy#189)
+
+Every lane above is a **static dataset**. This one is not: the policy determines
+the states it subsequently sees, which is the whole reason the
+`dfa-for-dynamic-control` arc exists. Nothing measured on a static fixture says
+whether DFA's noisier updates drift and compound in a loop or act as exploration
+that makes a policy robust to its own mistakes.
+
+The plant is Nguyen & Widrow's truck-and-trailer on Schoenauer & Ronald's arcsin
+reformulation (`lib/toy/io/toy_truck_task.rb`, toy#188), and the target is to
+**reproduce S&R's ICEC'94 result with a DFA-trained net in place of their GA**.
+
+**Why it is an experiment and not a re-run.** The GA has *no error signal* — one
+number per episode. So "DFA instead of GA" cannot mean BPTT-through-the-plant
+with `W2ᵀ` swapped for a random matrix; that keeps the entire gradient path the
+GA never had. It means an episodic **state error, randomly projected**, with no
+plant Jacobian anywhere (`dfa_tb`). Textbook DFA still hands the readout its true
+`dL/dy`; here `dL/du_t` does not exist without the plant.
+
+| arm | hidden `W1` | readout `W2` | role |
+|---|---|---|---|
+| `ga` | evolution | evolution | the paper's pole, reproduced |
+| `bptt` | exact plant Jacobian | exact | the ceiling |
+| `frozen` | fixed at init | exact | **the fixture gate** |
+| `dfa_tb` | `B1·e` | `B2·e` | the headline arm |
+| `dfa_rx` | `B1·e` | exact | disambiguation |
+
+`frozen` is not a formality: four inputs into nine random sigmoids is a good
+random-feature basis. If `bptt` does not beat it with margin at matched seeds the
+fixture cannot discriminate and every DFA row on it is void — read that row first.
+
+| flag | |
+|---|---|
+| `--arm ga\|bptt\|frozen\|dfa_tb\|dfa_rx` | which credit-rule pair (default `bptt`) |
+| `--start-scheme ensemble\|point\|yard\|lesson` | `ensemble` = the paper's 15 fixed starts (default) |
+| `--obs 4\|3\|8` | the paper's three input sets; `8` is its rescaled-duplicate trick |
+| `--hidden N` | hidden width (default 9 — with `--obs 4` that is the paper's 55 weights) |
+| `--act sigmoid\|tanh` | the paper's logistic (default) or the frontend's tanh. Also selects the output→steering map: `2σ−1` vs identity |
+| `--plant-r R` / `--step-cap N` | the paper's `r = 3` and 300-step episodes (defaults) |
+| `--lr R` / `--clip-grad R` | **per arm.** See the note below |
+| `--budget N` | the **matched-work** budget, in plant steps — the only comparable currency between a GA and a gradient arm |
+| `--loss best\|terminal` | which step the arms **descend**, as distinct from the nearest approach they are **scored** at |
+| `--ga-pop/--ga-gens/--ga-agg` | the paper's pole. `--ga-agg mean\|min`, both of which it reports as acceptable |
+| `--export PATH` | the controller in the frontend's format (`[layer][unit][w…, bias]`, bias **last**) plus a provenance sidecar |
+
+**The score is the NEAREST APPROACH over the episode**, `d² = x² + y² +
+min(θs², (θs−2π)², (θs+2π)²)` — the GA scored the best point on the trajectory,
+not where it stopped. `far` and `near` start sets are reported **separately on
+every run**, never pooled: the paper's own split is that the gradient-free method
+owned the far field and lost the close-up field, and which side a randomly
+projected error lands on is a pre-registered question.
+
+#### Three things measured here that will cost you time otherwise
+
+- **`--lr` is per arm, over four orders of magnitude.** Measured at 5000 updates
+  × 3 seeds: `bptt` peaks at `6.0` (interior — `12.0` collapses), `frozen` at
+  `0.1`, `dfa_rx` at `0.2`. Reading `bptt` and `frozen` at one shared `lr=1.0`
+  reports a 7% margin for a pair whose real separation is three orders of
+  magnitude.
+- **`--clip-grad` is effectively required** (default `1.0`). The objective is a
+  *physical* `d²` of order 10⁴ chained through ~30 plant steps, so one unclipped
+  update saturates the steering and every later episode ends at step 0 — a flat
+  loss curve, not an error.
+- **`--loss best` cannot train the paper's single-point start at all**, and the
+  reason is structural. From `(20, 10, −2)` backing up *increases* x, so an
+  untrained policy never gets closer than its start; the nearest approach IS the
+  start; and `d²` at the start is a **constant** no weight can move. The gradient
+  is then identically zero and every arm sits on a plateau reporting exactly
+  `504.0` — measured, 0/10 seeds, all four arms. `ga` reaches `d² < 5` on 5/5
+  seeds from the same start, which is the paper's own claim about why gradient
+  methods are a poor fit here.
+
+The GA's fitness carries `fitness=reconstructed` in its provenance: the paper's
+*amended* fitness is a bitmap figure the scan did not preserve, and the form used
+(`1/(ε+d²) · 1/(1+γl)`) satisfies everything its text states but is not a
+citation. `d²` itself is cited and unaffected.
+
+Gates: `gate-truck-plant` (the plant's parity against a golden trajectory from
+the frontend, and its analytic Jacobian against finite differences) and
+`gate-truck-lane` (the lane's own BPTT gradient, self-checked the same way).

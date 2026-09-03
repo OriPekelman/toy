@@ -1983,6 +1983,32 @@ tinynn/ab_smoke_patch_embed: tinynn/ab_smoke_patch_embed.rb lib/toy/models/trans
 prep/smokes/smoke_vit_tiny: prep/smokes/smoke_vit_tiny.rb lib/toy/llm/engine/vit_tiny_engine.rb lib/toy/models/toy_vit.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
+# toy#189 — the truck-backer-upper CONTROL lane: five pre-registered
+# arms (ga / bptt / frozen / dfa_tb / dfa_rx) over the toy#188 plant.
+#
+# NO GRAPH: 55 weights and 300-step episodes, so the net is scalar
+# loops Spinel compiles to C (a ggml graph per step would be dominated
+# by per-op FFI). tinynn is linked for the EVENTS WRITER only, which is
+# why libtinynn_ggml.a is still a prerequisite. CPU-only, no CUDA twin.
+# Own compilation unit (landmine #16).
+libexec/toy-train-truck: lib/toy/run/train_truck.rb \
+		lib/toy/io/json_builder.rb lib/toy/io/json.rb lib/toy/io/toy_events.rb \
+		vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
+		lib/toy/io/toy_truck_task.rb lib/toy/train/dfa_b.rb \
+		lib/toy/models/transformer.rb \
+		lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS) | libexec
+	$(SPINEL) $< -o $@
+toy-train-truck: libexec/toy-train-truck
+.PHONY: toy-train-truck
+
+# The lane gate. Leg 1 is the SELFTEST — the analytic BPTT gradient
+# finite-differenced against the plant, every parameter, including a
+# clamped configuration — because `bptt` is the ceiling every other arm
+# is read against and a sign error there would make DFA look good.
+.PHONY: gate-truck-lane
+gate-truck-lane: libexec/toy-train-truck
+	ruby prep/truck_lane_gate.rb
+
 # toy#188 — the truck-and-trailer PLANT parity gate
 # (dfa-for-dynamic-control's fixture; lib/toy/io/toy_truck_task.rb).
 #
@@ -2974,8 +3000,8 @@ runs-prune:
 gates-partition-check:
 	@test $$(( $(words $(GATES_FRAMEWORK)) + $(words $(GATES_RESEARCH)) )) -eq $(words $(GATES)) \
 	  || { echo "PARTITION BROKEN: $(words $(GATES_FRAMEWORK))+$(words $(GATES_RESEARCH)) != $(words $(GATES))"; exit 1; }
-	@test $(words $(FIXTURE_LANES)) -eq 11 \
-	  || { echo "FIXTURE_LANES read $(words $(FIXTURE_LANES)) lanes, expected 11 — the sed against FIXTURE_RECIPES has drifted"; exit 1; }
+	@test $(words $(FIXTURE_LANES)) -eq 12 \
+	  || { echo "FIXTURE_LANES read $(words $(FIXTURE_LANES)) lanes, expected 12 — the sed against FIXTURE_RECIPES has drifted"; exit 1; }
 	@echo "ok: $(words $(GATES)) legs = $(words $(GATES_FRAMEWORK)) framework + $(words $(GATES_RESEARCH)) research; $(words $(FIXTURE_LANES)) lanes read from FIXTURE_RECIPES"
 
 # toy#109 CUDA franken leg — the CUDA twin of the spec-callable runner

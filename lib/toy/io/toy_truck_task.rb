@@ -137,11 +137,14 @@
 #     the physically sensible reading, and it keeps a rollout scoreable
 #     — counted in tt_asin_sat and named in `provenance`.
 #  4. sr_fitness IS A RECONSTRUCTION, not a citation. See its comment.
-#  5. The frontend's validity test uses the four CORNERS of a 3 m-wide
-#     rectangle; `valid?` tests the three rig POINTS. A marginal state
-#     can differ. Its rendering world is also wider ([0,200]x[-100,100])
-#     than the yard sampled from ([0,100]x[-50,50]); the yard is fields,
-#     so widen them rather than concluding the port is wrong.
+#  5. THE SAMPLING BOX IS NOT THE WORLD BOX. tt_x_min/_max/tt_y_min/_max
+#     are where starts are DRAWN (the paper's generalisation region);
+#     tt_world_* is where the rig may BE (the frontend's rendering
+#     world). Conflating them makes the paper's own y = +/-50 ensemble
+#     starts instantly invalid and every episode zero steps long — see
+#     valid?. The frontend's validity test also uses the four CORNERS of
+#     a 3 m-wide rectangle where valid? tests rig POINTS, so a marginal
+#     state can differ.
 #
 # Spinel hygiene: plain class, no-arg ctor, no default args, no Struct,
 # while loops, typed-empty array seeds, no #{} interpolation.
@@ -171,6 +174,7 @@ class TruckTask
                 :tt_max_steps,
                 :tt_x_min, :tt_x_max, :tt_y_min, :tt_y_max,
                 :tt_yard_x_min, :tt_yard_x_max,
+                :tt_world_x_max, :tt_world_y_min, :tt_world_y_max,
                 :tt_dock_x, :tt_dock_y,
                 :tt_x, :tt_y, :tt_oc, :tt_os,
                 :tt_steps, :tt_clamped, :tt_clamp_count,
@@ -206,9 +210,15 @@ class TruckTask
     @tt_y_min = -50.0
     @tt_y_max = 50.0
 
-    # The validity box. x > 0 is the dock wall; the rest is the yard.
+    # The dock wall.
     @tt_yard_x_min = 0.0
     @tt_yard_x_max = 100.0
+
+    # The WORLD box the rig may occupy — the frontend's rendering
+    # world, deliberately WIDER than the sampling box above. See valid?.
+    @tt_world_x_max = 200.0
+    @tt_world_y_min = -100.0
+    @tt_world_y_max = 100.0
 
     @tt_dock_x = 0.0
     @tt_dock_y = 0.0
@@ -457,21 +467,36 @@ class TruckTask
     dx < 0.1 && dy < 0.1
   end
 
-  # x > 0 is the dock wall; the yard box is the rest. Tested on the
-  # three rig points — see landmine 5 on how this differs from the
-  # frontend's four-corner test.
+  # TWO DIFFERENT BOXES, and conflating them is a bug toy#189 found
+  # within an hour of consuming this file.
+  #
+  #  - THE DOCK WALL (x > 0) is a hard physical constraint and applies
+  #    to EVERY rig point: no part of the truck may pass through the
+  #    dock.
+  #  - THE WORLD BOX is where the rig may be, and it is NOT the box
+  #    starts are sampled from. The paper's own 15-start ensemble sits
+  #    AT y = +/-50, so a rig pointing outward has its coupling at
+  #    y = 64 the instant it starts. Testing every rig point against
+  #    the sampling box made all ten of those starts instantly invalid,
+  #    every episode zero steps long, and every arm report a flat loss
+  #    curve at d^2 ~ 9157 — a plausible number, not an error.
+  #    So the world box defaults to the FRONTEND's rendering world,
+  #    [0,200] x [-100,100], and is tested on the trailer reference
+  #    point, while tt_x_min/tt_x_max/tt_y_min/tt_y_max stay the
+  #    SAMPLING box (the paper's generalisation region).
   def valid?
-    if !point_valid?(@tt_x, @tt_y);             return false; end
-    if !point_valid?(coupling_x, coupling_y);   return false; end
-    if !point_valid?(cab_front_x, cab_front_y); return false; end
+    if !above_dock?(@tt_x, @tt_y);             return false; end
+    if !above_dock?(coupling_x, coupling_y);   return false; end
+    if !above_dock?(cab_front_x, cab_front_y); return false; end
+    if @tt_x > @tt_world_x_max;  return false; end
+    if @tt_y < @tt_world_y_min;  return false; end
+    if @tt_y > @tt_world_y_max;  return false; end
     true
   end
 
-  def point_valid?(x, y)
+  # The dock wall. `x <= 0` is through the wall, not merely at it.
+  def above_dock?(x, y)
     if x <= @tt_yard_x_min; return false; end
-    if x > @tt_yard_x_max;  return false; end
-    if y < @tt_y_min;       return false; end
-    if y > @tt_y_max;       return false; end
     true
   end
 

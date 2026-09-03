@@ -58,7 +58,7 @@ module Toy
         # See docs/research/lanes.md.
         FRAMEWORK_RECIPES = %w[from-scratch lora warm-start vit-tiny].freeze
         FIXTURE_RECIPES   = %w[franken franken-moe mlp ctr gnn ssm lstm gtx
-                               diff ae difflm].freeze
+                               diff ae difflm truck].freeze
         ALL_RECIPES       = (FRAMEWORK_RECIPES + FIXTURE_RECIPES).freeze
 
         # NOTE: target name MUST equal the output path — ToyRoot.ensure_built
@@ -109,6 +109,9 @@ module Toy
         # toy#153 (DFA-arch T1) — the GNN node-classification lane. Own
         # binary, CPU-only.
         GNN_RUNNER_TARGET = "libexec/toy-train-gnn"
+        # toy#189 — the truck-backer-upper CONTROL lane (the plant is
+        # toy#188). Own binary, CPU-only: 55 weights, no graph at all.
+        TRUCK_RUNNER_TARGET = "libexec/toy-train-truck"
         # toy#155 (DFA-arch T2) — the selective-scan / Mamba-lite lane.
         # Own binary, CPU-only this slice (tao#19 defers its CUDA twin to
         # the long-sequence memory measurement).
@@ -471,6 +474,8 @@ module Toy
                      DIFF_RUNNER_TARGET
                    elsif @recipe == "ssm"
                      SSM_RUNNER_TARGET
+                   elsif @recipe == "truck"
+                     TRUCK_RUNNER_TARGET
                    elsif @recipe == "gnn"
                      GNN_RUNNER_TARGET
                    elsif @recipe == "ctr"
@@ -783,6 +788,33 @@ module Toy
                              "SSM_B_SEED"      => (@dfa_b_seed || 1234).to_s,
                              "SSM_B_DIST"      => (@dfa_b_dist || ""),
                              "SSM_B_SCALE"     => (@dfa_b_scale || ""))
+          elsif @recipe == "truck"
+            # Lane-local TRUCK_* namespace. Every value is passed as a
+            # STRING and empty means "the runner's default": this lane's
+            # defaults are the PAPER's conventions (r=3, 300-step
+            # episodes, DOCK_TRAILER), and re-stating them here would
+            # give the CLI a second place to drift from.
+            env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
+                             "TRUCK_ARM"       => (@arm || ""),
+                             "TRUCK_START"     => (@start_scheme || ""),
+                             "TRUCK_OBS"       => (@obs ? @obs.to_s : ""),
+                             "TRUCK_HIDDEN"    => (@hidden ? @hidden.to_s : ""),
+                             "TRUCK_ACT"       => (@act || ""),
+                             "TRUCK_R"         => (@plant_r || ""),
+                             "TRUCK_STEP_CAP"  => (@step_cap ? @step_cap.to_s : ""),
+                             "TRUCK_LR"        => (@lr || ""),
+                             "TRUCK_CLIP"      => (@clip_grad || ""),
+                             "TRUCK_BUDGET"    => (@budget ? @budget.to_s : ""),
+                             "TRUCK_LOSS"      => (@loss || ""),
+                             "TRUCK_DFA_SUM"   => (@dfa_sum || ""),
+                             "TRUCK_GA_POP"    => (@ga_pop ? @ga_pop.to_s : ""),
+                             "TRUCK_GA_GENS"   => (@ga_gens ? @ga_gens.to_s : ""),
+                             "TRUCK_GA_AGG"    => (@ga_agg || ""),
+                             "TRUCK_EVAL_N"    => (@eval_n ? @eval_n.to_s : ""),
+                             "TRUCK_EXPORT"    => (@export_path || ""),
+                             "TRUCK_B_SEED"    => (@dfa_b_seed || 1234).to_s,
+                             "TRUCK_B_DIST"    => (@dfa_b_dist || ""),
+                             "TRUCK_B_SCALE"   => (@dfa_b_scale || ""))
           elsif @recipe == "gnn"
             # Lane-local GNN_* namespace, same discipline as MLP_*/CTR_*.
             env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
@@ -971,7 +1003,7 @@ module Toy
           # reports neither its result nor its provenance — which is
           # exactly how every cell ended up driven through the env
           # harness instead.
-          losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") || l.start_with?("val:") || l.start_with?("train:") || l.start_with?("graph:") || l.start_with?("stream:") || l.start_with?("gen:") || l.start_with?("corpus:") || l.start_with?("noise:") || l.start_with?("half_snr:") || l.start_with?("control:") || l.start_with?("latent_std:") || l.start_with?("converged:") || l.start_with?("stage1:") || l.start_with?("arm:") || l.start_with?("resid:") || l.start_with?("judge:") || l.start_with?("objective:") || l.start_with?("epsmse:") || l.start_with?("bytelm:") || l.start_with?("ndfa:") || l.start_with?("ldfa:") || l.start_with?("bcond") || l.start_with?("gtx: ") }.map(&:chomp)
+          losses = out.lines.select { |l| l.start_with?("step ") || l.start_with?("eval_ce:") || l.start_with?("val:") || l.start_with?("train:") || l.start_with?("graph:") || l.start_with?("stream:") || l.start_with?("gen:") || l.start_with?("corpus:") || l.start_with?("noise:") || l.start_with?("half_snr:") || l.start_with?("control:") || l.start_with?("latent_std:") || l.start_with?("converged:") || l.start_with?("stage1:") || l.start_with?("arm:") || l.start_with?("resid:") || l.start_with?("judge:") || l.start_with?("objective:") || l.start_with?("epsmse:") || l.start_with?("bytelm:") || l.start_with?("ndfa:") || l.start_with?("ldfa:") || l.start_with?("bcond") || l.start_with?("gtx: ") || l.start_with?("truck: ") || l.start_with?("eval: ") || l.start_with?("export: ") || l.start_with?("selftest: ") }.map(&:chomp)
           emit(run_id, run_dir, losses)
         end
 
@@ -1020,6 +1052,23 @@ module Toy
         end
 
         private
+
+        DIFFLM_ARMS = %w[ar-baseline diff-selfcond diff-plain prior-floor].freeze
+        TRUCK_ARMS  = %w[ga bptt frozen dfa_tb dfa_rx].freeze
+
+        # Returns a bad_arg result when `val` is not an arm of the current
+        # recipe, else nil. TWO LANES NAME ARMS NOW (toy#166's difflm and
+        # toy#189's truck), so the accepted set is recipe-aware rather
+        # than a union: `--arm dfa_tb` on difflm is a typo, and a union
+        # would run it as a silent default instead of rejecting it. When
+        # the recipe is not yet known at this point in the parse the union
+        # is accepted here and the runner rejects it loudly instead.
+        def check_arm(val)
+          allowed = @recipe == "truck"  ? TRUCK_ARMS :
+                    @recipe == "difflm" ? DIFFLM_ARMS : (DIFFLM_ARMS + TRUCK_ARMS)
+          return nil if allowed.include?(val)
+          bad_arg("--arm #{val.inspect} unsupported for recipe #{@recipe.inspect} (#{allowed.join('|')})")
+        end
 
         # Parse argv. Returns true, or an Integer exit code (message already
         # emitted). FIRST positional = recipe name (required; only
@@ -1146,6 +1195,47 @@ module Toy
               key == "base-rate" ? @base_rate = val.to_f : @lin_scale = val.to_f
             when "--fm-branch"
               @fm_branch = true
+            # ---- toy#189 (truck): the control lane's own knobs ----
+            when "--start-scheme", "--loss", "--dfa-sum",
+                 "--ga-agg", "--plant-r", "--export"
+              key = @argv[i]
+              i += 1
+              val = @argv[i]
+              return bad_arg("#{key} requires a value") if val.nil?
+              case key
+              when "--start-scheme" then @start_scheme = val
+              when "--loss"         then @loss = val
+              when "--dfa-sum"      then @dfa_sum = val
+              when "--ga-agg"       then @ga_agg = val
+              when "--plant-r"      then @plant_r = val
+              when "--export"       then @export_path = val
+              end
+            when /\A--start-scheme=(.*)\z/m then @start_scheme = $1
+            when /\A--loss=(.*)\z/m         then @loss = $1
+            when /\A--dfa-sum=(.*)\z/m      then @dfa_sum = $1
+            when /\A--ga-agg=(.*)\z/m       then @ga_agg = $1
+            when /\A--plant-r=(.*)\z/m      then @plant_r = $1
+            when /\A--export=(.*)\z/m       then @export_path = $1
+            when "--obs", "--step-cap", "--budget", "--ga-pop", "--ga-gens"
+              key = @argv[i]
+              i += 1
+              val = @argv[i]
+              return bad_arg("#{key} requires a value") if val.nil?
+              return bad_arg("#{key} must be an integer") unless val =~ /\A\d+\z/
+              case key
+              when "--obs"       then @obs = val.to_i
+              when "--step-cap"  then @step_cap = val.to_i
+              when "--budget"    then @budget = val.to_i
+              when "--ga-pop"    then @ga_pop = val.to_i
+              when "--ga-gens"   then @ga_gens = val.to_i
+              end
+            when /\A--obs=(\d+)\z/       then @obs = $1.to_i
+            when /\A--step-cap=(\d+)\z/  then @step_cap = $1.to_i
+            when /\A--budget=(\d+)\z/    then @budget = $1.to_i
+            when /\A--ga-pop=(\d+)\z/    then @ga_pop = $1.to_i
+            when /\A--ga-gens=(\d+)\z/   then @ga_gens = $1.to_i
+            when /\A--eval-n=(\d+)\z/    then @eval_n = $1.to_i
+
             # ---- toy#153 (gnn): the graph lane's own knobs ----
             when "--graph"
               i += 1
@@ -1294,19 +1384,22 @@ module Toy
               @text = val
             when /\A--text=(.*)\z/
               @text = $1
+            # TWO LANES NOW NAME ARMS (toy#166's difflm and toy#189's
+            # truck), so the accepted set is RECIPE-AWARE rather than a
+            # union: `--arm dfa_tb` on difflm and `--arm diff-plain` on
+            # truck are both typos, and a union would run them as a
+            # silent default instead of rejecting them.
             when "--arm"
               i += 1
               val = @argv[i]
               return bad_arg("--arm requires a value") if val.nil?
-              unless %w[ar-baseline diff-selfcond diff-plain prior-floor].include?(val)
-                return bad_arg("--arm #{val.inspect} unsupported (ar-baseline|diff-selfcond|diff-plain|prior-floor)")
-              end
+              err = check_arm(val)
+              return err if err
               @arm = val
             when /\A--arm=(.*)\z/
               val = $1
-              unless %w[ar-baseline diff-selfcond diff-plain prior-floor].include?(val)
-                return bad_arg("--arm #{val.inspect} unsupported (ar-baseline|diff-selfcond|diff-plain|prior-floor)")
-              end
+              err = check_arm(val)
+              return err if err
               @arm = val
             when "--loss-weight"
               i += 1
@@ -2245,7 +2338,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
             ["--init",          %w[warm-start],                     !@init.nil?, ""],
             ["--fields/--cardinality/--numeric/--emb/--pairs", %w[ctr], (!@fields.nil? || !@cardinality.nil? || !@numeric.nil? || !@emb.nil? || !@pairs.nil?), " (toy#154)"],
             ["--base-rate/--lin-scale/--fm-branch", %w[ctr], (!@base_rate.nil? || !@lin_scale.nil? || @fm_branch), " (toy#154)"],
-            ["--dfa-b-*",       %w[franken franken-moe mlp ctr gnn ssm lstm gtx diff], (!@dfa_b_seed.nil? || !@dfa_b_dist.nil? || !@dfa_b_scale.nil?), ""],
+            ["--dfa-b-*",       %w[franken franken-moe mlp ctr gnn ssm lstm gtx diff truck], (!@dfa_b_seed.nil? || !@dfa_b_dist.nil? || !@dfa_b_scale.nil?), ""],
             # toy#172/E1 Phase 1.2. gtx ONLY, and inside gtx `--task
             # bytelm` only (checked below): nDFA inverts the ERROR
             # COVARIANCE, and the question is about a WIDE error vector.
@@ -2272,6 +2365,18 @@ when /\A--dfa-feedback-lr=(.*)\z/
             # is UPDATED (fixed|kolen-pollack), this selects how the
             # error is ROUTED (direct|structure). Different axis, so a
             # different name — the tao#18 --policy-scope discipline.
+            # toy#189 (truck): every knob is lane-local. `--arm` in
+            # particular must NOT be confused with `--policy`: the truck
+            # arms name a CREDIT RULE PAIR (hidden signal x readout
+            # signal) plus a GA, not a per-layer policy string.
+            ["--start-scheme",  %w[truck],                          !@start_scheme.nil?, " (toy#189)"],
+            ["--obs",           %w[truck],                          !@obs.nil?, " (toy#189)"],
+            ["--plant-r/--step-cap", %w[truck],                     (!@plant_r.nil? || !@step_cap.nil?), " (toy#188/#189)"],
+            ["--budget",        %w[truck],                          !@budget.nil?, " (toy#189: the MATCHED-WORK budget, in plant steps)"],
+            ["--loss",          %w[truck],                          !@loss.nil?, " (toy#189: which step the arms DESCEND, as distinct from the nearest approach they are SCORED at)"],
+            ["--dfa-sum",       %w[truck],                          !@dfa_sum.nil?, " (toy#189)"],
+            ["--ga-pop/--ga-gens/--ga-agg", %w[truck],              (!@ga_pop.nil? || !@ga_gens.nil? || !@ga_agg.nil?), " (toy#189: the paper's pole)"],
+            ["--export",        %w[truck],                          !@export_path.nil?, " (toy#189: the frontend's controller format)"],
             ["--graph",         %w[gnn],                            !@graph.nil?, " (toy#153)"],
             ["--nodes/--degree/--homophily/--feat-signal", %w[gnn],
              (!@nodes.nil? || !@degree.nil? || !@homophily.nil? || !@feat_signal.nil?), " (toy#153)"],
@@ -2300,8 +2405,12 @@ when /\A--dfa-feedback-lr=(.*)\z/
              (!@heads.nil? || !@d_ff.nil?), " (toy#160/#165)"],
             ["--types/--entities", %w[gtx],
              (!@types.nil? || !@entities.nil?), " (toy#160)"],
-            ["--arm/--ae-steps/--tsteps/--gen-bytes/--judge-steps/--loss-weight/--minsnr-gamma", %w[difflm],
-             (!@arm.nil? || !@ae_steps.nil? || !@tsteps.nil? || !@gen_bytes.nil? || !@judge_steps.nil? ||
+            # toy#189 SPLIT --arm out of this row: it is now difflm's AND
+            # truck's, and leaving it bundled made `--arm bptt` on the
+            # truck lane fail as a difflm-only flag.
+            ["--arm", %w[difflm truck], !@arm.nil?, " (toy#166/#189)"],
+            ["--ae-steps/--tsteps/--gen-bytes/--judge-steps/--loss-weight/--minsnr-gamma", %w[difflm],
+             (!@ae_steps.nil? || !@tsteps.nil? || !@gen_bytes.nil? || !@judge_steps.nil? ||
               !@loss_weight.nil? || !@minsnr_gamma.nil?),
              " (toy#166)"],
             # toy#169/#170 SPLIT this row. It used to bundle seven flags
@@ -2325,7 +2434,12 @@ when /\A--dfa-feedback-lr=(.*)\z/
              (@retrofit || !@adapter_policy.nil? || !@adapter_layers.nil? ||
               !@adapter_rank.nil? || !@pretrain_steps.nil? || !@pretrain_lr.nil? ||
               @no_freeze_backbone), " (toy#161)"],
-            ["--clip-grad",     %w[lstm],                           !@clip_grad.nil?, " (toy#162)"],
+            # toy#189: the truck lane needs the same control. Its objective
+            # is a PHYSICAL d^2 of order 1e4 chained through ~30 plant
+            # steps, so one unclipped update saturates the steering and
+            # every later episode ends at step 0 — a flat loss curve, not
+            # an error.
+            ["--clip-grad",     %w[lstm truck],                     !@clip_grad.nil?, " (toy#162/#189)"],
             ["--noise",          %w[ssm lstm gtx],                   !@noise.nil?, " (toy#155/#157/#160)"],
             ["--dt-init",       %w[ssm],                            !@dt_init.nil?, " (toy#155)"],
             # toy#156 (diff). --latent is the OUTPUT DIM under test and
@@ -2337,7 +2451,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
              (!@modes.nil? || !@spread.nil? || !@mode_scale.nil?), " (toy#156)"],
             ["--diff-steps/--beta-lo/--beta-hi", %w[diff],
              (!@diff_steps.nil? || !@beta_lo.nil? || !@beta_hi.nil?), " (toy#156)"],
-            ["--eval-n",        %w[diff],                          !@eval_n.nil?, " (toy#156)"],
+            ["--eval-n",        %w[diff truck],                    !@eval_n.nil?, " (toy#156/#189)"],
             # tao#18 item 1: --policy-scope is DELIBERATELY not accepted
             # on mlp. The attn|ffn|all meaning stays stable across
             # lanes; an MLP has no attention to scope, and a
@@ -2352,7 +2466,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
             # was to pick a research lane. That was the clearest single symptom
             # of generic capability having been built into fixtures instead of
             # into the framework.
-            ["--lr",            %w[from-scratch warm-start franken franken-moe mlp ctr gnn ssm lstm gtx diff ae difflm], !@lr.nil?, " (toy#126/#132/#174)"],
+            ["--lr",            %w[from-scratch warm-start franken franken-moe mlp ctr gnn ssm lstm gtx diff ae difflm truck], !@lr.nil?, " (toy#126/#132/#174)"],
             # --warmup is NOT on from-scratch, deliberately. from-scratch
             # trains with a CONSTANT hp and has no schedule to warm up, so
             # accepting the flag would silently do nothing — the failure mode
@@ -2361,7 +2475,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
             ["--warmup",        %w[warm-start franken franken-moe mlp ctr gnn ssm lstm gtx diff ae difflm], !@warmup.nil?, " (toy#126/#132/#174)"],
             ["--classes",       %w[mlp gnn ssm lstm],               !@classes.nil?, " (toy#152/#153/#155/#157)"],
             ["--features",      %w[mlp gnn lstm gtx],               !@features.nil?, " (toy#152/#153/#157/#160)"],
-            ["--hidden",        %w[mlp ctr gnn lstm diff],          !@hidden.nil?, " (toy#152/#154/#153/#157/#156)"],
+            ["--hidden",        %w[mlp ctr gnn lstm diff truck],          !@hidden.nil?, " (toy#152/#154/#153/#157/#156)"],
             ["--layers",        %w[from-scratch warm-start mlp ctr gnn ssm lstm gtx diff ae difflm], !@mlp_layers.nil?, " (toy#152/#154/#153/#155/#157/#160/#156/#165)"],
             ["--task",          %w[mlp gnn ssm lstm gtx diff],      !@task.nil?, " (toy#152/#153/#155/#157/#160/#156)"],
             ["--teacher-dim",   %w[mlp gnn],                        !@teacher_dim.nil?, " (toy#152/#153)"],
@@ -2379,7 +2493,7 @@ when /\A--dfa-feedback-lr=(.*)\z/
             ["--context",       %w[from-scratch warm-start franken franken-moe ae difflm], !@context.nil?, " (toy#129/#165/#166)"],
             ["--vocab",         %w[from-scratch warm-start franken franken-moe gtx],       !@vocab.nil?, " (toy#129 names a headerless pack vocab; toy#170/P5 on gtx it is the NOMINAL HEAD WIDTH under --task bytelm. On the ae lane the head is byte-wide by construction, so there is no --vocab)"],
             ["--batch",         %w[franken franken-moe mlp ctr ssm lstm gtx diff], !@batch.nil?, " (toy#133; on gtx it is the labelled PAIRS per step)"],
-            ["--act",           %w[franken],                        !@act.nil?, " (toy#136/K1; MoE experts get their GLU in K4)"],
+            ["--act",           %w[franken truck],                  !@act.nil?, " (toy#136/K1; MoE experts get their GLU in K4. toy#189: the truck lane's sigmoid|tanh, which also selects its output->steering map)"],
             ["--rope",          %w[franken],                        !@rope.nil?, " (toy#136/K1)"],
             ["--schedule",      %w[franken franken-moe],            !@schedule.nil?, " (toy#136/K1)"],
             ["--moe-balance",   %w[franken-moe],                    !@moe_balance.nil?, " (toy#136/K1)"],

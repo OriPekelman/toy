@@ -43,6 +43,10 @@
 #                  the paper's r, and the state stays finite.
 #  11  STARTS      the paper's 15 fixed starts, its single point, the
 #                  frontend's curriculum endpoints, and yard bounds.
+#  12  RUNNABLE    every published start can actually TAKE A STEP. Added
+#                  after toy#189 consumed the plant and found all ten
+#                  y = +/-50 ensemble starts instantly invalid — zero-step
+#                  episodes reporting a flat loss curve at d^2 ~ 9157.
 #
 # Spinel hygiene: while loops, popped-empty literals, no interpolation.
 
@@ -575,6 +579,42 @@ else
   puts "truck STARTS FAIL — ens " + ens_ok.to_s + " point " + pt_ok.to_s +
        " lesson0 " + l0_ok.to_s + " lesson19 " + l19_ok.to_s +
        " yard " + yard_ok.to_s
+  fails = fails + 1
+end
+
+# --------------------------------------------------------------- leg 12
+# EVERY PUBLISHED START MUST BE ABLE TO RUN. This leg exists because it
+# was MISSING: toy#189 consumed the plant and every episode was zero
+# steps long. `valid?` tested all three rig points against the SAMPLING
+# box, and the paper's ensemble sits at y = +/-50, so a rig pointing
+# outward had its coupling at y = 64 and was invalid before it moved.
+# Every arm then reported a flat loss curve at d^2 ~ 9157 — a plausible
+# number, not an error. A start scheme that cannot take a step is not a
+# start scheme, so it is asserted, both ways.
+
+tp = TruckTask.new
+tp.paper_defaults!
+runnable = 0
+k = 0
+while k < 15
+  tp.ensemble_start!(k)
+  if tp.valid? && tp.continue?; runnable = runnable + 1; end
+  k = k + 1
+end
+tp.point_start!
+point_runs = tp.valid? && tp.continue?
+
+# The other side: a rig driven through the dock wall must be INVALID,
+# or `valid?` is not testing anything.
+tp.reset_state!(5.0, 0.0, Math::PI, Math::PI)
+through_wall = tp.valid?
+
+if runnable == 15 && point_runs && !through_wall
+  puts "truck RUNNABLE ok — all 15 ensemble starts and the single point can " +
+       "take a step; a rig through the dock wall cannot"
+else
+  puts "truck RUNNABLE FAIL — runnable " + runnable.to_s + "/15 point " +
+       point_runs.to_s + " through_wall_valid " + through_wall.to_s
   fails = fails + 1
 end
 
