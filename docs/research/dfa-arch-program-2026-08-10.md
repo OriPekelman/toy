@@ -1,5 +1,38 @@
 # DFA-arch program (toy#152–#158) — resolved decisions + build order
 
+> **SUPERSEDED for anything after toy#162. Read this as a record of #152–#162
+> and nothing later.**
+>
+> It says "all shipped" and is accurate about the lanes it covers. It
+> predates the whole 2026-08-30/09-03 arc (toy#176, #179–#186), which roughly
+> doubled the DFA surface and — more importantly — **reversed or retired
+> several conclusions a reader would otherwise take from here**:
+>
+> * **Faithful feedback is not what DFA runs on.** An oracle `B` routing
+>   `p_energy = 0.99999` trains the body no better than never training it,
+>   while a random `B` carrying 1.6% beats both (#176/D1b). DFA is not
+>   approximate backpropagation in any useful sense.
+> * **The representational-diversity explanation for that is dead.** Oracle
+>   and random arms have statistically identical stable rank (t = 0.00) while
+>   sitting 0.208 bpb apart (#183, measured with `GTX_ACTRANK`).
+> * **The cost claim has nothing to account for on this implementation.**
+>   `frozen` and `chain` build identical backward graphs and retain identical
+>   activations; `dfa` is *larger* on both (#182, the `ncost:` line). A saving
+>   would have to come from not BUILDING those nodes, and nothing here does.
+> * **Mismatched stale feedback is fatal at k=1** — past the frozen floor,
+>   +0.414, t = +5.59 at n=5 (#186). Pipelined delay is a different and
+>   unmeasured problem.
+>
+> The current knob surface, with semantics and the trap attached to each, is
+> the header block of `lib/toy/run/train_gtx.rb`. **That is the reference;
+> this file is history.**
+>
+> Read those traps seriously if you are arriving cold. Several of these knobs
+> fail **silently in the direction of the hoped-for answer** when misused,
+> and this arc paid for it three times: #181 adapters identical to their own
+> control, #185 a flip firing once at init while the cadence sweep measured
+> nothing, #186 an unwired ring reading as perfect staleness tolerance.
+
 Tao filed six new architecture lanes plus F15. This records what is
 SETTLED (tao#18, tao#19) so each lane can be built without re-litigating
 it, and flags the one thing I think is still ambiguous.

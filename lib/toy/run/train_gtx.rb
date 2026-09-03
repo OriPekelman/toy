@@ -75,14 +75,103 @@
 #   GTX_DFA_RANK    — full (default) | <r>. Factorises B as Q[dout x r] .
 #                     P[r x V]. `full` is BYTE-IDENTICAL to the pre-E2
 #                     binary. `--task bytelm` + a `dfa` policy only.
-#   GTX_DFA_ADAPT   — none (default) | oja. Whether P tracks the top-r
-#                     subspace of the ERROR stream by Oja's rule. Requires
+#   GTX_DFA_ADAPT   — none (default) | oja | oracle. How P is obtained.
+#                     `oja` tracks the top-r subspace of the ERROR stream by
+#                     Oja's rule; `oracle` (toy#176) reads an exact pooling
+#                     from GTX_LDFA_MAP instead of learning one. Requires
 #                     GTX_DFA_RANK.
 #   GTX_LDFA_ETA    — Oja step size (default 0.05). 0 is legal and is the
 #                     FROZEN-OJA control; it relabels itself in provenance
 #                     so an eta=0 cell can never be filed as adaptive.
-#   GTX_LDFA_EVERY  — steps between refreshes (default 500)
+#   GTX_LDFA_EVERY  — steps between refreshes (default 500). It drives the
+#                     Oja refresh AND the SIGNFLIP/RESAMPLE cadence — but
+#                     NOT refresh_b_lowrank! on its own: that recurs only
+#                     under Oja (toy#185).
 #   GTX_LDFA_M      — error samples per refresh (default 128)
+#   GTX_LDFA_MAP    — prefix of a two-file i32 map pack: `.meta.i32` is
+#                     [n_codes, n_base], `.tok.i32` is n_codes code->base row
+#                     ids. Required by GTX_DFA_ADAPT=oracle. Rows are
+#                     disjoint and unit-normalised, so P is orthonormal BY
+#                     CONSTRUCTION and adapt_p!(apply=0) measures it
+#                     unchanged. A map whose n_codes exceeds the head's
+#                     classes is refused naming both sides, so a token pack
+#                     cannot be mistaken for a pooling map.
+#                     Build one: prep/build_oracle_map.rb. The committed
+#                     fixture data/oracle_map_c256_b65 is deliberately an
+#                     ARBITRARY pooling (p_energy ~0.24, not D1's 0.99999) —
+#                     it exists to gate the mechanism, not to be faithful.
+#   GTX_LDFA_CSUP   — active | dead | full. Where the r - n_base random
+#                     complement rows draw support when GTX_DFA_RANK exceeds
+#                     the map's base-symbol count. NOT A DEFAULT: the engine
+#                     REFUSES r > n_base without it, because on an inflation
+#                     fixture full rank and a clean error stream cannot both
+#                     be had, and active vs dead are different experiments.
+#                     Running both brackets the confound from either side.
+#   GTX_LDFA_SIGNFLIP — re-sign a fixed P per ROW at each cadence boundary
+#                     (toy#185). Routing, magnitudes and orthonormality are
+#                     untouched — a signed orthonormal row set is still
+#                     orthonormal — so the ONLY thing broken is the
+#                     feedback's correlation with itself over training.
+#                     Applied to a saved base, never in place: compounding
+#                     signs would decorrelate at half the intended rate
+#                     while looking correct.
+#   GTX_LDFA_RESAMPLE — redraw P i.i.d. at each cadence boundary: the
+#                     random-side control that completes N3b's 2x2. REFUSED
+#                     with a map, because redrawing would discard the pooling
+#                     while the arm still reported itself as an oracle.
+#                     Refused together with SIGNFLIP — they are the two ARMS
+#                     of the 2x2, not a combination.
+#   GTX_DFA_STALE   — k: the surrogate consumes the error from k steps ago
+#                     (toy#186). Byte-null at k=0, including no `stale=`
+#                     field on the provenance line.
+#
+#                     IT MODELS *MISMATCHED* DELAY — h_t paired with e_{t-k}
+#                     — and that is the one that FAILED: fatal at k=1, past
+#                     the frozen floor, +0.414 vs k=0, t=+5.59 at n=5.
+#                     PIPELINED delay (h_{t-k} with e_{t-k}, i.e. tolerating
+#                     stale WEIGHTS instead) is a DIFFERENT and unmeasured
+#                     problem with no verdict here. A reader will reasonably
+#                     assume one knob covers both; it does not, and the two
+#                     have opposite implications for a heterogeneous seam.
+#
+#                     Warmup is stated, not inferred: step 0 has no history
+#                     and runs on a ZERO error, steps 1..k-1 hold the oldest
+#                     available, and the line says `warmup=zero_then_hold`.
+#                     k >= STEPS is refused — every step would be warmup and
+#                     the delay would never take effect.
+#                     A BP arm at the same k is NOT expressible by this flag:
+#                     it delays the DFA SURROGATE's error and a chain arm has
+#                     no surrogate. BP staleness means delaying the backward
+#                     pass, which is a different mechanism in a different
+#                     place.
+#   GTX_ACTRANK / GTX_ACTRANK_N — E1's statistics (trace, lambda_max,
+#                     participation ratio, stable rank, ceiling detector)
+#                     over the BODY's activations rather than the error
+#                     covariance (toy#183). Opt-in and byte-null off, and
+#                     byte-null ON the bpb beside it — an instrument that
+#                     perturbed its own cell would mean every arm it
+#                     compares was scored on a different run.
+#                     The ceiling bites HARDER here than in E1 and
+#                     asymmetrically: rank <= min(n, d_model), so a
+#                     participation ratio near d_model is bounded by the
+#                     model's WIDTH, and since the N3 hypothesis was about
+#                     COLLAPSE a ceiling reads as the hypothesis failing.
+#                     `capped=` is part of the reading, not a footnote.
+#
+#   toy#182 THE `ncost:` LINE — fwd_nodes/fwd_bytes/bwd_nodes/bwd_bytes/
+#   b_bytes/act_retained. Two facts that are not guessable from the names:
+#     * act_retained and bwd_bytes are DISJOINT. The first is forward nodes
+#       [0,na) that a backward node names as a source; the second is the
+#       backward expansion [na,nb). So they SUM to the schedulable working
+#       set rather than overlapping, and neither is the whole picture alone.
+#     * b_bytes is charged SEPARATELY on purpose. DFA's premise is that B is
+#       regenerated from a seed and never stored, so counting it against the
+#       method measures this implementation rather than the claim — reported
+#       apart, the seed-regenerated counterfactual is computable instead of
+#       hypothetical.
+#   graph_b is a dup of the forward graph SHARING tensor pointers, so the
+#   backward figures are deltas against the forward snapshot; raw totals
+#   would double-count the entire forward graph on every arm.
 #
 #   toy#161 RETROFIT MODE (GTX_RETROFIT=1):
 #   GTX_PRETRAIN_STEPS — BP steps on the PRETRAIN task (default 1500)
@@ -90,6 +179,27 @@
 #   GTX_ADAPTER_POLICY — chain | dfa | frozen  (the arm under test)
 #   GTX_ADAPTER_LAYERS — stacked pair-site adapters (default 2)
 #   GTX_ADAPTER_RANK   — bottleneck width (default 16)
+#   GTX_ADAPTER_SITE   — pair | block (toy#181). `block` puts ONE d_model-wide
+#                     adapter per block, so trainable capacity sits BELOW the
+#                     frozen top — which is the point: with adapters stacked
+#                     on top of a frozen backbone neither arm backprops
+#                     through it and DFA's structural saving vanishes (F12's
+#                     conclusion was that the win there was the FREEZING).
+#                     `block` works OUTSIDE a retrofit, which is how a bytelm
+#                     pretrain->adapt gets adapters; `pair` is the relational
+#                     stack and is refused outside one.
+#                     W_up is zero-init, so an untrained adapter is EXACTLY
+#                     the identity. That makes the failure mode invisible:
+#                     adapters that never step produce arms BIT-IDENTICAL to
+#                     the frozen control, with no error and no warning. The
+#                     gate asserts both sides — frozen adapters must match
+#                     the control, chain/dfa must NOT — because either alone
+#                     passes with every adapter dead.
+#                     Adapter layer index stays n_blocks+1 deliberately: the
+#                     per-weight step gate reads that index, so tagging a
+#                     block-site adapter with its own block index would make
+#                     the gate resolve the BLOCK's policy for it, silently
+#                     freezing an adapter under a frozen block.
 #   GTX_FREEZE_BACKBONE— 1 (default) freezes AND DETACHES the backbone
 #   STEPS / GTX_LR then apply to the RETROFIT phase.
 #   GTX_CKPT_EVERY     — write the BACKBONE as GGUF every K steps and at
