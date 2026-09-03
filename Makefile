@@ -1983,6 +1983,22 @@ tinynn/ab_smoke_patch_embed: tinynn/ab_smoke_patch_embed.rb lib/toy/models/trans
 prep/smokes/smoke_vit_tiny: prep/smokes/smoke_vit_tiny.rb lib/toy/llm/engine/vit_tiny_engine.rb lib/toy/models/toy_vit.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
+# toy#188 — the truck-and-trailer PLANT parity gate
+# (dfa-for-dynamic-control's fixture; lib/toy/io/toy_truck_task.rb).
+#
+# Diffs 20 steps against a golden trajectory emitted by a verbatim
+# transcription of the frontend's `drive()` under node, at 1e-12 per
+# entry, then finite-difference-checks all 20 analytic Jacobian
+# entries. NO tinynn dependency: the plant is arithmetic, and keeping
+# the graph library out of its prereqs means a tinynn rebuild cannot
+# make this leg look stale. toy#189's lane must not start until this
+# is green.
+prep/smokes/smoke_truck_plant: prep/smokes/smoke_truck_plant.rb lib/toy/io/toy_truck_task.rb
+	$(SPINEL) $< -o $@
+.PHONY: gate-truck-plant
+gate-truck-plant: prep/smokes/smoke_truck_plant
+	./prep/smokes/smoke_truck_plant
+
 # E1.5 / GH#13 — image-loader smoke.
 prep/smokes/smoke_image_loader: prep/smokes/smoke_image_loader.rb lib/toy/io/toy_image_loader.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) $< -o $@
