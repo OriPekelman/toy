@@ -812,6 +812,8 @@ module Toy
                              "TRUCK_GA_AGG"    => (@ga_agg || ""),
                              "TRUCK_EVAL_N"    => (@eval_n ? @eval_n.to_s : ""),
                              "TRUCK_EXPORT"    => (@export_path || ""),
+                             "TRUCK_E"         => (@error_mode || ""),
+                             "TRUCK_E_DECAY"   => (@e_decay || ""),
                              "TRUCK_LOAD"      => (@load_ctrl || ""),
                              "TRUCK_TRACE"     => (@trace_path || ""),
                              "TRUCK_TRACE_SCHEME" => (@trace_scheme || ""),
@@ -1229,7 +1231,8 @@ module Toy
             # ---- toy#189 (truck): the control lane's own knobs ----
             when "--start-scheme", "--loss", "--dfa-sum",
                  "--ga-agg", "--plant-r", "--export",
-                 "--load", "--trace", "--trace-scheme"
+                 "--load", "--trace", "--trace-scheme",
+                 "--error-mode", "--e-decay"
               key = @argv[i]
               i += 1
               val = @argv[i]
@@ -1244,6 +1247,8 @@ module Toy
               when "--load"         then @load_ctrl = val
               when "--trace"        then @trace_path = val
               when "--trace-scheme" then @trace_scheme = val
+              when "--error-mode"   then @error_mode = val
+              when "--e-decay"      then @e_decay = val
               end
             when /\A--start-scheme=(.*)\z/m then @start_scheme = $1
             when /\A--loss=(.*)\z/m         then @loss = $1
@@ -1254,6 +1259,8 @@ module Toy
             when /\A--load=(.*)\z/m         then @load_ctrl = $1
             when /\A--trace=(.*)\z/m        then @trace_path = $1
             when /\A--trace-scheme=(.*)\z/m then @trace_scheme = $1
+            when /\A--error-mode=(.*)\z/m   then @error_mode = $1
+            when /\A--e-decay=(.*)\z/m      then @e_decay = $1
             when "--obs", "--step-cap", "--budget", "--ga-pop", "--ga-gens",
                  "--trace-n", "--trace-seed", "--stride"
               key = @argv[i]
@@ -2436,6 +2443,9 @@ when /\A--dfa-feedback-lr=(.*)\z/
             ["--budget",        %w[truck],                          !@budget.nil?, " (toy#189: the MATCHED-WORK budget, in plant steps)"],
             ["--loss",          %w[truck],                          !@loss.nil?, " (toy#189: which step the arms DESCEND, as distinct from the nearest approach they are SCORED at)"],
             ["--dfa-sum",       %w[truck],                          !@dfa_sum.nil?, " (toy#189)"],
+            ["--error-mode/--e-decay", %w[truck],
+             (!@error_mode.nil? || !@e_decay.nil?),
+             " (toy#193/C2d: what the DFA broadcast projects — the always-positive dx component is what locks the readout to one sign)"],
             ["--ga-pop/--ga-gens/--ga-agg", %w[truck],              (!@ga_pop.nil? || !@ga_gens.nil? || !@ga_agg.nil?), " (toy#189: the paper's pole)"],
             ["--export",        %w[truck],                          !@export_path.nil?, " (toy#189: the frontend's controller format)"],
             ["--load/--trace/--trace-scheme/--trace-n/--trace-seed/--stride", %w[truck],

@@ -284,6 +284,9 @@ CLIP_S      = ENV["TRUCK_CLIP"] || ""
 CLIP        = CLIP_S.length > 0 ? CLIP_S.to_f : 1.0
 BUDGET_S    = ENV["TRUCK_BUDGET"] || ""
 BUDGET      = BUDGET_S.length > 0 ? BUDGET_S.to_i : 0
+E_MODE_S    = ENV["TRUCK_E"] || ""
+E_DECAY_S   = ENV["TRUCK_E_DECAY"] || ""
+E_DECAY     = E_DECAY_S.length > 0 ? E_DECAY_S.to_f : 0.99
 LOSS_S      = ENV["TRUCK_LOSS"] || ""
 DFA_SUM_S   = ENV["TRUCK_DFA_SUM"] || ""
 B_SEED_S    = ENV["TRUCK_B_SEED"] || ""
@@ -360,6 +363,11 @@ if ACT_S.length > 0 && ACT_S != "sigmoid" && ACT_S != "tanh"
   puts "toy-train-truck: TRUCK_ACT must be sigmoid|tanh, got " + ACT_S
   exit 1
 end
+if E_MODE_S.length > 0 && E_MODE_S != "xyt" && E_MODE_S != "yt" &&
+   E_MODE_S != "centered" && E_MODE_S != "signed_x"
+  puts "toy-train-truck: TRUCK_E must be xyt|yt|centered|signed_x, got " + E_MODE_S
+  exit 1
+end
 if LOSS_S.length > 0 && LOSS_S != "best" && LOSS_S != "terminal"
   puts "toy-train-truck: TRUCK_LOSS must be best|terminal, got " + LOSS_S
   exit 1
@@ -411,7 +419,28 @@ OFF_W2 = OFF_B1 + HIDDEN
 OFF_B2 = OFF_W2 + HIDDEN
 N_PARAM = OFF_B2 + 1
 
-E_DIM = 3   # the broadcast error: (dx, dy, dtheta), normalised
+# ---- toy#193 / C2d: WHAT THE BROADCAST PROJECTS ----
+#
+# THE MEASUREMENT THIS EXISTS FOR. Every start in the yard and in the
+# paper's ensemble is EAST of the dock, so the error's dx component is
+# always positive — mean |dx| 1.449 against 0.479 for dy and 0.444 for
+# dtheta, and its minimum over 200 episodes is +0.797, never negative.
+# A fixed B2 applied to that vector therefore has a dominant term whose
+# SIGN NEVER CHANGES: over 12 B draws the sign of B2.e falls on one side
+# in a median of 99.0% of episodes (min 67%, max 100%). The readout gets
+# the same push every update and integrates it into the constant-sign
+# saturated policy toy#192 measured. dy flipping sign was the wrong
+# suspect; dx NOT flipping is the right one.
+E_XYT      = 0   # (dx, dy, dtheta) — current behaviour, byte-null
+E_YT       = 1   # drop dx entirely: (dy, dtheta). B becomes 9x2 / 1x2
+E_CENTERED = 2   # (dx, dy, dtheta) minus a running mean, so an
+                 # always-positive component averages to zero
+E_SIGNED_X = 3   # replace dx by the SIGNED distance along the trailer's
+                 # heading to the dock, which does flip
+E_MODE = E_MODE_S == "yt" ? E_YT :
+         E_MODE_S == "centered" ? E_CENTERED :
+         E_MODE_S == "signed_x" ? E_SIGNED_X : E_XYT
+E_DIM = E_MODE == E_YT ? 2 : 3
 
 def tk_zeros(z_n)
   z_a = [0.0]; z_a.pop
@@ -817,17 +846,50 @@ def tk_dfa!(df_w, df_gr, df_ex, df_ey, df_eang, df_gstep, df_b1, df_b2,
             df_nin, df_hid,
             df_ow1, df_ob1, df_ow2, df_ob2, df_kind,
             df_a, df_h, df_yout, df_obs, df_e, df_d1,
-            df_hidden_only, df_to_best, df_T)
-  df_e[0] = df_ex / 50.0
-  df_e[1] = df_ey / 50.0
-  df_e[2] = df_eang / Math::PI
+            df_hidden_only, df_to_best, df_T,
+            df_emode, df_edim, df_mean, df_decay)
+  # toy#193: the error the broadcast projects. LANDMINE 5 of toy#189
+  # still holds in every mode — e is an ERROR, so it is normalised as
+  # one (dx/50), never through the observation's (x-50)/50, which would
+  # be non-zero AT THE GOAL.
+  if df_emode == 1
+    df_e[0] = df_ey / 50.0
+    df_e[1] = df_eang / Math::PI
+  elsif df_emode == 3
+    # The signed distance along the trailer's heading to the dock: the
+    # dock is at the origin, so the vector to it is (-x, -y) and the
+    # heading is (cos, sin) of the graded trailer angle. Positive when
+    # the dock is AHEAD of the trailer, negative when behind — which is
+    # the sign change dx does not have.
+    df_e[0] = (0.0 - df_ex * Math.cos(df_eang) - df_ey * Math.sin(df_eang)) / 50.0
+    df_e[1] = df_ey / 50.0
+    df_e[2] = df_eang / Math::PI
+  else
+    df_e[0] = df_ex / 50.0
+    df_e[1] = df_ey / 50.0
+    df_e[2] = df_eang / Math::PI
+  end
+
+  # `centered` subtracts a running mean, so a component that is always
+  # positive averages to zero. The mean is an EMA updated AFTER this
+  # episode's projection: subtracting a mean that already contains this
+  # episode would shrink the very signal under test.
+  if df_emode == 2
+    df_ci = 0
+    while df_ci < df_edim
+      df_raw = df_e[df_ci]
+      df_e[df_ci] = df_raw - df_mean[df_ci]
+      df_mean[df_ci] = df_decay * df_mean[df_ci] + (1.0 - df_decay) * df_raw
+      df_ci = df_ci + 1
+    end
+  end
 
   df_j = 0
   while df_j < df_hid
     df_acc = 0.0
     df_k = 0
-    while df_k < 3
-      df_acc = df_acc + df_b1[df_j * 3 + df_k] * df_e[df_k]
+    while df_k < df_edim
+      df_acc = df_acc + df_b1[df_j * df_edim + df_k] * df_e[df_k]
       df_k = df_k + 1
     end
     df_d1[df_j] = df_acc
@@ -835,7 +897,7 @@ def tk_dfa!(df_w, df_gr, df_ex, df_ey, df_eang, df_gstep, df_b1, df_b2,
   end
   df_d2 = 0.0
   df_k2 = 0
-  while df_k2 < 3
+  while df_k2 < df_edim
     df_d2 = df_d2 + df_b2[df_k2] * df_e[df_k2]
     df_k2 = df_k2 + 1
   end
@@ -1070,6 +1132,7 @@ gs   = tk_zeros(4)
 gsn  = tk_zeros(4)
 dobs = tk_zeros(N_IN)
 e3   = tk_zeros(E_DIM)
+e_mean = tk_zeros(E_DIM)
 d1v  = tk_zeros(HIDDEN)
 
 # ======================================================================
@@ -1474,7 +1537,8 @@ else
       if ARM == ARM_DFA_TB
         tk_dfa!(w, gr, g_x, g_y, g_ang, g_step, b1m, b2m, N_IN, HIDDEN,
                 OFF_W1, OFF_B1, OFF_W2, OFF_B2, ACT, rs_a, rs_h, rs_yout,
-                rs_obs, e3, d1v, 0, SUM_TO_BEST ? 1 : 0, ro[0].to_i)
+                rs_obs, e3, d1v, 0, SUM_TO_BEST ? 1 : 0, ro[0].to_i,
+                E_MODE, E_DIM, e_mean, E_DECAY)
         # A BROADCAST arm's update is non-zero whenever the episode took
         # a step: its error is the graded STATE, not a difference, so it
         # does not vanish when the graded step is 0. Counting this arm by
@@ -1488,7 +1552,8 @@ else
         # is back HERE AND ONLY HERE, and the arm is labelled for it.
         tk_dfa!(w, gr, g_x, g_y, g_ang, g_step, b1m, b2m, N_IN, HIDDEN,
                 OFF_W1, OFF_B1, OFF_W2, OFF_B2, ACT, rs_a, rs_h, rs_yout,
-                rs_obs, e3, d1v, 1, SUM_TO_BEST ? 1 : 0, ro[0].to_i)
+                rs_obs, e3, d1v, 1, SUM_TO_BEST ? 1 : 0, ro[0].to_i,
+                E_MODE, E_DIM, e_mean, E_DECAY)
         tk_bptt!(jplant, w, gr, g_step, g_x, g_y, g_ang,
                  N_IN, HIDDEN, OFF_W1, OFF_B1, OFF_W2,
                  OFF_B2, ACT, rs_x, rs_y, rs_oc, rs_os, rs_clamp, rs_sig,
@@ -1854,6 +1919,10 @@ prov = prov + " b_dist=" + (B_DIST_S.length > 0 ? B_DIST_S : "gaussian")
 prov = prov + " b_scale=" + (B_SCALE_S.length > 0 ? B_SCALE_S : "inv_sqrt_fan")
 prov = prov + " b_seed=" + B_SEED.to_s
 prov = prov + " dfa_sum=" + (SUM_TO_BEST ? "to_best" : "episode")
+prov = prov + " e=" + (E_MODE == E_YT ? "yt" :
+                       E_MODE == E_CENTERED ? "centered" :
+                       E_MODE == E_SIGNED_X ? "signed_x" : "xyt")
+prov = prov + " e_dim=" + E_DIM.to_s
 prov = prov + " objective=nearest_approach"
 prov = prov + " loss=" + (LOSS_TERMINAL ? "terminal" : "best")
 prov = prov + " fitness=reconstructed"
@@ -1969,6 +2038,8 @@ if EVENTS.length > 0
     cf.add_num("b_seed", B_SEED)
     cf.add_str("b_dist", B_DIST_S.length > 0 ? B_DIST_S : "gaussian")
     cf.add_str("b_scale", B_SCALE_S.length > 0 ? B_SCALE_S : "inv_sqrt_fan")
+    cf.add_str("e_mode", E_MODE_S.length > 0 ? E_MODE_S : "xyt")
+    cf.add_num("e_dim", E_DIM)
     cf.add_str("objective", "nearest_approach_d2")
     cf.add_str("loss", LOSS_TERMINAL ? "terminal" : "best")
     cf.add_str("fitness", "reconstructed")

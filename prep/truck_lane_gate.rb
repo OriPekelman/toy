@@ -51,6 +51,8 @@
 #                   and DISCRIMINATING — they must separate dfa_tb's
 #                   bang-bang from dfa_rx's passive jack-knife, which
 #                   mean_d2/dock5 cannot.
+#  14  E-MODE       toy#193's TRUCK_E: xyt byte-null, every mode reaches
+#                   the runner, yt resizes B, and no mode is a rename.
 #   9  C-FIXTURE    bptt vs frozen, REPORTED not asserted — see the leg.
 
 ROOT   = File.expand_path("..", __dir__)
@@ -486,6 +488,45 @@ puts(failures.length == n0 ?
   "GATE ok [metrics]: all four present and in range, and they separate dfa_tb (#{mv.dig('dfa_tb', 'mean_abs_signal')}) from dfa_rx (#{mv.dig('dfa_rx', 'mean_abs_signal')})" :
   "GATE FAIL [metrics]: #{failures[n0..].join('; ')}")
 
+# ----------------------------------------------------------------- 14
+# toy#193 / C2d — TRUCK_E: what the broadcast projects.
+#
+# `xyt` must be BYTE-NULL (the mode existing at all must not move the
+# default cell), each mode must reach the runner and name itself, and
+# `yt` must actually resize B — a mode that renamed the arm without
+# changing the projection would read as "the input is not the mechanism"
+# while never having tested it.
+n0 = failures.length
+base, = run_truck({ "TRUCK_ARM" => "dfa_tb", "STEPS" => "150", "TRUCK_LR" => "0.2" })
+xyt,  = run_truck({ "TRUCK_ARM" => "dfa_tb", "STEPS" => "150", "TRUCK_LR" => "0.2",
+                    "TRUCK_E" => "xyt" })
+strip = ->(o) { o.lines.reject { |l| l.start_with?("truck: ") }.join }
+failures << "e-mode: TRUCK_E=xyt is not byte-null against the unset default" unless strip.call(base) == strip.call(xyt)
+failures << "e-mode: e= missing from provenance" if prov_field(base, "e").nil?
+failures << "e-mode: default is not xyt (#{prov_field(base, 'e')})" unless prov_field(base, "e") == "xyt"
+failures << "e-mode: default e_dim is not 3" unless prov_field(base, "e_dim") == "3"
+
+modes = {}
+%w[yt centered signed_x].each do |m|
+  out, ok = run_truck({ "TRUCK_ARM" => "dfa_tb", "STEPS" => "150",
+                        "TRUCK_LR" => "0.2", "TRUCK_E" => m })
+  failures << "e-mode: #{m} exited non-zero" unless ok.success?
+  failures << "e-mode: #{m} not named in provenance" unless prov_field(out, "e") == m
+  modes[m] = out
+end
+# yt drops a component, so B is 1x2 and the arm CANNOT be bit-identical
+# to the 3-component default; the other two keep 3 components but change
+# the values, so they must differ too.
+failures << "e-mode: yt did not resize the error (e_dim #{prov_field(modes['yt'], 'e_dim')})" unless prov_field(modes["yt"], "e_dim") == "2"
+modes.each do |m, out|
+  failures << "e-mode: #{m} is bit-identical to xyt — the projection was not changed" if strip.call(out) == strip.call(xyt)
+end
+_, bad = run_truck({ "TRUCK_ARM" => "dfa_tb", "STEPS" => "5", "TRUCK_E" => "bogus" })
+failures << "e-mode: an unknown TRUCK_E was accepted" if bad.success?
+puts(failures.length == n0 ?
+  "GATE ok [e-mode]: xyt is byte-null, all four modes reach the runner and name themselves, yt resizes B to e_dim 2, and every mode changes the result" :
+  "GATE FAIL [e-mode]: #{failures[n0..].join('; ')}")
+
 # ------------------------------------------------------------------ 9
 # C-FIXTURE, REPORTED AND NOT ASSERTED. The programme's rule is that
 # `bptt` must beat `frozen` with margin or no DFA reading on this
@@ -549,7 +590,7 @@ end
 
 # ----------------------------------------------------------------------
 if failures.empty?
-  puts "GATE PASS [truck-lane]: 12 legs (gradcheck, arms, frozen, b-reaches, budget, zero_grad, export, repro, trace, stride, half_yard, metrics)"
+  puts "GATE PASS [truck-lane]: 13 legs (gradcheck, arms, frozen, b-reaches, budget, zero_grad, export, repro, trace, stride, half_yard, metrics, e-mode)"
 else
   puts "GATE FAIL [truck-lane]: #{failures.length} failure(s)"
   failures.each { |f| puts "  - #{f}" }

@@ -488,6 +488,7 @@ fixture cannot discriminate and every DFA row on it is void — read that row fi
 | `--loss best\|terminal` | which step the arms **descend**, as distinct from the nearest approach they are **scored** at. `best` is the default and descends exactly what it scores |
 | `--load PATH` / `--trace PATH` | roll a trained controller out headless to a `tbu-traces/1` bundle (toy#190) |
 | `--trace-scheme` / `--trace-n` / `--trace-seed` / `--stride` | which starts to roll, how many, from which seed, and how much of each trace to keep |
+| `--error-mode xyt\|yt\|centered\|signed_x` | what the DFA broadcast projects (toy#193). `xyt` is the default and byte-null |
 | `--ga-pop/--ga-gens/--ga-agg` | the paper's pole. `--ga-agg mean\|min`, both of which it reports as acceptable |
 | `--export PATH` | the controller in the frontend's format (`[layer][unit][w…, bias]`, bias **last**) plus a provenance sidecar |
 
@@ -596,3 +597,39 @@ cured by training on one half.
 
 At `lr = 0.003` it does *not* saturate (`frac_sat` 0.000) and still docks
 nothing, so saturation is a symptom rather than the cause.
+
+#### `--error-mode` — what the broadcast projects (toy#193 / C2d)
+
+`dfa_tb` collapses to a constant, saturated, single-sign policy (toy#192). The
+error it broadcasts is `e = (dx/50, dy/50, dθ/π)` at the graded step, and **every
+start in the yard and in the paper's ensemble is east of the dock**, so `dx` is
+always positive: measured over 200 episodes its minimum is `+0.797` and its mean
+magnitude `1.449`, against `0.479` for `dy` and `0.444` for `dθ`. A fixed
+`B₂` applied to that has a dominant term whose sign never changes — over 12 `B`
+draws, `sign(B₂·e)` falls on one side in a **median 99.0%** of episodes (min 67%,
+max 100%). `dy` flipping sign was the wrong suspect; `dx` *not* flipping is the
+right one.
+
+| mode | |
+|---|---|
+| `xyt` | the three components as-is. Default, byte-null |
+| `yt` | drop `dx`: `e = (dy/50, dθ/π)`, and `B` becomes `9×2` / `1×2` |
+| `centered` | subtract an EMA of `e` (`--e-decay`, default 0.99) so an always-positive component averages to zero |
+| `signed_x` | replace `dx` by the signed distance *along the trailer's heading* to the dock, which does flip |
+
+**The result is neither of the two outcomes C2d pre-registered.** Removing or
+centering the constant component **does** break the sign lock — the trained
+policy's steering sign becomes strongly state-dependent, splitting on which half
+of the yard the run starts in:
+
+| mode (lr 0.2) | steps with signal > 0, `y > 0` starts | `y < 0` starts |
+|---|---|---|
+| `xyt` | 0.313 | 0.060 |
+| `yt` | 0.055 | **1.000** |
+| `centered` | **0.935** | 0.143 |
+| `signed_x` | **0.879** | 0.071 |
+
+— and **none of them docks anything**, at any LR in {0.003 … 2.0}, 3 seeds, 4000
+updates, on either the ensemble or the far set. So the constant component *is*
+what locks the sign, and a state-dependent sign is *not sufficient* for the arm
+to work. The mechanism is confirmed and the arm is still dead.
