@@ -309,7 +309,33 @@ failures << "matrix: mlp --experts lost the lane-list message written for the re
 # everyone — the fixtures-only special case must not fire on it.
 out, st = probe(%w[lora --lr 0.01])
 failures << "matrix: lora --lr wrongly took the fixtures-only branch (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?("only valid with recipe 'from-scratch'") && !out.include?("research fixture lanes")
-puts failures.length == n0 ? "  ok: right-recipe probes pass the matrix (their errors come from later rules)" : "  FAIL: acceptance side"
+# ---- toy#191: PER-RECIPE VALUE sets for flags TWO LANES SHARE ----
+#
+# The matrix says which FLAGS a recipe accepts; it says nothing about
+# which VALUES. `--act` was validated against franken's set at parse
+# time, before the recipe is known, which made truck's `--act sigmoid`
+# unreachable BY FLAG ENTIRELY while the matrix happily listed --act as
+# valid on truck. The lane's default hid it: only the tanh run — the one
+# the frontend-parity story depends on — was blocked.
+#
+# Both directions are probed for both flags, because a union check would
+# pass the "accepts its own" half while quietly accepting the other
+# lane's vocabulary too.
+out, st = probe(%w[truck --act swiglu])
+failures << "values: truck --act swiglu was not rejected (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?('unsupported for recipe "truck"')
+out, st = probe(%w[franken --act sigmoid])
+failures << "values: franken --act sigmoid was not rejected (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?('unsupported for recipe "franken"')
+out, st = probe(%w[truck --arm diff-plain])
+failures << "values: truck --arm diff-plain was not rejected (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?('unsupported for recipe "truck"')
+out, st = probe(%w[difflm --arm bptt])
+failures << "values: difflm --arm bptt was not rejected (#{out.lines.last(1).join.strip})" unless st.exitstatus == 2 && out.include?('unsupported for recipe "difflm"')
+# And the accepting side: each lane's OWN value must get past both the
+# matrix and the value check, or the flag is unreachable again.
+out, st = probe(%w[truck --act tanh])
+failures << "values: truck --act tanh was rejected — the frontend-parity run is unreachable (#{out.lines.last(1).join.strip})" if st.exitstatus == 2 && out.include?("--act")
+out, st = probe(%w[truck --arm dfa_tb])
+failures << "values: truck --arm dfa_tb was rejected (#{out.lines.last(1).join.strip})" if st.exitstatus == 2 && out.include?("--arm")
+puts failures.length == n0 ? "  ok: right-recipe probes pass the matrix (their errors come from later rules), and shared flags enforce PER-RECIPE value sets both ways" : "  FAIL: acceptance side"
 
 if failures.empty?
 # The acceptance count is DERIVED, not typed. It read "12" while this

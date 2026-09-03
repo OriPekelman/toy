@@ -1061,6 +1061,11 @@ module Toy
 
         DIFFLM_ARMS = %w[ar-baseline diff-selfcond diff-plain prior-floor].freeze
         TRUCK_ARMS  = %w[ga bptt frozen dfa_tb dfa_rx].freeze
+        # Per-recipe value sets for flags TWO LANES SHARE. Keyed by
+        # recipe so neither lane's vocabulary can silently accept the
+        # other's — see check_recipe_enums!.
+        ARM_SETS = { "difflm" => DIFFLM_ARMS, "truck" => TRUCK_ARMS }.freeze
+        ACT_SETS = { "franken" => %w[swiglu situ-glu], "truck" => %w[sigmoid tanh] }.freeze
 
         # Returns a bad_arg result when `val` is not an arm of the current
         # recipe, else nil. TWO LANES NAME ARMS NOW (toy#166's difflm and
@@ -1069,6 +1074,26 @@ module Toy
         # would run it as a silent default instead of rejecting it. When
         # the recipe is not yet known at this point in the parse the union
         # is accepted here and the runner rejects it loudly instead.
+        def check_act_union(val)
+          all = ACT_SETS.values.flatten
+          return nil if all.include?(val)
+          bad_arg("--act #{val.inspect} unsupported; franken: " +
+                  ACT_SETS["franken"].join("|") + ", truck: " + ACT_SETS["truck"].join("|"))
+        end
+
+        # Exact per-recipe enum check, run once the recipe is known.
+        # Returns a bad_arg result or nil.
+        def check_recipe_enums!
+          { "--act" => [@act, ACT_SETS], "--arm" => [@arm, ARM_SETS] }.each do |flag, (val, sets)|
+            next if val.nil?
+            allowed = sets[@recipe]
+            next if allowed.nil? || allowed.include?(val)
+            return bad_arg("#{flag} #{val.inspect} unsupported for recipe " \
+                           "#{@recipe.inspect} (#{allowed.join('|')})")
+          end
+          nil
+        end
+
         def check_arm(val)
           allowed = @recipe == "truck"  ? TRUCK_ARMS :
                     @recipe == "difflm" ? DIFFLM_ARMS : (DIFFLM_ARMS + TRUCK_ARMS)
@@ -2077,15 +2102,24 @@ when /\A--dfa-feedback-lr=(.*)\z/
               val = $1
               return bad_arg("--mla-rank must be a positive integer, got #{val.inspect}") unless val =~ /\A[1-9]\d*\z/
               @mla_rank = val.to_i
+            # TWO LANES NAME ACTIVATIONS (franken's swiglu|situ-glu and
+            # truck's sigmoid|tanh), and the RECIPE IS NOT KNOWN YET here
+            # — it is resolved from the positional after this loop. So the
+            # parse accepts the union and the exact per-recipe set is
+            # enforced in check_recipe_enums! once the recipe is known.
+            # Validating franken's set here made truck's `--act sigmoid`
+            # unreachable by flag at all (toy#191).
             when "--act"
               i += 1
               val = @argv[i]
               return bad_arg("--act requires a value") if val.nil?
-              return bad_arg("--act must be swiglu or situ-glu, got #{val.inspect}") unless %w[swiglu situ-glu].include?(val)
+              err = check_act_union(val)
+              return err if err
               @act = val
             when /\A--act=(.*)\z/
               val = $1
-              return bad_arg("--act must be swiglu or situ-glu, got #{val.inspect}") unless %w[swiglu situ-glu].include?(val)
+              err = check_act_union(val)
+              return err if err
               @act = val
             when "--rope"
               i += 1
@@ -2342,6 +2376,13 @@ when /\A--dfa-feedback-lr=(.*)\z/
                          "prefer `toy research train #{@recipe}`. " \
                          "The old form still works (tao#25)."
           end
+          # Per-recipe VALUE checks for the flags two lanes share. The
+          # matrix below says which flags a recipe accepts; this says
+          # which VALUES, and it has to run here because the recipe is
+          # not known while the flags are parsed.
+          enum_err = check_recipe_enums!
+          return enum_err if enum_err
+
           # ---- toy#132: the flag x recipe MATRIX ----
           # Four llama-first flags in a row tripped franken-moe at Tao
           # runtime (--corpus toy#125, --align-every toy#127, --ckpt-every
