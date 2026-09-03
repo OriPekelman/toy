@@ -789,39 +789,49 @@ module Toy
                              "SSM_B_DIST"      => (@dfa_b_dist || ""),
                              "SSM_B_SCALE"     => (@dfa_b_scale || ""))
           elsif @recipe == "truck"
-            # Lane-local TRUCK_* namespace. Every value is passed as a
+            # Lane-local TRUCK_* namespace.
+            #
+            # EVERY value is `.to_s`, uniformly. The ivars behind these
+            # flags are owned by other lanes and carry THEIR storage
+            # types: @clip_grad is a Float (lstm stores val.to_f), and
+            # marshalling it unconverted made Open3.capture2e raise
+            # "no implicit conversion of Float into String" for EVERY
+            # value of --clip-grad on this lane (toy#196; it killed 120
+            # cells). nil.to_s is already "", so the nil guards this
+            # block used to carry were hiding the type question rather
+            # than answering it. Every value is passed as a
             # STRING and empty means "the runner's default": this lane's
             # defaults are the PAPER's conventions (r=3, 300-step
             # episodes, DOCK_TRAILER), and re-stating them here would
             # give the CLI a second place to drift from.
             env = base.merge("STEPS" => @steps.to_s, "SEED" => @seed.to_s,
-                             "TRUCK_ARM"       => (@arm || ""),
-                             "TRUCK_START"     => (@start_scheme || ""),
-                             "TRUCK_OBS"       => (@obs ? @obs.to_s : ""),
-                             "TRUCK_HIDDEN"    => (@hidden ? @hidden.to_s : ""),
-                             "TRUCK_ACT"       => (@act || ""),
-                             "TRUCK_R"         => (@plant_r || ""),
-                             "TRUCK_STEP_CAP"  => (@step_cap ? @step_cap.to_s : ""),
-                             "TRUCK_LR"        => (@lr || ""),
-                             "TRUCK_CLIP"      => (@clip_grad || ""),
-                             "TRUCK_BUDGET"    => (@budget ? @budget.to_s : ""),
-                             "TRUCK_LOSS"      => (@loss || ""),
-                             "TRUCK_DFA_SUM"   => (@dfa_sum || ""),
-                             "TRUCK_GA_POP"    => (@ga_pop ? @ga_pop.to_s : ""),
-                             "TRUCK_GA_GENS"   => (@ga_gens ? @ga_gens.to_s : ""),
-                             "TRUCK_GA_AGG"    => (@ga_agg || ""),
-                             "TRUCK_EVAL_N"    => (@eval_n ? @eval_n.to_s : ""),
-                             "TRUCK_EXPORT"    => (@export_path || ""),
-                             "TRUCK_E"         => (@error_mode || ""),
-                             "TRUCK_E_DECAY"   => (@e_decay || ""),
-                             "TRUCK_LOAD"      => (@load_ctrl || ""),
-                             "TRUCK_TRACE"     => (@trace_path || ""),
-                             "TRUCK_TRACE_SCHEME" => (@trace_scheme || ""),
-                             "TRUCK_TRACE_N"   => (@trace_n ? @trace_n.to_s : ""),
-                             "TRUCK_TRACE_SEED" => (@trace_seed ? @trace_seed.to_s : ""),
-                             "TRUCK_STRIDE"    => (@stride ? @stride.to_s : ""),
+                             "TRUCK_ARM"        => @arm.to_s,
+                             "TRUCK_START"      => @start_scheme.to_s,
+                             "TRUCK_OBS"        => @obs.to_s,
+                             "TRUCK_HIDDEN"     => @hidden.to_s,
+                             "TRUCK_ACT"        => @act.to_s,
+                             "TRUCK_R"          => @plant_r.to_s,
+                             "TRUCK_STEP_CAP"   => @step_cap.to_s,
+                             "TRUCK_LR"         => @lr.to_s,
+                             "TRUCK_CLIP"       => @clip_grad.to_s,
+                             "TRUCK_BUDGET"     => @budget.to_s,
+                             "TRUCK_LOSS"       => @loss.to_s,
+                             "TRUCK_DFA_SUM"    => @dfa_sum.to_s,
+                             "TRUCK_GA_POP"     => @ga_pop.to_s,
+                             "TRUCK_GA_GENS"    => @ga_gens.to_s,
+                             "TRUCK_GA_AGG"     => @ga_agg.to_s,
+                             "TRUCK_EVAL_N"     => @eval_n.to_s,
+                             "TRUCK_EXPORT"     => @export_path.to_s,
+                             "TRUCK_E"          => @error_mode.to_s,
+                             "TRUCK_E_DECAY"    => @e_decay.to_s,
+                             "TRUCK_LOAD"       => @load_ctrl.to_s,
+                             "TRUCK_TRACE"      => @trace_path.to_s,
+                             "TRUCK_TRACE_SCHEME"  => @trace_scheme.to_s,
+                             "TRUCK_TRACE_N"    => @trace_n.to_s,
+                             "TRUCK_TRACE_SEED"  => @trace_seed.to_s,
+                             "TRUCK_STRIDE"     => @stride.to_s,
                              "TRUCK_B_SEED"    => (@dfa_b_seed || 1234).to_s,
-                             "TRUCK_B_DIST"    => (@dfa_b_dist || ""),
+                             "TRUCK_B_DIST"     => @dfa_b_dist.to_s,
                              "TRUCK_B_SCALE"   => (@dfa_b_scale || ""))
           elsif @recipe == "gnn"
             # Lane-local GNN_* namespace, same discipline as MLP_*/CTR_*.
@@ -1076,6 +1086,18 @@ module Toy
         # would run it as a silent default instead of rejecting it. When
         # the recipe is not yet known at this point in the parse the union
         # is accepted here and the runner rejects it loudly instead.
+        # TWO LANES CLIP, with DIFFERENT contracts for zero: on lstm
+        # (toy#162) clipping is nil = OFF and a value must be positive;
+        # on truck (toy#189) the runner's contract is "0 disables",
+        # documented in its own header, and omission means the runner's
+        # default of 1.0. The recipe is not known while flags are
+        # parsed, so the number is accepted here and the per-recipe rule
+        # is applied by check_recipe_enums!.
+        def check_clip(val)
+          return nil if val =~ /\A\d*\.?\d+([eE][+-]?\d+)?\z/ && val.to_f >= 0.0
+          bad_arg("--clip-grad must be a non-negative float, got #{val.inspect}")
+        end
+
         def check_act_union(val)
           all = ACT_SETS.values.flatten
           return nil if all.include?(val)
@@ -1086,6 +1108,12 @@ module Toy
         # Exact per-recipe enum check, run once the recipe is known.
         # Returns a bad_arg result or nil.
         def check_recipe_enums!
+          # lstm keeps its "positive, omit to disable" contract; truck
+          # accepts 0 because its runner treats 0 as "no clipping".
+          if !@clip_grad.nil? && @clip_grad <= 0.0 && @recipe != "truck"
+            return bad_arg("--clip-grad must be a positive float " \
+                           "(omit it to disable clipping) on recipe #{@recipe.inspect}")
+          end
           { "--act" => [@act, ACT_SETS], "--arm" => [@arm, ARM_SETS] }.each do |flag, (val, sets)|
             next if val.nil?
             allowed = sets[@recipe]
@@ -1627,11 +1655,13 @@ module Toy
               i += 1
               val = @argv[i]
               return bad_arg("--clip-grad requires a value") if val.nil?
-              return bad_arg("--clip-grad must be a positive float (omit it to disable clipping), got #{val.inspect}") unless val =~ /\A\d*\.?\d+([eE][+-]?\d+)?\z/ && val.to_f > 0.0
+              err = check_clip(val)
+              return err if err
               @clip_grad = val.to_f
             when /\A--clip-grad=(.*)\z/
               val = $1
-              return bad_arg("--clip-grad must be a positive float (omit it to disable clipping), got #{val.inspect}") unless val =~ /\A\d*\.?\d+([eE][+-]?\d+)?\z/ && val.to_f > 0.0
+              err = check_clip(val)
+              return err if err
               @clip_grad = val.to_f
             when "--noise"
               i += 1

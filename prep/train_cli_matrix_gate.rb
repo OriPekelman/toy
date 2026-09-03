@@ -334,6 +334,25 @@ failures << "values: difflm --arm bptt was not rejected (#{out.lines.last(1).joi
 out, st = probe(%w[truck --act tanh])
 failures << "values: truck --act tanh was rejected — the frontend-parity run is unreachable (#{out.lines.last(1).join.strip})" if st.exitstatus == 2 && out.include?("--act")
 out, st = probe(%w[truck --arm dfa_tb])
+# ---- toy#196: the shim must MARSHAL, not just accept ----
+#
+# The truck block reuses ivars owned by other lanes and inherits THEIR
+# storage types: @clip_grad is a Float (lstm stores val.to_f), and
+# passing it to Open3 unconverted raised "no implicit conversion of
+# Float into String" for EVERY value of --clip-grad on truck. The flag
+# was accepted by the matrix and by its own validator, and still could
+# not run — so a probe that only checks the matrix would have missed it.
+# These run far enough to prove the spawn succeeds.
+out, st = probe(%w[truck --clip-grad 1.0])
+failures << "marshal: truck --clip-grad 1.0 died in the shim (#{out.lines.last(1).join.strip})" if out.include?("no implicit conversion") || out.include?("TypeError")
+out, st = probe(%w[truck --lr 0.5])
+failures << "marshal: truck --lr 0.5 died in the shim (#{out.lines.last(1).join.strip})" if out.include?("no implicit conversion") || out.include?("TypeError")
+# 0 disables clipping on truck (its runner's contract) and stays an
+# error on lstm (toy#162's nil = OFF).
+out, st = probe(%w[truck --clip-grad 0])
+failures << "values: truck --clip-grad 0 was rejected — clipping cannot be disabled (#{out.lines.last(1).join.strip})" if st.exitstatus == 2 && out.include?("--clip-grad")
+out, st = probe(%w[lstm --clip-grad 0])
+failures << "values: lstm --clip-grad 0 was accepted — lstm's positive-only contract was weakened" unless st.exitstatus == 2 && out.include?("--clip-grad must be a positive float")
 failures << "values: truck --arm dfa_tb was rejected (#{out.lines.last(1).join.strip})" if st.exitstatus == 2 && out.include?("--arm")
 puts failures.length == n0 ? "  ok: right-recipe probes pass the matrix (their errors come from later rules), and shared flags enforce PER-RECIPE value sets both ways" : "  FAIL: acceptance side"
 
