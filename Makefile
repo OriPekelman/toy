@@ -1992,7 +1992,8 @@ prep/smokes/smoke_vit_tiny: prep/smokes/smoke_vit_tiny.rb lib/toy/llm/engine/vit
 # why libtinynn_ggml.a is still a prerequisite. CPU-only, no CUDA twin.
 # Own compilation unit (landmine #16).
 libexec/toy-train-truck: lib/toy/run/train_truck.rb \
-		lib/toy/io/json_builder.rb lib/toy/io/json.rb lib/toy/io/toy_events.rb \
+		lib/toy/io/json_builder.rb lib/toy/io/json.rb lib/toy/io/json_decoder.rb \
+		lib/toy/io/toy_events.rb \
 		vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
 		lib/toy/io/toy_truck_task.rb lib/toy/train/dfa_b.rb \
 		lib/toy/models/transformer.rb \
