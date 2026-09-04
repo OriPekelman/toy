@@ -725,7 +725,7 @@ docks.** A broadcast-DFA positive cannot exist there by construction — there i
 nothing for the body to learn that freezing does not already give you, which is
 `dfa-vs-bp`'s own F9d/N1b rule arriving from a new direction.
 
-#### `TRUCK_EXPERT_SHARPEN` — the teacher decides whether DFA matches BP (toy#197)
+#### `TRUCK_EXPERT_SHARPEN` — hardening the imitation target (toy#197)
 
 The imitation leg's one clear asymmetry is the *teacher*. This knob isolates why:
 
@@ -751,22 +751,29 @@ far dock5:
 | ga | 4.0 | 0.910 | 0.562 | 0.559 | **0.003** |
 | bptt | 4.0 | 0.951 | 0.500 | 0.451 | 0.049 |
 
-**The gap is a function of the target's achieved saturation, not of k and not of
-which arm produced the teacher** — the rows above are sorted by `target_sat` and
-the gap falls monotonically along it, across two different experts. At
-`target_sat ≈ 0.9` DFA matches BP (0.559 vs 0.562); at `target_sat ≈ 0.12` it
-collapses (0.024 vs 0.542).
+**This reading was REFUTED by a larger run** (C4c, 288 cells, engine `ae1e0e0`)
+and is kept here only so the mistake is not repeated. On the table above the gap
+falls monotonically with `target_sat` across two experts — but each saturation
+level was represented by exactly ONE policy, so the statistic was standing in for
+the teacher. With a genuinely bang-bang GA (native `target_sat` 0.96, against the
+0.119 of the one used here) the relation breaks in both directions: that GA
+*softened* to `target_sat` 0.000 still gives DFA ≈ BP (0.438 vs 0.479), and
+`bptt` *hardened* to 0.906 still leaves DFA 0.13 behind.
 
-So the per-step regime where random feedback works is **sign classification**,
-and the graded-regression end is where it fails — which is where every DFA
-positive in `dfa-vs-bp` already lived, now stated on a closed loop.
+**What does unify it is imitation MSE against the loop.** Neither student fits a
+bang-bang policy — a sigmoid cannot draw the discontinuity — and neither needs
+to, because the plant uses the *sign* and its ±70° saturation absorbs the
+magnitude error. A graded policy is fit exactly by BP and almost by DFA, and an
+RMS residual of ~0.1 costs half the docking over 300 steps; the single `B` draw
+that reached MSE 0.001 drives like BP.
 
-**One boundary to respect:** at `k ≤ 0.5` the target softens so far that
-`imit_bp` fails too (both arms 0.000). That end says nothing about DFA — the
-target itself has stopped being drivable — so the claim holds only in the region
-where BP still works.
+So the regime is **policies robust to imitation error**. Bang-bang teachers are
+easy *because bang-bang is robust*, not because ±1 targets are
+classification-shaped for the student. The knob remains useful — it refuted its
+own premise cleanly, and `target_sat` on the provenance line is what made the
+refutation legible.
 
-A note for anyone reading C4: **a `ga` expert is not automatically bang-bang.**
+**A `ga` expert is not automatically bang-bang.**
 Ours docks 15/15 at `mean_d2` 0.35 with `mean_abs_signal` 0.54 and `frac_sat`
 ≈ 0, and its native `target_sat` is 0.119. The teacher property that matters is
 saturation, and it is not determined by the arm that produced the teacher.
