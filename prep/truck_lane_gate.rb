@@ -819,6 +819,51 @@ puts(failures.length == n0 ?
   "GATE ok [b-sigma]: byte-null at 1.0, a real axis with the clip off, EXACTLY inert with it on (clip_hits says which), printed only under `fixed`, refused elsewhere" :
   "GATE FAIL [b-sigma]: #{failures[n0..].join('; ')}")
 
+# ----------------------------------------------------------------- 20
+# toy#200 — TRUCK_B_SIGN and B2 on the line. The point of the knob is
+# that -1 is the EXACT MIRROR of a run and not a different draw, so
+# that is asserted elementwise off the provenance rather than assumed.
+n0 = failures.length
+base = { "TRUCK_ARM" => "dfa_tb", "TRUCK_E" => "yt", "TRUCK_DFA_SUM" => "to_best",
+         "TRUCK_B_SEED" => "227935", "STEPS" => "200", "SEED" => "0",
+         "TRUCK_EVAL_N" => "4" }
+b2_of = lambda do |out|
+  f = prov_field(out, "b2")
+  f && f.gsub(/[\[\]]/, "").split(",").map(&:to_f)
+end
+pos, = run_truck(base)
+neg, = run_truck(base.merge("TRUCK_B_SIGN" => "-1"))
+p2 = b2_of.call(pos)
+n2 = b2_of.call(neg)
+if p2.nil? || n2.nil?
+  failures << "b_sign: b2 is not on the provenance line for dfa_tb"
+else
+  failures << "b2 has #{p2.length} entries, expected e_dim 2 under yt" unless p2.length == 2
+  unless p2.zip(n2).all? { |a, b| (a + b).abs < 1e-15 }
+    failures << "b_sign: -1 is not the exact elementwise negation (#{p2.inspect} vs #{n2.inspect})"
+  end
+end
+strip = ->(o) { o.lines.reject { |l| l.start_with?("truck: ") }.join }
+one, = run_truck(base.merge("TRUCK_B_SIGN" => "1"))
+failures << "b_sign: unset is not byte-identical to 1" unless strip.call(pos) == strip.call(one)
+failures << "b_sign: -1 changed nothing" if strip.call(pos) == strip.call(neg)
+failures << "b_sign: not reported" unless prov_field(neg, "b_sign") == "-1"
+
+# Printed only where it acted: bptt uses no B, and dfa_rx never touches
+# B2 (its readout signal is the exact gradient).
+bp, = run_truck({ "TRUCK_ARM" => "bptt", "STEPS" => "5", "TRUCK_EVAL_N" => "2" })
+failures << "b_sign: printed on bptt, which uses no B" unless prov_field(bp, "b_sign").nil?
+failures << "b2: printed on bptt" unless prov_field(bp, "b2").nil?
+rx, = run_truck(base.merge("TRUCK_ARM" => "dfa_rx"))
+failures << "b_sign: missing on dfa_rx, which does use B1" if prov_field(rx, "b_sign").nil?
+failures << "b2: printed on dfa_rx, which never consumes B2" unless prov_field(rx, "b2").nil?
+
+_, bad = run_truck(base.merge("TRUCK_B_SIGN" => "0"))
+failures << "b_sign: 0 was accepted" if bad.success?
+puts(failures.length == n0 ?
+  "GATE ok [b-sign]: -1 is the exact elementwise mirror of the draw, +1 is byte-null, and b_sign/b2 appear only on the arms that consume them" :
+  "GATE FAIL [b-sign]: #{failures[n0..].join('; ')}")
+
 # ------------------------------------------------------------------ 9
 # C-FIXTURE, REPORTED AND NOT ASSERTED. The programme's rule is that
 # `bptt` must beat `frozen` with margin or no DFA reading on this
@@ -882,7 +927,7 @@ end
 
 # ----------------------------------------------------------------------
 if failures.empty?
-  puts "GATE PASS [truck-lane]: 18 legs (gradcheck, arms, frozen, b-reaches, budget, zero_grad, export, repro, trace, stride, half_yard, metrics, e-mode, imit, regime, sharpen, label, b-sigma)"
+  puts "GATE PASS [truck-lane]: 19 legs (gradcheck, arms, frozen, b-reaches, budget, zero_grad, export, repro, trace, stride, half_yard, metrics, e-mode, imit, regime, sharpen, label, b-sigma, b-sign)"
 else
   puts "GATE FAIL [truck-lane]: #{failures.length} failure(s)"
   failures.each { |f| puts "  - #{f}" }

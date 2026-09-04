@@ -212,6 +212,12 @@
 #                     the magnitude back out. `clip_hits=` on the
 #                     provenance line says whether that happened; set
 #                     TRUCK_CLIP=0 to make B's magnitude a real axis.
+#   TRUCK_B_SIGN    — 1 (default, byte-null) | -1. Negates EVERY B this
+#                     lane draws, after the draw, so -1 is the exact
+#                     mirror of a run rather than a different draw
+#                     (toy#200). The provenance also prints B2 itself
+#                     for dfa_tb, so the mirror family can be read off
+#                     instead of inferred.
 #   TRUCK_B_SIGMA   — B's magnitude under TRUCK_B_SCALE=fixed (default
 #                     1.0, byte-null). The other two rules derive sigma
 #                     from the dims, so without this the lane had exactly
@@ -330,6 +336,8 @@ B_SEED_S    = ENV["TRUCK_B_SEED"] || ""
 B_SEED      = B_SEED_S.length > 0 ? B_SEED_S.to_i : 1234
 B_DIST_S    = ENV["TRUCK_B_DIST"]    || ""
 B_SCALE_S   = ENV["TRUCK_B_SCALE"]   || ""
+B_SIGN_S    = ENV["TRUCK_B_SIGN"]    || ""
+B_SIGN      = B_SIGN_S == "-1" ? -1.0 : 1.0
 B_SIGMA_S   = ENV["TRUCK_B_SIGMA"]   || ""
 B_SIGMA_K   = B_SIGMA_S.length > 0 ? B_SIGMA_S.to_f : 1.0
 GA_POP_S    = ENV["TRUCK_GA_POP"] || ""
@@ -433,6 +441,10 @@ if ARM_S.length > 0 && ARM_S != "ga" && ARM_S != "bptt" && ARM_S != "frozen" &&
    ARM_S != "imit_dfa" && ARM_S != "imit_frozen"
   puts "toy-train-truck: TRUCK_ARM must be " +
        "ga|bptt|frozen|dfa_tb|dfa_rx|imit_bp|imit_dfa|imit_frozen, got " + ARM_S
+  exit 1
+end
+if B_SIGN_S.length > 0 && B_SIGN_S != "1" && B_SIGN_S != "-1"
+  puts "toy-train-truck: TRUCK_B_SIGN must be 1 or -1, got " + B_SIGN_S
   exit 1
 end
 if B_SIGMA_K <= 0.0
@@ -1270,6 +1282,27 @@ B_SIGMA2 = Toy::Train::DfaB.sigma_for(B_SCALE, E_DIM, 1, B_SIGMA_K)
 b1m = Toy::Train::DfaB.fill(HIDDEN * E_DIM, B_SEED, B_DIST, B_SIGMA1)
 b2m = Toy::Train::DfaB.fill(E_DIM, B_SEED + 7919, B_DIST, B_SIGMA2)
 
+# toy#200 — NEGATE THE WHOLE FEEDBACK. C3a read the `yt` policies as two
+# mirror-image families selected by the sign of B2's dy weight; if the
+# dead B draws are simply the other family, negating B revives them and
+# the recipe needs ONE BIT rather than a lucky seed.
+#
+# Applied AFTER the draw, to every B this lane makes (both broadcast
+# matrices and the imitation arms' 9x1), so `-1` is the exact mirror of
+# a run and not a different draw.
+if B_SIGN < 0.0
+  bs_i = 0
+  while bs_i < HIDDEN * E_DIM
+    b1m[bs_i] = 0.0 - b1m[bs_i]
+    bs_i = bs_i + 1
+  end
+  bs_j = 0
+  while bs_j < E_DIM
+    b2m[bs_j] = 0.0 - b2m[bs_j]
+    bs_j = bs_j + 1
+  end
+end
+
 # toy#190: a loaded controller REPLACES the init and training is
 # skipped. Done after the init draw rather than instead of it so the
 # init RNG stream is identical either way — an arm that loads and one
@@ -1565,6 +1598,13 @@ target_sat = 0.0
 # not a 3-vector, because it is per-step rather than a broadcast.
 B_SIGMA_I = Toy::Train::DfaB.sigma_for(B_SCALE, 1, HIDDEN, B_SIGMA_K)
 b1i = Toy::Train::DfaB.fill(HIDDEN, B_SEED + 104729, B_DIST, B_SIGMA_I)
+if B_SIGN < 0.0
+  bi_i = 0
+  while bi_i < HIDDEN
+    b1i[bi_i] = 0.0 - b1i[bi_i]
+    bi_i = bi_i + 1
+  end
+end
 
 # `&& !SKIP_TRAIN`: demonstrations are needed to TRAIN an imitation arm,
 # not to ROLL ONE OUT. Without this, loading a saved imit_dfa
@@ -2372,6 +2412,25 @@ prov = prov + " clip_hits=" + clip_hits.to_s
 prov = prov + " b_dist=" + (B_DIST_S.length > 0 ? B_DIST_S : "gaussian")
 prov = prov + " b_scale=" + (B_SCALE_S.length > 0 ? B_SCALE_S : "inv_sqrt_fan")
 prov = prov + " b_seed=" + B_SEED.to_s
+# Printed only for arms that USE B. A b_sign on a bptt line would be a
+# number that did not act, which is the shape this lane keeps paying for.
+USES_B = ARM == ARM_DFA_TB || ARM == ARM_DFA_RX || ARM == ARM_IMIT_DFA
+if USES_B
+  prov = prov + " b_sign=" + (B_SIGN < 0.0 ? "-1" : "1")
+end
+# B2 itself, so the family can be READ rather than inferred. Only
+# dfa_tb consumes B2 — dfa_rx takes its readout signal from the exact
+# gradient and never touches it.
+if ARM == ARM_DFA_TB
+  b2s = " b2=["
+  b2i = 0
+  while b2i < E_DIM
+    if b2i > 0; b2s = b2s + ","; end
+    b2s = b2s + b2m[b2i].to_s
+    b2i = b2i + 1
+  end
+  prov = prov + b2s + "]"
+end
 # Emitted ONLY under `fixed`, where it is the sigma. Under a dimensional
 # rule the sigma is a function of the dims, and printing `b_sigma=1.0`
 # beside `b_scale=glorot` would read as "sigma was 1.0" when it was not.
@@ -2517,6 +2576,18 @@ if EVENTS.length > 0
     cf.add_str("b_scale", B_SCALE_S.length > 0 ? B_SCALE_S : "inv_sqrt_fan")
     if B_SCALE == Toy::Train::DfaB::SCALE_FIXED
       cf.add_raw("b_sigma", B_SIGMA_K.to_s)
+    end
+    if USES_B
+      cf.add_num("b_sign", B_SIGN < 0.0 ? -1 : 1)
+    end
+    if ARM == ARM_DFA_TB
+      # The two signs the family reading turns on, named rather than
+      # left to be indexed out of b2 — the dy slot MOVES with the error
+      # mode (0 under `yt`, 1 under the three-component modes).
+      dy_i = E_MODE == E_YT ? 0 : 1
+      dt_i = E_MODE == E_YT ? 1 : 2
+      cf.add_num("b2_sign_dy", b2m[dy_i] < 0.0 ? -1 : 1)
+      cf.add_num("b2_sign_dt", b2m[dt_i] < 0.0 ? -1 : 1)
     end
     cf.add_str("e_mode", E_MODE_S.length > 0 ? E_MODE_S : "xyt")
     cf.add_num("e_dim", E_DIM)

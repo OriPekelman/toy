@@ -492,6 +492,7 @@ fixture cannot discriminate and every DFA row on it is void — read that row fi
 | `--car` / `--lesson i` | the regime search (toy#195): the no-trailer body, and the curriculum index 0..19 as a difficulty axis |
 | `TRUCK_EXPERT_SHARPEN=k` | harden (k>1) or soften (k<1) the imitation TARGET without touching the driving action (toy#197). k=1 byte-null |
 | `TRUCK_B_SIGMA` | `B`'s magnitude under `--dfa-b-scale fixed` (toy#199). Default 1.0, byte-null, refused under the dimensional rules |
+| `TRUCK_B_SIGN=1\|-1` | negate every `B` after the draw (toy#200). Default 1, byte-null. `dfa_tb` also prints `b2=[…]` |
 | `--arm imit_bp\|imit_dfa\|imit_frozen` + `--expert PATH` | the imitation leg (toy#194): train a fresh net on a docking expert's per-step action |
 | `--demos scarce\|abundant` / `--demo-n` / `--demo-batch` / `--weight-decay` | the paper's 15 starts, or `N` yard starts; and the regularisation F17's comparison had |
 | `--ga-pop/--ga-gens/--ga-agg` | the paper's pole. `--ga-agg mean\|min`, both of which it reports as acceptable |
@@ -807,3 +808,46 @@ straight back out — measured identical to 15 significant figures at σ = 1, 4 
 knob that did nothing can be told from a knob that did something small. The same
 caution applies to the scale *rule*: whenever the clip binds, `lr` is the only
 surviving step-size axis for these arms.
+
+#### `TRUCK_B_SIGN` — which `B` draws work, and why (toy#200)
+
+The first pure-broadcast recipe that docks on this plant is `dfa_tb` with
+`--error-mode yt` **and** `--dfa-sum to_best` (each necessary, together
+sufficient). It is gated by the `B` draw, and `TRUCK_B_SIGN=-1` negates every `B`
+after the draw — the exact mirror of a run, not a different draw — so the
+"dead draws are the other family" reading is testable with one bit.
+
+`dfa_tb` also prints `b2=[…]` on the provenance line, which is what makes the
+family readable rather than inferred. Measured, 5 draws × both signs × 8 seeds,
+`lr ∈ {4, 20}`, far dock5 against a frozen reference of 0.031:
+
+| `B_SEED` | sign | `b2` = (dy, dθ) | far dock5 | seeds > frozen |
+|---|---|---|---|---|
+| 227935 | +1 | (+0.530, **+1.080**) | 0.000 | 0/8 |
+| 227935 | −1 | (−0.530, **−1.080**) | 0.051 | 3/8 |
+| 7 | +1 | (+0.745, **−0.733**) | 0.102 | 6/8 |
+| 7 | −1 | (−0.745, **+0.733**) | 0.000 | 0/8 |
+| 1234 | +1 | (+0.417, **−1.006**) | 0.406 | 8/8 |
+| 1234 | −1 | (−0.417, **+1.006**) | 0.000 | 0/8 |
+| 99 | +1 | (+0.884, +0.029) | 0.000 | 0/8 |
+| 99 | −1 | (−0.884, −0.029) | 0.000 | 0/8 |
+| 31337 | +1 | (−0.136, **−0.186**) | 0.098 | 7/8 |
+| 31337 | −1 | (+0.136, **+0.186**) | 0.000 | 0/8 |
+
+**Exactly one sign is alive in four of the five draws, and the selector is the
+sign of `B₂`'s dθ weight — not its dy weight.** `sign(dθ) < 0` predicts 9 of
+10 rows. The dy sign splits the alive set two-and-two and predicts nothing.
+
+The one miss is `99` at −1: dθ = −0.029 has the right sign but is ~30× smaller
+than any other draw's, so that draw carries essentially no trailer-angle feedback
+in either family and is dead both ways. That is a magnitude floor, not a
+counterexample to the sign rule.
+
+So the recipe needs one bit, and the bit is readable from `B₂` before a single
+episode is run.
+
+**A discrepancy to resolve before this is built on:** C6d classified 227935 and 7
+as the working draws with 1234/99/31337 dead. On this engine 1234 is the
+*strongest* draw (0.406, 8/8) across the whole LR band 1.7–85, and 227935 is dead
+across all of it. The `b2` values above are what to compare against — if C6d's
+cells show different numbers for the same seed, the draws themselves differ.
