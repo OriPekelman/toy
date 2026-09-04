@@ -121,6 +121,13 @@
 #   STEPS / SEED / RUN_DIR / TOY_RUN_ID   — as every other runner.
 #                     STEPS is the UPDATE cap (generations, for `ga`).
 #   TRUCK_ARM       — ga | bptt | frozen | dfa_tb | dfa_rx (default bptt)
+#   TRUCK_EXPERT_SHARPEN — k > 0 (default 1.0, byte-null). Transforms
+#                     the recorded TARGET, not the driving action:
+#                     u*' = tanh(k*atanh(clip(u*))). k > 1 turns the
+#                     per-step problem into a SIGN CLASSIFICATION, k < 1
+#                     into a graded REGRESSION. C4 found the teacher
+#                     decides whether DFA matches BP, and this is the
+#                     axis that says why.
 #   TRUCK_CAR       — 1 => the CAR regime (toy#195): no trailer, no
 #                     jack-knife, one heading. A docking policy on a car
 #                     is near-linear in (y, theta) — the regime a fixed
@@ -328,6 +335,8 @@ DEMO_B_S    = ENV["TRUCK_DEMO_BATCH"] || ""
 DEMO_BATCH  = DEMO_B_S.length > 0 ? DEMO_B_S.to_i : 64
 WD_S        = ENV["TRUCK_WD"] || ""
 WD          = WD_S.length > 0 ? WD_S.to_f : 0.0
+SHARPEN_S   = ENV["TRUCK_EXPERT_SHARPEN"] || ""
+SHARPEN     = SHARPEN_S.length > 0 ? SHARPEN_S.to_f : 1.0
 CAR         = (ENV["TRUCK_CAR"] || "") == "1"
 LESSON_S    = ENV["TRUCK_LESSON"] || ""
 LESSON      = LESSON_S.length > 0 ? LESSON_S.to_i : 19
@@ -404,6 +413,10 @@ if ARM_S.length > 0 && ARM_S != "ga" && ARM_S != "bptt" && ARM_S != "frozen" &&
    ARM_S != "imit_dfa" && ARM_S != "imit_frozen"
   puts "toy-train-truck: TRUCK_ARM must be " +
        "ga|bptt|frozen|dfa_tb|dfa_rx|imit_bp|imit_dfa|imit_frozen, got " + ARM_S
+  exit 1
+end
+if SHARPEN <= 0.0
+  puts "toy-train-truck: TRUCK_EXPERT_SHARPEN must be > 0, got " + SHARPEN.to_s
   exit 1
 end
 if DEMOS_S.length > 0 && DEMOS_S != "scarce" && DEMOS_S != "abundant"
@@ -1117,6 +1130,32 @@ end
 # bundle then said `scheme: "half_yard"` over starts spanning the whole
 # yard, which is a wrong number that looks right. Returns -1 for an
 # unknown name so the caller can refuse it.
+# toy#197 — SHARPEN THE TEACHER'S ACTION, and only the action.
+#
+#   u*' = tanh(k * atanh(clip(u*, +/-0.999)))
+#
+# k > 1 hardens toward +/-1 (a sign classification), k < 1 softens
+# toward 0 (a regression), k = 1 is the identity and byte-null.
+#
+# THE PLANT IS STILL DRIVEN BY THE EXPERT'S TRUE ACTION. Only the
+# recorded TARGET is transformed, so the state distribution is held
+# fixed across k and the sweep varies one thing. The gate asserts that
+# by requiring demo_pairs and expert_mean_d2 to be identical at every k.
+#
+# atanh is written out rather than called: Math.atanh's availability
+# under the compiler is not something to discover at runtime, and
+# 0.5*log((1+x)/(1-x)) is the definition.
+def tk_sharpen(sh_u, sh_k)
+  if sh_k == 1.0
+    return sh_u
+  end
+  sh_x = sh_u
+  if sh_x > 0.999;  sh_x = 0.999;  end
+  if sh_x < -0.999; sh_x = -0.999; end
+  sh_a = 0.5 * Math.log((1.0 + sh_x) / (1.0 - sh_x))
+  Math.tanh(sh_k * sh_a)
+end
+
 def tk_scheme_mode(sm_name)
   if sm_name == "point";         return 1; end
   if sm_name == "yard";          return 2; end
@@ -1441,6 +1480,7 @@ dm_obs  = [0.0]; dm_obs.pop      # (state, action) pairs
 dm_u    = [0.0]; dm_u.pop
 dm_n    = 0
 expert_d2 = 0.0
+target_sat = 0.0
 
 # B1 for the imitation arms is HIDDEN x 1: the error is a SCALAR here,
 # not a 3-vector, because it is per-step rather than a broadcast.
@@ -1484,14 +1524,27 @@ if IS_IMIT
         dm_obs.push(rs_obs[dm_t * N_IN + dm_k])
         dm_k = dm_k + 1
       end
-      dm_u.push(rs_sig[dm_t])
+      dm_u.push(tk_sharpen(rs_sig[dm_t], SHARPEN))
       dm_n = dm_n + 1
       dm_t = dm_t + 1
     end
     dm_i = dm_i + 1
   end
   expert_d2 = expert_d2 / dm_starts.to_f
+  # The ACHIEVED hardness, not the knob: a reader needs to know what
+  # fraction of the targets actually sit at the rail, which is a
+  # property of the teacher AND k together.
+  dm_sat = 0
+  dm_s2 = 0
+  while dm_s2 < dm_n
+    dm_av = dm_u[dm_s2]
+    if dm_av < 0.0; dm_av = 0.0 - dm_av; end
+    if dm_av > 0.99; dm_sat = dm_sat + 1; end
+    dm_s2 = dm_s2 + 1
+  end
+  target_sat = dm_n > 0 ? dm_sat.to_f / dm_n.to_f : 0.0
   puts "demos: n_pairs=" + dm_n.to_s + " starts=" + dm_starts.to_s +
+       " sharpen=" + SHARPEN.to_s + " target_sat=" + target_sat.to_s +
        " regime=" + (DEMOS_SCARCE ? "scarce" : "abundant") +
        " expert=" + EXPERT + " expert_mean_d2=" + expert_d2.to_s
 
@@ -2244,6 +2297,8 @@ if IS_IMIT
   prov = prov + " demo_pairs=" + dm_n.to_s
   prov = prov + " demo_batch=" + DEMO_BATCH.to_s
   prov = prov + " wd=" + WD.to_s
+  prov = prov + " sharpen=" + SHARPEN.to_s
+  prov = prov + " target_sat=" + target_sat.to_s
   prov = prov + " imit_mse=" + imit_mse.to_s
   # The teacher's own number, beside the student's: a student cannot be
   # better than its teacher's data and the reader needs both.

@@ -663,6 +663,57 @@ puts(failures.length == n0 ?
   "GATE ok [regime]: car mode never clamps while the truck does, the lesson index is a measured difficulty axis and is range-checked, and `train` is the run's own scheme" :
   "GATE FAIL [regime]: #{failures[n0..].join('; ')}")
 
+# ----------------------------------------------------------------- 17
+# toy#197 — TRUCK_EXPERT_SHARPEN. The one thing this knob must not do is
+# change the STATE DISTRIBUTION: the plant is driven by the expert's
+# true action and only the recorded target is transformed. If sharpening
+# leaked into the driving action, the sweep would vary two things and
+# every reading off it would be confounded — so that is asserted
+# directly, not documented and hoped for.
+n0 = failures.length
+Dir.mktmpdir("truck-sharp") do |dir|
+  expert = File.join(dir, "e.json")
+  run_truck({ "TRUCK_ARM" => "bptt", "STEPS" => "3000", "TRUCK_LR" => "6.0",
+              "TRUCK_EXPORT" => expert })
+  base = { "TRUCK_ARM" => "imit_bp", "TRUCK_EXPERT" => expert, "STEPS" => "100",
+           "TRUCK_EVAL_N" => "4" }
+  demo_line = lambda { |o| o.lines.find { |l| l.start_with?("demos: ") } }
+  sat = lambda { |o| demo_line.call(o)[/target_sat=(\S+)/, 1].to_f }
+
+  outs = {}
+  %w[0.25 0.5 1 2 4].each { |k| outs[k], = run_truck(base.merge("TRUCK_EXPERT_SHARPEN" => k)) }
+
+  # 1. THE STATE DISTRIBUTION IS FIXED: identical pair count and an
+  #    identical expert score at every k.
+  pairs = outs.values.map { |o| prov_field(o, "demo_pairs") }.uniq
+  d2s   = outs.values.map { |o| prov_field(o, "expert_mean_d2") }.uniq
+  failures << "sharpen: demo_pairs varies with k (#{pairs.inspect}) — the driving action was sharpened too" unless pairs.length == 1
+  failures << "sharpen: expert_mean_d2 varies with k (#{d2s.inspect}) — the plant saw the transformed action" unless d2s.length == 1
+
+  # 2. IT IS MONOTONE IN k, and the ACHIEVED hardness is reported, not
+  #    just the knob.
+  s_lo = sat.call(outs["0.25"])
+  s_1  = sat.call(outs["1"])
+  s_hi = sat.call(outs["4"])
+  failures << "sharpen: target_sat is not monotone (#{s_lo}, #{s_1}, #{s_hi})" unless s_lo <= s_1 && s_1 <= s_hi
+  failures << "sharpen: k=4 did not harden the target (#{s_hi} vs #{s_1})" unless s_hi > s_1
+  failures << "sharpen: k=0.25 did not soften the target (#{s_lo} vs #{s_1})" unless s_lo < s_1
+
+  # 3. k = 1 IS BYTE-NULL against the unset default.
+  unset, = run_truck(base)
+  strip = ->(o) { o.lines.reject { |l| l.start_with?("truck: ") }.join }
+  failures << "sharpen: k=1 is not byte-null against the unset default" unless strip.call(unset) == strip.call(outs["1"])
+  # ...and a k that is not 1 must actually move the run, or the knob is
+  # a label.
+  failures << "sharpen: k=4 changed nothing" if strip.call(outs["4"]) == strip.call(outs["1"])
+
+  _, bad = run_truck(base.merge("TRUCK_EXPERT_SHARPEN" => "0"))
+  failures << "sharpen: k=0 was accepted" if bad.success?
+end
+puts(failures.length == n0 ?
+  "GATE ok [sharpen]: k moves the target's achieved saturation monotonically while demo_pairs and expert_mean_d2 stay identical — the state distribution is held fixed; k=1 is byte-null" :
+  "GATE FAIL [sharpen]: #{failures[n0..].join('; ')}")
+
 # ------------------------------------------------------------------ 9
 # C-FIXTURE, REPORTED AND NOT ASSERTED. The programme's rule is that
 # `bptt` must beat `frozen` with margin or no DFA reading on this
@@ -726,7 +777,7 @@ end
 
 # ----------------------------------------------------------------------
 if failures.empty?
-  puts "GATE PASS [truck-lane]: 15 legs (gradcheck, arms, frozen, b-reaches, budget, zero_grad, export, repro, trace, stride, half_yard, metrics, e-mode, imit, regime)"
+  puts "GATE PASS [truck-lane]: 16 legs (gradcheck, arms, frozen, b-reaches, budget, zero_grad, export, repro, trace, stride, half_yard, metrics, e-mode, imit, regime, sharpen)"
 else
   puts "GATE FAIL [truck-lane]: #{failures.length} failure(s)"
   failures.each { |f| puts "  - #{f}" }

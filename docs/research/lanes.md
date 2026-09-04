@@ -490,6 +490,7 @@ fixture cannot discriminate and every DFA row on it is void — read that row fi
 | `--trace-scheme` / `--trace-n` / `--trace-seed` / `--stride` | which starts to roll, how many, from which seed, and how much of each trace to keep |
 | `--error-mode xyt\|yt\|centered\|signed_x` | what the DFA broadcast projects (toy#193). `xyt` is the default and byte-null |
 | `--car` / `--lesson i` | the regime search (toy#195): the no-trailer body, and the curriculum index 0..19 as a difficulty axis |
+| `TRUCK_EXPERT_SHARPEN=k` | harden (k>1) or soften (k<1) the imitation TARGET without touching the driving action (toy#197). k=1 byte-null |
 | `--arm imit_bp\|imit_dfa\|imit_frozen` + `--expert PATH` | the imitation leg (toy#194): train a fresh net on a docking expert's per-step action |
 | `--demos scarce\|abundant` / `--demo-n` / `--demo-batch` / `--weight-decay` | the paper's 15 starts, or `N` yard starts; and the regularisation F17's comparison had |
 | `--ga-pop/--ga-gens/--ga-agg` | the paper's pole. `--ga-agg mean\|min`, both of which it reports as acceptable |
@@ -723,3 +724,49 @@ law docks is the same regime where a frozen random body with a trained readout
 docks.** A broadcast-DFA positive cannot exist there by construction — there is
 nothing for the body to learn that freezing does not already give you, which is
 `dfa-vs-bp`'s own F9d/N1b rule arriving from a new direction.
+
+#### `TRUCK_EXPERT_SHARPEN` — the teacher decides whether DFA matches BP (toy#197)
+
+The imitation leg's one clear asymmetry is the *teacher*. This knob isolates why:
+
+```
+u*' = tanh(k · atanh(clip(u*, ±0.999)))
+```
+
+applied to the recorded **target** only — the plant is driven by the expert's
+true action at every k, so the state distribution is held fixed and the sweep
+varies one thing. `gate-truck-lane` asserts that directly: `demo_pairs` and
+`expert_mean_d2` must be identical at every k, or the sharpening leaked into the
+driving action.
+
+Abundant demos, 40 000 updates, 3 seeds, `imit_dfa` also over 3 `B` draws,
+far dock5:
+
+| expert | k | achieved `target_sat` | `imit_bp` | `imit_dfa` | gap |
+|---|---|---|---|---|---|
+| ga | 1.0 | 0.119 | 0.542 | 0.024 | **0.517** |
+| ga | 2.0 | 0.801 | 0.562 | 0.497 | 0.066 |
+| bptt | 1.0 | 0.821 | 0.438 | 0.378 | 0.059 |
+| bptt | 2.0 | 0.905 | 0.500 | 0.444 | 0.056 |
+| ga | 4.0 | 0.910 | 0.562 | 0.559 | **0.003** |
+| bptt | 4.0 | 0.951 | 0.500 | 0.451 | 0.049 |
+
+**The gap is a function of the target's achieved saturation, not of k and not of
+which arm produced the teacher** — the rows above are sorted by `target_sat` and
+the gap falls monotonically along it, across two different experts. At
+`target_sat ≈ 0.9` DFA matches BP (0.559 vs 0.562); at `target_sat ≈ 0.12` it
+collapses (0.024 vs 0.542).
+
+So the per-step regime where random feedback works is **sign classification**,
+and the graded-regression end is where it fails — which is where every DFA
+positive in `dfa-vs-bp` already lived, now stated on a closed loop.
+
+**One boundary to respect:** at `k ≤ 0.5` the target softens so far that
+`imit_bp` fails too (both arms 0.000). That end says nothing about DFA — the
+target itself has stopped being drivable — so the claim holds only in the region
+where BP still works.
+
+A note for anyone reading C4: **a `ga` expert is not automatically bang-bang.**
+Ours docks 15/15 at `mean_d2` 0.35 with `mean_abs_signal` 0.54 and `frac_sat`
+≈ 0, and its native `target_sat` is 0.119. The teacher property that matters is
+saturation, and it is not determined by the arm that produced the teacher.
