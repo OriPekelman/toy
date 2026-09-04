@@ -149,6 +149,7 @@ puts(failures.length == n0 ?
 # ------------------------------------------------------------------ 3
 n0 = failures.length
 require "tmpdir"
+require "fileutils"
 Dir.mktmpdir("truck-gate") do |dir|
   init = File.join(dir, "init.json")
   froz = File.join(dir, "frozen.json")
@@ -714,6 +715,65 @@ puts(failures.length == n0 ?
   "GATE ok [sharpen]: k moves the target's achieved saturation monotonically while demo_pairs and expert_mean_d2 stay identical — the state distribution is held fixed; k=1 is byte-null" :
   "GATE FAIL [sharpen]: #{failures[n0..].join('; ')}")
 
+# ----------------------------------------------------------------- 18
+# toy#198 — a rollout is labelled by the CONTROLLER, not by the runner.
+# A bundle naming the wrong arm is the wrong-number-that-looks-right
+# toy#190's format exists to prevent, and the frontend overlays it under
+# that label.
+n0 = failures.length
+Dir.mktmpdir("truck-label") do |dir|
+  expert = File.join(dir, "e.json")
+  run_truck({ "TRUCK_ARM" => "bptt", "STEPS" => "2000", "TRUCK_LR" => "6.0",
+              "TRUCK_EXPORT" => expert })
+  ctrl = File.join(dir, "idfa.json")
+  run_truck({ "TRUCK_ARM" => "imit_dfa", "TRUCK_EXPERT" => expert,
+              "TRUCK_DEMOS" => "scarce", "STEPS" => "300", "TRUCK_LR" => "8.0",
+              "TRUCK_EXPORT" => ctrl })
+  sidecar = ctrl + ".meta.json"
+  failures << "label: no sidecar written beside the controller" unless File.exist?(sidecar)
+
+  # 1. NO --arm: the label comes from the sidecar, not the runner default.
+  trace = File.join(dir, "t.json")
+  out, ok = run_truck({ "TRUCK_LOAD" => ctrl, "TRUCK_TRACE" => trace,
+                        "TRUCK_TRACE_SCHEME" => "ensemble" })
+  failures << "label: loaded rollout exited non-zero" unless ok.success?
+  failures << "label: provenance says arm=#{prov_field(out, 'arm')}, not the controller's imit_dfa" unless prov_field(out, "arm") == "imit_dfa"
+  failures << "label: arm_source is not `sidecar`" unless prov_field(out, "arm_source") == "sidecar"
+  if File.exist?(trace)
+    b = JSON.parse(File.read(trace))
+    failures << "label: the BUNDLE says arm=#{b.dig('provenance', 'arm')}" unless b.dig("provenance", "arm") == "imit_dfa"
+    failures << "label: the bundle does not record arm_source" unless b.dig("provenance", "arm_source") == "sidecar"
+    # train_seed must be the seed that TRAINED the controller, not the
+    # rollout's — for a pure rollout the latter means nothing.
+    failures << "label: train_seed is the rollout's, not the controller's" unless b.dig("provenance", "train_seed") == 0
+  else
+    failures << "label: no trace written"
+  end
+
+  # 2. A DISAGREEING --arm is refused. Silently preferring either side
+  #    relabels somebody's experiment.
+  _, bad = run_truck({ "TRUCK_LOAD" => ctrl, "TRUCK_ARM" => "bptt",
+                       "TRUCK_TRACE" => File.join(dir, "x.json") })
+  failures << "label: a --arm disagreeing with the sidecar was accepted" if bad.success?
+
+  # 3. An AGREEING --arm is fine — and this is also the leg that catches
+  #    an imitation arm demanding an expert it does not need to roll out.
+  ag, agok = run_truck({ "TRUCK_LOAD" => ctrl, "TRUCK_ARM" => "imit_dfa" })
+  failures << "label: an agreeing --arm was refused (does the rollout demand an expert?)" unless agok.success?
+  failures << "label: agreeing --arm lost the sidecar source" unless prov_field(ag, "arm_source") == "sidecar"
+
+  # 4. NO SIDECAR: warn, and say the label is the runner's rather than
+  #    assert a controller label nothing supports.
+  bare = File.join(dir, "bare.json")
+  FileUtils.cp(ctrl, bare)
+  ns, = run_truck({ "TRUCK_LOAD" => bare })
+  failures << "label: a missing sidecar did not warn" unless ns.include?("warning: no sidecar")
+  failures << "label: arm_source should be `flag` without a sidecar" unless prov_field(ns, "arm_source") == "flag"
+end
+puts(failures.length == n0 ?
+  "GATE ok [label]: a loaded rollout takes arm and train_seed from the controller's sidecar, records arm_source, refuses a disagreeing --arm, accepts an agreeing one, and warns when there is no sidecar" :
+  "GATE FAIL [label]: #{failures[n0..].join('; ')}")
+
 # ------------------------------------------------------------------ 9
 # C-FIXTURE, REPORTED AND NOT ASSERTED. The programme's rule is that
 # `bptt` must beat `frozen` with margin or no DFA reading on this
@@ -777,7 +837,7 @@ end
 
 # ----------------------------------------------------------------------
 if failures.empty?
-  puts "GATE PASS [truck-lane]: 16 legs (gradcheck, arms, frozen, b-reaches, budget, zero_grad, export, repro, trace, stride, half_yard, metrics, e-mode, imit, regime, sharpen)"
+  puts "GATE PASS [truck-lane]: 17 legs (gradcheck, arms, frozen, b-reaches, budget, zero_grad, export, repro, trace, stride, half_yard, metrics, e-mode, imit, regime, sharpen, label)"
 else
   puts "GATE FAIL [truck-lane]: #{failures.length} failure(s)"
   failures.each { |f| puts "  - #{f}" }

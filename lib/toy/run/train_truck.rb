@@ -260,6 +260,10 @@
 
 require_relative "../io/json_builder"
 require_relative "../io/json"
+# toy#198: only the decoders this file calls (get_str/get_int). The
+# decoder half is a separate require on purpose — Spinel compiles every
+# loaded method and a set of uncalled ones can widen each other's params.
+require_relative "../io/json_decoder"
 require_relative "../io/toy_events"
 require_relative "../io/toy_truck_task"
 require_relative "../train/dfa_b"
@@ -1285,12 +1289,58 @@ ld_buf = tk_zeros(N_PARAM + 8)
 # skipped. Done after the init draw rather than instead of it so the
 # init RNG stream is identical either way.
 SKIP_TRAIN = LOAD_PATH.length > 0
+
+# toy#198 — A ROLLOUT IS LABELLED BY THE CONTROLLER, NOT BY THE RUNNER.
+#
+# `--load ctrl.json --trace ...` with no `--arm` used to stamp the
+# bundle's provenance.arm with the runner's DEFAULT arm (`bptt`) while
+# the sidecar beside the weights said `imit_dfa`. The frontend then
+# overlays the run under the wrong label — a wrong number that looks
+# right, which is the failure toy#190's format was written to prevent.
+#
+# So on --load the identity comes from the controller's own sidecar when
+# there is one, and `arm_source` records where it came from so a reader
+# can tell a known label from a guessed one. Without that field an
+# absent sidecar would look exactly like a present one.
+loaded_arm = ""
+loaded_seed = SEED
+arm_source = "flag"
 if SKIP_TRAIN
   if tk_load_ctrl!(LOAD_PATH, w, N_IN, HIDDEN, OFF_W1, OFF_B1, OFF_W2,
                    OFF_B2, N_PARAM, ld_buf) == 0
     exit 1
   end
+  meta_path = LOAD_PATH + ".meta.json"
+  if File.exist?(meta_path)
+    meta_raw = File.read(meta_path)
+    meta_arm = Toy::Json.get_str(meta_raw, "arm")
+    if meta_arm.length > 0
+      loaded_arm = meta_arm
+      arm_source = "sidecar"
+      # An explicit --arm that DISAGREES is refused rather than
+      # resolved: silently preferring either one relabels somebody's
+      # experiment, and there is no legitimate reason to roll out a
+      # controller under another arm's name.
+      if ARM_S.length > 0 && ARM_S != meta_arm
+        puts "toy-train-truck: --load says the controller is arm=" + meta_arm +
+             " (from " + meta_path + ") but TRUCK_ARM=" + ARM_S +
+             " was also given. Omit the arm to take the controller's own label."
+        exit 1
+      end
+    end
+    meta_seed = Toy::Json.get_int(meta_raw, "seed")
+    if meta_seed >= 0
+      loaded_seed = meta_seed
+    end
+  else
+    # Said out loud: a bundle whose label came from the runner's default
+    # is exactly what this issue was about.
+    puts "warning: no sidecar at " + meta_path +
+         "; the rollout will be labelled arm=" + ARM_NAMES[ARM] +
+         " from the runner, not from the controller"
+  end
 end
+ARM_LABEL = loaded_arm.length > 0 ? loaded_arm : ARM_NAMES[ARM]
 
 gs   = tk_zeros(4)
 gsn  = tk_zeros(4)
@@ -1487,7 +1537,12 @@ target_sat = 0.0
 B_SIGMA_I = Toy::Train::DfaB.sigma_for(B_SCALE, 1, HIDDEN, 1.0)
 b1i = Toy::Train::DfaB.fill(HIDDEN, B_SEED + 104729, B_DIST, B_SIGMA_I)
 
-if IS_IMIT
+# `&& !SKIP_TRAIN`: demonstrations are needed to TRAIN an imitation arm,
+# not to ROLL ONE OUT. Without this, loading a saved imit_dfa
+# controller — the very thing toy#198 is about — demanded an expert it
+# has no use for, and the arm-label fix could not even be exercised on
+# an imitation controller.
+if IS_IMIT && !SKIP_TRAIN
   if EXPERT.length == 0
     puts "toy-train-truck: TRUCK_ARM=" + ARM_S + " requires TRUCK_EXPERT=<controller.json>"
     exit 1
@@ -2127,13 +2182,16 @@ if TRACE.length > 0
   tf = File.open(TRACE, "w")
   tf.write("{\"format\":\"tbu-traces/1\",\"provenance\":")
   pb = Toy::Json::Builder.new
-  pb.add_str("arm",    ARM_NAMES[ARM])
+  pb.add_str("arm",    ARM_LABEL)
+  # Where that label came from: `sidecar` is the controller's own,
+  # `flag` is the runner's default or an explicit --arm.
+  pb.add_str("arm_source", arm_source)
   pb.add_str("engine", "toy")
   tr_gp = SpinelKit::Git.read
   pb.add_str("engine_git", tr_gp.sha)
   pb.add_str("weights", LOAD_PATH.length > 0 ? LOAD_PATH :
                         (EXPORT.length > 0 ? EXPORT : "in-process"))
-  pb.add_num("train_seed", SEED)
+  pb.add_num("train_seed", loaded_seed)
   nb = Toy::Json::Builder.new
   nb.add_raw("shape", "[" + N_IN.to_s + "," + HIDDEN.to_s + ",1]")
   nb.add_str("activation", ACT == ACT_TANH ? "tanh" : "logistic")
@@ -2254,7 +2312,10 @@ end
 
 # ---- provenance ----
 
-prov = "truck: arm=" + ARM_NAMES[ARM]
+prov = "truck: arm=" + ARM_LABEL
+if SKIP_TRAIN
+  prov = prov + " arm_source=" + arm_source
+end
 prov = prov + " obs=" + N_IN.to_s
 prov = prov + " hidden=" + HIDDEN.to_s
 prov = prov + " params=" + N_PARAM.to_s
@@ -2345,7 +2406,7 @@ if EXPORT.length > 0
 
   mb = Toy::Json::Builder.new
   mb.add_str("schema",     "toy-truck-controller/v1")
-  mb.add_str("arm",        ARM_NAMES[ARM])
+  mb.add_str("arm",        ARM_LABEL)
   mb.add_str("activation", ACT == ACT_TANH ? "tanh" : "logistic")
   mb.add_str("output_map", ACT == ACT_TANH ? "signal = out" : "signal = 2*out - 1")
   mb.add_str("steering",   "u = signal * 70deg, saturating at |signal| = 1")
@@ -2393,7 +2454,7 @@ if EVENTS.length > 0
                                "cpu")
     cf = Toy::Json::Builder.new
     cf.add_str("lane",   "truck")
-    cf.add_str("arm",    ARM_NAMES[ARM])
+    cf.add_str("arm",    ARM_LABEL)
     cf.add_num("obs",    N_IN)
     cf.add_num("hidden", HIDDEN)
     cf.add_num("params", N_PARAM)

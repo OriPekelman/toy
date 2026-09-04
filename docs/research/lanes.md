@@ -574,6 +574,14 @@ from the rows. Two consequences worth knowing:
 3-input net is refused naming both counts, because a silently half-applied load
 would leave the tail of the net at init and read as a slightly worse arm.
 
+**A rollout is labelled by the controller, not by the runner** (toy#198). On
+`--load`, `arm` and `train_seed` come from the controller's `.meta.json` sidecar,
+and `provenance.arm_source` records whether the label was read from the sidecar
+or fell back to the runner's flag — without that field an absent sidecar looks
+exactly like a present one. A `--arm` that *disagrees* with the sidecar is
+refused rather than resolved: preferring either side silently relabels somebody's
+experiment. With no sidecar the run warns and says the label is the runner's.
+
 There is no gzip step in the runner — it has no zlib. Pipe it:
 `gzip -9 bundle.json`.
 
