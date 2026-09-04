@@ -774,6 +774,51 @@ puts(failures.length == n0 ?
   "GATE ok [label]: a loaded rollout takes arm and train_seed from the controller's sidecar, records arm_source, refuses a disagreeing --arm, accepts an agreeing one, and warns when there is no sidecar" :
   "GATE FAIL [label]: #{failures[n0..].join('; ')}")
 
+# ----------------------------------------------------------------- 19
+# toy#199 — TRUCK_B_SIGMA, and the clip interaction that decides whether
+# it is an axis at all.
+n0 = failures.length
+base = { "TRUCK_ARM" => "dfa_tb", "STEPS" => "200", "SEED" => "0",
+         "TRUCK_EVAL_N" => "4", "TRUCK_B_SCALE" => "fixed" }
+strip = ->(o) { o.lines.reject { |l| l.start_with?("truck: ") }.join }
+
+# 1. BYTE-NULL: the knob's default is the literal the code used before it
+#    existed.
+un,  = run_truck(base)
+one, = run_truck(base.merge("TRUCK_B_SIGMA" => "1.0"))
+failures << "b_sigma: unset is not byte-identical to 1.0" unless strip.call(un) == strip.call(one)
+
+# 2. WITH THE CLIP OFF it is a real axis...
+off1, = run_truck(base.merge("TRUCK_CLIP" => "0"))
+off4, = run_truck(base.merge("TRUCK_CLIP" => "0", "TRUCK_B_SIGMA" => "4.0"))
+failures << "b_sigma: inert even with the clip off — the knob is not wired" if strip.call(off1) == strip.call(off4)
+
+# 3. ...and WITH THE CLIP ON it is exactly inert, because a broadcast
+#    arm's whole gradient is proportional to B and a global-norm clip
+#    divides the magnitude back out. Asserted, not just documented: if
+#    this ever stops holding, the reason a 600-cell search treated
+#    lr x scale-rule as one axis has changed.
+on1, = run_truck(base.merge("TRUCK_CLIP" => "1.0"))
+on4, = run_truck(base.merge("TRUCK_CLIP" => "1.0", "TRUCK_B_SIGMA" => "4.0"))
+failures << "b_sigma: NOT inert under the clip — the clip/B interaction changed" unless strip.call(on1) == strip.call(on4)
+failures << "b_sigma: clip_hits missing from provenance" if prov_field(on1, "clip_hits").nil?
+failures << "b_sigma: clip_hits is 0 while the clip was on" unless prov_field(on1, "clip_hits").to_i > 0
+failures << "b_sigma: clip_hits is non-zero with the clip off" unless prov_field(off1, "clip_hits").to_i == 0
+
+# 4. The field is printed ONLY where it is the sigma.
+failures << "b_sigma: not on the line under fixed" if prov_field(one, "b_sigma").nil?
+dim, = run_truck({ "TRUCK_ARM" => "dfa_tb", "STEPS" => "5", "TRUCK_EVAL_N" => "2" })
+failures << "b_sigma: printed under a dimensional rule, where it is not the sigma" unless prov_field(dim, "b_sigma").nil?
+
+# 5. Refused where it would have no effect, and at zero.
+_, r1 = run_truck({ "TRUCK_ARM" => "dfa_tb", "STEPS" => "5", "TRUCK_B_SIGMA" => "2.0" })
+failures << "b_sigma: accepted under a dimensional rule" if r1.success?
+_, r2 = run_truck(base.merge("TRUCK_B_SIGMA" => "0"))
+failures << "b_sigma: accepted at 0" if r2.success?
+puts(failures.length == n0 ?
+  "GATE ok [b-sigma]: byte-null at 1.0, a real axis with the clip off, EXACTLY inert with it on (clip_hits says which), printed only under `fixed`, refused elsewhere" :
+  "GATE FAIL [b-sigma]: #{failures[n0..].join('; ')}")
+
 # ------------------------------------------------------------------ 9
 # C-FIXTURE, REPORTED AND NOT ASSERTED. The programme's rule is that
 # `bptt` must beat `frozen` with margin or no DFA reading on this
@@ -837,7 +882,7 @@ end
 
 # ----------------------------------------------------------------------
 if failures.empty?
-  puts "GATE PASS [truck-lane]: 17 legs (gradcheck, arms, frozen, b-reaches, budget, zero_grad, export, repro, trace, stride, half_yard, metrics, e-mode, imit, regime, sharpen, label)"
+  puts "GATE PASS [truck-lane]: 18 legs (gradcheck, arms, frozen, b-reaches, budget, zero_grad, export, repro, trace, stride, half_yard, metrics, e-mode, imit, regime, sharpen, label, b-sigma)"
 else
   puts "GATE FAIL [truck-lane]: #{failures.length} failure(s)"
   failures.each { |f| puts "  - #{f}" }

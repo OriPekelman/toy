@@ -206,6 +206,20 @@
 #                     default; `to_best` makes the asymmetry testable
 #                     instead of only noted.
 #   TRUCK_B_SEED / _DIST / _SCALE — the DfaB feedback axes
+#                     CAUTION: under the default global-norm clip this
+#                     knob is INERT for the broadcast arms — their whole
+#                     gradient is proportional to B, so the clip divides
+#                     the magnitude back out. `clip_hits=` on the
+#                     provenance line says whether that happened; set
+#                     TRUCK_CLIP=0 to make B's magnitude a real axis.
+#   TRUCK_B_SIGMA   — B's magnitude under TRUCK_B_SCALE=fixed (default
+#                     1.0, byte-null). The other two rules derive sigma
+#                     from the dims, so without this the lane had exactly
+#                     THREE B magnitudes and none was a free axis
+#                     (toy#199). REFUSED under a dimensional rule rather
+#                     than ignored, and printed only where it is the
+#                     sigma, so the provenance line never carries a
+#                     number that did not act.
 #   TRUCK_GA_POP / _GENS / _AGG / _MUT / _ELITE — the GA's own knobs.
 #                     _AGG = mean (default) | min, both of which the
 #                     paper reports as acceptable aggregations over the
@@ -316,6 +330,8 @@ B_SEED_S    = ENV["TRUCK_B_SEED"] || ""
 B_SEED      = B_SEED_S.length > 0 ? B_SEED_S.to_i : 1234
 B_DIST_S    = ENV["TRUCK_B_DIST"]    || ""
 B_SCALE_S   = ENV["TRUCK_B_SCALE"]   || ""
+B_SIGMA_S   = ENV["TRUCK_B_SIGMA"]   || ""
+B_SIGMA_K   = B_SIGMA_S.length > 0 ? B_SIGMA_S.to_f : 1.0
 GA_POP_S    = ENV["TRUCK_GA_POP"] || ""
 GA_POP      = GA_POP_S.length > 0 ? GA_POP_S.to_i : 50
 GA_GENS_S   = ENV["TRUCK_GA_GENS"] || ""
@@ -417,6 +433,19 @@ if ARM_S.length > 0 && ARM_S != "ga" && ARM_S != "bptt" && ARM_S != "frozen" &&
    ARM_S != "imit_dfa" && ARM_S != "imit_frozen"
   puts "toy-train-truck: TRUCK_ARM must be " +
        "ga|bptt|frozen|dfa_tb|dfa_rx|imit_bp|imit_dfa|imit_frozen, got " + ARM_S
+  exit 1
+end
+if B_SIGMA_K <= 0.0
+  puts "toy-train-truck: TRUCK_B_SIGMA must be > 0, got " + B_SIGMA_K.to_s
+  exit 1
+end
+if B_SIGMA_S.length > 0 && B_SCALE_S != "fixed"
+  # Read ONLY under `fixed`. Accepting it silently under a dimensional
+  # rule would put a number on the provenance line that had no effect on
+  # the run — the exact shape of wrong-but-plausible this lane keeps
+  # paying for.
+  puts "toy-train-truck: TRUCK_B_SIGMA is only read with TRUCK_B_SCALE=fixed" +
+       " (got b_scale=" + (B_SCALE_S.length > 0 ? B_SCALE_S : "inv_sqrt_fan") + ")"
   exit 1
 end
 if SHARPEN <= 0.0
@@ -1236,8 +1265,8 @@ B_SCALE = B_SCALE_S == "glorot" ? Toy::Train::DfaB::SCALE_GLOROT :
           Toy::Train::DfaB::SCALE_INV_SQRT_FAN
 # fan_in = the ERROR dim (3, not the vocab this helper was written for),
 # fan_out = the projected-into dim.
-B_SIGMA1 = Toy::Train::DfaB.sigma_for(B_SCALE, E_DIM, HIDDEN, 1.0)
-B_SIGMA2 = Toy::Train::DfaB.sigma_for(B_SCALE, E_DIM, 1, 1.0)
+B_SIGMA1 = Toy::Train::DfaB.sigma_for(B_SCALE, E_DIM, HIDDEN, B_SIGMA_K)
+B_SIGMA2 = Toy::Train::DfaB.sigma_for(B_SCALE, E_DIM, 1, B_SIGMA_K)
 b1m = Toy::Train::DfaB.fill(HIDDEN * E_DIM, B_SEED, B_DIST, B_SIGMA1)
 b2m = Toy::Train::DfaB.fill(E_DIM, B_SEED + 7919, B_DIST, B_SIGMA2)
 
@@ -1534,7 +1563,7 @@ target_sat = 0.0
 
 # B1 for the imitation arms is HIDDEN x 1: the error is a SCALAR here,
 # not a 3-vector, because it is per-step rather than a broadcast.
-B_SIGMA_I = Toy::Train::DfaB.sigma_for(B_SCALE, 1, HIDDEN, 1.0)
+B_SIGMA_I = Toy::Train::DfaB.sigma_for(B_SCALE, 1, HIDDEN, B_SIGMA_K)
 b1i = Toy::Train::DfaB.fill(HIDDEN, B_SEED + 104729, B_DIST, B_SIGMA_I)
 
 # `&& !SKIP_TRAIN`: demonstrations are needed to TRAIN an imitation arm,
@@ -1660,6 +1689,14 @@ train_state = [tk_seed_state(SEED + 101)]
 plant_steps = 0
 updates     = 0
 zero_grad   = 0
+# How often the clip actually BOUND. Not decoration: for a broadcast arm
+# the whole gradient is proportional to B, so a global-norm clip divides
+# B's magnitude straight back out — TRUCK_B_SIGMA is EXACTLY inert
+# whenever this equals the update count (measured: identical to 15
+# significant figures at sigma 1, 4 and 16). Without this number a
+# reader sees a knob on the provenance line that did nothing and has no
+# way to know why.
+clip_hits   = 0
 final_loss  = 0.0
 imit_mse    = -1.0
 ga_best_fit = 0.0
@@ -1988,6 +2025,7 @@ else
       end
       gn = Math.sqrt(gn)
       if gn > CLIP
+        clip_hits = clip_hits + 1
         cf = CLIP / gn
         cz2 = 0
         while cz2 < N_PARAM
@@ -2330,9 +2368,18 @@ end
 prov = prov + " seed=" + SEED.to_s
 prov = prov + " lr=" + LR.to_s
 prov = prov + " clip=" + CLIP.to_s
+prov = prov + " clip_hits=" + clip_hits.to_s
 prov = prov + " b_dist=" + (B_DIST_S.length > 0 ? B_DIST_S : "gaussian")
 prov = prov + " b_scale=" + (B_SCALE_S.length > 0 ? B_SCALE_S : "inv_sqrt_fan")
 prov = prov + " b_seed=" + B_SEED.to_s
+# Emitted ONLY under `fixed`, where it is the sigma. Under a dimensional
+# rule the sigma is a function of the dims, and printing `b_sigma=1.0`
+# beside `b_scale=glorot` would read as "sigma was 1.0" when it was not.
+# Omitting it also keeps every cell recorded before this knob existed
+# byte-identical.
+if B_SCALE == Toy::Train::DfaB::SCALE_FIXED
+  prov = prov + " b_sigma=" + B_SIGMA_K.to_s
+end
 prov = prov + " dfa_sum=" + (SUM_TO_BEST ? "to_best" : "episode")
 prov = prov + " e=" + (E_MODE == E_YT ? "yt" :
                        E_MODE == E_CENTERED ? "centered" :
@@ -2464,9 +2511,13 @@ if EVENTS.length > 0
     cf.add_num("seed",   SEED)
     cf.add_raw("lr",     LR.to_s)
     cf.add_raw("clip",   CLIP.to_s)
+    cf.add_num("clip_hits", clip_hits)
     cf.add_num("b_seed", B_SEED)
     cf.add_str("b_dist", B_DIST_S.length > 0 ? B_DIST_S : "gaussian")
     cf.add_str("b_scale", B_SCALE_S.length > 0 ? B_SCALE_S : "inv_sqrt_fan")
+    if B_SCALE == Toy::Train::DfaB::SCALE_FIXED
+      cf.add_raw("b_sigma", B_SIGMA_K.to_s)
+    end
     cf.add_str("e_mode", E_MODE_S.length > 0 ? E_MODE_S : "xyt")
     cf.add_num("e_dim", E_DIM)
     cf.add_str("e_norm", E_NORM == 1 ? "unit" : "none")

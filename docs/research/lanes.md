@@ -491,6 +491,7 @@ fixture cannot discriminate and every DFA row on it is void — read that row fi
 | `--error-mode xyt\|yt\|centered\|signed_x` | what the DFA broadcast projects (toy#193). `xyt` is the default and byte-null |
 | `--car` / `--lesson i` | the regime search (toy#195): the no-trailer body, and the curriculum index 0..19 as a difficulty axis |
 | `TRUCK_EXPERT_SHARPEN=k` | harden (k>1) or soften (k<1) the imitation TARGET without touching the driving action (toy#197). k=1 byte-null |
+| `TRUCK_B_SIGMA` | `B`'s magnitude under `--dfa-b-scale fixed` (toy#199). Default 1.0, byte-null, refused under the dimensional rules |
 | `--arm imit_bp\|imit_dfa\|imit_frozen` + `--expert PATH` | the imitation leg (toy#194): train a fresh net on a docking expert's per-step action |
 | `--demos scarce\|abundant` / `--demo-n` / `--demo-batch` / `--weight-decay` | the paper's 15 starts, or `N` yard starts; and the regularisation F17's comparison had |
 | `--ga-pop/--ga-gens/--ga-agg` | the paper's pole. `--ga-agg mean\|min`, both of which it reports as acceptable |
@@ -785,3 +786,24 @@ refutation legible.
 Ours docks 15/15 at `mean_d2` 0.35 with `mean_abs_signal` 0.54 and `frac_sat`
 ≈ 0, and its native `target_sat` is 0.119. The teacher property that matters is
 saturation, and it is not determined by the arm that produced the teacher.
+
+#### `TRUCK_B_SIGMA`, and why `B`'s magnitude is usually not an axis (toy#199)
+
+The two dimensional scale rules derive sigma from the dims, so under `fixed` the
+sigma used to be the literal `1.0` with no way to set it — three `B` magnitudes
+in total, none of them free. `TRUCK_B_SIGMA` makes it free, is read **only**
+under `fixed`, and is **refused** under a dimensional rule rather than ignored:
+a number on the provenance line that had no effect on the run is this lane's
+recurring failure shape. For the same reason it is printed only where it *is*
+the sigma, which also keeps every cell recorded before the knob byte-identical.
+
+**The interaction that matters more than the knob:** under the lane's default
+global-norm clip, `B`'s magnitude is **exactly inert** for the broadcast arms.
+Their whole gradient is proportional to `B`, so the clip divides the magnitude
+straight back out — measured identical to 15 significant figures at σ = 1, 4 and
+16. Set `--clip-grad 0` to make it a real axis.
+
+`clip_hits=` on the provenance line says whether the clip actually bound, so a
+knob that did nothing can be told from a knob that did something small. The same
+caution applies to the scale *rule*: whenever the clip binds, `lr` is the only
+surviving step-size axis for these arms.
