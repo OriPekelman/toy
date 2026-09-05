@@ -864,6 +864,67 @@ puts(failures.length == n0 ?
   "GATE ok [b-sign]: -1 is the exact elementwise mirror of the draw, +1 is byte-null, and b_sign/b2 appear only on the arms that consume them" :
   "GATE FAIL [b-sign]: #{failures[n0..].join('; ')}")
 
+# ----------------------------------------------------------------- 21
+# toy#201 — TRUCK_B_COLSIGN. The claim the knob has to earn is "a random
+# B plus two bits", so the gate checks that a COLUMN was flipped (a
+# shared sign per error component) and not that B was redesigned: every
+# |entry| of B1 and B2 must be unchanged, only signs may move, and each
+# column's flip must be all-or-nothing.
+n0 = failures.length
+base = { "TRUCK_ARM" => "dfa_tb", "TRUCK_E" => "yt", "TRUCK_DFA_SUM" => "to_best",
+         "STEPS" => "5", "TRUCK_EVAL_N" => "2" }
+b2_of = lambda do |out|
+  f = prov_field(out, "b2")
+  f && f.gsub(/[\[\]]/, "").split(",").map(&:to_f)
+end
+strip = ->(o) { o.lines.reject { |l| l.start_with?("truck: ") }.join }
+
+# 227935 needs the dtheta flip; 31337 needs the dy flip; 7 needs neither.
+%w[227935 7 1234 99 31337].each do |bs|
+  none, = run_truck(base.merge("TRUCK_B_SEED" => bs))
+  auto, = run_truck(base.merge("TRUCK_B_SEED" => bs, "TRUCK_B_COLSIGN" => "auto"))
+  dt,   = run_truck(base.merge("TRUCK_B_SEED" => bs, "TRUCK_B_COLSIGN" => "dt"))
+  n2 = b2_of.call(none); a2 = b2_of.call(auto); d2 = b2_of.call(dt)
+  if [n2, a2, d2].any?(&:nil?)
+    failures << "colsign: b2 missing for seed #{bs}"
+    next
+  end
+  # magnitudes preserved, so only signs moved
+  unless n2.zip(a2).all? { |x, y| (x.abs - y.abs).abs < 1e-15 }
+    failures << "colsign: auto changed a MAGNITUDE on seed #{bs} — that is a redesigned B, not a sign fix"
+  end
+  # the two conditions actually hold afterwards
+  failures << "colsign: auto left b2_dtheta >= 0 on seed #{bs} (#{a2[1]})" unless a2[1] < 0.0
+  failures << "colsign: auto left b2_dy <= 0 on seed #{bs} (#{a2[0]})" unless a2[0] > 0.0
+  # `dt` applies ONLY the dtheta condition
+  failures << "colsign: dt left b2_dtheta >= 0 on seed #{bs}" unless d2[1] < 0.0
+  unless (d2[0] - n2[0]).abs < 1e-15
+    failures << "colsign: dt touched the dy column on seed #{bs} — the two bits do not separate"
+  end
+end
+
+# A draw already satisfying both conditions must be BYTE-NULL under auto
+# (seed 7 is (+,-)), or the knob is doing something beyond the two bits.
+n7, = run_truck(base.merge("TRUCK_B_SEED" => "7", "STEPS" => "150", "TRUCK_EVAL_N" => "4"))
+a7, = run_truck(base.merge("TRUCK_B_SEED" => "7", "STEPS" => "150", "TRUCK_EVAL_N" => "4",
+                           "TRUCK_B_COLSIGN" => "auto"))
+failures << "colsign: auto is not byte-null on a draw that already satisfies both conditions" unless strip.call(n7) == strip.call(a7)
+# ...and a draw needing a flip must MOVE.
+n9, = run_truck(base.merge("TRUCK_B_SEED" => "227935", "STEPS" => "150", "TRUCK_EVAL_N" => "4"))
+a9, = run_truck(base.merge("TRUCK_B_SEED" => "227935", "STEPS" => "150", "TRUCK_EVAL_N" => "4",
+                           "TRUCK_B_COLSIGN" => "auto"))
+failures << "colsign: auto changed nothing on a draw that needed a flip" if strip.call(n9) == strip.call(a9)
+
+failures << "colsign: default is not `none`" unless prov_field(n9, "b_colsign") == "none"
+failures << "colsign: mode not reported" unless prov_field(a9, "b_colsign") == "auto"
+_, conflict = run_truck(base.merge("TRUCK_B_COLSIGN" => "auto", "TRUCK_B_SIGN" => "-1"))
+failures << "colsign: b_sign=-1 accepted alongside a column fix that overrides it" if conflict.success?
+_, badmode = run_truck(base.merge("TRUCK_B_COLSIGN" => "sideways"))
+failures << "colsign: an unknown mode was accepted" if badmode.success?
+puts(failures.length == n0 ?
+  "GATE ok [b-colsign]: only SIGNS move (every magnitude preserved), both conditions hold after `auto`, `dt` touches the dtheta column only, byte-null on a draw that already complies, and b_sign=-1 is refused alongside it" :
+  "GATE FAIL [b-colsign]: #{failures[n0..].join('; ')}")
+
 # ------------------------------------------------------------------ 9
 # C-FIXTURE, REPORTED AND NOT ASSERTED. The programme's rule is that
 # `bptt` must beat `frozen` with margin or no DFA reading on this
@@ -927,7 +988,7 @@ end
 
 # ----------------------------------------------------------------------
 if failures.empty?
-  puts "GATE PASS [truck-lane]: 19 legs (gradcheck, arms, frozen, b-reaches, budget, zero_grad, export, repro, trace, stride, half_yard, metrics, e-mode, imit, regime, sharpen, label, b-sigma, b-sign)"
+  puts "GATE PASS [truck-lane]: 20 legs (gradcheck, arms, frozen, b-reaches, budget, zero_grad, export, repro, trace, stride, half_yard, metrics, e-mode, imit, regime, sharpen, label, b-sigma, b-sign, b-colsign)"
 else
   puts "GATE FAIL [truck-lane]: #{failures.length} failure(s)"
   failures.each { |f| puts "  - #{f}" }

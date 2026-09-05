@@ -493,6 +493,7 @@ fixture cannot discriminate and every DFA row on it is void — read that row fi
 | `TRUCK_EXPERT_SHARPEN=k` | harden (k>1) or soften (k<1) the imitation TARGET without touching the driving action (toy#197). k=1 byte-null |
 | `TRUCK_B_SIGMA` | `B`'s magnitude under `--dfa-b-scale fixed` (toy#199). Default 1.0, byte-null, refused under the dimensional rules |
 | `TRUCK_B_SIGN=1\|-1` | negate every `B` after the draw (toy#200). Default 1, byte-null. `dfa_tb` also prints `b2=[…]` |
+| `TRUCK_B_COLSIGN=none\|auto\|dt` | fix the SIGNS of `B`'s error columns after the draw (toy#201) so `b2_dθ < 0` and, under `auto`, `b2_dy > 0` |
 | `--arm imit_bp\|imit_dfa\|imit_frozen` + `--expert PATH` | the imitation leg (toy#194): train a fresh net on a docking expert's per-step action |
 | `--demos scarce\|abundant` / `--demo-n` / `--demo-batch` / `--weight-decay` | the paper's 15 starts, or `N` yard starts; and the regularisation F17's comparison had |
 | `--ga-pop/--ga-gens/--ga-agg` | the paper's pole. `--ga-agg mean\|min`, both of which it reports as acceptable |
@@ -851,3 +852,48 @@ as the working draws with 1234/99/31337 dead. On this engine 1234 is the
 *strongest* draw (0.406, 8/8) across the whole LR band 1.7–85, and 227935 is dead
 across all of it. The `b2` values above are what to compare against — if C6d's
 cells show different numbers for the same seed, the draws themselves differ.
+
+#### `TRUCK_B_COLSIGN` — the recipe is a random `B` plus two bits (toy#201)
+
+C6e established that the working recipe's two conditions are the two signs of a
+proportional controller on `(y, θ)`, both readable from `B₂` before an episode
+runs: `b2_dθ < 0` selects the alive family, and among alive draws `b2_dy > 0`
+separates strong from weak. `TRUCK_B_COLSIGN` applies them instead of drawing
+them — flipping one **column** of `B₁` and `B₂` together, so every hidden unit
+still sees the same random mix up to a shared sign per component. `dt` applies
+only the first, so the bits separate.
+
+C6f, far dock5 over 8 seeds, best of `lr ∈ {4, 20}`, frozen reference 0.031:
+
+| family | `B_SEED` | `none` | `dt` | `auto` |
+|---|---|---|---|---|
+| gau | 227935 | 0.000 (0/8) | **0.332 (8/8)** | 0.332 (8/8) |
+| gau | 7 | 0.102 (7/8) | 0.102 (7/8) | 0.102 (7/8) |
+| gau | 1234 | 0.406 (8/8) | 0.406 (8/8) | 0.406 (8/8) |
+| gau | 99 | 0.000 (0/8) | 0.000 (0/8) | **0.000 (0/8)** |
+| gau | 31337 | 0.098 (8/8) | 0.098 (8/8) | **0.254 (7/8)** |
+| uni | 227935 | 0.402 (8/8) | 0.402 (8/8) | 0.402 (8/8) |
+| uni | 7 | 0.246 (8/8) | 0.246 (8/8) | 0.246 (8/8) |
+| uni | 1234 | 0.000 (0/8) | **0.355 (8/8)** | 0.355 (8/8) |
+| uni | 99 | 0.016 (3/8) | 0.016 (3/8) | **0.070 (4/8)** |
+| uni | 31337 | 0.074 (8/8) | 0.074 (8/8) | **0.324 (8/8)** |
+
+Both bits do what C6e predicted. The dθ bit **revives dead draws to full
+strength** (gau 227935 0.000 → 0.332; uni 1234 0.000 → 0.355), the dy bit
+**turns weak draws strong** (gau 31337 0.098 → 0.254; uni 31337 0.074 → 0.324),
+and draws that already comply are byte-null under the fix.
+
+**Eight of ten reach the pre-registered bar (far ≥ 0.10, ≥ 6/8 seeds). The two
+that do not are both seed 99, and for two different reasons:**
+
+- **gau 99 is a magnitude floor.** `|dθ| = 0.029`, ~25× smaller than any other
+  draw's. A sign bit cannot help a column that carries no trailer-angle feedback,
+  and this draw is dead in every family and under every fix.
+- **uni 99 is not explained.** Both bits are satisfied with healthy magnitudes
+  (`+0.559, −0.755`) and it still reaches only 0.070 (4/8).
+
+A `dy/|dθ|` ratio orders the strengths loosely — the three weakest draws all sit
+at ratio ≥ 0.73 — but Spearman ρ is only −0.58 at n = 10, which is not
+significant, and the lowest-ratio draw is mid-pack. **Recorded as a hypothesis,
+not a finding**: this lane already produced one monotone-looking relation
+(`target_sat`, toy#197) that dissolved when a second policy per level arrived.

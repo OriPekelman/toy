@@ -212,6 +212,14 @@
 #                     the magnitude back out. `clip_hits=` on the
 #                     provenance line says whether that happened; set
 #                     TRUCK_CLIP=0 to make B's magnitude a real axis.
+#   TRUCK_B_COLSIGN — none (default, byte-null) | auto | dt. Fixes the
+#                     SIGNS of B's error columns after the draw so that
+#                     b2_dtheta < 0 (the alive family) and, under
+#                     `auto`, b2_dy > 0 (the strong one) — the two bits
+#                     C6e found, applied instead of drawn (toy#201).
+#                     `dt` applies only the first, so the bits separate.
+#                     Refused together with TRUCK_B_SIGN=-1, which it
+#                     would silently override.
 #   TRUCK_B_SIGN    — 1 (default, byte-null) | -1. Negates EVERY B this
 #                     lane draws, after the draw, so -1 is the exact
 #                     mirror of a run rather than a different draw
@@ -336,6 +344,7 @@ B_SEED_S    = ENV["TRUCK_B_SEED"] || ""
 B_SEED      = B_SEED_S.length > 0 ? B_SEED_S.to_i : 1234
 B_DIST_S    = ENV["TRUCK_B_DIST"]    || ""
 B_SCALE_S   = ENV["TRUCK_B_SCALE"]   || ""
+B_COLSIGN_S = ENV["TRUCK_B_COLSIGN"] || ""
 B_SIGN_S    = ENV["TRUCK_B_SIGN"]    || ""
 B_SIGN      = B_SIGN_S == "-1" ? -1.0 : 1.0
 B_SIGMA_S   = ENV["TRUCK_B_SIGMA"]   || ""
@@ -443,8 +452,21 @@ if ARM_S.length > 0 && ARM_S != "ga" && ARM_S != "bptt" && ARM_S != "frozen" &&
        "ga|bptt|frozen|dfa_tb|dfa_rx|imit_bp|imit_dfa|imit_frozen, got " + ARM_S
   exit 1
 end
+if B_COLSIGN_S.length > 0 && B_COLSIGN_S != "none" && B_COLSIGN_S != "auto" &&
+   B_COLSIGN_S != "dt"
+  puts "toy-train-truck: TRUCK_B_COLSIGN must be none|auto|dt, got " + B_COLSIGN_S
+  exit 1
+end
 if B_SIGN_S.length > 0 && B_SIGN_S != "1" && B_SIGN_S != "-1"
   puts "toy-train-truck: TRUCK_B_SIGN must be 1 or -1, got " + B_SIGN_S
+  exit 1
+end
+# COLSIGN RUNS AFTER B_SIGN AND WOULD OVERRIDE IT. Refused together
+# rather than silently won: a `b_sign=-1` on the line beside a colsign
+# that put the columns back is a knob that did not act.
+if B_COLSIGN_S.length > 0 && B_COLSIGN_S != "none" && B_SIGN_S == "-1"
+  puts "toy-train-truck: TRUCK_B_SIGN=-1 and TRUCK_B_COLSIGN=" + B_COLSIGN_S +
+       " conflict — the column fix sets the signs the global sign would flip"
   exit 1
 end
 if B_SIGMA_K <= 0.0
@@ -1281,6 +1303,46 @@ B_SIGMA1 = Toy::Train::DfaB.sigma_for(B_SCALE, E_DIM, HIDDEN, B_SIGMA_K)
 B_SIGMA2 = Toy::Train::DfaB.sigma_for(B_SCALE, E_DIM, 1, B_SIGMA_K)
 b1m = Toy::Train::DfaB.fill(HIDDEN * E_DIM, B_SEED, B_DIST, B_SIGMA1)
 b2m = Toy::Train::DfaB.fill(E_DIM, B_SEED + 7919, B_DIST, B_SIGMA2)
+
+# toy#201 — FIX THE ERROR COLUMNS' SIGNS.
+#
+# C6e found the recipe's two conditions are the two signs of a
+# proportional controller on (y, theta): `b2_dtheta < 0` selects the
+# ALIVE family (17/18 pairs across both B families), and among alive
+# draws `b2_dy > 0` separates STRONG from weak. Both are readable from
+# B2 before an episode runs, so they can be FIXED instead of drawn.
+#
+# A COLUMN flip multiplies that error component's column in BOTH B1 and
+# B2 by -1. Every hidden unit still sees the same random mix of the two
+# components, up to one shared sign per component — so the claim stays
+# "a random B plus two bits", not "a designed B".
+#
+# `dt` applies only the dtheta condition, so the two bits can be
+# separated. The dx column (present under the three-component error
+# modes) has no stated condition and is left alone.
+if B_COLSIGN_S == "auto" || B_COLSIGN_S == "dt"
+  cs_dy = E_MODE == E_YT ? 0 : 1
+  cs_dt = E_MODE == E_YT ? 1 : 2
+  cs_c = 0
+  while cs_c < E_DIM
+    cs_flip = 0
+    if cs_c == cs_dt && b2m[cs_c] >= 0.0
+      cs_flip = 1
+    end
+    if B_COLSIGN_S == "auto" && cs_c == cs_dy && b2m[cs_c] <= 0.0
+      cs_flip = 1
+    end
+    if cs_flip == 1
+      b2m[cs_c] = 0.0 - b2m[cs_c]
+      cs_j = 0
+      while cs_j < HIDDEN
+        b1m[cs_j * E_DIM + cs_c] = 0.0 - b1m[cs_j * E_DIM + cs_c]
+        cs_j = cs_j + 1
+      end
+    end
+    cs_c = cs_c + 1
+  end
+end
 
 # toy#200 — NEGATE THE WHOLE FEEDBACK. C3a read the `yt` policies as two
 # mirror-image families selected by the sign of B2's dy weight; if the
@@ -2417,11 +2479,15 @@ prov = prov + " b_seed=" + B_SEED.to_s
 USES_B = ARM == ARM_DFA_TB || ARM == ARM_DFA_RX || ARM == ARM_IMIT_DFA
 if USES_B
   prov = prov + " b_sign=" + (B_SIGN < 0.0 ? "-1" : "1")
+  prov = prov + " b_colsign=" + (B_COLSIGN_S.length > 0 ? B_COLSIGN_S : "none")
 end
 # B2 itself, so the family can be READ rather than inferred. Only
 # dfa_tb consumes B2 — dfa_rx takes its readout signal from the exact
 # gradient and never touches it.
-if ARM == ARM_DFA_TB
+# b2 is printed for dfa_tb always, and for ANY broadcast arm once a
+# column fix has run — the fix is DEFINED on b2, so the resulting
+# vector is what says whether it did what it claims.
+if ARM == ARM_DFA_TB || (USES_B && B_COLSIGN_S.length > 0 && B_COLSIGN_S != "none")
   b2s = " b2=["
   b2i = 0
   while b2i < E_DIM
@@ -2579,6 +2645,7 @@ if EVENTS.length > 0
     end
     if USES_B
       cf.add_num("b_sign", B_SIGN < 0.0 ? -1 : 1)
+      cf.add_str("b_colsign", B_COLSIGN_S.length > 0 ? B_COLSIGN_S : "none")
     end
     if ARM == ARM_DFA_TB
       # The two signs the family reading turns on, named rather than
