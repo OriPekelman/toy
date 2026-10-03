@@ -7,8 +7,14 @@
 # $XDG_CACHE_HOME/spin/native/, and links them via [native] libs.
 #
 # Uses the #1845 mechanics (matz/spinel 2a4a3a6e):
-#   - tinynn lives at tinynn/ — [[build]] workdirs are excluded from
-#     carried-C discovery, no vendor/ escape hatch needed;
+#   - tinynn lives at tinynn/ — [[build]] workdirs are a separate
+#     mechanism from carried C, so no vendor/ escape hatch is needed.
+#     (As of spinel 2026.09.12 / matz/spinel#4362, carried C is DECLARED
+#     via [package] sources rather than discovered by presence; a .c no
+#     `sources` entry names is reported on stderr and skipped. That does
+#     not touch toy — it carries no loose .c outside its [[build]]
+#     workdirs — but the old "discovery" framing above was stale. See
+#     toy#202 item 4.);
 #   - artifacts keep their entry-relative paths under ${build.out}, so
 #     the ggml public headers ship as artifacts and the tinynn entry
 #     compiles against `-I ${build.out}/include` — no header snapshot;
@@ -18,7 +24,21 @@
 # GPU variants: consumer-side `--features cuda` exists upstream; the
 # remaining gap is a per-target link-flag surface for the CUDA runners'
 # `-Wl,-u,tnn_cuda_force_link` (dedicated upstream issue when we take
-# that leg — see toy#107).
+# that leg — see toy#107). RE-CHECKED at spinel 2026.09.12 (toy#202
+# item 3): still absent — [native] libs takes artifact paths and
+# [[build]] features gates whole entries, and neither is a place to put
+# a -Wl,... for ONE target. Still unfiled upstream.
+#
+# THREADS / the `_mt` archive variant (spinel 2026.09.12 R10, toy#202
+# item 1): a package whose C touches the Spinel runtime needs a second
+# archive built with -DSP_THREADS, because the runtime's per-worker
+# globals become thread-local and a non-TLS read fails AT LINK. TOY
+# DOES NOT NEED ONE. Verified, not assumed: tinynn's C includes only
+# libc, ggml/gguf and its own headers, and `nm -u libtinynn_ggml.a` has
+# ZERO undefined sp_/spinel/mrb_/rb_ symbols — its whole external
+# surface is 111 ggml + 24 gguf + libc + its own tnn_*. The shim is
+# purely an FFI callee: Spinel calls in, it never calls back out. If
+# that ever stops being true, this entry needs to emit both variants.
 
 [package]
 name = "toy"
