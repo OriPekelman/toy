@@ -187,14 +187,22 @@ channel yet, so it is not an HTTP 400 — and one whose prompt fits but whose
 takes the server down. The serve stack lives at `lib/toy/serve/openai/` and is driven by
 `lib/toy/run/serve.rb` → `libexec/toy-serve`.
 
-> Known issue: `libexec/toy-serve` fails to compile at toy's current Spinel pin
-> (`Tep::Scheduler.spawn_fiber` → `FiberSlot.new` incompatible-pointer; plus a
-> JSON-key monomorphization). This is a **Spinel regression**, not a tep bug —
-> both are clean at tep's Spinel pin `f6d5eef`. The fix is to align toy's Spinel
-> build to that pin (no tep release needed); tracked as
-> [OriPekelman/tep#198](https://github.com/OriPekelman/tep/issues/198) (the
-> pin-bump tracker; gates toy#30). `infer`/`train`/`eval` don't link tep and are
-> unaffected.
+> At the current Spinel pin (`2026.10.25`) `libexec/toy-serve` compiles and
+> both serve gates pass, with one condition: vendored tep 0.11.7 must have its
+> stock-Ruby guard corrected. Spinel now defines `RUBY_ENGINE` (`"spinel"`),
+> so the guard at the top of `vendor/spinel/tep/lib/tep.rb` fires inside the
+> compiled binary and the server exits at boot with "tep is a Spinel-AOT
+> framework, not a CRuby library". Until a tep release carries the fix
+> ([OriPekelman/tep#272](https://github.com/OriPekelman/tep/issues/272)),
+> re-apply it after every `make vendor-tep` (`vendor/` is gitignored):
+>
+> ```ruby
+> if defined?(RUBY_ENGINE) && RUBY_ENGINE != "spinel"
+> ```
+>
+> `infer`/`train`/`eval` don't link tep and are unaffected. (The older note
+> here, about `toy-serve` not compiling at the pin, described the 2026-06
+> pins and stopped being true before this one.)
 
 ## Project config — `toy.yml`
 

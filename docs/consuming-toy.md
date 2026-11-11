@@ -12,45 +12,79 @@ into toy's tree.
 
 ## Recommended Spinel revision
 
-toy is verified against **Spinel master**, plain rev pin:
+toy is verified against a Spinel **dated release**, pinned by commit:
 
 ```sh
 git clone https://github.com/matz/spinel && cd spinel
-git checkout dc5b8f17
-make deps && make
+git checkout 2026.10.25        # = 2814693f
+make deps && make              # needs a Ruby with prism on PATH (3.4+)
 ```
 
-At `dc5b8f17` (verified 2026-07-27, gx10/GB10): the full `make gates`
-matrix passes — all 39 legs green, including every byte-exact fixture
-(four training recipes, also under `SPINEL_GC_STRESS=1`; infer/eval;
-serve; GPT-2 CPU+CUDA), the CUDA batteries, the GDN/Dragon and
-MLA/MoE decodes, consumer cold-start, poly-degrade, gate-mri, the
-five franken credit-assignment gates, and mixed-precision (0.17%,
-healthy since the toy#114 init reset). `dc5b8f17` is deliberately the
-LAST GOOD rev below **matz/spinel#3396** (toy-filed, bisected:
-94e332ee's generational string-heap sweep frees a live poly-concat
-operand — warm-start SEGVs under GC stress). Do not advance past
-dc5b8f17 until #3396 is fixed; the nine commits above it are the
-94e332ee wave plus header renames. Pin exactly this rev for
-byte-reproducibility; it advances per the toy#95 sweep protocol.
+At `2026.10.25` / `2814693f` (verified 2026-11-11, gx10/GB10): every
+gate leg passes — 53 CPU legs, 7 CUDA legs and `gate-run-log`, 61 in
+all, byte-exact fixtures included. The 53 CPU legs and the serial leg
+passed in one keep-going run (46 min wall). Five of the seven CUDA legs
+first failed with `CUDA error: out of memory` at `cudaSetDevice` while
+an unrelated job held ~65 GB of the unified pool, and passed when rerun
+on their own; that is contention on this box, not the pin, but it is
+why the CUDA number is not from a single uninterrupted pass.
+
+This pin is 14,635 commits above the previous one (`dc5b8f17`,
+2026-07-25), which had been held below matz/spinel#3396 (closed
+2026-07-28). What the jump changed for toy, all fixed in the same
+series of commits as the pin move:
+
+- **Integer overflow raises.** `<<` past 64 bits is a `RangeError`
+  where the old pin wrapped silently (`lib/toy/train/dfa_b.rb`).
+- **An out-of-range array read is a tracked `nil`**, and arithmetic on
+  it raises (or is refused at compile time) as in CRuby; the old pin
+  returned whatever was past the array. One real bug surfaced
+  (`train_franken_moe_cli.rb`'s placeholder batch).
+- **Byte-assembled strings are binary**, as in CRuby; the tokenizer's
+  GPT-2 byte map depended on the old behaviour.
+- **`RUBY_ENGINE` is defined** (`"spinel"`), which trips vendored tep
+  0.11.7's stock-Ruby guard — see the note under `serve` in
+  [`cli.md`](cli.md) and OriPekelman/tep#272. This one is NOT fixed in
+  the tree: `vendor/` is gitignored, so the one-line patch has to be
+  re-applied after `make vendor-tep` until tep ships it.
+- **One compiler bug**, worked around with an RBS seed in
+  `sig/toy.rbs`: matz/spinel#11623 (a `.seed` call on an untyped
+  receiver resolves to `Random#seed` and the C does not compile; still
+  present on master `e64fb6a0`).
+- Float arithmetic compiled from Ruby can differ in the last ulp from
+  the old pin (seen in `toy-train-difflm`'s printed statistics). No
+  gated fixture moved.
+
+Runtime cost was checked on one Ruby-heavy runner (`toy-train-difflm`,
+same configuration, old-pin vs new-pin binary): 683 s vs 697 s on a
+busy box — no measurable change.
 
 The pin is ENFORCED by the build (toy#119): the Makefile carries
-`PINNED_SPINEL := b96280b3` and every `make` invocation checks
+`PINNED_SPINEL := 2814693f` and every `make` invocation checks
 `SPINEL_DIR`'s git rev against it, failing loud on mismatch — compiling
 toy with any other Spinel is how gate-franken-llama "broke at HEAD"
 with zero source changes (a stale shared checkout miscompiled the
 engine). On the gx10 the default `SPINEL_DIR` resolves to the pinned
-scratch toolchain (`/srv/data/scratch/spinel-master-0723`), so a bare
-`make` does the right thing; any checkout at the pinned rev passes the
+scratch toolchain (`/srv/data/scratch/spinel-$(PINNED_SPINEL)`), so a
+bare `make` does the right thing, and an empty `SPINEL_DIR` in the
+environment counts as unset; any checkout at the pinned rev passes the
 guard (the check is by rev, not path). `SPINEL_SKIP_PIN_CHECK=1`
 bypasses it deliberately (pin-advance sweeps). A pin advance updates
 `PINNED_SPINEL` and this document in the same commit. `make gates`
 runs every gate leg on the current platform — the required sweep after
 any shared-layer change (tinynn C, the engine unit, a pin move).
 
-Previous pins: `b96280b3` (2026-07-25, 36/37), `ecac633caa`
-(2026-07-23, 32/33 — deliberately the last fast rev before the
-then-unfixed #3287 window), `f6a189e8` (2026-07-10, 28/28).
+Before a pin advance, `ruby tools/promise_diff.rb <FROM> <TO>` in the
+spinel checkout lists what changed in the written-down surface. Across
+this hop it reported 265 breaks (220 rubyspec rows, 45 pinned answers),
+121 deliberate limitation changes and 12,061 additions; none of the
+breaks toy actually hit were among them, so treat it as a survey, not
+as the list of what will fail.
+
+Previous pins: `dc5b8f17` (2026-07-27, 39/39), `b96280b3` (2026-07-25,
+36/37), `ecac633caa` (2026-07-23, 32/33 — deliberately the last fast
+rev before the then-unfixed #3287 window), `f6a189e8` (2026-07-10,
+28/28).
 
 Historical note: v0.8.0–v0.9.0 were verified against the
 `toy-v0.8.0-pin` union branch (`fbb9beb` = spinel-dev#13 + #14 fixes,
