@@ -22,7 +22,7 @@ require_relative "gguf_kv"
 
 class Tokenizer
   attr_reader :vocab_size, :bos_id, :eos_id, :pad_id, :unk_id, :present, :spm,
-              :spm_unigram, :add_bos
+              :spm_unigram, :add_bos, :n_special
   attr_accessor :add_bos
 
   def initialize(vocab, merges, bos_id, eos_id, pad_id, unk_id,
@@ -89,6 +89,40 @@ class Tokenizer
     # piece that misses vocab prints to stderr with the piece value;
     # subsequent misses are quiet to avoid spamming long prompts.
     @warned_unk = false
+
+    # Special tokens (toy#208): the vocab entries the GGUF marks CONTROL
+    # or USER_DEFINED in tokenizer.ggml.token_type — <|im_start|>,
+    # <|im_end|>, <tool_call>, … They are matched as WHOLE strings before
+    # any pre-tokenizing or BPE, exactly as HF's added-tokens pass and
+    # llama.cpp's parse_special do. Filled by add_special (from_gguf);
+    # empty for a GGUF without the array, and then encode is the plain
+    # path it always was.
+    @special_inv   = {}
+    @special_first = [0]
+    @special_first.pop
+    @special_max   = 0
+    @n_special     = 0
+  end
+
+  # Register one special token. `piece` is the vocab string, `id` its id.
+  def add_special(piece, id)
+    bl = piece.bytesize
+    if bl == 0
+      return
+    end
+    if @special_first.length == 0
+      j = 0
+      while j < 256
+        @special_first.push(0)
+        j = j + 1
+      end
+    end
+    @special_inv[piece] = id
+    @special_first[piece.getbyte(0)] = 1
+    if bl > @special_max
+      @special_max = bl
+    end
+    @n_special = @n_special + 1
   end
 
   def build_byte_tables
@@ -265,28 +299,120 @@ class Tokenizer
     0
   end
 
-  # Encode text → IDs. Pre-tokenize via regex; for each chunk, run the
-  # byte→char map then BPE merge loop; lookup pieces in vocab.
+  # Does this tokenizer open with BOS? Only where the GGUF asks for it
+  # (tokenizer.ggml.add_bos_token) AND on the two paths that have always
+  # honored it:
+  #   - SPM-Unigram (T-Gemma #117): Gemma 2 degenerates without BOS at
+  #     pos 0.
+  #   - byte-level BPE: DeepSeek-V2 sets it (the attention sink lives on
+  #     BOS). False for every toy-converted fixture (they don't emit the
+  #     key), so canonical SmolLM2/Qwen/Llama tokenization is unchanged.
+  # BPE-SPM (Mistral/TinyLlama) never prepended it here and still doesn't.
+  def bos_prefix?
+    if !@add_bos || @bos_id == nil || @bos_id < 0
+      return false
+    end
+    if @spm_unigram
+      return true
+    end
+    if @spm
+      return false
+    end
+    true
+  end
+
+  # Encode text → IDs.
+  #
+  # Special tokens written out in the text ("<|im_start|>user\n…") become
+  # their single id; the text between them goes through the ordinary
+  # pre-tokenizer + BPE. Without this a ChatML prompt reaches the model
+  # as `<`, `|`, `im`, `_start`, … — 23 tokens where the model was
+  # trained on 9 — and the output is wrong with no error (toy#208).
+  # Longest special wins where two start at the same byte.
+  #
+  # A GGUF with no token_type array has no specials, and this is then
+  # exactly encode_plain. Use encode_plain directly to tokenize text that
+  # must NOT be able to spell a control token (untrusted content).
   def encode(text)
     if !@present
       puts "Tokenizer.encode: vocab not loaded (re-convert with --with-tokenizer)"
       return []
     end
-    # T-Gemma (#117): prepend BOS only on the SPM-Unigram path
-    # (Gemma 2 needs it; without BOS at pos 0 the model produces
-    # degenerate output). Other paths (byte-level BPE for SmolLM2/
-    # Qwen3; BPE-SPM for Mistral/TinyLlama) preserve their existing
-    # tokenization to maintain bit-identical regression behavior on
-    # canonical prompts.
-    if @spm_unigram
-      ids = [0]; ids.pop
-      if @add_bos && @bos_id != nil && @bos_id >= 0
-        ids.push(@bos_id)
+    if @n_special == 0
+      return encode_plain(text)
+    end
+    ids = [0]
+    ids.pop
+    if bos_prefix?
+      ids.push(@bos_id)
+    end
+    n   = text.bytesize
+    seg = 0          # start of the pending ordinary-text run
+    pos = 0
+    while pos < n
+      hit_len = 0
+      hit_id  = -1
+      if @special_first[text.getbyte(pos)] == 1
+        len = @special_max
+        if len > n - pos
+          len = n - pos
+        end
+        while len > 0
+          cand = text.byteslice(pos, len)
+          if @special_inv.has_key?(cand)
+            hit_len = len
+            hit_id  = @special_inv[cand]
+            break
+          end
+          len = len - 1
+        end
       end
-      body = encode_spm_unigram(text)
+      if hit_len > 0
+        if pos > seg
+          body = encode_body(text.byteslice(seg, pos - seg))
+          bi = 0
+          while bi < body.length; ids.push(body[bi]); bi = bi + 1; end
+        end
+        ids.push(hit_id)
+        pos = pos + hit_len
+        seg = pos
+      else
+        pos = pos + 1
+      end
+    end
+    if n > seg
+      body = encode_body(text.byteslice(seg, n - seg))
       bi = 0
       while bi < body.length; ids.push(body[bi]); bi = bi + 1; end
-      return ids
+    end
+    ids
+  end
+
+  # Encode text → IDs with NO special-token parsing: every character is
+  # ordinary text, so "<|im_end|>" comes out as its BPE pieces. This was
+  # the only behaviour before toy#208.
+  def encode_plain(text)
+    if !@present
+      puts "Tokenizer.encode: vocab not loaded (re-convert with --with-tokenizer)"
+      return []
+    end
+    ids = [0]
+    ids.pop
+    if bos_prefix?
+      ids.push(@bos_id)
+    end
+    body = encode_body(text)
+    bi = 0
+    while bi < body.length; ids.push(body[bi]); bi = bi + 1; end
+    ids
+  end
+
+  # One run of ordinary text → IDs, no BOS. Pre-tokenize via regex; for
+  # each chunk, run the byte→char map then BPE merge loop; lookup pieces
+  # in vocab. (SPM vocabs dispatch to their own encoders.)
+  def encode_body(text)
+    if @spm_unigram
+      return encode_spm_unigram(text)
     end
     if @spm
       return encode_spm(text)
@@ -294,14 +420,6 @@ class Tokenizer
     build_byte_tables
     ids = [0]
     ids.pop
-    # Honor tokenizer.ggml.add_bos_token on the byte-level BPE path too
-    # (DeepSeek-V2 sets it; without BOS at pos 0 the model degenerates —
-    # the attention sink lives on the BOS token). Gated on @add_bos, which
-    # is false for every toy-converted fixture (they don't emit the key),
-    # so canonical SmolLM2/Qwen/Llama tokenization stays bit-identical.
-    if @add_bos && @bos_id != nil && @bos_id >= 0
-      ids.push(@bos_id)
-    end
     # Pre-tokenizer regex (Llama-3 / cl100k_base style, ASCII fallback).
     pre_re = /'s|'t|'re|'ve|'m|'ll|'d|'S|'T|'RE|'VE|'M|'LL|'D|[^\r\na-zA-Z0-9]?[a-zA-Z]+|[0-9]{1,3}| ?[^\sa-zA-Z0-9]+[\r\n]*|\s+/
     chunks = text.scan(pre_re)
@@ -629,7 +747,32 @@ class Tokenizer
       end
     end
 
+    # toy#208: CONTROL (3) and USER_DEFINED (4) entries are the special
+    # tokens. Collected as ids here (the handle is about to go away) and
+    # registered on the tokenizer below. A GGUF without the array reports
+    # -1 for every index → no specials → encode stays the plain path.
+    special_ids = [0]
+    special_ids.pop
+    n_types = GgufKV.tnn_gguf_arr_n(handle, "tokenizer.ggml.token_type")
+    if n_types > 0
+      i = 0
+      while i < n_types && i < n_tok
+        tt = GgufKV.tnn_gguf_arr_i32(handle, "tokenizer.ggml.token_type", i)
+        if tt == 3 || tt == 4
+          special_ids.push(i)
+        end
+        i = i + 1
+      end
+    end
+
     GgufKV.tnn_gguf_free(handle)
-    Tokenizer.new(vocab, merges, bos, eos, pad, unk, model_name, add_bos)
+    tok = Tokenizer.new(vocab, merges, bos, eos, pad, unk, model_name, add_bos)
+    i = 0
+    while i < special_ids.length
+      sid = special_ids[i]
+      tok.add_special(vocab[sid], sid)
+      i = i + 1
+    end
+    tok
   end
 end

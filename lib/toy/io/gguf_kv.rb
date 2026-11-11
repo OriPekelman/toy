@@ -32,4 +32,5 @@ module GgufKV
   ffi_func :tnn_gguf_get_str,  [:ptr, :str],      :str
   ffi_func :tnn_gguf_arr_n,    [:ptr, :str],      :int
   ffi_func :tnn_gguf_arr_str,  [:ptr, :str, :int], :str
+  ffi_func :tnn_gguf_arr_i32,  [:ptr, :str, :int], :int
 end

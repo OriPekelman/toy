@@ -681,6 +681,14 @@ gate-llamacpp-gguf:
 gate-context:
 	ruby prep/context_gate.rb
 
+# Special-token gate (toy#208): "<|im_start|>" written in prompt text must
+# encode to its ONE id (GGUF token_type CONTROL / USER_DEFINED), not to BPE
+# pieces. Expected ids are HuggingFace tokenizers output, not toy's own.
+# TOY_GATE_QWEN_GGUF=<file> adds a leg on a real Qwen2.5 tokenizer.
+.PHONY: gate-special-tokens
+gate-special-tokens:
+	ruby prep/special_tokens_gate.rb
+
 # Qwen3-MoE (qwen3moe arch) inference gate — Phase 1 routing variants
 # (arch-prefix load + separate expert_ff + norm_topk renorm). Model-gated
 # (~18 GB Qwen3-30B-A3B Q4_K_M, gitignored); SKIPs loudly when absent.
@@ -1243,6 +1251,10 @@ toy-serve: libexec/toy-serve
 # toy#gguf-checkpoint-reload (#153) — smoke binary that loads a
 # from-scratch toy GGUF and runs a tiny generation. No tokenizer.
 prep/smokes/smoke_toy_ckpt_reload: prep/smokes/smoke_toy_ckpt_reload.rb lib/toy/models/arch.rb lib/toy/models/transformer_lm.rb lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb lib/toy/models/transformer.rb lib/toy/models/gpt2.rb lib/toy/io/gguf_load.rb lib/toy/ffi/tinynn.rb lib/toy/io/tokenizer.rb tinynn/libtinynn_ggml.a
+	$(SPINEL) $< -o $@
+
+# toy#208 — tokenizer-only probe: ids for a string, no weights loaded.
+prep/smokes/smoke_tokenize: prep/smokes/smoke_tokenize.rb lib/toy/io/tokenizer.rb lib/toy/io/gguf_kv.rb tinynn/libtinynn_ggml.a $(SPINEL_DEPS)
 	$(SPINEL) $< -o $@
 
 # toy#embed-api (#145) — smoke for ToyLM#embed_lookup.
