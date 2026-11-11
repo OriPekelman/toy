@@ -43,6 +43,17 @@ class ToyLMMetal
     @max_T = t
   end
 
+  # toy#207: "" when prompt + n_new fits the allocated context, otherwise
+  # the reason, for the runner to print before any decode. The check used
+  # to be a ggml view assert halfway through prefill.
+  def context_overflow(n_prompt, n_new)
+    if n_prompt + n_new <= @max_T
+      return ""
+    end
+    "prompt " + n_prompt.to_s + " tokens + n " + n_new.to_s + " exceeds context " +
+      @max_T.to_s + " (raise it with --ctx / CTX=)"
+  end
+
   def load(path)
     flags = GGUFLoad.detect_smollm2_flags(path)
     cfg   = SmolLM2ConfigLoader.read(path)
@@ -96,6 +107,11 @@ class ToyLMMetal
     if !@loaded
       puts "ToyLMMetal.generate: model not loaded; call .load(path) first"
       return prompt_ids
+    end
+    # Backstop for callers that skip context_overflow (toy#207): fail
+    # here, by name, rather than in a ggml assert mid-prefill.
+    if prompt_ids.length + n_new > @max_T
+      raise ArgumentError, context_overflow(prompt_ids.length, n_new)
     end
     ids = []
     j = 0

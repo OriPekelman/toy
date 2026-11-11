@@ -1078,7 +1078,7 @@ class SmolLM2KVFFICache
 
   def realize_and_load_auto(gguf_path, max_T, cfg, flags)
     gguf = TinyNN.tnn_gguf_load(gguf_path)
-    is_native = TinyNN.tnn_gguf_get_bool(gguf, "toy.ggml_native") == 1
+    is_native = TinyNN.tnn_gguf_is_native_layout(gguf) == 1
     if is_native
       wtype = GGUFLoad.detect_weight_type(gguf_path)
       set_weight_type(wtype)

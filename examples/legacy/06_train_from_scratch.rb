@@ -23,6 +23,11 @@
 #     generated tokens.
 
 require_relative "../../lib/toy"
+# Events are built with Toy::Json::Builder, NOT SpinelKit's twin class:
+# Toy::Events.add_provenance nests Toy builders into the run_start one,
+# and from spinel 2026.10.25 mixing the two (identical) classes in one
+# add_obj slot is a compile refusal. The vendored require stays only
+# because the Makefile lists it as a prerequisite.
 require_relative "../../vendor/spinel/spinel_kit/lib/spinel_kit/json_builder"
 require_relative "../../lib/toy/llm/adamw"
 require_relative "../../lib/toy/io/toy_events"
@@ -269,7 +274,7 @@ if EVENTS.length > 0
   else
     puts "events → " + EVENTS
     rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
-    rs = SpinelKit::Json::Builder.new
+    rs = Toy::Json::Builder.new
     rs.add_str("kind", "run_start")
     rs.add_str("schema", "toy/v1")
     rs.add_num("t", TinyNN.tnn_events_now_seconds)
@@ -280,7 +285,7 @@ if EVENTS.length > 0
       TinyNN.tnn_provenance_host_name, TinyNN.tnn_provenance_host_os,
       TinyNN.tnn_provenance_host_arch,
       TinyNN.tnn_backend_name(fcache.sess))
-    model = SpinelKit::Json::Builder.new
+    model = Toy::Json::Builder.new
     model.add_str("arch", "llama")
     model.add_str("name", "from-scratch-tinystories")
     model.add_num("vocab",    cfg.vocab)
@@ -295,7 +300,7 @@ if EVENTS.length > 0
     # (0=f32, 1=f16, 30=bf16); reuse the canonical name map.
     model.add_str("weight_type", ToyDescribeFlow.dtype_name(WEIGHT_DTYPE))
     rs.add_obj("model", model)
-    config = SpinelKit::Json::Builder.new
+    config = Toy::Json::Builder.new
     config.add_num("context",    CONTEXT)
     config.add_num("batch",      BATCH)
     config.add_num("grad_accum", GRAD_ACCUM)
@@ -455,7 +460,7 @@ while step <= STEPS
   # feedback_spinel_type_inference_landmines).
   if EVENTS.length > 0
     step_wall_us = ((TinyNN.tnn_events_now_seconds - step_wall_start) * 1.0e6).to_i
-    es = SpinelKit::Json::Builder.new
+    es = Toy::Json::Builder.new
     es.add_str("kind",  "step")
     es.add_str("phase", "train")
     es.add_num("t",       TinyNN.tnn_events_now_seconds)
@@ -540,14 +545,14 @@ end
 # Closes toy#run-end-reason-semantics.
 exit_code = not_learning ? 1 : 0
 if EVENTS.length > 0 && TinyNN.tnn_events_active == 1
-  re = SpinelKit::Json::Builder.new
+  re = Toy::Json::Builder.new
   re.add_str("kind", "run_end")
   re.add_num("t",          TinyNN.tnn_events_now_seconds)
   re.add_str("ended_at",   TinyNN.tnn_events_iso8601_now)
   re.add_str("reason",     "completed")
   re.add_num("final_step", STEPS)
   re.add_num("final_loss", final_loss)
-  qg = SpinelKit::Json::Builder.new
+  qg = Toy::Json::Builder.new
   qg.add_bool("passed", not_learning ? false : true)
   qg.add_str("metric",     "loss_ratio")
   qg.add_num("value",      ratio)

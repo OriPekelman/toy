@@ -26,14 +26,23 @@
 # The default SPINEL_DIR prefers the pinned scratch toolchain when it
 # exists (gx10), falling back to ~/sites/spinel (which the guard then
 # vets by rev, NOT by path — a Mac clone at the pin passes).
-PINNED_SPINEL := dc5b8f17
-SPINEL_DIR  ?= $(firstword $(wildcard /srv/data/scratch/spinel-dc5b8f17) $(HOME)/sites/spinel)
+PINNED_SPINEL := 2814693f
+# An EMPTY SPINEL_DIR is treated as unset. `?=` alone is not enough: it
+# only assigns when the variable is undefined, and a dozen gate scripts
+# forward `"SPINEL_DIR" => ENV["SPINEL_DIR"].to_s` to their child make —
+# which is "" when the caller never exported one. That used to be
+# invisible because exporting SPINEL_DIR was mandatory on this box; with
+# a default that works on its own, "" reached the pin guard as
+# SPINEL_DIR= "at 'unknown'" and failed the leg.
+ifeq ($(strip $(SPINEL_DIR)),)
+override SPINEL_DIR := $(firstword $(wildcard /srv/data/scratch/spinel-$(PINNED_SPINEL)) $(HOME)/sites/spinel)
+endif
 SPINEL_BIN  ?= $(SPINEL_DIR)/spinel
 
 SPINEL_ACTUAL := $(shell git -C $(SPINEL_DIR) rev-parse --short=8 HEAD 2>/dev/null || echo unknown)
 ifneq ($(SPINEL_SKIP_PIN_CHECK),1)
 ifneq ($(SPINEL_ACTUAL),$(PINNED_SPINEL))
-$(error toy is pinned to spinel $(PINNED_SPINEL) but SPINEL_DIR=$(SPINEL_DIR) is at '$(SPINEL_ACTUAL)'. Export SPINEL_DIR=<checkout at $(PINNED_SPINEL)> (gx10: /srv/data/scratch/spinel-dc5b8f17), or SPINEL_SKIP_PIN_CHECK=1 to bypass deliberately (e.g. a pin-advance sweep))
+$(error toy is pinned to spinel $(PINNED_SPINEL) but SPINEL_DIR=$(SPINEL_DIR) is at '$(SPINEL_ACTUAL)'. Export SPINEL_DIR=<checkout at $(PINNED_SPINEL)> (gx10: /srv/data/scratch/spinel-$(PINNED_SPINEL)), or SPINEL_SKIP_PIN_CHECK=1 to bypass deliberately (e.g. a pin-advance sweep))
 endif
 endif
 
@@ -652,6 +661,25 @@ endif
 .PHONY: gate-moe-kquant
 gate-moe-kquant:
 	ruby prep/moe_kquant_gate.rb
+
+# llama.cpp-labelled GGUF gate (toy#203): a file written by llama.cpp's own
+# converter (qwen2.* keys, native layout, no toy.ggml_native) must resolve
+# its dimensions AND decode the same ids as its source. Compares IDS, not
+# "it loaded": the prefix fix alone still sent such a file down the legacy
+# transposing loader, which generates plausible wrong tokens with exit 0.
+# The fixture is manufactured at gate time by prep/gguf_relabel.rb from
+# data/smollm2-135m-native.gguf — nothing new is committed or downloaded.
+.PHONY: gate-llamacpp-gguf
+gate-llamacpp-gguf:
+	ruby prep/llamacpp_gguf_gate.rb
+
+# Context-length gate (toy#207): the KV-cache context comes from --ctx /
+# CTX= or the GGUF's context_length (clamped to [256, 4096]) instead of a
+# literal 256; output must not depend on it; and prompt + n past it is a
+# plain error before decode rather than a ggml view assert mid-prefill.
+.PHONY: gate-context
+gate-context:
+	ruby prep/context_gate.rb
 
 # Qwen3-MoE (qwen3moe arch) inference gate — Phase 1 routing variants
 # (arch-prefix load + separate expert_ff + norm_topk renorm). Model-gated

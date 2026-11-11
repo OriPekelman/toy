@@ -395,3 +395,40 @@ class Tokenizer
 
   def self.from_gguf: (String path) -> Tokenizer
 end
+
+# ============================================================================
+# Sampler config + the three generate() entry points.
+# (lib/toy/train/sampler.rb, lib/toy/models/transformer_lm{,_cuda,_metal}.rb)
+#
+# Declared for the spinel 2026.10.25 pin. Every runner that only ever
+# decodes greedily passes NO sampler_config, so the parameter is nil-only
+# and untyped. From 2026.10.25 an untyped receiver's `.seed` is resolved
+# BY NAME to the builtin Random#seed, which returns a plain int into
+# SamplerContext#initialize's nilable-int slot — and the emitted C does
+# not compile ("incompatible type for argument 2 of sp_SamplerContext_new",
+# expected sp_oint). Typing the parameter is what removes the guess;
+# typing SamplerContext alone does NOT. Still present on spinel master
+# e64fb6a0 (2026-11-11); 24-line repro in the pin-advance notes.
+# ============================================================================
+class SamplerConfig
+  attr_accessor temperature: Float
+  attr_accessor top_k:       Integer
+  attr_accessor top_p:       Float
+  attr_accessor rep_penalty: Float
+  attr_accessor seed:        Integer
+  attr_accessor max_tokens:  Integer
+
+  def initialize: () -> void
+end
+
+class ToyLM
+  def generate: (Array[Integer] prompt_ids, Integer n_new, ?SamplerConfig? sampler_config) -> Array[Integer]
+end
+
+class ToyLMCuda
+  def generate: (Array[Integer] prompt_ids, Integer n_new, ?SamplerConfig? sampler_config) -> Array[Integer]
+end
+
+class ToyLMMetal
+  def generate: (Array[Integer] prompt_ids, Integer n_new, ?SamplerConfig? sampler_config) -> Array[Integer]
+end

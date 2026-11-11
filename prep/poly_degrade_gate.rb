@@ -40,7 +40,9 @@ def resolve_spinel_dir_pd
   out, st = Open3.capture2("make", "--no-print-directory", "-s", "print-spinel-dir",
                            chdir: File.expand_path("..", __dir__))
   abort "poly-degrade-gate: SPINEL_DIR resolution via make failed (pin guard?):\n#{out}" unless st.success?
-  out.strip
+  # Under a parallel parent make, MAKEFLAGS carries -w and the child
+  # prints "Entering/Leaving directory" despite --no-print-directory.
+  out.lines.map(&:strip).reject { |l| l.empty? || l.start_with?("make") }.last.to_s
 end
 # Toolchain via make (pin-guard-validated; toy#119 class — the old
 # ~/sites/spinel fallback silently compiled with a stale toolchain).

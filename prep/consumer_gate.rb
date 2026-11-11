@@ -47,7 +47,10 @@ def resolve_spinel_dir
   out, st = Open3.capture2("make", "--no-print-directory", "-s", "print-spinel-dir",
                            chdir: File.expand_path("..", __dir__))
   abort "consumer_gate: SPINEL_DIR resolution via make failed (pin guard?):\n#{out}" unless st.success?
-  out.strip
+  # Under a parallel parent make, MAKEFLAGS carries -w and the child
+  # prints "Entering/Leaving directory" despite --no-print-directory, so
+  # the answer is the line that is not make's own chatter.
+  out.lines.map(&:strip).reject { |l| l.empty? || l.start_with?("make") }.last.to_s
 end
 SPINEL_DIR = resolve_spinel_dir
 SPINEL_BIN = File.join(SPINEL_DIR, "spinel")

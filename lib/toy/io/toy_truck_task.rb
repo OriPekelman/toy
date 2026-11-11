@@ -305,6 +305,17 @@ class TruckTask
   # which INCLUDES the start state (an episode that begins at the dock
   # has already achieved its best approach).
   def reset_state!(x, y, oc, os)
+    # Every caller feeds this from ARRAY READS (ST_CFG_*[i], bp_*[t],
+    # @tt_ens_*[k]). From spinel 2026.10.25 an out-of-range Float read
+    # is a tracked nil, and an unguarded one reaching @tt_oc/@tt_os makes
+    # the compiler refuse wrap_pi's `angle % ...`. Fail loud HERE — the
+    # same place CRuby would otherwise die later with a NoMethodError on
+    # nil — rather than coerce (nil.to_f would turn a bad index into a
+    # silent 0.0 start state). An RBS seed does NOT fix this; it is
+    # advisory and the refusal stands.
+    if x == nil || y == nil || oc == nil || os == nil
+      raise ArgumentError, "TruckTask#reset_state!: nil start state (out-of-range read at the caller?)"
+    end
     @tt_x  = x
     @tt_y  = y
     @tt_oc = oc

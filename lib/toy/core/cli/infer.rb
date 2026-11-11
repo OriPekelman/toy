@@ -1,4 +1,4 @@
-# lib/toy/core/cli/infer.rb — `toy infer <model.gguf> --prompt "X" [--n N]`.
+# lib/toy/core/cli/infer.rb — `toy infer <model.gguf> --prompt "X" [--n N] [--ctx N]`.
 #
 # Generate text from a GGUF model with greedy (argmax) decode. CRuby ONLY
 # (the CLI shell) — NO Spinel. This is the first user of the CRuby→runner
@@ -48,6 +48,7 @@ module Toy
           @prompt = DEFAULT_PROMPT
           @prompt_ids = nil # numeric ids for tokenizer-less models
           @n = DEFAULT_N
+          @ctx = nil
           @device = "cpu"
         end
 
@@ -99,6 +100,9 @@ module Toy
           env = { "GGUF" => path, "PROMPT" => @prompt, "N_NEW" => @n.to_s,
                   "DEVICE" => @device }
           env["PROMPT_IDS"] = @prompt_ids if @prompt_ids
+          # toy#207: only when asked for — unset, the runner derives the
+          # context from the GGUF (context_length clamped to [256, 4096]).
+          env["CTX"] = @ctx.to_s if @ctx
           # Metal: disable ggml's residency-set optimization. The runner relies
           # on process exit to reclaim GPU buffers (it never explicitly frees),
           # but ggml-metal's static-destructor teardown asserts the residency
@@ -175,6 +179,20 @@ module Toy
                 return bad_arg("--n must be a positive integer, got #{val.inspect}")
               end
               @n = val.to_i
+            when "--ctx"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--ctx requires a value") if val.nil?
+              unless val =~ /\A\d+\z/ && val.to_i > 0
+                return bad_arg("--ctx must be a positive integer, got #{val.inspect}")
+              end
+              @ctx = val.to_i
+            when /\A--ctx=(.*)\z/
+              val = $1
+              unless val =~ /\A\d+\z/ && val.to_i > 0
+                return bad_arg("--ctx must be a positive integer, got #{val.inspect}")
+              end
+              @ctx = val.to_i
             when "--device"
               i += 1
               val = @argv[i]

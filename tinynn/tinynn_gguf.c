@@ -274,6 +274,77 @@ const char *tnn_gguf_get_str(void *handle, const char *key)
     return gguf_get_val_str(s->gguf_ctx, kid);
 }
 
+/* toy#203 — the ONE place that decides which "<prefix>.*" namespace a
+ * GGUF's scalar metadata lives under. Arch.from_gguf and the loader's
+ * detect_arch_prefix each carried a copy of the same probe list (llama,
+ * olmoe, gemma2, qwen3moe, qwen2moe, deepseek2); a file written by
+ * llama.cpp's convert_hf_to_gguf.py for Qwen2.5 uses "qwen2.*", fell
+ * through both, and every dimension read back as -1.
+ *
+ * The list is the set of architectures whose graph the llama-family
+ * engine actually models, in the old order with qwen2 / qwen3 appended,
+ * so every file that resolved before resolves identically now.
+ *
+ * It is deliberately NOT "whatever general.architecture says". That was
+ * tried: a GPT-2 file then resolved to "gpt2", read back perfectly
+ * valid dimensions, and was driven through a graph it does not have
+ * until gguf.cpp asserted. Having metadata is not the same as being a
+ * model this engine can run; admitting a new family is a list entry
+ * made on purpose.
+ *
+ * Returns "" (never NULL) when nothing resolves; Arch.from_gguf fails
+ * loud and names general.architecture. */
+const char *tnn_gguf_arch_prefix(void *handle)
+{
+    static const char *const known[] = {
+        "llama", "olmoe", "gemma2", "qwen3moe", "qwen2moe", "deepseek2",
+        "qwen2", "qwen3"
+    };
+    char key[192];
+    if (!handle) return "";
+    for (size_t i = 0; i < sizeof(known) / sizeof(known[0]); i++) {
+        snprintf(key, sizeof(key), "%s.embedding_length", known[i]);
+        if (tnn_gguf_get_u32(handle, key) >= 0) return known[i];
+    }
+    return "";
+}
+
+/* toy#203 — is this file in ggml-native weight layout (2D linears
+ * stored ne=[in, out], readable in place), or in toy's LEGACY layout
+ * (the pre---ggml-native converter, transposed: ne=[out, in])?
+ *
+ * Callers used to ask only "is toy.ggml_native set?". A GGUF written by
+ * llama.cpp's own converter is native but carries no toy.* key, so it
+ * was sent down the legacy transposing loader and decoded GARBAGE with
+ * no error — a 3.98B Qwen2.5 produced token ids, just the wrong ones.
+ * (MoE and Gemma-2 files were already special-cased to native by the
+ * caller for the same reason; this is the general rule they were
+ * instances of.)
+ *
+ * The flag still wins when present. Otherwise the stored SHAPE of
+ * blk.0.ffn_gate.weight decides, which is exact because that matrix is
+ * never square in practice: native is [d_model, d_ff], legacy is
+ * [d_ff, d_model]. If it is absent (MoE) or square, the answer is the
+ * old one — not native — and the caller's own special cases still apply.
+ * Returns 1 native, 0 legacy/unknown. */
+int tnn_gguf_is_native_layout(void *handle)
+{
+    char key[192];
+    if (!handle) return 0;
+    if (tnn_gguf_get_bool(handle, "toy.ggml_native") == 1) return 1;
+    const char *ap = tnn_gguf_arch_prefix(handle);
+    if (!ap || ap[0] == '\0') return 0;
+    snprintf(key, sizeof(key), "%s.embedding_length", ap);
+    int d = tnn_gguf_get_u32(handle, key);
+    snprintf(key, sizeof(key), "%s.feed_forward_length", ap);
+    int ff = tnn_gguf_get_u32(handle, key);
+    int idx = tnn_gguf_find_index(handle, "blk.0.ffn_gate.weight");
+    if (idx < 0 || d <= 0 || ff <= 0 || d == ff) return 0;
+    int ne0 = tnn_gguf_tensor_ne(handle, idx, 0);
+    int ne1 = tnn_gguf_tensor_ne(handle, idx, 1);
+    return (ne0 == d && ne1 == ff) ? 1 : 0;
+}
+
 /* Array metadata: length. Used to enumerate tokenizer.ggml.tokens
  * (string array, == vocab size) and .merges (string array of BPE
  * pairs). Returns -1 if the key is missing or non-array. */

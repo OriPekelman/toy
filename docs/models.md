@@ -83,6 +83,49 @@ example_inference_metal` builds + runs end-to-end (Metal kernels JIT,
 fusion/concurrency on), F32, deterministic ids — identical to the
 prior 2026-05-31 Mac validation (`9b5131a`).
 
+## Which GGUF files load
+
+Three kinds of file are accepted by the llama-family runners (`toy infer`,
+`toy eval`, `toy serve`), and the loader tells them apart itself:
+
+| Written by | Metadata keys | Weight layout | How it is recognised |
+| --- | --- | --- | --- |
+| `prep/convert_smollm2_to_gguf.py --ggml-native` (and toy's own checkpoint writer) | `llama.*` | ggml-native | `toy.ggml_native = true` |
+| the same converter without `--ggml-native` (legacy) | `llama.*` | transposed | no flag, and `blk.0.ffn_gate.weight` stored `[d_ff, d_model]` |
+| **llama.cpp `convert_hf_to_gguf.py`** / `llama-quantize` | `qwen2.*`, `qwen3.*`, `llama.*`, … | ggml-native | no flag, and `blk.0.ffn_gate.weight` stored `[d_model, d_ff]` |
+
+llama.cpp-converted files are a supported input as of toy#203. Before
+it they failed twice over: the `qwen2.*` keys were not probed, so every
+dimension read back `-1`; and layout was decided by the flag alone, so
+such a file took the legacy transposing path and decoded wrong tokens
+with exit 0. Layout is now decided by the stored shape of
+`blk.0.ffn_gate.weight` (the flag still wins when present), in one
+place — `tnn_gguf_is_native_layout` in the shim.
+
+Verified on the gx10, CPU, greedy decode, against the toy-converted Q8
+of the same weights (a Qwen2.5-7B pruned to 22 layers / d_ff 9472,
+3.98 B): the llama.cpp **Q8_0** (4.23 GB, embeddings and head quantised
+too) and **Q4_K_M** (2.48 GB) both produce identical ids. `qwen3.*`
+resolves but has not been run from a llama.cpp file. `make
+gate-llamacpp-gguf` keeps this honest on a manufactured fixture, CPU;
+the same gate passes against `toy-infer-cuda` on the small F32 fixture.
+Quantised weights on CUDA are a separate question (toy#205).
+
+Which architectures resolve is an explicit list in the shim
+(`tnn_gguf_arch_prefix`: llama, olmoe, gemma2, qwen3moe, qwen2moe,
+deepseek2, qwen2, qwen3), not "whatever `general.architecture` says" —
+a GPT-2 file has perfectly valid `gpt2.*` dimensions and no llama-family
+graph. Anything else is refused before a graph is built, with the
+architecture named:
+
+```
+Arch.from_gguf: model.gguf: unsupported architecture — general.architecture=gpt2, ...
+```
+
+and a file whose prefix resolves but whose `embedding_length`,
+`block_count`, `attention.head_count` or `feed_forward_length` is
+missing is refused the same way, listing the four values.
+
 ## Tokenizer / RoPE coverage
 
 Three tokenizer flavors are auto-detected from the GGUF:

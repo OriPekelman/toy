@@ -14,6 +14,11 @@
 #   make example_train_vit_tiny
 #   STEPS=200 TAO_RUN_DIR=/tmp/vit ./examples/example_train_vit_tiny
 
+# Events are built with Toy::Json::Builder, NOT SpinelKit's twin class:
+# Toy::Events.add_provenance nests Toy builders into the run_start one,
+# and from spinel 2026.10.25 mixing the two (identical) classes in one
+# add_obj slot is a compile refusal. The vendored require stays only
+# because the Makefile lists it as a prerequisite.
 require_relative "../../vendor/spinel/spinel_kit/lib/spinel_kit/json_builder"
 require_relative "../../lib/toy/llm/adamw"
 require_relative "../../lib/toy/io/toy_events"
@@ -152,7 +157,7 @@ if EVENTS.length > 0
   else
     puts "events → " + EVENTS
     rid = RUN_ID.length > 0 ? RUN_ID : "anonymous"
-    rs = SpinelKit::Json::Builder.new
+    rs = Toy::Json::Builder.new
     rs.add_str("kind", "run_start")
     rs.add_str("schema", "toy/v1")
     rs.add_num("t", TinyNN.tnn_events_now_seconds)
@@ -164,7 +169,7 @@ if EVENTS.length > 0
       TinyNN.tnn_provenance_host_name, TinyNN.tnn_provenance_host_os,
       TinyNN.tnn_provenance_host_arch,
       TinyNN.tnn_backend_name(cache.sess))
-    model = SpinelKit::Json::Builder.new
+    model = Toy::Json::Builder.new
     model.add_str("arch", "vit")
     model.add_str("name", "vit-tiny")
     model.add_num("image_size",  cfg.image_size)
@@ -175,7 +180,7 @@ if EVENTS.length > 0
     model.add_num("d_ff",        cfg.d_ff)
     model.add_num("num_classes", cfg.num_classes)
     rs.add_obj("model", model)
-    config = SpinelKit::Json::Builder.new
+    config = Toy::Json::Builder.new
     config.add_str("image_dir", IMG_DIR)
     config.add_num("n_images",  N_IMAGES)
     config.add_num("steps",     STEPS)
@@ -183,7 +188,7 @@ if EVENTS.length > 0
     config.add_str("init",      INIT)
     config.add_str("donor",     (INIT == "pure_emb" ? DONOR_GGUF : ""))
     rs.add_obj("config", config)
-    schedule = SpinelKit::Json::Builder.new
+    schedule = Toy::Json::Builder.new
     schedule.add_num("lr_max",  LR_MAX)
     schedule.add_num("lr_min",  LR_MIN)
     schedule.add_num("warmup",  WARMUP)
@@ -272,7 +277,7 @@ while step < STEPS
 
   if EVENTS.length > 0
     t_now = TinyNN.tnn_events_now_seconds
-    ev = SpinelKit::Json::Builder.new
+    ev = Toy::Json::Builder.new
     ev.add_str("kind",  "step")
     ev.add_str("phase", "train")
     ev.add_num("t",    t_now)
@@ -303,14 +308,14 @@ puts "initial=" + initial_loss.to_s + " final=" + final_loss.to_s +
 
 if EVENTS.length > 0
   t_close = TinyNN.tnn_events_now_seconds
-  re = SpinelKit::Json::Builder.new
+  re = Toy::Json::Builder.new
   re.add_str("kind",  "run_end")
   re.add_str("phase", "train")
   re.add_num("t",      t_close)
   re.add_str("reason", "completed")
   # quality_gate conforms to the events.md contract:
   # {passed:bool, metric:str, value:float, threshold:float} (issue #24).
-  qg = SpinelKit::Json::Builder.new
+  qg = Toy::Json::Builder.new
   qg.add_bool("passed",   ratio < 0.95 ? true : false)
   qg.add_str("metric",    "loss_ratio")
   qg.add_num("value",     ratio)
