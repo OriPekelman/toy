@@ -174,6 +174,68 @@ module GGUFLoad
     end
   end
 
+  # ---- context length (toy#207) ----------------------------------------
+  # The KV cache is allocated for a fixed number of positions. It used to
+  # be a literal 256 in every ToyLM and in the server, with no flag: a
+  # 362-token prompt died mid-prefill in a ggml view assert.
+  #
+  # trained_ctx: the model's own <prefix>.context_length (8192 when the
+  # key is absent — the same default Arch.from_gguf uses).
+  def self.trained_ctx(path)
+    handle = TinyNN.tnn_gguf_load(path)
+    if handle == nil
+      return 8192
+    end
+    ap = detect_arch_prefix(handle)
+    c = TinyNN.tnn_gguf_get_u32(handle, ap + ".context_length")
+    TinyNN.tnn_gguf_free(handle)
+    if c <= 0
+      c = 8192
+    end
+    c
+  end
+
+  # The context a runner should allocate. `ctx_s` is the raw CTX= /
+  # --ctx value ("" = not given).
+  #
+  # Not given: the trained context clamped to [256, 4096]. The FLOOR is
+  # the old constant, so nothing that ran before gets a smaller cache
+  # (toy's own from-scratch checkpoints declare context 16 and were
+  # happily decoded past it). The CAP is because the cache is allocated
+  # up front — a model that declares 131072 must not cost that much to
+  # say hello; ask for more explicitly.
+  #
+  # Given: used as is. Above the trained context is allowed and SAID, as
+  # llama.cpp does — RoPE extrapolates, quality is the user's call.
+  # A malformed value is fatal, never a silent fallback to the default.
+  def self.resolve_ctx(path, ctx_s, cmd)
+    trained = trained_ctx(path)
+    if ctx_s.length == 0
+      c = trained
+      if c < 256;  c = 256;  end
+      if c > 4096; c = 4096; end
+      return c
+    end
+    ok = true
+    i = 0
+    while i < ctx_s.length
+      ch = ctx_s[i]
+      if ch < "0" || ch > "9"
+        ok = false
+      end
+      i = i + 1
+    end
+    c = ok ? ctx_s.to_i : 0
+    if c <= 0
+      puts cmd + ": context must be a positive integer, got '" + ctx_s + "'"
+      exit 1
+    end
+    if c > trained
+      puts cmd + ": note: context " + c.to_s + " exceeds the model's trained context_length " + trained.to_s
+    end
+    c
+  end
+
   # The GGUF arch-metadata prefix ("llama", "olmoe", "qwen2", ...).
   # Resolved in ONE place — tnn_gguf_arch_prefix in the shim (toy#203),
   # shared with Arch.from_gguf, which used to carry its own copy of this

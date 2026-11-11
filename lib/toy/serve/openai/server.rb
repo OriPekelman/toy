@@ -17,7 +17,8 @@
 #                data/smollm2-135m-native.gguf)
 #   MODEL_NAME   user-facing label in /v1/models + completion responses.
 #                Defaults to GGUF basename minus .gguf.
-#   MAX_T        max context for the KV cache (default 256)
+#   MAX_T        max context for the KV cache (default: the GGUF's
+#                context_length clamped to [256, 4096]; toy#207)
 #   PORT         (read in the entrypoint, not here)
 #
 # Spinel hygiene (#16): no #{} interpolation, no Struct.new, String-concat
@@ -42,7 +43,9 @@ _mn_basename   = _mn_last_slash == nil ? GGUF_PATH : GGUF_PATH[_mn_last_slash + 
 _mn_dot_gguf   = _mn_basename.rindex(".gguf")
 _mn_default    = _mn_dot_gguf == nil ? _mn_basename : _mn_basename[0...(_mn_dot_gguf)]
 MODEL_NAME = MODEL_NAME_ENV.length > 0 ? MODEL_NAME_ENV : _mn_default
-MAX_T      = (ENV["MAX_T"] || "256").to_i
+# toy#207: MAX_T= (the CLI's --ctx) when given, otherwise the model's own
+# context_length clamped to [256, 4096] — it was a literal 256.
+MAX_T      = GGUFLoad.resolve_ctx(GGUF_PATH, ENV["MAX_T"] || "", "toy-serve")
 
 # ---- Inference state. Class instance held as a CONSTANT so spinel
 #      emits a typed slot for it (same pattern as inference_api.rb /

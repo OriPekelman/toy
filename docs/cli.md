@@ -59,12 +59,25 @@ graph-walk that infers the model's shape and capabilities).
 Download a GGUF from a HuggingFace repo into the cache and add a `data/`
 symlink. The second positional selects a specific `.gguf` file within the repo.
 
-### `infer <model> [--prompt TEXT] [--prompt-ids "ID ID …"] [--n N] [--device cpu|cuda|metal] [--json]`
+### `infer <model> [--prompt TEXT] [--prompt-ids "ID ID …"] [--n N] [--ctx N] [--device cpu|cuda|metal] [--json]`
 Greedy decode from a GGUF model. `--prompt-ids` drives tokenizer-less models with
 explicit numeric token IDs (overrides `--prompt`; the runners fail loud on a
 tokenizer-less model with neither). `--device cuda|metal` selects the per-device
 runner (`metal` is macOS-only). Defaults: `--prompt "Once upon a time"`, `--n 16`,
 `--device cpu`.
+
+`--ctx N` sets the context (the number of positions the KV cache is allocated
+for). Left out, it is the model's own `context_length` clamped to [256, 4096]:
+the floor is the old fixed value, the cap is there because the cache is
+allocated up front. A value above the trained context is accepted and noted.
+A prompt plus `--n` that does not fit is refused before any decode:
+
+```
+toy-infer: prompt 362 tokens + n 80 exceeds context 256 (raise it with --ctx / CTX=)
+```
+
+`toy eval` takes no `--ctx`: it scores a fixed 3-token prefill and cannot
+overflow.
 
 ### `train <recipe> [--steps N] [--seed S] [--arch llama|gpt2] [--device cpu|cuda|metal] [--out DIR] [--json]`
 
@@ -163,10 +176,15 @@ They now appear in `toy eval --help` and under a `subcommands` key in
 `toy --manifest`, which is emitted only for commands that have them, so
 existing manifest consumers see no new key.
 
-### `serve <model> [--port PORT] [--name NAME]`
+### `serve <model> [--port PORT] [--name NAME] [--ctx N]`
 Serve a GGUF model over an OpenAI-compatible HTTP API (CPU). Default
 `--port 4567`; `--name` sets the model label in `/v1/models` (default: the GGUF
-basename). The serve stack lives at `lib/toy/serve/openai/` and is driven by
+basename). `--ctx N` sets the context exactly as for `infer` (same default). A
+request whose prompt does not fit comes back with no tokens and
+`finish_reason: "context_length_exceeded"` — tep's backend API has no error
+channel yet, so it is not an HTTP 400 — and one whose prompt fits but whose
+`max_tokens` does not is cut to what fits (`finish_reason: "length"`). Neither
+takes the server down. The serve stack lives at `lib/toy/serve/openai/` and is driven by
 `lib/toy/run/serve.rb` → `libexec/toy-serve`.
 
 > Known issue: `libexec/toy-serve` fails to compile at toy's current Spinel pin

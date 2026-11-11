@@ -79,6 +79,9 @@ arch = Arch.load_or_fail(GGUF, "toy-infer")
 puts arch.summary
 
 lm = ToyLMMetal.new(arch)
+# toy#207: the KV-cache context. CTX= (the CLI's --ctx) when given,
+# otherwise the model's own context_length clamped to [256, 4096].
+lm.max_T = GGUFLoad.resolve_ctx(GGUF, ENV["CTX"] || "", "toy-infer")
 lm.load(GGUF)
 
 tok = Tokenizer.from_gguf(GGUF)
@@ -112,6 +115,11 @@ if PROMPT_IDS.length > 0
     puts "toy-infer: PROMPT_IDS parsed to no token ids"
     exit 1
   end
+  ctx_err = lm.context_overflow(parsed.length, N_NEW)
+  if ctx_err.length > 0
+    puts "toy-infer: " + ctx_err
+    exit 1
+  end
   out_ids = lm.generate(parsed, N_NEW)
   print "ids:"
   k = 0
@@ -123,6 +131,11 @@ if PROMPT_IDS.length > 0
 elsif tok.present
   in_ids = tok.encode(PROMPT)
   puts "prompt: " + PROMPT.inspect + " → " + in_ids.length.to_s + " tokens"
+  ctx_err = lm.context_overflow(in_ids.length, N_NEW)
+  if ctx_err.length > 0
+    puts "toy-infer: " + ctx_err
+    exit 1
+  end
   out_ids = lm.generate(in_ids, N_NEW)
   puts "text: " + tok.decode(out_ids)
 else

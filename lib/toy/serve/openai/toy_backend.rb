@@ -61,6 +61,26 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
     if n_new <= 0; n_new = 16; end
     if n_new > 256; n_new = 256; end
 
+    # toy#207: the request must fit the allocated context. Before this the
+    # only check was a ggml view assert during prefill, which took the
+    # whole server down on one long prompt.
+    #   - prompt alone does not fit: nothing can be generated. tep's
+    #     backend API has no error channel (Completion carries only
+    #     finish_reason), so the reason goes there and to the log —
+    #     never a truncated prompt decoded as if it were the whole one.
+    #   - prompt fits but prompt + max_tokens does not: generate what
+    #     fits; finish_reason stays "length", which is what it means.
+    if token_ids.length >= MAX_T
+      puts "[openai_api_llama] request refused: prompt " + token_ids.length.to_s +
+           " tokens does not fit context " + MAX_T.to_s + " (start with --ctx N)"
+      comp.prompt_tokens = token_ids.length
+      comp.finish_reason = "context_length_exceeded"
+      return comp
+    end
+    if token_ids.length + n_new > MAX_T
+      n_new = MAX_T - token_ids.length
+    end
+
     t_start = TinyNN.tnn_events_now_seconds
     new_ids = api_generate_ids(token_ids, n_new)
     t_end   = TinyNN.tnn_events_now_seconds
