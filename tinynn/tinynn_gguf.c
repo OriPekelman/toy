@@ -376,6 +376,32 @@ const char *tnn_gguf_arr_str(void *handle, const char *key, int i)
     return gguf_get_arr_str(s->gguf_ctx, kid, (size_t)i);
 }
 
+/* Array element accessor (integer-typed arrays). Used to read
+ * tokenizer.ggml.token_type (INT32 per vocab entry: 1 normal, 2 unknown,
+ * 3 control, 4 user-defined, 5 unused, 6 byte). Returns -1 when the key
+ * is missing, the array is not an integer array, or i is out of range —
+ * no valid token type is negative, so -1 is unambiguous there. */
+int tnn_gguf_arr_i32(void *handle, const char *key, int i)
+{
+    if (!handle || !key || i < 0) return -1;
+    tnn_gguf_session *s = (tnn_gguf_session *)handle;
+    int64_t kid = gguf_find_key(s->gguf_ctx, key);
+    if (kid < 0) return -1;
+    if (gguf_get_kv_type(s->gguf_ctx, kid) != GGUF_TYPE_ARRAY) return -1;
+    if ((size_t)i >= gguf_get_arr_n(s->gguf_ctx, kid)) return -1;
+    const void *d = gguf_get_arr_data(s->gguf_ctx, kid);
+    if (!d) return -1;
+    switch (gguf_get_arr_type(s->gguf_ctx, kid)) {
+        case GGUF_TYPE_INT32:  return (int)((const int32_t  *)d)[i];
+        case GGUF_TYPE_UINT32: return (int)((const uint32_t *)d)[i];
+        case GGUF_TYPE_INT8:   return (int)((const int8_t   *)d)[i];
+        case GGUF_TYPE_UINT8:  return (int)((const uint8_t  *)d)[i];
+        case GGUF_TYPE_INT16:  return (int)((const int16_t  *)d)[i];
+        case GGUF_TYPE_UINT16: return (int)((const uint16_t *)d)[i];
+        default: return -1;
+    }
+}
+
 /* Helper: locate the raw bytes of a GGUF tensor in the mmap'd file.
  * No dequant — caller wants the on-disk type preserved (Phase 3 of
  * memory-design.md: Q8 stays Q8 in memory). Phase 2: the bytes live

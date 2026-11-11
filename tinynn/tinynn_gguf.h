@@ -51,6 +51,8 @@ int    tnn_gguf_is_native_layout(void *handle);
  * returns NULL on bounds error or non-string-typed array. */
 int         tnn_gguf_arr_n  (void *handle, const char *key);
 const char *tnn_gguf_arr_str(void *handle, const char *key, int i);
+/* Integer array element (tokenizer.ggml.token_type); -1 if absent. */
+int    tnn_gguf_arr_i32(void *handle, const char *key, int i);
 
 /* Phase 2 BYO-pointer mmap accessors. Used to wire weight tensors to
  * point at file pages via tnn_session_attach_weight_mmap. */

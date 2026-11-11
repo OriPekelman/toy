@@ -79,6 +79,22 @@ toy-infer: prompt 362 tokens + n 80 exceeds context 256 (raise it with --ctx / C
 `toy eval` takes no `--ctx`: it scores a fixed 3-token prefill and cannot
 overflow.
 
+**Special tokens in `--prompt`.** A special token written out in the prompt —
+`<|im_start|>`, `<|im_end|>`, `<tool_call>` — is encoded as its single id, so a
+chat-formatted prompt can be passed as text:
+
+```
+toy infer model.gguf --prompt $'<|im_start|>user\nBonjour<|im_end|>\n<|im_start|>assistant\n'
+```
+
+Which strings count comes from the GGUF: the entries `tokenizer.ggml.token_type`
+marks control (3) or user-defined (4), which is what both the Toy converter and
+llama.cpp's write. The ids match HuggingFace's tokenizer (`make
+gate-special-tokens`). A GGUF without that array has no special tokens and
+tokenizes as before. In Ruby, `Tokenizer#encode` parses them and
+`Tokenizer#encode_plain` does not — use the latter for text that must not be
+able to spell a control token.
+
 ### `train <recipe> [--steps N] [--seed S] [--arch llama|gpt2] [--device cpu|cuda|metal] [--out DIR] [--json]`
 
 Train a model and record a run bundle. `<recipe>` is required.
