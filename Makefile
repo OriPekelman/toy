@@ -27,7 +27,16 @@
 # exists (gx10), falling back to ~/sites/spinel (which the guard then
 # vets by rev, NOT by path — a Mac clone at the pin passes).
 PINNED_SPINEL := 2814693f
-SPINEL_DIR  ?= $(firstword $(wildcard /srv/data/scratch/spinel-$(PINNED_SPINEL)) $(HOME)/sites/spinel)
+# An EMPTY SPINEL_DIR is treated as unset. `?=` alone is not enough: it
+# only assigns when the variable is undefined, and a dozen gate scripts
+# forward `"SPINEL_DIR" => ENV["SPINEL_DIR"].to_s` to their child make —
+# which is "" when the caller never exported one. That used to be
+# invisible because exporting SPINEL_DIR was mandatory on this box; with
+# a default that works on its own, "" reached the pin guard as
+# SPINEL_DIR= "at 'unknown'" and failed the leg.
+ifeq ($(strip $(SPINEL_DIR)),)
+override SPINEL_DIR := $(firstword $(wildcard /srv/data/scratch/spinel-$(PINNED_SPINEL)) $(HOME)/sites/spinel)
+endif
 SPINEL_BIN  ?= $(SPINEL_DIR)/spinel
 
 SPINEL_ACTUAL := $(shell git -C $(SPINEL_DIR) rev-parse --short=8 HEAD 2>/dev/null || echo unknown)
