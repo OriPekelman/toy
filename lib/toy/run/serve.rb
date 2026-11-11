@@ -11,7 +11,8 @@
 # CONTROLLED ENV contract (read from ENV only -- `toy serve` sets these):
 #   MODEL_PATH   path to the GGUF (default data/smollm2-135m-native.gguf)
 #   MODEL_NAME   user-facing label (default = GGUF basename minus .gguf)
-#   MAX_T        KV-cache context (default 256)
+#   MAX_T        KV-cache context (default: GGUF context_length clamped
+#                to [256, 4096]; `toy serve --ctx N` sets it — toy#207)
 #   PORT         TCP port to bind (NEW -- replaces the old ARGV -p parse;
 #                `toy serve` owns the CLI UX now). Default 4567.
 #

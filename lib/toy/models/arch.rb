@@ -163,26 +163,20 @@ class Arch
       return nil
     end
 
-    # Llama-family GGUF keys are the canonical scalar metadata (the
-    # converter writes "llama.*" for SmolLM2/TinyLlama/Qwen2.5/Llama3
-    # alike). Read once and reuse.
-    # M2.3: support multiple arch prefixes (llama.* OR olmoe.* OR …).
-    # Probe embedding_length (present in every arch); whichever
-    # resolves wins. vocab_size isn't reliable — some archs (OLMoE)
-    # omit it and rely on the tokenizer.ggml.tokens array length.
-    arch_prefix = "llama"
-    if TinyNN.tnn_gguf_get_u32(handle, "llama.embedding_length") < 0
-      if TinyNN.tnn_gguf_get_u32(handle, "olmoe.embedding_length") >= 0
-        arch_prefix = "olmoe"
-      elsif TinyNN.tnn_gguf_get_u32(handle, "gemma2.embedding_length") >= 0
-        arch_prefix = "gemma2"
-      elsif TinyNN.tnn_gguf_get_u32(handle, "qwen3moe.embedding_length") >= 0
-        arch_prefix = "qwen3moe"
-      elsif TinyNN.tnn_gguf_get_u32(handle, "qwen2moe.embedding_length") >= 0
-        arch_prefix = "qwen2moe"
-      elsif TinyNN.tnn_gguf_get_u32(handle, "deepseek2.embedding_length") >= 0
-        arch_prefix = "deepseek2"
-      end
+    # Which "<prefix>.*" namespace the scalar metadata lives under is
+    # decided in the shim (tnn_gguf_arch_prefix, toy#203), shared with
+    # the loader: the families this engine models, which now include
+    # llama.cpp's own qwen2.* / qwen3.* naming.
+    arch_prefix = TinyNN.tnn_gguf_arch_prefix(handle)
+    if arch_prefix.length == 0
+      ga = TinyNN.tnn_gguf_get_str(handle, "general.architecture")
+      ga_s = ga == nil ? "(absent)" : ga
+      puts "Arch.from_gguf: " + path + ": unsupported architecture — " +
+           "general.architecture=" + ga_s + ", and none of llama / olmoe / gemma2 / " +
+           "qwen3moe / qwen2moe / deepseek2 / qwen2 / qwen3 .embedding_length is present. " +
+           "This runner models llama-family graphs only."
+      TinyNN.tnn_gguf_free(handle)
+      return nil
     end
     vocab    = TinyNN.tnn_gguf_get_u32(handle, arch_prefix + ".vocab_size")
     if vocab < 0
@@ -201,6 +195,18 @@ class Arch
     rms_eps   = TinyNN.tnn_gguf_get_f32(handle, arch_prefix + ".attention.layer_norm_rms_epsilon")
     # Prefer explicit key_length (MLA / Qwen3 set head_dim ≠ d_model/n_q).
     d_head    = TinyNN.tnn_gguf_get_u32(handle, arch_prefix + ".attention.key_length")
+    # toy#203: fail loud BEFORE anything builds a graph. A dimension that
+    # read back as -1 used to flow straight into the engine and surface
+    # as a ggml assert ("tensor buffer not set") with no mention of the
+    # metadata. Checked ahead of the d_head fallback, which divides.
+    if d_model <= 0 || n_layers <= 0 || n_q <= 0 || d_ff <= 0
+      puts "Arch.from_gguf: " + path + ": incomplete " + arch_prefix + ".* metadata — " +
+           "embedding_length=" + d_model.to_s + " block_count=" + n_layers.to_s +
+           " attention.head_count=" + n_q.to_s + " feed_forward_length=" + d_ff.to_s +
+           " (every one must be > 0)."
+      TinyNN.tnn_gguf_free(handle)
+      return nil
+    end
     if d_head <= 0
       d_head = d_model / n_q
     end

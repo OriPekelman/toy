@@ -1,4 +1,4 @@
-# lib/toy/core/cli/serve.rb — `toy serve <model.gguf> [--port N] [--name NAME]`.
+# lib/toy/core/cli/serve.rb — `toy serve <model.gguf> [--port N] [--name NAME] [--ctx N]`.
 #
 # Serve a GGUF model over an OpenAI-compatible HTTP API (CPU). CRuby ONLY
 # (the CLI shell) — NO Spinel. Follows the infer/train/eval run-flow for
@@ -47,6 +47,7 @@ module Toy
           @argv = argv
           @model = nil
           @port = DEFAULT_PORT
+          @ctx = nil
           @name = nil
         end
 
@@ -112,11 +113,12 @@ module Toy
           # The controlled env hash is exec's first positional arg — the
           # caller's stale MODEL_PATH/MODEL_NAME/PORT can never leak in.
           # Control never returns past this line.
-          Kernel.exec(
-            { "MODEL_PATH" => path, "MODEL_NAME" => name, "PORT" => @port.to_s,
-              "TOY_RUN_DIR" => run_dir, "TOY_RUN_ID" => run_id },
-            runner
-          )
+          serve_env = { "MODEL_PATH" => path, "MODEL_NAME" => name, "PORT" => @port.to_s,
+                        "TOY_RUN_DIR" => run_dir, "TOY_RUN_ID" => run_id }
+          # toy#207: only when asked for — unset, the runner derives the
+          # context from the GGUF (context_length clamped to [256, 4096]).
+          serve_env["MAX_T"] = @ctx.to_s if @ctx
+          Kernel.exec(serve_env, runner)
         end
 
         private
@@ -165,6 +167,20 @@ module Toy
           while i < @argv.length
             tok = @argv[i]
             case tok
+            when "--ctx"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--ctx requires a value") if val.nil?
+              unless val =~ /\A\d+\z/ && val.to_i > 0
+                return bad_arg("--ctx must be a positive integer, got #{val.inspect}")
+              end
+              @ctx = val.to_i
+            when /\A--ctx=(.*)\z/
+              val = $1
+              unless val =~ /\A\d+\z/ && val.to_i > 0
+                return bad_arg("--ctx must be a positive integer, got #{val.inspect}")
+              end
+              @ctx = val.to_i
             when "--port"
               i += 1
               val = @argv[i]

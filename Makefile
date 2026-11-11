@@ -662,6 +662,25 @@ endif
 gate-moe-kquant:
 	ruby prep/moe_kquant_gate.rb
 
+# llama.cpp-labelled GGUF gate (toy#203): a file written by llama.cpp's own
+# converter (qwen2.* keys, native layout, no toy.ggml_native) must resolve
+# its dimensions AND decode the same ids as its source. Compares IDS, not
+# "it loaded": the prefix fix alone still sent such a file down the legacy
+# transposing loader, which generates plausible wrong tokens with exit 0.
+# The fixture is manufactured at gate time by prep/gguf_relabel.rb from
+# data/smollm2-135m-native.gguf — nothing new is committed or downloaded.
+.PHONY: gate-llamacpp-gguf
+gate-llamacpp-gguf:
+	ruby prep/llamacpp_gguf_gate.rb
+
+# Context-length gate (toy#207): the KV-cache context comes from --ctx /
+# CTX= or the GGUF's context_length (clamped to [256, 4096]) instead of a
+# literal 256; output must not depend on it; and prompt + n past it is a
+# plain error before decode rather than a ggml view assert mid-prefill.
+.PHONY: gate-context
+gate-context:
+	ruby prep/context_gate.rb
+
 # Qwen3-MoE (qwen3moe arch) inference gate — Phase 1 routing variants
 # (arch-prefix load + separate expert_ff + norm_topk renorm). Model-gated
 # (~18 GB Qwen3-30B-A3B Q4_K_M, gitignored); SKIPs loudly when absent.
