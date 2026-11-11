@@ -536,6 +536,8 @@ module TinyNN
   ffi_func :tnn_gguf_get_f32,               [:ptr, :str],     :double
   ffi_func :tnn_gguf_get_bool,              [:ptr, :str],     :int
   ffi_func :tnn_gguf_get_str,               [:ptr, :str],     :str
+  ffi_func :tnn_gguf_arch_prefix,           [:ptr],           :str
+  ffi_func :tnn_gguf_is_native_layout,      [:ptr],           :int
   ffi_func :tnn_gguf_arr_n,                 [:ptr, :str],     :int
   ffi_func :tnn_gguf_arr_str,               [:ptr, :str, :int], :str
   ffi_func :tnn_gguf_mmap_base,             [:ptr],           :ptr

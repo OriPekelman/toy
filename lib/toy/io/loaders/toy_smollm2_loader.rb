@@ -174,26 +174,13 @@ module GGUFLoad
     end
   end
 
-  # Detect the GGUF arch-metadata prefix by probing <arch>.embedding_length
-  # (present in every arch; the general.architecture key is unreliable). Each
-  # family uses a unique prefix, so order only disambiguates. Extend this list
-  # as MoE/other families are added (roadmap: qwen3moe / deepseek2 / …).
+  # The GGUF arch-metadata prefix ("llama", "olmoe", "qwen2", ...).
+  # Resolved in ONE place — tnn_gguf_arch_prefix in the shim (toy#203),
+  # shared with Arch.from_gguf, which used to carry its own copy of this
+  # probe list and drift from it. "" when nothing resolves; every read
+  # under it then misses, and Arch.from_gguf is where that fails loud.
   def self.detect_arch_prefix(handle)
-    ap = "llama"
-    if TinyNN.tnn_gguf_get_u32(handle, "llama.embedding_length") < 0
-      if TinyNN.tnn_gguf_get_u32(handle, "olmoe.embedding_length") >= 0
-        ap = "olmoe"
-      elsif TinyNN.tnn_gguf_get_u32(handle, "gemma2.embedding_length") >= 0
-        ap = "gemma2"
-      elsif TinyNN.tnn_gguf_get_u32(handle, "qwen3moe.embedding_length") >= 0
-        ap = "qwen3moe"
-      elsif TinyNN.tnn_gguf_get_u32(handle, "qwen2moe.embedding_length") >= 0
-        ap = "qwen2moe"
-      elsif TinyNN.tnn_gguf_get_u32(handle, "deepseek2.embedding_length") >= 0
-        ap = "deepseek2"
-      end
-    end
-    ap
+    TinyNN.tnn_gguf_arch_prefix(handle)
   end
 
   # norm_topk_prob: whether the routed-expert combine weights are renormalized
@@ -661,7 +648,7 @@ module GGUFLoad
       puts "open failed: " + path
       return false
     end
-    is_native = TinyNN.tnn_gguf_get_bool(handle, "toy.ggml_native") == 1
+    is_native = TinyNN.tnn_gguf_is_native_layout(handle) == 1
     TinyNN.tnn_gguf_free(handle)
     if is_native
       load_kv_cache_directly_native(kv_cache, path)

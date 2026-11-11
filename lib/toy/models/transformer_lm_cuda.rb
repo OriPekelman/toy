@@ -51,7 +51,7 @@ class ToyLMCuda
     probe = TinyNNCuda.tnn_gguf_load(path)
     is_native = false
     if probe != nil
-      is_native = (TinyNNCuda.tnn_gguf_get_bool(probe, "toy.ggml_native") == 1)
+      is_native = (TinyNNCuda.tnn_gguf_is_native_layout(probe) == 1)
       TinyNNCuda.tnn_gguf_free(probe)
     end
 

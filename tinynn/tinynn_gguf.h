@@ -42,6 +42,10 @@ int    tnn_gguf_get_bool(void *handle, const char *key);
 /* String metadata: returns NULL if key missing / not a string. The
  * returned pointer is owned by ggml; do not free. */
 const char *tnn_gguf_get_str(void *handle, const char *key);
+/* toy#203: resolved "<prefix>.*" metadata namespace, "" if none. */
+const char *tnn_gguf_arch_prefix(void *handle);
+/* toy#203: 1 if weights are ggml-native layout (flag OR stored shape). */
+int    tnn_gguf_is_native_layout(void *handle);
 
 /* Array metadata. n() returns -1 on missing / non-array. arr_str()
  * returns NULL on bounds error or non-string-typed array. */
