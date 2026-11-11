@@ -42,11 +42,18 @@ module Toy
       # xorshift64 stream from `seed`.
       def self.fill(n, seed, dist_code, sigma)
         a = [0.0]; a.pop
+        # The xorshift steps below mask the operand BEFORE shifting
+        # (35 bits << 13, 31 bits << 17 — both land in 48). `s` is up to
+        # 53 bits here, so the plain `(s << 17) & mask` needs 70: CRuby
+        # goes through a bignum, the old spinel pin wrapped at 64 and the
+        # mask hid it, and spinel 2026.10.25 raises RangeError ("integer
+        # overflow in <<"). All three agree on the masked form, bit for
+        # bit, so every recorded B stream is unchanged.
         s = (seed * 2654435761) % 9007199254740881
         if s <= 0; s = seed + 7; end
         i = 0
         while i < n
-          s ^= (s << 13) & 0xFFFFFFFFFFFF; s ^= (s >> 7); s ^= (s << 17) & 0xFFFFFFFFFFFF
+          s ^= ((s & 0x7FFFFFFFF) << 13) & 0xFFFFFFFFFFFF; s ^= (s >> 7); s ^= ((s & 0x7FFFFFFF) << 17) & 0xFFFFFFFFFFFF
           u1 = ((s % 1000003).to_f + 1.0) / 1000004.0
           if dist_code == DIST_UNIFORM
             a.push((u1 * 2.0 - 1.0) * sigma)
@@ -57,7 +64,7 @@ module Toy
               a.push(sigma)
             end
           else
-            s ^= (s << 13) & 0xFFFFFFFFFFFF; s ^= (s >> 7); s ^= (s << 17) & 0xFFFFFFFFFFFF
+            s ^= ((s & 0x7FFFFFFFF) << 13) & 0xFFFFFFFFFFFF; s ^= (s >> 7); s ^= ((s & 0x7FFFFFFF) << 17) & 0xFFFFFFFFFFFF
             u2 = ((s % 1000003).to_f + 1.0) / 1000004.0
             g = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(6.283185307179586 * u2)
             a.push(g * sigma)

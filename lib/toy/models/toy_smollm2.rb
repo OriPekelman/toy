@@ -112,6 +112,13 @@ module Toy
     def self.compute_llama3_freq_factors(d_head, freq_base,
                                          orig_max_pos, factor,
                                          low_freq, high_freq)
+      # A program that requires the engines but never builds one (the
+      # compute-surface smoke) leaves @rope_base nil-only, and from
+      # spinel 2026.10.25 that tracked nil reaching `freq_base ** ...`
+      # is a compile REFUSAL. Guard, loudly — never default a rope base.
+      if freq_base == nil
+        raise ArgumentError, "compute_llama3_freq_factors: freq_base is nil"
+      end
       n = d_head / 2
       omp_f         = orig_max_pos.to_f
       low_wavelen   = omp_f / low_freq

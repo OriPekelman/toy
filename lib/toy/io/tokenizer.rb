@@ -143,7 +143,14 @@ class Tokenizer
     if c < 0x800
       b1 = (0xC0 | (c >> 6)).chr
       b2 = (0x80 | (c & 0x3F)).chr
-      return b1 + b2
+      # Integer#chr above 0x7F is a BINARY one-byte string, so b1 + b2
+      # is two binary bytes that do not equal (or hash like) the UTF-8
+      # char they spell — which is what CRuby has always said, and what
+      # spinel says from 2026.10.25. The old pin treated the pair as one
+      # char, and the whole GPT-2 byte map silently depended on that:
+      # without the retag every Ġ lookup misses and text decodes as
+      # "Onceuponatime:?The?time". Same bytes, UTF-8 label.
+      return (b1 + b2).force_encoding("UTF-8")
     end
     "?"
   end
@@ -190,7 +197,8 @@ class Tokenizer
       end
       j = j + 1
     end
-    out
+    # Assembled byte by byte (binary); it IS UTF-8 text. See cp_to_utf8.
+    out.force_encoding("UTF-8")
   end
 
   # T1.3: SentencePiece decode. Concatenate token strings; replace ▁
@@ -244,7 +252,8 @@ class Tokenizer
       end
       i = i + 1
     end
-    out
+    # Assembled byte by byte (binary); it IS UTF-8 text. See cp_to_utf8.
+    out.force_encoding("UTF-8")
   end
 
   # ASCII hex char → 0..15. Caller has already verified it's a hex
@@ -390,6 +399,9 @@ class Tokenizer
       end
       tb = tb + 1
     end
+    # Built bytewise: retag so .chars walks CHARACTERS, not raw bytes
+    # (a non-ASCII char would otherwise never match a vocab piece).
+    pre = pre.force_encoding("UTF-8")
 
     pieces = pre.chars
     # Byte-fallback for any char not in vocab. UTF-8 chars are
@@ -497,6 +509,8 @@ class Tokenizer
       end
       tb = tb + 1
     end
+    # Built bytewise: retag so .chars below really is character-wise.
+    prepared = prepared.force_encoding("UTF-8")
 
     # Greedy longest-match. Walk character-by-character (NOT byte-by-
     # byte — multi-byte UTF-8 like ▁ must be intact for vocab lookup).

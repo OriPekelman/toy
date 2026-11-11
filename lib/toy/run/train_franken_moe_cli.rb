@@ -1620,9 +1620,20 @@ module Toy
           end
 
           ids = [1, 2, 3, 4]
+          # The built-in overfit batch is FOUR tokens. With --context > 4
+          # the loop below used to read ids[4..] out of range: the old
+          # spinel pin returned whatever sat past the array, so the
+          # no-corpus labels were garbage, and spinel 2026.10.25 raises
+          # (as CRuby would). With a corpus the batch is replaced at step
+          # 0, so only the in-range prefix is filled here; without one
+          # there is no defined batch that wide, and it says so.
+          if corpus_s.length == 0 && tv > ids.length
+            puts "toy-train-franken-moe: the built-in batch is " + ids.length.to_s + " tokens; --context " + tv.to_s + " needs --corpus"
+            return 1
+          end
           labels = zeros(vocabv * tv)
           tt = 0
-          while tt < tv
+          while tt < tv && tt < ids.length
             tgt = (ids[tt] + 1) % vocabv
             labels[tgt + vocabv * tt] = 1.0
             tt = tt + 1
