@@ -1,5 +1,6 @@
 #include "tinynn_ggml.h"
 #include "tinynn_trace.h"
+#include "tinynn_gguf.h"   /* TNN_GGUF_MMAP_TAIL */
 #include "ggml.h"
 #include "ggml-backend.h"
 #include "ggml-cpu.h"
@@ -599,6 +600,15 @@ int tnn_session_attach_weight_mmap(void *sess, void *base, size_t size)
                     s->engine->backend_name[0] == 'c' &&
                     s->engine->backend_name[1] == 'u');
     if (is_cuda) {
+        /* Register the zero tail too (TNN_GGUF_MMAP_TAIL, see
+         * tinynn_gguf.h): ggml-cuda's padded size for a quantized tensor
+         * with ne0 % 512 != 0 runs up to 544 bytes past the tensor, and
+         * for the last tensor in the file that is past `size`. With the
+         * tail inside the buffer, ggml_backend_tensor_alloc's range
+         * check passes and the kernel's over-read stays in mapped,
+         * registered, zero memory (toy#205). `base` MUST come from
+         * tnn_gguf_mmap_base — that is what guarantees the tail. */
+        size = size + TNN_GGUF_MMAP_TAIL;
         s->weights_buf_mmap = tnn_cuda_buffer_from_ptr_internal(base, size, 0);
         if (!s->weights_buf_mmap) return -2;  /* CUDA archive not linked / GPU error */
     } else {

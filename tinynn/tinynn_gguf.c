@@ -22,7 +22,8 @@ typedef struct {
     struct ggml_context *ggml_ctx;   /* tensors have NULL data with no_alloc */
     int    fd;                       /* -1 for "empty" sessions */
     void  *map;                      /* NULL if no mmap (empty session) */
-    size_t map_size;
+    size_t map_size;                 /* file size */
+    size_t map_len;                  /* mapped length: file + zero tail */
     size_t data_offset;              /* gguf data section start, absolute */
 } tnn_gguf_session;
 
@@ -43,8 +44,32 @@ void *tnn_gguf_load(const char *path)
         close(fd); gguf_free(gctx); if (ggml_ctx) ggml_free(ggml_ctx); return NULL;
     }
     size_t fsize = (size_t)st.st_size;
-    void *map = mmap(NULL, fsize, PROT_READ, MAP_PRIVATE, fd, 0);
+    /* Map the file with a readable ZERO TAIL after it (toy#205).
+     *
+     * ggml-cuda sizes a quantized tensor whose row width is not a
+     * multiple of 512 as its bytes PLUS up to one padding row segment
+     * (MATRIX_ROW_PADDING; at most 544 bytes for Q8_0), because its
+     * matmul kernels may read that far past the last row. Mid-file the
+     * extra bytes are just the next tensor. For the LAST tensor in the
+     * file they are past EOF: ggml_backend_tensor_alloc's range check
+     * aborted the load (Qwen2.5-0.5B Q8, d_ff 4864; a pruned student,
+     * d_ff 9472), and without the check the kernel would read off the
+     * end of the mapping.
+     *
+     * So reserve [file rounded up to a page] + TNN_GGUF_MMAP_TAIL of
+     * anonymous zero pages and map the file over the front of it. The
+     * bytes after EOF up to the page boundary are zero by POSIX, the
+     * rest are the anonymous pages. tnn_gguf_mmap_size still reports
+     * the FILE size; the tail is a guarantee about what follows it. */
+    size_t page    = (size_t)sysconf(_SC_PAGESIZE);
+    size_t map_len = ((fsize + page - 1) / page) * page + TNN_GGUF_MMAP_TAIL;
+    void *resv = mmap(NULL, map_len, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (resv == MAP_FAILED) {
+        close(fd); gguf_free(gctx); if (ggml_ctx) ggml_free(ggml_ctx); return NULL;
+    }
+    void *map = mmap(resv, fsize, PROT_READ, MAP_PRIVATE | MAP_FIXED, fd, 0);
     if (map == MAP_FAILED) {
+        munmap(resv, map_len);
         close(fd); gguf_free(gctx); if (ggml_ctx) ggml_free(ggml_ctx); return NULL;
     }
     /* Hint the kernel that we'll touch most pages once. Keeps the
@@ -59,7 +84,7 @@ void *tnn_gguf_load(const char *path)
 
     tnn_gguf_session *s = (tnn_gguf_session *)calloc(1, sizeof(*s));
     if (!s) {
-        munmap(map, fsize); close(fd);
+        munmap(map, map_len); close(fd);
         gguf_free(gctx); if (ggml_ctx) ggml_free(ggml_ctx);
         return NULL;
     }
@@ -68,6 +93,7 @@ void *tnn_gguf_load(const char *path)
     s->fd          = fd;
     s->map         = map;
     s->map_size    = fsize;
+    s->map_len     = map_len;
     s->data_offset = gguf_get_data_offset(gctx);
     return s;
 }
@@ -87,7 +113,7 @@ void tnn_gguf_free(void *handle)
 {
     if (!handle) return;
     tnn_gguf_session *s = (tnn_gguf_session *)handle;
-    if (s->map) munmap(s->map, s->map_size);
+    if (s->map) munmap(s->map, s->map_len);
     if (s->fd > 0) close(s->fd);
     if (s->ggml_ctx) ggml_free(s->ggml_ctx);
     if (s->gguf_ctx) gguf_free(s->gguf_ctx);
