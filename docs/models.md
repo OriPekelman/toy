@@ -65,9 +65,8 @@ zero tail, and these files load on CUDA and decode the CPU's ids
 `--ggml-native --quantize q8_0` loads on CUDA but decodes different ids
 from the CPU, which agrees with F32. The legacy-layout Q8 of the same
 model is correct on CUDA, and so is the native file with any single
-tensor quantized, so the Q8 ✓ in the SmolLM2 row holds for the legacy
-file only. The runner from before toy#205 behaves the same. Cause not
-yet known.
+tensor quantized. The runner from before toy#205 behaves the same.
+Cause not yet known.
 
 ※ These cells used to read ✗: Qwen3 CUDA decode was degenerate while
 CPU was coherent (caught by the 2026-06-11 re-verification, toy#76).
