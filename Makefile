@@ -681,6 +681,14 @@ gate-llamacpp-gguf:
 gate-context:
 	ruby prep/context_gate.rb
 
+# Q8-at-end-of-file gate (toy#205, CUDA): a GGUF whose LAST tensor is
+# quantized with a row width that is not a multiple of 512 must load on
+# CUDA (ggml-cuda's row padding ran past EOF and aborted the load) and
+# decode the CPU's ids. Fixture manufactured by gguf_relabel.rb --q8-last.
+.PHONY: gate-q8-tail-cuda
+gate-q8-tail-cuda:
+	ruby prep/q8_tail_gate.rb
+
 # Special-token gate (toy#208): "<|im_start|>" written in prompt text must
 # encode to its ONE id (GGUF token_type CONTROL / USER_DEFINED), not to BPE
 # pieces. Expected ids are HuggingFace tokenizers output, not toy's own.

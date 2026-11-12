@@ -51,6 +51,16 @@ current ggml pin (`41e7949`) that restriction no longer reproduces:
 Qwen2.5-1.5B/3B Q8 run on CUDA and decode token-identical to the CPU
 Q8 and F32 paths (re-verified 2026-06-11).
 
+One case of it did remain until toy#205: a file whose **last** tensor
+is quantized with a row width that is not a multiple of 512 aborted at
+load on CUDA (`ggml-backend.cpp: GGML_ASSERT(… get_alloc_size …)`).
+ggml-cuda may read up to one padding row segment past such a tensor;
+mid-file that is the next tensor, at the end of the file it was past
+the mapping. Qwen2.5-0.5B Q8 (`d_ff` 4864) and a pruned model with
+`d_ff` 9472 hit it. Every GGUF is now mapped with a
+zero tail, and these files load on CUDA and decode the CPU's ids
+(`make gate-q8-tail-cuda`).
+
 ※ These cells used to read ✗: Qwen3 CUDA decode was degenerate while
 CPU was coherent (caught by the 2026-06-11 re-verification, toy#76).
 Root cause was toy-side, not a ggml kernel: the hand-written CUDA

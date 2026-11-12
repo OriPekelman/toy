@@ -56,6 +56,12 @@ int    tnn_gguf_arr_i32(void *handle, const char *key, int i);
 
 /* Phase 2 BYO-pointer mmap accessors. Used to wire weight tensors to
  * point at file pages via tnn_session_attach_weight_mmap. */
+/* The mapping returned by tnn_gguf_mmap_base is followed by at least
+ * this many readable ZERO bytes past tnn_gguf_mmap_size (the file size).
+ * ggml-cuda reads up to one padding row segment past a quantized tensor
+ * (<= 544 bytes); for the last tensor in the file that lands here
+ * instead of off the end of the mapping (toy#205). */
+#define TNN_GGUF_MMAP_TAIL 4096
 void  *tnn_gguf_mmap_base(void *handle);
 size_t tnn_gguf_mmap_size(void *handle);
 size_t tnn_gguf_tensor_file_offset(void *handle, int i);
