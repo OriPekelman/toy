@@ -61,6 +61,14 @@ the mapping. Qwen2.5-0.5B Q8 (`d_ff` 4864) and a pruned model with
 zero tail, and these files load on CUDA and decode the CPU's ids
 (`make gate-q8-tail-cuda`).
 
+**Open (found 2026-11-12, not fixed):** SmolLM2-135M converted with
+`--ggml-native --quantize q8_0` loads on CUDA but decodes different ids
+from the CPU, which agrees with F32. The legacy-layout Q8 of the same
+model is correct on CUDA, and so is the native file with any single
+tensor quantized, so the Q8 ✓ in the SmolLM2 row holds for the legacy
+file only. The runner from before toy#205 behaves the same. Cause not
+yet known.
+
 ※ These cells used to read ✗: Qwen3 CUDA decode was degenerate while
 CPU was coherent (caught by the 2026-06-11 re-verification, toy#76).
 Root cause was toy-side, not a ggml kernel: the hand-written CUDA
@@ -135,6 +143,44 @@ Arch.from_gguf: model.gguf: unsupported architecture — general.architecture=gp
 and a file whose prefix resolves but whose `embedding_length`,
 `block_count`, `attention.head_count` or `feed_forward_length` is
 missing is refused the same way, listing the four values.
+
+## Converting a checkpoint
+
+`prep/convert_smollm2_to_gguf.py` converts a llama-family checkpoint
+(Llama, SmolLM2, Qwen2.x, Qwen3) from a HuggingFace repo or from a local
+directory:
+
+```
+uv run --script prep/convert_smollm2_to_gguf.py \
+    --model-dir /path/to/checkpoint --ggml-native --with-tokenizer \
+    --quantize q8_0 --quantize-embd --out model-q8.gguf
+```
+
+- **`--model-dir`** reads `config.json`, `model.safetensors` (or
+  `model.safetensors.index.json` and its shards) and, with
+  `--with-tokenizer`, `tokenizer.json`, `tokenizer_config.json` and
+  `chat_template.jinja`. Nothing is downloaded, so a pruned or
+  fine-tuned model converts without being published. Shapes come from
+  the config. `--repo-id` is the HuggingFace path, as before.
+- **RoPE base.** Read from top-level `rope_theta`, or from
+  `rope_parameters.rope_theta`, which is where transformers 5 writes it.
+  A config with neither is refused; `--rope-theta <base>` states it.
+  Before toy#204 the second form was not read and the file got
+  `rope.freq_base = 10000`, which decodes plausible wrong text.
+- **`--quantize q8_0|q4_0|q5_0`** quantizes the 2-D weights, including
+  an untied `output.weight`. `token_embd.weight` stays F32 unless
+  **`--quantize-embd`** is also given.
+
+On the 3.98 B student above, `--quantize q8_0` gives 5.83 GB and adding
+`--quantize-embd` gives 4.23 GB, the size of the llama.cpp Q8_0. 266 of
+its 267 tensors are byte-identical to the llama.cpp file; `token_embd`
+differs only in blocks whose scale is zero (never-trained rows), which
+dequantize to zero in both. Greedy ids are the same from both files, on
+CPU and CUDA. The conversion holds the whole checkpoint in memory: about
+20 GB resident for that 8 GB BF16 checkpoint.
+
+`make gate-converter` covers the above on a tiny random checkpoint built
+at gate time.
 
 ## Tokenizer / RoPE coverage
 

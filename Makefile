@@ -697,6 +697,16 @@ gate-q8-tail-cuda:
 gate-special-tokens:
 	ruby prep/special_tokens_gate.rb
 
+# Converter gate (toy#204): prep/convert_smollm2_to_gguf.py converts a LOCAL
+# checkpoint directory (--model-dir), takes the rope base from the
+# transformers-5 `rope_parameters` form as well as top-level `rope_theta`
+# (it silently wrote 10000), refuses when the config states none, and can
+# quantize token_embd (--quantize-embd). The checkpoint is a tiny random
+# one built at gate time; the produced files are decoded by toy-infer.
+.PHONY: gate-converter
+gate-converter:
+	uv run --script prep/converter_gate.py
+
 # Qwen3-MoE (qwen3moe arch) inference gate — Phase 1 routing variants
 # (arch-prefix load + separate expert_ff + norm_topk renorm). Model-gated
 # (~18 GB Qwen3-30B-A3B Q4_K_M, gitignored); SKIPs loudly when absent.

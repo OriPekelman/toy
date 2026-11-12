@@ -34,9 +34,12 @@
 #   blk.N.{attn_norm, attn_q, attn_k, attn_v, attn_output,
 #          ffn_norm, ffn_gate, ffn_up, ffn_down}.weight
 #
-# No tokenizer is embedded — tokenization happens host-side
-# (prep/encode_smollm2.py) and IDs go through the Ruby model as
-# integers. v1 simplification; the converter writes weights only.
+# The tokenizer is embedded only with --with-tokenizer.
+#
+# Source: a HuggingFace repo (--repo-id, downloaded into --cache) or a
+# local checkpoint directory (--model-dir: config.json, model.safetensors
+# or its shards, tokenizer.json), e.g. a pruned or fine-tuned model that
+# was never published (toy#204).
 
 import argparse
 import json
@@ -54,12 +57,81 @@ OUT     = Path("data/smollm2-135m-f32.gguf")
 CACHE   = Path("prep/_hf_cache")
 
 
-def is_quantizable(name: str, shape) -> bool:
+class Source:
+    """Where the checkpoint files come from: a local directory
+    (--model-dir) or a HuggingFace repo (--repo-id)."""
+
+    def __init__(self, repo_id: str, cache: str, model_dir):
+        self.repo_id = repo_id
+        self.cache = cache
+        self.model_dir = Path(model_dir) if model_dir else None
+        if self.model_dir is not None and not self.model_dir.is_dir():
+            raise SystemExit(f"--model-dir {model_dir}: not a directory")
+
+    def label(self) -> str:
+        return str(self.model_dir) if self.model_dir is not None else self.repo_id
+
+    def path(self, filename: str, required: bool = True):
+        """Path of `filename`, or None when it is absent and not required."""
+        if self.model_dir is not None:
+            p = self.model_dir / filename
+            if p.is_file():
+                return str(p)
+            if required:
+                raise SystemExit(f"--model-dir {self.model_dir}: {filename} not found")
+            return None
+        try:
+            return hf_hub_download(repo_id=self.repo_id, filename=filename,
+                                   cache_dir=self.cache)
+        except Exception:
+            if required:
+                raise
+            return None
+
+
+def read_rope(cfg: dict, override):
+    """(rope_theta, scaling dict or None) from an HF config.
+
+    transformers < 5 writes top-level `rope_theta` and `rope_scaling`.
+    transformers 5 writes one `rope_parameters` dict holding `rope_theta`,
+    `rope_type` and the scaling fields. Neither form present is an error:
+    a guessed base decodes plausible wrong text (toy#204)."""
+    rp = cfg.get("rope_parameters")
+    if not isinstance(rp, dict):
+        rp = None
+    theta = cfg.get("rope_theta")
+    if theta is None and rp is not None:
+        theta = rp.get("rope_theta")
+    if override is not None:
+        theta = override
+    if theta is None:
+        raise SystemExit(
+            "config.json has neither rope_theta nor rope_parameters.rope_theta; "
+            "pass --rope-theta <base> to state it (not defaulting to 10000)")
+    scaling = cfg.get("rope_scaling")
+    if not isinstance(scaling, dict):
+        scaling = rp
+    kind = None
+    if isinstance(scaling, dict):
+        # HF uses both "type" (older) and "rope_type" (newer Llama-3).
+        kind = scaling.get("rope_type") or scaling.get("type")
+    if kind in (None, "default"):
+        return float(theta), None
+    if kind not in ("linear", "yarn", "llama3"):
+        raise SystemExit(f"rope scaling type {kind!r} is not supported by this "
+                         "converter (linear, yarn, llama3)")
+    return float(theta), dict(scaling, rope_type=kind)
+
+
+def is_quantizable(name: str, shape, quantize_embd: bool = False) -> bool:
     """Quantize 2-D weight tensors. Keep embeddings + 1-D norms + 1-D
     biases in f32: embeddings are gathered (no matmul savings to quantize);
-    norms are tiny and quantizing hurts more than it saves."""
+    norms are tiny and quantizing hurts more than it saves.
+    --quantize-embd quantizes token_embd too, for file size."""
     if len(shape) < 2:
         return False
+    if name == "token_embd.weight" and quantize_embd:
+        return True
     if "embd" in name and "weight" in name:
         return False           # token_embd, position_embd
     if "output_norm" in name or "attn_norm" in name or "ffn_norm" in name:
@@ -67,7 +139,7 @@ def is_quantizable(name: str, shape) -> bool:
     return True
 
 
-def embed_tokenizer(w: "gguf.GGUFWriter", repo_id: str, cache: str) -> None:
+def embed_tokenizer(w: "gguf.GGUFWriter", src: "Source") -> None:
     """Pull the model's tokenizer from HF and embed vocab + merges +
     special-token IDs + chat template into the GGUF.
 
@@ -80,10 +152,9 @@ def embed_tokenizer(w: "gguf.GGUFWriter", repo_id: str, cache: str) -> None:
     from tokenizers import Tokenizer
     import tempfile
 
-    print(f"  embedding tokenizer from {repo_id}…")
+    print(f"  embedding tokenizer from {src.label()}…")
     # Locate the tokenizer.json (downloads on first run, cached after).
-    tok_path = hf_hub_download(repo_id=repo_id, filename="tokenizer.json",
-                                cache_dir=cache)
+    tok_path = src.path("tokenizer.json")
     tok = Tokenizer.from_file(tok_path)
     vocab = tok.get_vocab()        # dict[str, int]
     inv_vocab = sorted(vocab.items(), key=lambda kv: kv[1])
@@ -140,12 +211,7 @@ def embed_tokenizer(w: "gguf.GGUFWriter", repo_id: str, cache: str) -> None:
 
     # Read from tokenizer config first (canonical source); fall back
     # to common names.
-    tcfg_path = None
-    try:
-        tcfg_path = hf_hub_download(repo_id=repo_id, filename="tokenizer_config.json",
-                                     cache_dir=cache)
-    except Exception:
-        pass
+    tcfg_path = src.path("tokenizer_config.json", required=False)
 
     bos_id = eos_id = pad_id = unk_id = None
     chat_template = None
@@ -170,6 +236,13 @@ def embed_tokenizer(w: "gguf.GGUFWriter", repo_id: str, cache: str) -> None:
             elif key == "pad_token": pad_id = tid
             elif key == "unk_token": unk_id = tid
 
+    # transformers 5 saves the template beside the config instead of in it.
+    if not chat_template and src.model_dir is not None:
+        jinja_path = src.path("chat_template.jinja", required=False)
+        if jinja_path:
+            with open(jinja_path) as f:
+                chat_template = f.read()
+
     if bos_id is not None: w.add_bos_token_id(bos_id)
     if eos_id is not None: w.add_eos_token_id(eos_id)
     if pad_id is not None: w.add_pad_token_id(pad_id)
@@ -183,13 +256,26 @@ def embed_tokenizer(w: "gguf.GGUFWriter", repo_id: str, cache: str) -> None:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo-id", default=REPO_ID)
+    ap.add_argument("--model-dir", default=None,
+                    help="Convert a local checkpoint directory instead of a "
+                         "HuggingFace repo: config.json, model.safetensors "
+                         "(or model.safetensors.index.json + shards) and, "
+                         "with --with-tokenizer, tokenizer.json. Nothing is "
+                         "downloaded.")
+    ap.add_argument("--rope-theta", type=float, default=None,
+                    help="RoPE base. Overrides config.json; required when "
+                         "the config states none.")
+    ap.add_argument("--quantize-embd", action="store_true",
+                    help="With --quantize, quantize token_embd.weight too "
+                         "(it stays F32 otherwise). An untied output.weight "
+                         "is always quantized.")
     ap.add_argument("--out",     default=str(OUT))
     ap.add_argument("--cache",   default=str(CACHE))
     ap.add_argument("--quantize", choices=["", "q8_0", "q4_0", "q5_0"],
                     default="",
                     help="Quantize 2-D weight tensors (legacy quantizers via "
-                         "gguf-py). q8_0 (~4× smaller, ~1% noise), q4_0 "
-                         "(~8× smaller, ~3-5% noise), q5_0 (in between). "
+                         "gguf-py). q8_0 (~4× smaller, ~1%% noise), q4_0 "
+                         "(~8× smaller, ~3-5%% noise), q5_0 (in between). "
                          "Embeddings, biases, and norms stay f32. K-quants "
                          "(Q4_K_M etc.) need ggml's C-side quantizer.")
     ap.add_argument("--ggml-native", action="store_true",
@@ -216,29 +302,32 @@ def main():
     if args.quantize:
         qtype = qmap[args.quantize]
 
-    os.makedirs(args.cache,            exist_ok=True)
+    if args.quantize_embd and qtype is None:
+        raise SystemExit("--quantize-embd needs --quantize")
+
+    src = Source(args.repo_id, args.cache, args.model_dir)
+    if src.model_dir is None:
+        os.makedirs(args.cache,        exist_ok=True)
     os.makedirs(Path(args.out).parent, exist_ok=True)
 
-    print(f"[1/4] downloading {args.repo_id} → {args.cache}")
-    cfg_path = hf_hub_download(args.repo_id, "config.json",       cache_dir=args.cache)
+    if src.model_dir is None:
+        print(f"[1/4] downloading {args.repo_id} → {args.cache}")
+    else:
+        print(f"[1/4] reading {src.model_dir}")
+    cfg_path = src.path("config.json")
     # Larger models (≥3B) shard weights across multiple safetensors
     # with a model.safetensors.index.json that lists which key lives
     # in which shard. Try single-file first, fall back to sharded.
-    try:
-        sft_path = hf_hub_download(args.repo_id, "model.safetensors",
-                                    cache_dir=args.cache)
+    sft_path = src.path("model.safetensors", required=False)
+    if sft_path:
         shard_paths = [sft_path]
-    except Exception:
-        idx_path = hf_hub_download(args.repo_id,
-                                    "model.safetensors.index.json",
-                                    cache_dir=args.cache)
+    else:
+        idx_path = src.path("model.safetensors.index.json")
         with open(idx_path) as f:
             idx = json.load(f)
         shards = sorted(set(idx["weight_map"].values()))
         print(f"      sharded: {len(shards)} files ({', '.join(shards)})")
-        shard_paths = [hf_hub_download(args.repo_id, s,
-                                         cache_dir=args.cache)
-                        for s in shards]
+        shard_paths = [src.path(s) for s in shards]
 
     with open(cfg_path) as f:
         cfg = json.load(f)
@@ -249,7 +338,7 @@ def main():
     n_kv        = cfg["num_key_value_heads"]
     n_layer     = cfg["num_hidden_layers"]
     n_ff        = cfg["intermediate_size"]
-    rope_theta  = float(cfg.get("rope_theta", 10000.0))
+    rope_theta, rope_scaling = read_rope(cfg, args.rope_theta)
     rms_eps     = float(cfg.get("rms_norm_eps", 1e-5))
     # M1.1: prefer explicit head_dim when HF sets it (Qwen3 does:
     # head_dim=128 with hidden_size=1024 / num_heads=16 = 64 — the
@@ -265,12 +354,9 @@ def main():
     #   {"rope_type":"yarn",   "factor":..., "attn_factor":..., ...}
     # We emit the matching llama.rope.scaling.* GGUF keys so the Ruby
     # loader (SmolLM2ConfigLoader.read_rope_scaling) can dispatch.
-    rope_scaling = cfg.get("rope_scaling")
-    if isinstance(rope_scaling, dict):
-        # HF uses both "type" (older) and "rope_type" (newer Llama-3).
-        rs_kind = rope_scaling.get("rope_type") or rope_scaling.get("type")
-    else:
-        rs_kind = None
+    # transformers 5 keeps the same fields inside rope_parameters;
+    # read_rope() returns whichever form the config uses.
+    rs_kind = rope_scaling["rope_type"] if rope_scaling else None
 
     print(f"      vocab={n_vocab} ctx={n_ctx} d={n_embd} d_head={d_head} "
           f"heads={n_head} n_kv={n_kv} layers={n_layer} d_ff={n_ff} "
@@ -379,12 +465,12 @@ def main():
     # template) when --with-tokenizer. Required for Ruby-side
     # encode/decode via lib/tokenizer.rb.
     if args.with_tokenizer:
-        embed_tokenizer(w, args.repo_id, args.cache)
+        embed_tokenizer(w, src)
 
     # Quantize 2-D weight tensors when --quantize is set. add() wraps
     # w.add_tensor so quantization is transparent at the call sites.
     def add(name: str, data: np.ndarray):
-        if qtype is not None and is_quantizable(name, data.shape):
+        if qtype is not None and is_quantizable(name, data.shape, args.quantize_embd):
             try:
                 quantized_bytes = gguf.quantize(data, qtype)
                 w.add_tensor(name, quantized_bytes, raw_dtype=qtype)
