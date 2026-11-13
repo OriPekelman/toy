@@ -110,10 +110,13 @@ module Toy
         },
         "serve" => {
           class: Serve,
-          summary: "Serve a GGUF model over an OpenAI-compatible HTTP API (CPU)",
+          summary: "Serve a GGUF model over an OpenAI-compatible HTTP API",
           args:  [{ name: "model", required: true, desc: "path to a .gguf file" }],
           flags: [{ name: "--port", desc: "TCP port to bind (default 4567)" },
-                  { name: "--name", desc: "model label in /v1/models (default GGUF basename)" }]
+                  { name: "--name", desc: "model label in /v1/models (default GGUF basename)" },
+                  { name: "--ctx", desc: "context length in tokens (default: the model's, clamped to [256, 4096])" },
+                  { name: "--device", desc: "cpu (default) | cuda" },
+                  { name: "--stop-ids", desc: "extra end-of-generation token ids, comma-separated" }]
         }
       }.freeze
 

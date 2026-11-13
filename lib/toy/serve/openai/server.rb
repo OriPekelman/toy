@@ -19,6 +19,8 @@
 #                Defaults to GGUF basename minus .gguf.
 #   MAX_T        max context for the KV cache (default: the GGUF's
 #                context_length clamped to [256, 4096]; toy#207)
+#   STOP_IDS     extra end-of-generation token ids, comma-separated
+#                (`toy serve --stop-ids`; toy#209)
 #   PORT         (read in the entrypoint, not here)
 #
 # Spinel hygiene (#16): no #{} interpolation, no Struct.new, String-concat
@@ -56,7 +58,12 @@ class State
   # per-request monotonic counter the serving events emitter uses as a
   # deterministic-shaped request_id. Held on the already-CONSTANT-held STATE
   # so Spinel emits a typed slot; NO new polymorphic accessor (landmine #16).
+  # toy#209: :tok is the GGUF's embedded tokenizer (present == false when
+  # the file has none: the server then stays ids-only). :stop_ids are the
+  # end-of-generation token ids, :chat_family the template family, and
+  # :finish the finish_reason of the LAST generation ("stop" | "length").
   attr_accessor :cfg, :kv, :gguf, :model_name, :ready, :req_seq
+  attr_accessor :tok, :stop_ids, :chat_family, :finish
   def initialize
     @cfg  = nil
     @kv   = nil
@@ -64,9 +71,28 @@ class State
     @model_name = MODEL_NAME
     @ready      = false
     @req_seq    = 0
+    @tok         = nil
+    @stop_ids    = [0]
+    @stop_ids.pop
+    @chat_family = "chatml"
+    @finish      = "length"
   end
 end
 STATE = State.new
+
+# True when `id` ends generation (toy#209). Never true on a GGUF without
+# a tokenizer (no stop ids).
+def api_stop_id?(id)
+  i = 0
+  while i < STATE.stop_ids.length
+    if STATE.stop_ids[i] == id
+      return true
+    end
+    i = i + 1
+  end
+  false
+end
+
 # GH#188 -- explicit re-assignment AFTER STATE.new. State#initialize
 # captures `@model_name = MODEL_NAME` but Spinel's ivar typing
 # appears to evaluate it before the MODEL_NAME ternary resolves
@@ -96,6 +122,76 @@ puts "[openai_api_llama] realising (MAX_T=" + MAX_T.to_s + ")..."
 STATE.kv = SmolLM2KVFFICache.new
 STATE.gguf = STATE.kv.realize_and_load_auto(GGUF_PATH, MAX_T, STATE.cfg, flags)
 
+# toy#209: the embedded tokenizer, when the GGUF has one. It gives text
+# out (/v1/completions `text`), chat (/v1/chat/completions) and the stop
+# ids. Without one the server is ids-only exactly as before: no stop ids,
+# so generation runs to max_tokens.
+STATE.tok = Tokenizer.from_gguf(GGUF_PATH)
+if STATE.tok.present
+  # End-of-generation ids: the GGUF's eos plus the end-of-turn specials of
+  # the supported chat families, where the vocabulary has them.
+  if STATE.tok.eos_id >= 0
+    STATE.stop_ids.push(STATE.tok.eos_id)
+  end
+  _stop_names = ["<|im_end|>", "<|endoftext|>", "<|eot_id|>", "<|end_of_text|>", "<end_of_turn>"]
+  _sn = 0
+  while _sn < _stop_names.length
+    _sid = STATE.tok.special_id(_stop_names[_sn])
+    if _sid >= 0
+      _dup = false
+      _sj = 0
+      while _sj < STATE.stop_ids.length
+        if STATE.stop_ids[_sj] == _sid; _dup = true; end
+        _sj = _sj + 1
+      end
+      if !_dup
+        STATE.stop_ids.push(_sid)
+      end
+    end
+    _sn = _sn + 1
+  end
+  # Chat template family, from the special tokens the vocabulary carries.
+  if STATE.tok.special_id("<|im_start|>") >= 0
+    STATE.chat_family = "chatml"
+  elsif STATE.tok.special_id("<|start_header_id|>") >= 0
+    STATE.chat_family = "llama3"
+  elsif STATE.tok.special_id("<start_of_turn>") >= 0
+    STATE.chat_family = "gemma2"
+  elsif STATE.tok.spm
+    STATE.chat_family = "mistral"
+  else
+    STATE.chat_family = "chatml"
+  end
+  puts "[openai_api_llama] tokenizer: " + STATE.tok.vocab_size.to_s + " tokens, " +
+       STATE.tok.n_special.to_s + " special, " + STATE.stop_ids.length.to_s +
+       " stop id(s), chat template " + STATE.chat_family
+else
+  puts "[openai_api_llama] no embedded tokenizer: ids-only (no text, no chat, no EOS stop)"
+end
+
+# STOP_IDS: extra end-of-generation token ids, comma-separated (`toy serve
+# --stop-ids`). For a GGUF whose metadata names no eos, or a workload that
+# ends on some other token. Applies with or without a tokenizer.
+_extra_stops = (ENV["STOP_IDS"] || "").split(",")
+_es = 0
+while _es < _extra_stops.length
+  _piece = _extra_stops[_es].strip
+  if _piece.length > 0
+    _eid = _piece.to_i
+    if _eid.to_s != _piece || _eid < 0 || _eid >= STATE.cfg.vocab
+      puts "[openai_api_llama] STOP_IDS: not a token id in [0," + STATE.cfg.vocab.to_s + "): " + _piece
+      exit 1
+    end
+    if !api_stop_id?(_eid)
+      STATE.stop_ids.push(_eid)
+    end
+  end
+  _es = _es + 1
+end
+if _extra_stops.length > 0
+  puts "[openai_api_llama] stop ids: " + STATE.stop_ids.length.to_s + " (with STOP_IDS)"
+end
+
 STATE.ready = true
 puts "[openai_api_llama] ready; serving"
 
@@ -120,10 +216,20 @@ end
 # cache's t_K / t_V tensors are persistent and get overwritten in
 # place. (A future optimisation would be a fast prefix-cache for
 # shared prompts.)
-def api_generate_ids(prompt_ids, n_new)
-  out_ids = [0]
-  out_ids.pop
+def api_argmax(logits, vocab)
+  best_idx = 0
+  best_val = logits.flat[0]
+  v_iter = 1
+  while v_iter < vocab
+    val = logits.flat[v_iter]
+    if val > best_val; best_val = val; best_idx = v_iter; end
+    v_iter = v_iter + 1
+  end
+  best_idx
+end
 
+# Prefill the prompt; returns the FIRST generated token id.
+def api_first_id(prompt_ids)
   vocab = STATE.cfg.vocab
   last_logits = Mat.new(1, vocab)
   prefill_pos = 0
@@ -131,32 +237,66 @@ def api_generate_ids(prompt_ids, n_new)
     last_logits = SmolLM2KV.decode_step(STATE.kv, prompt_ids[prefill_pos], prefill_pos)
     prefill_pos = prefill_pos + 1
   end
+  api_argmax(last_logits, vocab)
+end
 
-  # First generated token comes from the last prefill step's logits.
-  best_idx = 0
-  best_val = last_logits.flat[0]
-  v_iter = 1
-  while v_iter < vocab
-    val = last_logits.flat[v_iter]
-    if val > best_val; best_val = val; best_idx = v_iter; end
-    v_iter = v_iter + 1
+# Feed `prev_id` at position `pos`; returns the next token id.
+def api_next_id(prev_id, pos)
+  api_argmax(SmolLM2KV.decode_step(STATE.kv, prev_id, pos), STATE.cfg.vocab)
+end
+
+# Generates up to `n_new` ids and stops BEFORE a stop id (which is not
+# returned). STATE.finish says which happened: "stop" or "length".
+def api_generate_ids(prompt_ids, n_new)
+  out_ids = [0]
+  out_ids.pop
+  STATE.finish = "length"
+  if n_new <= 0
+    return out_ids
   end
-  out_ids.push(best_idx)
 
-  step = 1
+  id = api_first_id(prompt_ids)
+  step = 0
   while step < n_new
-    last_logits = SmolLM2KV.decode_step(STATE.kv, out_ids[out_ids.length - 1],
-                                         prompt_ids.length + out_ids.length - 1)
-    best_idx = 0
-    best_val = last_logits.flat[0]
-    v_iter = 1
-    while v_iter < vocab
-      val = last_logits.flat[v_iter]
-      if val > best_val; best_val = val; best_idx = v_iter; end
-      v_iter = v_iter + 1
+    if api_stop_id?(id)
+      STATE.finish = "stop"
+      return out_ids
     end
-    out_ids.push(best_idx)
+    out_ids.push(id)
     step = step + 1
+    if step < n_new
+      id = api_next_id(id, prompt_ids.length + out_ids.length - 1)
+    end
   end
   out_ids
+end
+
+# Byte length of the longest prefix of `s` that does not end inside a
+# multi-byte UTF-8 character. A byte-level BPE token can end mid-character,
+# so a streamed piece is cut here and the rest waits for the next token.
+def api_utf8_safe_len(s)
+  n = s.bytesize
+  i = n - 1
+  back = 0
+  while i >= 0 && back < 4
+    b = s.getbyte(i)
+    if b < 128
+      return n
+    end
+    if b >= 192
+      need = 2
+      if b >= 240
+        need = 4
+      elsif b >= 224
+        need = 3
+      end
+      if back + 1 >= need
+        return n
+      end
+      return i
+    end
+    i = i - 1
+    back = back + 1
+  end
+  n
 end

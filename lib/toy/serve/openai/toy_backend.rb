@@ -1,9 +1,11 @@
 # lib/toy/serve/openai/toy_backend.rb -- toy's Tep::Llm::OpenAI::Backend
 # (toy#30: the hand-rolled /v1 handlers collapse onto tep's battery).
 #
-# IDs-only backend: token_ids carries the generated IDs and text stays ""
-# (tep's CompletionsHandler emits choices[0].ids when token_ids is
-# non-empty — the tep#209 contract). Constructed with (state, model_name)
+# token_ids carries the generated IDs (tep's CompletionsHandler emits
+# choices[0].ids when token_ids is non-empty — the tep#209 contract). With
+# a GGUF that embeds a tokenizer the backend is also a TEXT backend
+# (toy#209): `text` is decoded, generation stops at EOS, and chat is on.
+# Without one it is ids-only, as before. Constructed with (state, model_name)
 # so no cross-file constant resolution (same pattern as the retired
 # EmbeddingsHandler). Generation + id minting reuse the top-level helpers
 # in server.rb (api_generate_ids / api_gen_id) — the greedy argmax path
@@ -48,47 +50,170 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
     true
   end
 
+  # toy#209: chat needs the GGUF's embedded tokenizer (template text in,
+  # decoded text out). Without one /v1/chat/completions stays 501.
+  def supports_chat?
+    @state.tok.present
+  end
+
+  # /v1/completions. The prompt is token ids (tep's handler reads `prompt`
+  # as an int array only). The reply always carries choices[0].ids; when the
+  # GGUF embeds a tokenizer it also carries the decoded `text`, and
+  # generation stops at an end-of-generation token (finish_reason "stop").
   def generate_from_tokens(model, token_ids, sampling)
     comp = Tep::Llm::OpenAI::Completion.new
     comp.id = api_gen_id("cmpl")
     if token_ids.length == 0
       return comp
     end
-
-    # max_tokens: same defaults/clamps as the retired handler (0 or
-    # absent => 16; ceiling 256).
+    # max_tokens: 0 or absent => 16 (unchanged). The ceiling is the
+    # context, applied in run_generation (it was a literal 256).
     n_new = sampling.max_tokens
     if n_new <= 0; n_new = 16; end
-    if n_new > 256; n_new = 256; end
+    run_generation(comp, token_ids, n_new)
+    comp
+  end
 
-    # toy#207: the request must fit the allocated context. Before this the
-    # only check was a ggml view assert during prefill, which took the
-    # whole server down on one long prompt.
-    #   - prompt alone does not fit: nothing can be generated. tep's
-    #     backend API has no error channel (Completion carries only
-    #     finish_reason), so the reason goes there and to the log —
-    #     never a truncated prompt decoded as if it were the whole one.
-    #   - prompt fits but prompt + max_tokens does not: generate what
-    #     fits; finish_reason stays "length", which is what it means.
-    if token_ids.length >= MAX_T
-      puts "[openai_api_llama] request refused: prompt " + token_ids.length.to_s +
-           " tokens does not fit context " + MAX_T.to_s + " (start with --ctx N)"
-      comp.prompt_tokens = token_ids.length
-      comp.finish_reason = "context_length_exceeded"
+  # /v1/chat/completions (toy#209): messages -> chat template -> ids ->
+  # greedy decode to an end-of-turn token -> text.
+  def chat_completion(req)
+    comp = Tep::Llm::OpenAI::Completion.new
+    comp.id = api_gen_id("chatcmpl")
+    body = req.raw_body
+    token_ids = chat_prompt_ids(body)
+    if token_ids.length == 0
       return comp
     end
-    if token_ids.length + n_new > MAX_T
-      n_new = MAX_T - token_ids.length
+    run_generation(comp, token_ids, chat_max_tokens(body, token_ids.length))
+    # A chat reply is text; the ids stay out of the chat envelope.
+    comp.token_ids = [0]
+    comp.token_ids.delete_at(0)
+    comp
+  end
+
+  # Streaming chat: one delta per generated token, cut at UTF-8 character
+  # boundaries (a byte-level BPE token can end mid-character).
+  def chat_completion_stream(req, sink)
+    body = req.raw_body
+    token_ids = chat_prompt_ids(body)
+    if token_ids.length == 0
+      return 0
+    end
+    n_new = fit_context(token_ids.length, chat_max_tokens(body, token_ids.length))
+    if n_new <= 0
+      return 0
+    end
+    t_start = TinyNN.tnn_events_now_seconds
+    out_ids = [0]
+    out_ids.pop
+    emitted = 0
+    id = api_first_id(token_ids)
+    step = 0
+    while step < n_new
+      if api_stop_id?(id)
+        break
+      end
+      out_ids.push(id)
+      text = @state.tok.decode(out_ids)
+      safe = api_utf8_safe_len(text)
+      if safe > emitted
+        sink.emit_token(text.byteslice(emitted, safe - emitted))
+        emitted = safe
+      end
+      step = step + 1
+      if step < n_new
+        id = api_next_id(id, token_ids.length + out_ids.length - 1)
+      end
+    end
+    t_end = TinyNN.tnn_events_now_seconds
+    emit_request_event(token_ids.length, out_ids.length,
+                       ((t_end - t_start) * 1.0e6).to_i, n_new)
+    out_ids.length
+  end
+
+  # ---- shared pieces ----
+
+  # Messages -> template text -> ids. Empty when the body has no messages.
+  def chat_prompt_ids(body)
+    msgs  = Tep::Llm::OpenAI.parse_messages(body)
+    pairs = [["", ""]]
+    pairs.delete_at(0)
+    i = 0
+    while i < msgs.length
+      pairs.push([msgs[i].role, msgs[i].content])
+      i = i + 1
+    end
+    if pairs.length == 0
+      empty = [0]
+      empty.pop
+      return empty
+    end
+    @state.tok.encode(ToyChatTemplate.apply(@state.chat_family, pairs, true))
+  end
+
+  # Chat max_tokens: `max_completion_tokens` or `max_tokens` when given,
+  # otherwise whatever the context has left after the prompt.
+  def chat_max_tokens(body, n_prompt)
+    n_new = 0
+    if SpinelKit::Json.has_key?(body, "max_completion_tokens")
+      n_new = SpinelKit::Json.get_int(body, "max_completion_tokens")
+    elsif SpinelKit::Json.has_key?(body, "max_tokens")
+      n_new = SpinelKit::Json.get_int(body, "max_tokens")
+    end
+    if n_new <= 0
+      n_new = MAX_T - n_prompt
+    end
+    n_new
+  end
+
+  # toy#207: the request must fit the allocated context. Returns how many
+  # tokens may be generated: `n_new` cut to what fits, or 0 when the prompt
+  # alone does not fit (logged; nothing is generated, and never a truncated
+  # prompt decoded as if it were the whole one).
+  def fit_context(n_prompt, n_new)
+    if n_prompt >= MAX_T
+      puts "[openai_api_llama] request refused: prompt " + n_prompt.to_s +
+           " tokens does not fit context " + MAX_T.to_s + " (start with --ctx N)"
+      return 0
+    end
+    if n_prompt + n_new > MAX_T
+      return MAX_T - n_prompt
+    end
+    n_new
+  end
+
+  # Generate into `comp`: ids, text (when a tokenizer is embedded), usage,
+  # finish_reason, and the per-request event.
+  def run_generation(comp, token_ids, n_new_req)
+    n_new = fit_context(token_ids.length, n_new_req)
+    if n_new <= 0
+      # tep's backend API has no error channel (Completion carries only
+      # finish_reason), so the reason goes there and to the log.
+      comp.prompt_tokens = token_ids.length
+      comp.finish_reason = "context_length_exceeded"
+      return 0
     end
 
     t_start = TinyNN.tnn_events_now_seconds
     new_ids = api_generate_ids(token_ids, n_new)
     t_end   = TinyNN.tnn_events_now_seconds
-    latency_us = ((t_end - t_start) * 1.0e6).to_i
+    emit_request_event(token_ids.length, new_ids.length,
+                       ((t_end - t_start) * 1.0e6).to_i, n_new)
 
-    # ONE eval/serve/request event per completion (toy/v1). FILE-only
-    # side effect; response bytes unaffected. Guarded by the process-
-    # global C events state. Byte-identical to the retired handler's.
+    comp.token_ids         = new_ids
+    comp.prompt_tokens     = token_ids.length
+    comp.completion_tokens = new_ids.length
+    comp.finish_reason     = @state.finish
+    if @state.tok.present
+      comp.text = @state.tok.decode(new_ids)
+    end
+    0
+  end
+
+  # ONE eval/serve/request event per completion (toy/v1). FILE-only side
+  # effect; response bytes unaffected. Guarded by the process-global C
+  # events state. Byte-identical to the retired handler's.
+  def emit_request_event(n_prompt, n_completion, latency_us, n_new)
     if TinyNN.tnn_events_active == 1
       @state.req_seq = @state.req_seq + 1
       req_id = "req-" + @state.req_seq.to_s
@@ -97,20 +222,15 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
       ev = ev + ",\"name\":\"request\""
       ev = ev + ",\"extra\":{"
       ev = ev +   "\"model\":\"" + @model_name + "\""
-      ev = ev +   ",\"prompt_tokens\":"     + token_ids.length.to_s
-      ev = ev +   ",\"completion_tokens\":" + new_ids.length.to_s
+      ev = ev +   ",\"prompt_tokens\":"     + n_prompt.to_s
+      ev = ev +   ",\"completion_tokens\":" + n_completion.to_s
       ev = ev +   ",\"latency_us\":"        + latency_us.to_s
       ev = ev +   ",\"sampling\":{\"max_tokens\":" + n_new.to_s + "}"
       ev = ev +   ",\"request_id\":\"" + req_id + "\""
       ev = ev + "}}"
       TinyNN.tnn_events_emit(ev)
     end
-
-    comp.token_ids         = new_ids
-    comp.prompt_tokens     = token_ids.length
-    comp.completion_tokens = new_ids.length
-    comp.finish_reason     = "length"
-    comp
+    0
   end
 
   # Mean-pooled d_model vector over the input token embeddings

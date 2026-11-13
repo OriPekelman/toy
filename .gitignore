@@ -332,3 +332,10 @@ prep/smokes/smoke_projection_lens_metal.rb
 # Python bytecode (e.g. from `python3 -m py_compile` spot-checks)
 __pycache__/
 *.pyc
+# toy#209: the serve runner, state and backend are generated mirrors too.
+lib/toy/run/serve_cuda.rb
+lib/toy/run/serve_metal.rb
+lib/toy/serve/openai/server_cuda.rb
+lib/toy/serve/openai/server_metal.rb
+lib/toy/serve/openai/toy_backend_cuda.rb
+lib/toy/serve/openai/toy_backend_metal.rb
