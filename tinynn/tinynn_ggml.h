@@ -537,6 +537,19 @@ void   tnn_gguf_w_free(void *ctx);
 int    tnn_filesystem_symlink(const char *target, const char *sym_path);
 int    tnn_filesystem_mkdir(const char *path);
 
+/* toy#210 — KV prefix file (sequential tagged records; one open at a time). */
+int         tnn_kvf_open_w(const char *path);
+int         tnn_kvf_open_r(const char *path);
+int         tnn_kvf_close(void);
+int         tnn_kvf_put_str(const char *s);
+const char *tnn_kvf_get_str(void);
+int         tnn_kvf_put_ints(const int64_t *src, int n);
+int         tnn_kvf_peek_ints(void);
+int         tnn_kvf_get_ints(int64_t *dst, int n);
+int         tnn_kvf_put_tensor(void *tensor, int n_rows);
+int         tnn_kvf_get_tensor(void *tensor, int n_rows);
+const char *tnn_file_fingerprint(const char *path);
+
 /* Stats over the first `n` floats of sess->scratch. Caller has just
  * done tnn_download(sess, t). Used by FFI trace-tap diagnostics. */
 double tnn_scratch_min_f32(void *sess, int n);

@@ -1,4 +1,4 @@
-# lib/toy/core/cli/serve.rb — `toy serve <model.gguf> [--port N] [--name NAME] [--ctx N] [--device cpu|cuda] [--stop-ids N,M]`.
+# lib/toy/core/cli/serve.rb — `toy serve <model.gguf> [--port N] [--name NAME] [--ctx N] [--device cpu|cuda] [--stop-ids N,M] [--prefix-file F] [--prefix-cache F]`.
 #
 # Serve a GGUF model over an OpenAI-compatible HTTP API (CPU or CUDA). CRuby ONLY
 # (the CLI shell) — NO Spinel. Follows the infer/train/eval run-flow for
@@ -51,6 +51,8 @@ module Toy
           @name = nil
           @device = "cpu"
           @stop_ids = nil
+          @prefix_file = nil
+          @prefix_cache = nil
         end
 
         def run
@@ -60,6 +62,15 @@ module Toy
           path = File.expand_path(@model)
           unless File.file?(path)
             return bad_input("no such file: #{path}")
+          end
+
+          # toy#210: a prefix file must exist; a prefix cache may not exist
+          # yet, but then there must be a prefix file to build it from.
+          if @prefix_file && !File.file?(File.expand_path(@prefix_file))
+            return bad_input("no such file: #{File.expand_path(@prefix_file)}")
+          end
+          if @prefix_cache && !@prefix_file && !File.file?(File.expand_path(@prefix_cache))
+            return bad_input("--prefix-cache #{@prefix_cache} does not exist; pass --prefix-file to build it")
           end
 
           root = ToyRoot.locate_root
@@ -123,6 +134,8 @@ module Toy
           # context from the GGUF (context_length clamped to [256, 4096]).
           serve_env["MAX_T"] = @ctx.to_s if @ctx
           serve_env["STOP_IDS"] = @stop_ids if @stop_ids
+          serve_env["PREFIX_FILE"]  = File.expand_path(@prefix_file)  if @prefix_file
+          serve_env["PREFIX_CACHE"] = File.expand_path(@prefix_cache) if @prefix_cache
           Kernel.exec(serve_env, runner)
         end
 
@@ -204,6 +217,20 @@ module Toy
             when /\A--stop-ids=(.*)\z/
               sres = parse_stop_ids($1)
               return sres unless sres == true
+            when "--prefix-file"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--prefix-file requires a value") if val.nil?
+              @prefix_file = val
+            when /\A--prefix-file=(.*)\z/m
+              @prefix_file = $1
+            when "--prefix-cache"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--prefix-cache requires a value") if val.nil?
+              @prefix_cache = val
+            when /\A--prefix-cache=(.*)\z/m
+              @prefix_cache = $1
             when "--port"
               i += 1
               val = @argv[i]

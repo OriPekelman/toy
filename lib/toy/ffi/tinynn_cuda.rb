@@ -104,6 +104,18 @@ module TinyNNCuda
   ffi_func :tnn_session_free,     [:ptr],                   :void
   ffi_func :tnn_session_set_graph_capacity, [:ptr, :int],   :int
   ffi_func :tnn_embed_lookup_to_doubles, [:ptr, :ptr, :int, :float_array, :int], :int
+  # toy#210 — KV prefix file + model file fingerprint.
+  ffi_func :tnn_kvf_open_w,       [:str],                   :int
+  ffi_func :tnn_kvf_open_r,       [:str],                   :int
+  ffi_func :tnn_kvf_close,        [],                       :int
+  ffi_func :tnn_kvf_put_str,      [:str],                   :int
+  ffi_func :tnn_kvf_get_str,      [],                       :str
+  ffi_func :tnn_kvf_put_ints,     [:int_array, :int],       :int
+  ffi_func :tnn_kvf_peek_ints,    [],                       :int
+  ffi_func :tnn_kvf_get_ints,     [:int_array, :int],       :int
+  ffi_func :tnn_kvf_put_tensor,   [:ptr, :int],             :int
+  ffi_func :tnn_kvf_get_tensor,   [:ptr, :int],             :int
+  ffi_func :tnn_file_fingerprint, [:str],                   :str
   ffi_func :tnn_read_i32_file,   [:str, :int, :int, :int_array],            :int
   ffi_func :tnn_read_f32_file,   [:str, :int, :int, :float_array],          :int
   ffi_func :tnn_input_4d_f32_persistent, [:ptr, :int, :int, :int, :int], :ptr
