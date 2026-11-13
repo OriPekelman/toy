@@ -20,6 +20,7 @@ require_relative "cli/exit_codes"
 require_relative "cli/new"
 require_relative "cli/list"
 require_relative "cli/describe"
+require_relative "cli/pack"
 require_relative "cli/fetch"
 require_relative "cli/install"
 require_relative "cli/infer"
@@ -119,6 +120,18 @@ module Toy
                   { name: "--stop-ids", desc: "extra end-of-generation token ids, comma-separated" },
                   { name: "--prefix-file", desc: "system message every request starts with; evaluated once at boot" },
                   { name: "--prefix-cache", desc: "KV prefix file: restored at boot, or built from --prefix-file and saved" }]
+        },
+        "pack" => {
+          class: Pack,
+          summary: "Build one executable carrying the model, config and KV prefix, serving with no arguments",
+          args:  [{ name: "model", required: true, desc: "path to a .gguf file (with an embedded tokenizer for chat)" }],
+          flags: [{ name: "-o", desc: "the artifact to write (required)" },
+                  { name: "--prefix", desc: "system message every request starts with; its KV state is embedded" },
+                  { name: "--name", desc: "model label in /v1/models (default GGUF basename)" },
+                  { name: "--device", desc: "cpu (default) | cuda" },
+                  { name: "--ctx", desc: "context length in tokens (default: the model's, clamped to [256, 4096])" },
+                  { name: "--port", desc: "default TCP port of the artifact (default 4567)" },
+                  { name: "--stop-ids", desc: "extra end-of-generation token ids, comma-separated" }]
         }
       }.freeze
 

@@ -298,6 +298,62 @@ The serve stack lives at `lib/toy/serve/openai/` and is driven by
 >
 > `infer`/`train`/`eval` don't link tep and are unaffected.
 
+### `pack <model> -o <artifact> [--prefix F] [--name NAME] [--device cpu|cuda] [--ctx N] [--port PORT] [--stop-ids N,M]`
+Build one executable that carries the model and serves it with no arguments
+(toy#211).
+
+```
+toy pack student.gguf --prefix system.txt --name support-desk --device cuda -o support-desk
+./support-desk                # serves on the packed port (default 4567)
+./support-desk --port 8080    # or PORT=8080
+./support-desk --describe     # card and provenance; loads nothing
+```
+
+What is inside:
+
+- **The model**, as the GGUF file byte for byte. Its tokenizer is the one
+  embedded in the GGUF, so pack a file that has one if you want chat.
+- **The KV prefix** for `--prefix F`: the system message's attention state,
+  computed once at pack time on `--device`. The artifact restores it at boot
+  instead of evaluating it. Requests that start with that system message
+  skip it, as with `toy serve --prefix-cache`.
+- **A fixed config**: name, context, stop ids, default port.
+- **A description**: the `toy describe` card, the model's sha256, the toy,
+  spinel and ggml commits, the runner's hash, the prefix's hash and token
+  count, and the shared libraries the artifact needs.
+
+How it behaves:
+
+- A pack reads its model, name, context, stop ids and KV prefix from itself.
+  `MODEL_PATH`, `MODEL_NAME`, `MAX_T`, `STOP_IDS`, `PREFIX_FILE` and
+  `PREFIX_CACHE` in the environment are ignored. Only the port can be moved.
+- The weights are mapped from the executable in place, as `toy serve` maps
+  them from the GGUF file. Starting a pack does not copy or unpack the model.
+- The artifact is the serve runner with the files appended, each on a 64 KiB
+  boundary, then an index and a 24-byte trailer (layout in
+  `tinynn/tinynn_gguf.h`). The runner looks for the trailer in its own
+  executable; a runner with nothing appended is the plain runner.
+
+Limits:
+
+- **Not statically linked.** The artifact needs the shared libraries
+  `--describe` lists: libc, libstdc++, libm, OpenSSL and SQLite (through
+  tep), and for CUDA the driver's `libcuda.so.1`. The CUDA runtime itself is
+  linked in, which is why a CUDA artifact is 0.7 GB larger than its model.
+- **Tied to the machine class it was packed on**: same OS and CPU
+  architecture, and for CUDA a GPU the linked kernels support.
+- **The KV prefix matches one system message exactly.** A request with a
+  different system message is still answered correctly; it just evaluates
+  its whole prompt.
+- **No integrity check of the payload.** A truncated file or a damaged
+  trailer is refused at start, and so is a KV prefix from another model,
+  but a flipped byte inside the weights is not detected. Compare the file's
+  own sha256 if that matters.
+- `strip` and code signing rewrite an executable's tail; do not run them on
+  an artifact. macOS is not tested.
+
+`make gate-pack` and `gate-pack-cuda` cover it.
+
 ## Project config — `toy.yml`
 
 A project's `toy.yml` (loaded by `lib/toy/core/config.rb`) has exactly two keys.
@@ -343,6 +399,7 @@ Spinel-compiled runner. The mapping:
 | `train` | `lib/toy/run/train.rb` | `libexec/toy-train` |
 | `eval`  | `lib/toy/run/eval.rb`  | `libexec/toy-eval` |
 | `serve` | `lib/toy/serve/openai/` (via `lib/toy/run/serve.rb`) | `libexec/toy-serve`, `libexec/toy-serve-cuda` |
+| `pack`  | none of its own: appends files to the `serve` runner | the artifact named by `-o` |
 
 A command builds its runner on demand (`make <target>`, e.g.
 `make libexec/toy-train`) or you can build them all up front with `toy install`.

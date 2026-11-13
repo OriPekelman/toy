@@ -3021,7 +3021,7 @@ int tnn_kvf_open_w(const char *path)
 int tnn_kvf_open_r(const char *path)
 {
     if (!path || g_kvf) return -1;
-    g_kvf = fopen(path, "rb");
+    g_kvf = tnn_pack_fopen(path, NULL, NULL);   /* a file, or "@pack:<name>" (toy#211) */
     if (!g_kvf) return -3;
     g_kvf_write = 0;
     g_kvf_err   = 0;
@@ -3173,11 +3173,11 @@ const char *tnn_file_fingerprint(const char *path)
     static char out[64];
     out[0] = 0;
     if (!path) return out;
-    FILE *f = fopen(path, "rb");
+    /* A "@pack:<name>" entry fingerprints as the file it was packed from
+     * (toy#211): same size, same sampled bytes. */
+    int64_t base = 0, size = 0;
+    FILE *f = tnn_pack_fopen(path, &base, &size);
     if (!f) return out;
-    struct stat st;
-    if (fstat(fileno(f), &st) != 0) { fclose(f); return out; }
-    const int64_t size  = (int64_t)st.st_size;
     const int64_t chunk = 16 * 1024;
     const int     n     = 1024;
     unsigned char *buf = (unsigned char *)malloc((size_t)chunk);
@@ -3186,8 +3186,9 @@ const char *tnn_file_fingerprint(const char *path)
     for (int i = 0; i < n; i++) {
         int64_t off = 0;
         if (size > chunk) off = (int64_t)(((double)(size - chunk) / (double)(n - 1)) * (double)i);
-        if (fseeko(f, (off_t)off, SEEK_SET) != 0) break;
-        size_t got = fread(buf, 1, (size_t)chunk, f);
+        if (fseeko(f, (off_t)(base + off), SEEK_SET) != 0) break;
+        size_t want = (size_t)(size < chunk ? size : chunk);
+        size_t got = fread(buf, 1, want, f);
         for (size_t k = 0; k < got; k++) { h ^= buf[k]; h *= 1099511628211ULL; }
         if (size <= chunk) break;
     }

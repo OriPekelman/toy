@@ -3,6 +3,8 @@
 #include "ggml-backend.h"
 #include "gguf.h"
 
+#include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
@@ -27,6 +29,172 @@ typedef struct {
     size_t data_offset;              /* gguf data section start, absolute */
 } tnn_gguf_session;
 
+/* ---- toy pack (toy#211); layout in tinynn_gguf.h ---- */
+#define TNN_PACK_MAX 16
+typedef struct { char name[64]; int64_t off; int64_t len; } tnn_pack_entry;
+static tnn_pack_entry g_pack[TNN_PACK_MAX];
+static int  g_pack_n      = -1;          /* -1: not looked at yet */
+static char g_pack_exe[4096];
+static int  g_pack_damaged = 0;          /* appended data without a readable index */
+
+static int pack_exe_path(char *out, size_t n)
+{
+#if defined(__APPLE__)
+    uint32_t sz = (uint32_t)n;
+    extern int _NSGetExecutablePath(char *buf, uint32_t *bufsize);
+    return _NSGetExecutablePath(out, &sz) == 0 ? 0 : -1;
+#else
+    ssize_t got = readlink("/proc/self/exe", out, n - 1);
+    if (got <= 0) return -1;
+    out[got] = 0;
+    return 0;
+#endif
+}
+
+static void pack_scan(void)
+{
+    if (g_pack_n >= 0) return;
+    g_pack_n = 0;
+    if (pack_exe_path(g_pack_exe, sizeof g_pack_exe) != 0) return;
+    FILE *f = fopen(g_pack_exe, "rb");
+    if (!f) return;
+    unsigned char tr[24];
+    if (fseeko(f, -24, SEEK_END) != 0 || fread(tr, 1, 24, f) != 24) { fclose(f); return; }
+    const int64_t fsize = (int64_t)ftello(f);
+    if (memcmp(tr, "TOYPACK1", 8) != 0) {
+        /* No trailer. A plain runner's file ends where its ELF image ends
+         * (the section header table is last). If more follows, something
+         * was appended and its trailer is gone: a cut or damaged pack,
+         * which must not quietly behave as a plain runner. */
+        unsigned char eh[64];
+        if (fseeko(f, 0, SEEK_SET) == 0 && fread(eh, 1, 64, f) == 64 &&
+            memcmp(eh, "\177ELF", 4) == 0 && eh[4] == 2 /* ELFCLASS64 */ && eh[5] == 1 /* LE */) {
+            uint64_t shoff = 0;
+            for (int i = 7; i >= 0; i--) shoff = (shoff << 8) | eh[0x28 + i];
+            const uint64_t shentsize = (uint64_t)eh[0x3A] | ((uint64_t)eh[0x3B] << 8);
+            const uint64_t shnum     = (uint64_t)eh[0x3C] | ((uint64_t)eh[0x3D] << 8);
+            if (shoff > 0 && (uint64_t)fsize > shoff + shentsize * shnum) g_pack_damaged = 1;
+        }
+        fclose(f);
+        return;
+    }
+    g_pack_damaged = 1;                  /* until the index reads back whole */
+    uint64_t ioff = 0, ilen = 0;
+    for (int i = 7; i >= 0; i--) { ioff = (ioff << 8) | tr[8 + i]; ilen = (ilen << 8) | tr[16 + i]; }
+    if (ilen == 0 || ilen > 65536 || (int64_t)(ioff + ilen + 24) != fsize) { fclose(f); return; }
+    char *idx = (char *)malloc((size_t)ilen + 1);
+    if (!idx) { fclose(f); return; }
+    if (fseeko(f, (off_t)ioff, SEEK_SET) != 0 || fread(idx, 1, (size_t)ilen, f) != (size_t)ilen) {
+        free(idx); fclose(f); return;
+    }
+    idx[ilen] = 0;
+    fclose(f);
+    char *line = idx;
+    while (*line && g_pack_n < TNN_PACK_MAX) {
+        char *nl = strchr(line, '\n');
+        if (nl) *nl = 0;
+        tnn_pack_entry e;
+        long long off = 0, len = 0;
+        if (sscanf(line, "%63s %lld %lld", e.name, &off, &len) == 3 &&
+            off > 0 && len >= 0 && off % TNN_PACK_ALIGN == 0 && off + len <= (long long)ioff) {
+            e.off = off; e.len = len;
+            g_pack[g_pack_n++] = e;
+        } else if (*line) {
+            g_pack_n = 0;          /* a damaged index: no entries, state stays damaged */
+            free(idx);
+            return;
+        }
+        if (!nl) break;
+        line = nl + 1;
+    }
+    free(idx);
+    if (g_pack_n > 0) g_pack_damaged = 0;
+}
+
+static const tnn_pack_entry *pack_find(const char *name)
+{
+    pack_scan();
+    for (int i = 0; i < g_pack_n; i++)
+        if (strcmp(g_pack[i].name, name) == 0) return &g_pack[i];
+    return NULL;
+}
+
+/* "@pack:<name>" -> its entry, else NULL. */
+static const tnn_pack_entry *pack_path(const char *path)
+{
+    if (!path || strncmp(path, "@pack:", 6) != 0) return NULL;
+    return pack_find(path + 6);
+}
+
+int tnn_pack_count(void) { pack_scan(); return g_pack_damaged ? -1 : g_pack_n; }
+int tnn_pack_has(const char *name) { return name && pack_find(name) ? 1 : 0; }
+
+FILE *tnn_pack_fopen(const char *path, int64_t *base, int64_t *len)
+{
+    if (!path) return NULL;
+    if (strncmp(path, "@pack:", 6) == 0) {
+        const tnn_pack_entry *e = pack_path(path);
+        if (!e) return NULL;
+        FILE *f = fopen(g_pack_exe, "rb");
+        if (!f) return NULL;
+        if (fseeko(f, (off_t)e->off, SEEK_SET) != 0) { fclose(f); return NULL; }
+        if (base) *base = e->off;
+        if (len)  *len  = e->len;
+        return f;
+    }
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    struct stat st;
+    if (fstat(fileno(f), &st) != 0) { fclose(f); return NULL; }
+    if (base) *base = 0;
+    if (len)  *len  = (int64_t)st.st_size;
+    return f;
+}
+
+/* Text entries are small (config, describe): read once, kept. */
+static char *g_pack_text[TNN_PACK_MAX];
+const char *tnn_pack_text(const char *name)
+{
+    if (!name) return "";
+    const tnn_pack_entry *e = pack_find(name);
+    if (!e || e->len > (16 << 20)) return "";
+    int i = (int)(e - g_pack);
+    if (g_pack_text[i]) return g_pack_text[i];
+    FILE *f = fopen(g_pack_exe, "rb");
+    if (!f) return "";
+    char *buf = (char *)malloc((size_t)e->len + 1);
+    if (!buf) { fclose(f); return ""; }
+    if (fseeko(f, (off_t)e->off, SEEK_SET) != 0 ||
+        fread(buf, 1, (size_t)e->len, f) != (size_t)e->len) { free(buf); fclose(f); return ""; }
+    buf[e->len] = 0;
+    fclose(f);
+    g_pack_text[i] = buf;
+    return buf;
+}
+
+const char *tnn_pack_cfg(const char *key)
+{
+    static char val[4096];
+    val[0] = 0;
+    if (!key) return val;
+    const char *t = tnn_pack_text("config");
+    size_t klen = strlen(key);
+    while (*t) {
+        const char *nl = strchr(t, '\n');
+        size_t ll = nl ? (size_t)(nl - t) : strlen(t);
+        if (ll > klen && t[klen] == '=' && strncmp(t, key, klen) == 0) {
+            size_t vl = ll - klen - 1;
+            if (vl >= sizeof val) vl = sizeof val - 1;
+            memcpy(val, t + klen + 1, vl);
+            val[vl] = 0;
+            return val;
+        }
+        if (!nl) break;
+        t = nl + 1;
+    }
+    return val;
+}
+
 void *tnn_gguf_load(const char *path)
 {
     if (!path) return NULL;
@@ -34,16 +202,22 @@ void *tnn_gguf_load(const char *path)
     struct gguf_init_params params;
     params.no_alloc = true;   /* Phase 2: tensor data lives in mmap, not in ctx */
     params.ctx      = &ggml_ctx;
-    struct gguf_context *gctx = gguf_init_from_file(path, params);
+    /* toy#211: a "@pack:<name>" path is a region of the executable. The
+     * GGUF is parsed from a FILE positioned at the region's start, and the
+     * region (not the whole file) is what gets mapped below, so every
+     * offset after this block is relative to the region as it would be to
+     * a standalone file. */
+    int64_t pk_off = 0, pk_len = 0;
+    FILE *pf = tnn_pack_fopen(path, &pk_off, &pk_len);
+    if (!pf) return NULL;
+    struct gguf_context *gctx = gguf_init_from_file_ptr(pf, params);
+    fclose(pf);
     if (!gctx) return NULL;
 
-    int fd = open(path, O_RDONLY);
+    const int packed = strncmp(path, "@pack:", 6) == 0;
+    int fd = open(packed ? g_pack_exe : path, O_RDONLY);
     if (fd < 0) { gguf_free(gctx); if (ggml_ctx) ggml_free(ggml_ctx); return NULL; }
-    struct stat st;
-    if (fstat(fd, &st) < 0) {
-        close(fd); gguf_free(gctx); if (ggml_ctx) ggml_free(ggml_ctx); return NULL;
-    }
-    size_t fsize = (size_t)st.st_size;
+    size_t fsize = (size_t)pk_len;
     /* Map the file with a readable ZERO TAIL after it (toy#205).
      *
      * ggml-cuda sizes a quantized tensor whose row width is not a
@@ -67,7 +241,14 @@ void *tnn_gguf_load(const char *path)
     if (resv == MAP_FAILED) {
         close(fd); gguf_free(gctx); if (ggml_ctx) ggml_free(ggml_ctx); return NULL;
     }
-    void *map = mmap(resv, fsize, PROT_READ, MAP_PRIVATE | MAP_FIXED, fd, 0);
+    /* A pack entry starts on a TNN_PACK_ALIGN boundary and is followed by
+     * zeros up to the next one, so the mapping offset is page-aligned and
+     * the bytes after the entry in its last page are zero, as after EOF. */
+    if ((size_t)pk_off % page != 0) {
+        munmap(resv, map_len);
+        close(fd); gguf_free(gctx); if (ggml_ctx) ggml_free(ggml_ctx); return NULL;
+    }
+    void *map = mmap(resv, fsize, PROT_READ, MAP_PRIVATE | MAP_FIXED, fd, (off_t)pk_off);
     if (map == MAP_FAILED) {
         munmap(resv, map_len);
         close(fd); gguf_free(gctx); if (ggml_ctx) ggml_free(ggml_ctx); return NULL;
@@ -94,7 +275,8 @@ void *tnn_gguf_load(const char *path)
     s->map         = map;
     s->map_size    = fsize;
     s->map_len     = map_len;
-    s->data_offset = gguf_get_data_offset(gctx);
+    /* gguf records the data section's position in the FILE it read. */
+    s->data_offset = gguf_get_data_offset(gctx) - (size_t)pk_off;
     return s;
 }
 
