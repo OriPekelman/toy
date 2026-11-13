@@ -19,6 +19,7 @@ end
 puts arch.summary
 
 lm = ToyLM.new(arch, :cpu)
+lm.per_head_kv = true     # trace taps live on the per-head graph (toy#206)
 lm.load(GGUF)
 lm.kv_cpu.enable_trace!
 

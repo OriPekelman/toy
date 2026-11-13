@@ -18,7 +18,8 @@
 #   restore  a second boot given ONLY the file (so nothing can be rebuilt)
 #            serves the first request with the same cached count and the
 #            same reply
-#   stale    the file is refused with a different model, with a damaged
+#   stale    the file is refused with a different model, by a server using
+#            the other KV row layout (KV_FUSED=0), with a damaged
 #            fingerprint and when truncated (boot exits non-zero); with a
 #            different --prefix-file it is rebuilt, not used
 #
@@ -235,8 +236,12 @@ begin
   end
   port, st = start_server(other, "PREFIX_CACHE" => kvfile)
   stale << "accepted with a different model file" unless port.nil? && st != 0
+  # A file written with one KV row layout is not read back with the other
+  # (toy#206: fused = one tensor per layer, per-head = one per KV head).
+  port, st = start_server(GGUF, "PREFIX_CACHE" => kvfile, "KV_FUSED" => "0")
+  stale << "a fused-layout file was accepted by a per-head server" unless port.nil? && st != 0
   bad = saved.dup
-  at = bad.index("toy-kv-prefix-1") + 15 + 5 + 3   # inside the fingerprint string
+  at = bad.index(/toy-kv-prefix-\d/) + 15 + 5 + 3   # inside the fingerprint string
   bad.setbyte(at, bad.getbyte(at) ^ 1)
   File.binwrite(kvfile, bad)
   port, st = start_server(GGUF, "PREFIX_CACHE" => kvfile)
@@ -259,7 +264,7 @@ begin
     stale << "changed --prefix-file: the cache file was not rewritten" if File.binread(kvfile) == saved
   end
   if stale.empty?
-    ok.call("stale", "refused for another model, a damaged fingerprint and a truncated file; rebuilt for a changed prefix")
+    ok.call("stale", "refused for another model, the other KV layout, a damaged fingerprint and a truncated file; rebuilt for a changed prefix")
   else
     stale.each { |m| failures << "stale: #{m}" }
   end

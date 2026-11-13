@@ -200,15 +200,59 @@ RoPE scaling (YaRN / llama3-style / linear) propagates through the
 converter and loader, so Llama-3.x and Qwen3 long-context
 configurations work without extra wiring.
 
+## Decode graphs
+
+The KV-cache engine (`toy infer`, `toy eval`, `toy serve`) has two decode
+graphs (toy#206):
+
+- **Fused** (default where eligible). Every attention head of a layer is
+  carried in one tensor, about 40 graph nodes per layer, and a prompt is
+  evaluated in batches of up to 512 tokens. The KV cache is one K and one V
+  tensor per layer.
+- **Per-head.** One small node chain per attention head (about 380 nodes
+  per layer at 28 heads), one token per step. On a GPU the per-node
+  dispatch cost dominates: 8,430 nodes and 41 ms per token on a 3.98 B
+  model, against 862 nodes and 25 ms fused, of which 23 ms is the
+  quantized weight matmuls.
+
+A model runs fused when its GGUF is in native (mmap) layout with whole
+`attn_q/k/v` tensors, and it is plain full attention: dense FFN, F32 KV
+cache, optional QKV bias, optional Qwen3-style QK-norm. These keep the
+per-head graph: MoE and MLA models, sliding-window or soft-capped
+attention (Gemma 2), OLMoE/Granite-style QK-norm, per-head checkpoints
+written by `toy train`, legacy-layout GGUFs, LoRA adapters, and
+`KV_Q8=1` / `FLASH_ATTN=1`.
+
+Fused and per-head give the same token ids on the fixtures the gate runs
+(`make gate-decode-fused`, `gate-decode-fused-cuda`). They are not
+bit-identical in general: the order of floating-point operations differs,
+so a near-tie between two tokens can resolve differently. The same holds
+for the batch size on quantized weights: with
+`data/qwen25-0.5b-native-q8.gguf` and prompt ids `9707 11 1879 0 358 1079
+264`, the third generated token is 323 one token at a time (CPU and CUDA)
+and 11 on CPU with the prompt in one batch; the F32 file picks 448 there
+in every mode.
+
+Environment variables the runners read:
+
+- **`KV_FUSED=0`** — force the per-head graph.
+- **`KV_BATCH=<n>`** — most prompt tokens evaluated in one step (default
+  512).
+- **`TNN_STEP_PROFILE=1`** — print, at exit, the mean per-step cost split
+  into graph build, allocation, compute and download, and the nodes per
+  step. `=2` adds one line per step; `=3` adds time per ggml op
+  (synchronised after every node, so totals are inflated but the split is
+  right).
+
 ## Opt-in performance features
 
 Environment variables the runners read:
 
 - **`KV_Q8=1`** — K and V caches stored as Q8_0 (3.75× smaller),
-  auto-enables flash attention. Validated on Qwen3-1.7B: 13% faster
-  wallclock at N_NEW=32, bit-identical token output.
-- **`FLASH_ATTN=1`** — fused `ggml_flash_attn_ext` per Q-head. 12%
-  faster on Qwen3-1.7B at N_NEW=32 vs the scale→softmax→matmul triplet.
+  auto-enables flash attention. Selects the per-head graph, so it is now
+  a memory option, not a speed one.
+- **`FLASH_ATTN=1`** — `ggml_flash_attn_ext` per Q-head. Selects the
+  per-head graph; faster than plain per-head, slower than fused.
 - **`TOY_EVENTS=path.jsonl`** — emit the structured `toy/v1` event
   stream for live TUIs and post-run analysis (see
   [`events.md`](events.md)).

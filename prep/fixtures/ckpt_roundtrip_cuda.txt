@@ -5,4 +5,7 @@
 # generated ids) differ — the shared fixture only worked while the
 # degenerate seed-0 init (toy#114) collapsed both to "7 7 7 …".
 # Recorded 2026-07-25 (toy#114 init-quality reset: mixer-seeded stream).
-ids: 1 2 3 297 146 591 225 369
+# Re-recorded 2026-11-13 (toy#206: `generate` no longer feeds the last prompt
+# token twice; the previous line, 1 2 3 297 146 591 225 369, is what a runner
+# with that bug prints for this checkpoint).
+ids: 1 2 3 297 320 281 590 81

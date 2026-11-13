@@ -113,9 +113,22 @@ end
 #
 # Layout (tinynn's tnn_kvf_* record file): format tag, model fingerprint,
 # backend name, shape ints [n_layers, n_kv, d_head, kv_type_k, kv_type_v], the prefix
-# token ids, then per layer and kv-head the first n rows of K and of V.
+# token ids, then per layer and KV tensor the first n rows of K and of V.
+#
+# The tag names the row layout: "-1" is one tensor per KV head (the
+# per-head decode graph), "-2" one tensor per layer holding every head of a
+# position (the fused graph, toy#206). A file is only read back by a server
+# using the layout it was written with.
 
-KV_FILE_TAG = "toy-kv-prefix-1"
+KV_FILE_TAG       = "toy-kv-prefix-1"
+KV_FILE_TAG_FUSED = "toy-kv-prefix-2"
+
+def api_kv_tag
+  if STATE.kv.fused
+    return KV_FILE_TAG_FUSED
+  end
+  KV_FILE_TAG
+end
 
 # Saves the first `n` cached positions. Returns "" on success, otherwise
 # the reason.
@@ -130,7 +143,7 @@ def api_kv_save(path, n)
   if TinyNN.tnn_kvf_open_w(path) != 0
     return "cannot write " + path
   end
-  TinyNN.tnn_kvf_put_str(KV_FILE_TAG)
+  TinyNN.tnn_kvf_put_str(api_kv_tag)
   TinyNN.tnn_kvf_put_str(STATE.model_fp)
   TinyNN.tnn_kvf_put_str(TinyNN.tnn_backend_name(kv.sess))
   shape = [kv.n_layers, kv.n_kv, kv.d_head, kv.kv_type_k, kv.kv_type_v]
@@ -147,7 +160,7 @@ def api_kv_save(path, n)
   while li < kv.n_layers
     blk = kv.kv_blocks_ffi[li]
     h = 0
-    while h < kv.n_kv
+    while h < kv.kv_tensor_count
       TinyNN.tnn_kvf_put_tensor(blk.t_K[h], n)
       TinyNN.tnn_kvf_put_tensor(blk.t_V[h], n)
       h = h + 1
@@ -181,7 +194,11 @@ def api_kv_restore(path)
 end
 
 def api_kv_restore_open(kv)
-  if TinyNN.tnn_kvf_get_str != KV_FILE_TAG
+  tag = TinyNN.tnn_kvf_get_str
+  if tag != api_kv_tag
+    if tag == KV_FILE_TAG || tag == KV_FILE_TAG_FUSED
+      return "its cache layout does not match this server (fused vs per-head KV)"
+    end
     return "unknown KV prefix file version"
   end
   if TinyNN.tnn_kvf_get_str != STATE.model_fp
@@ -224,7 +241,7 @@ def api_kv_restore_open(kv)
   while li < kv.n_layers
     blk = kv.kv_blocks_ffi[li]
     h = 0
-    while h < kv.n_kv
+    while h < kv.kv_tensor_count
       if TinyNN.tnn_kvf_get_tensor(blk.t_K[h], n) != 0 ||
          TinyNN.tnn_kvf_get_tensor(blk.t_V[h], n) != 0
         return "damaged or truncated tensor data"
@@ -244,9 +261,12 @@ end
 # Evaluate ids[from...] into the cache (no sampling); used for the boot
 # prefix. Positions below `from` must already be cached.
 def api_kv_feed(ids, from)
+  if from >= ids.length
+    return 0
+  end
+  SmolLM2KV.decode_batch(STATE.kv, ids, from, ids.length - from, from)
   pos = from
   while pos < ids.length
-    SmolLM2KV.decode_step(STATE.kv, ids[pos], pos)
     STATE.kv_ids.push(ids[pos])
     pos = pos + 1
   end
@@ -280,6 +300,14 @@ puts "[openai_api_llama] flags: untied=" + flags.untied.to_s +
 # to unlock the mmap fast path on this binary.
 puts "[openai_api_llama] realising (MAX_T=" + MAX_T.to_s + ")..."
 STATE.kv = SmolLM2KVFFICache.new
+# toy#206: KV_FUSED=0 keeps the per-head decode graph; KV_BATCH=<n> caps
+# the prompt tokens one batched step evaluates.
+if (ENV["KV_FUSED"] || "") == "0"
+  STATE.kv.disable_fused!
+end
+if (ENV["KV_BATCH"] || "").to_i > 0
+  STATE.kv.batch_max = (ENV["KV_BATCH"] || "").to_i
+end
 STATE.gguf = STATE.kv.realize_and_load_auto(GGUF_PATH, MAX_T, STATE.cfg, flags)
 
 # toy#209: the embedded tokenizer, when the GGUF has one. It gives text
@@ -455,7 +483,7 @@ def api_gen_id(prefix)
 end
 
 # Greedy generation from a pre-tokenized prompt. KV-cache decode:
-# prefill the prompt one step at a time, then sample greedily for
+# prefill the prompt (batched, toy#206), then sample greedily for
 # `n_new` more steps. Returns Array<Int> of the new token IDs (does
 # NOT include the prompt).
 #
@@ -503,10 +531,12 @@ def api_first_id(prompt_ids)
   while STATE.kv_ids.length > start
     STATE.kv_ids.pop
   end
-  last_logits = Mat.new(1, vocab)
+  # toy#206: the uncached part of the prompt goes through batched steps
+  # (one token at a time on a per-head cache).
+  last_logits = SmolLM2KV.decode_batch(STATE.kv, prompt_ids, start,
+                                       prompt_ids.length - start, start)
   prefill_pos = start
   while prefill_pos < prompt_ids.length
-    last_logits = SmolLM2KV.decode_step(STATE.kv, prompt_ids[prefill_pos], prefill_pos)
     STATE.kv_ids.push(prompt_ids[prefill_pos])
     prefill_pos = prefill_pos + 1
   end

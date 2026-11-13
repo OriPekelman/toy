@@ -492,6 +492,7 @@ def subs_for(cpu_path, backend)
       [/\bSmolLM2KVBlockFFI\b/,      "SmolLM2KVBlockFFI"   + suffix],
       # Module — the ".decode_step" wrapper.
       [/\bSmolLM2KV\.decode_step\b/, "SmolLM2KV" + suffix + ".decode_step"],
+      [/\bSmolLM2KV\.decode_batch\b/, "SmolLM2KV" + suffix + ".decode_batch"],
       [/\bSmolLM2KV\.upload_from\b/, "SmolLM2KV" + suffix + ".upload_from"],
       [/^module SmolLM2KV$/,         "module SmolLM2KV" + suffix],
     ] + common_module_tail
@@ -571,6 +572,7 @@ def subs_for(cpu_path, backend)
        "# lib/toy/serve/openai/server.rb -- the Server state + boot + greedy"],
       [/\bSmolLM2KVFFICache\b/,      "SmolLM2KVFFICache" + suffix],
       [/\bSmolLM2KV\.decode_step\b/, "SmolLM2KV" + suffix + ".decode_step"],
+      [/\bSmolLM2KV\.decode_batch\b/, "SmolLM2KV" + suffix + ".decode_batch"],
     ] + common_module_tail
 
   when "lib/toy/serve/openai/toy_backend.rb"

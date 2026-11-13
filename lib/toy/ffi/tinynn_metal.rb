@@ -167,6 +167,9 @@ module TinyNNMetal
   ffi_func :tnn_layer_norm,       [:ptr, :ptr, :ptr, :ptr, :double], :ptr
   ffi_func :tnn_view_1d,          [:ptr, :ptr, :int, :long],         :ptr
   ffi_func :tnn_view_2d,          [:ptr, :ptr, :int, :int, :long, :long], :ptr
+  ffi_func :tnn_view_3d,          [:ptr, :ptr, :int, :int, :int, :long, :long, :long], :ptr
+  ffi_func :tnn_cont,             [:ptr, :ptr], :ptr
+  ffi_func :tnn_upload_causal_mask, [:ptr, :ptr, :int, :int, :int], :int
   ffi_func :tnn_reshape_3d,       [:ptr, :ptr, :int, :int, :int], :ptr
   ffi_func :tnn_reshape_2d,       [:ptr, :ptr, :int, :int],       :ptr
   ffi_func :tnn_cpy,              [:ptr, :ptr, :ptr],       :ptr

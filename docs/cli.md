@@ -256,12 +256,20 @@ toy serve model.gguf --device cuda --prefix-file system.txt --prefix-cache syste
 - Each request's event carries `cached_tokens`, the number of prompt tokens
   not re-evaluated.
 
-Measured on the gx10 (CUDA, a 3.98 B Qwen2.5-shaped model in Q8, 269-token
-system turn, ~30-token user message, 24 new tokens): about 14 s per request
-without reuse, about 2.2 s with the prefix. Restoring the 24 MB file takes
-12 ms and saving it 43 ms; evaluating the prefix at boot takes 12 s. The
-first requests after a restore are slower (5–6 s) until each new position
-has been evaluated once.
+Measured on the gx10 (CUDA, a 3.98 B Qwen2.5-shaped model in Q8, 753-token
+system turn, 776-token prompt, 24 new tokens, GPU shared with another job):
+about 0.79 s per request without reuse and 0.64 s with the prefix cached;
+llama-server takes 0.57 s and 0.45 s on the same requests. Evaluating the
+prefix at boot takes 0.34 s, saving the 68 MB file 0.22 s and restoring it
+14 ms.
+
+**Decode speed (toy#206).** Prompts are evaluated in batches of up to 512
+tokens, and each generated token is one small graph covering every
+attention head of a layer. On the model above that is about 40 tokens/s
+generated on CUDA (llama.cpp: 55–58 under the same load) and a 776-token
+prompt in about 0.2 s. Models and options the fused step does not cover
+run on the older per-head graph, which is several times slower on a GPU;
+see "Decode graphs" in [`models.md`](models.md).
 
 Three things only tep can change (tep#276), so they are as tep has them:
 `/v1/completions` reads `prompt` as a token-id array only (a string prompt is

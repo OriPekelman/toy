@@ -93,9 +93,21 @@ class SmolLM2KVBlockFFI
                 # m/v live next to A/B so a future "save adapter +
                 # optimizer state" hook can serialize them together.
                 :t_w_lora_a_q_m, :t_w_lora_a_q_v,
-                :t_w_lora_b_q_m, :t_w_lora_b_q_v
+                :t_w_lora_b_q_m, :t_w_lora_b_q_v,
+                # toy#206 fused multi-head decode. The whole attn_q /
+                # attn_k / attn_v weights and biases as ONE tensor each
+                # (aliases of the same mmap bytes the per-head t_w_q[h]
+                # slices point into). Set only when cache.fused.
+                :t_w_q_full, :t_w_k_full, :t_w_v_full,
+                :t_b_q_full, :t_b_k_full, :t_b_v_full
 
   def initialize
+    @t_w_q_full = TinyNN.tnn_null_ptr
+    @t_w_k_full = TinyNN.tnn_null_ptr
+    @t_w_v_full = TinyNN.tnn_null_ptr
+    @t_b_q_full = TinyNN.tnn_null_ptr
+    @t_b_k_full = TinyNN.tnn_null_ptr
+    @t_b_v_full = TinyNN.tnn_null_ptr
     @t_rn1_gamma = TinyNN.tnn_null_ptr
     @t_rn2_gamma = TinyNN.tnn_null_ptr
     @t_q_norm_gamma = TinyNN.tnn_null_ptr
@@ -234,9 +246,19 @@ class SmolLM2KVFFICache
                 # LoRA-A/B pair in ctx_w. Required for multi-position
                 # SFT: between graph rebuilds the compute ctx is freed,
                 # so moments held there would be lost (NaN on cycle 2+).
-                :lora_q_adamw_enabled
+                :lora_q_adamw_enabled,
+                # toy#206: fused multi-head decode (see fused_eligible?).
+                # fused        — decided in realize_for_mmap; when true
+                #                blk.t_K / blk.t_V hold ONE tensor each,
+                #                ne=[n_kv*d_head, max_T].
+                # fused_wanted — false after disable_fused!.
+                # batch_max    — most tokens one batched step evaluates.
+                :fused, :fused_wanted, :batch_max
 
   def initialize
+    @fused        = false
+    @fused_wanted = true
+    @batch_max    = 512
     @realized   = false
     @max_T      = 0
     @d_model    = 0
@@ -381,6 +403,46 @@ class SmolLM2KVFFICache
     @lora_q_adamw_enabled = true
   end
 
+  # toy#206: keep the per-head decode graph (one small node chain per
+  # attention head). Needed for trace taps; also the reference the
+  # fused path is gated against. Call BEFORE realize_for_mmap.
+  def disable_fused!
+    @fused_wanted = false
+  end
+
+  # The fused step covers the plain llama-family block: full-attention
+  # GQA with optional QKV bias and Qwen3-style QK-norm, dense FFN, F32
+  # KV. Everything else keeps the per-head graph.
+  def fused_eligible?
+    if !@fused_wanted || @is_mla || @is_moe || @per_head_attn
+      return false
+    end
+    if @lora_q_enabled || @use_flash_attn || @trace_on
+      return false
+    end
+    if @kv_type_k != 0 || @kv_type_v != 0
+      return false
+    end
+    if @swa_window > 0 || @swa_alternates || @attn_softcap > 0.0
+      return false
+    end
+    if @has_qk_norm && @qk_norm_kind != 1
+      return false
+    end
+    true
+  end
+
+  # How many tensors blk.t_K / blk.t_V hold per layer.
+  def kv_tensor_count
+    if @fused
+      return 1
+    end
+    if @is_mla
+      return @n_heads
+    end
+    @n_kv
+  end
+
   # Phase 3 opt-in: set the ggml type used for 2D linear weights when
   # realize_for runs. 0 = F32, 8 = Q8_0. Call BEFORE realize_for —
   # the persistent tensors are allocated there.
@@ -489,6 +551,7 @@ class SmolLM2KVFFICache
     if @per_head_attn
       puts "  per-head tensors detected (toy from-scratch checkpoint)"
     end
+    @fused = fused_eligible?
 
     # Globals — embeddings + final norm + optional untied output.
     eidx = TinyNN.tnn_gguf_find_index(gguf_handle, "token_embd.weight")
@@ -730,12 +793,27 @@ class SmolLM2KVFFICache
       # ne0. Per-position writes span a contiguous d_head-vector
       # which is Q8-block-aligned at d_head=64 (=2 blocks of 32).
       # See the struct comment on :kv_type_k / :kv_type_v.
-      if @kv_type_k == 8
+      if @fused
+        # toy#206: one K and one V tensor per layer, every KV head of a
+        # position contiguous: ne=[n_kv*d_head, max_T]. Plus whole-weight
+        # aliases of attn_q/k/v (per_head_attn is false here, so
+        # q/k/v_off_base are the whole tensors' offsets).
+        blk.t_K = [TinyNN.tnn_input_2d_f32_persistent(@sess, max_T, @n_kv * @d_head)]
+        blk.t_V = [TinyNN.tnn_input_2d_f32_persistent(@sess, max_T, @n_kv * @d_head)]
+        blk.t_w_q_full = TinyNN.tnn_input_2d_persistent_mmap(@sess,
+                           @n_heads * @d_head, @d_model, q_type, q_off_base)
+        blk.t_w_k_full = TinyNN.tnn_input_2d_persistent_mmap(@sess,
+                           @n_kv * @d_head, @d_model, k_type, k_off_base)
+        blk.t_w_v_full = TinyNN.tnn_input_2d_persistent_mmap(@sess,
+                           @n_kv * @d_head, @d_model, v_type, v_off_base)
+      elsif @kv_type_k == 8
         blk.t_K = [TinyNN.tnn_input_2d_persistent_typed(@sess, max_T, @d_head, 8)]
       else
         blk.t_K = [TinyNN.tnn_input_2d_f32_persistent(@sess, max_T, @d_head)]
       end
-      if @kv_type_v == 8
+      if @fused
+        # allocated above
+      elsif @kv_type_v == 8
         blk.t_V = [TinyNN.tnn_input_2d_persistent_typed(@sess, max_T, @d_head, 8)]
       else
         blk.t_V = [TinyNN.tnn_input_2d_f32_persistent(@sess, max_T, @d_head)]
@@ -759,12 +837,16 @@ class SmolLM2KVFFICache
                            @d_head, @d_model, v_type,
                            v_off_base + hkv * v_stride))
         end
-        if @kv_type_k == 8
+        if @fused
+          # single K/V tensor per layer, allocated above
+        elsif @kv_type_k == 8
           blk.t_K.push(TinyNN.tnn_input_2d_persistent_typed(@sess, max_T, @d_head, 8))
         else
           blk.t_K.push(TinyNN.tnn_input_2d_f32_persistent(@sess, max_T, @d_head))
         end
-        if @kv_type_v == 8
+        if @fused
+          # see above
+        elsif @kv_type_v == 8
           blk.t_V.push(TinyNN.tnn_input_2d_persistent_typed(@sess, max_T, @d_head, 8))
         else
           blk.t_V.push(TinyNN.tnn_input_2d_f32_persistent(@sess, max_T, @d_head))
@@ -781,6 +863,11 @@ class SmolLM2KVFFICache
         kb_off = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, kb_idx)
         vb_off = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, vb_idx)
         bias_stride = @d_head * 4  # f32
+        if @fused
+          blk.t_b_q_full = TinyNN.tnn_input_1d_persistent_mmap(@sess, @n_heads * @d_head, 0, qb_off)
+          blk.t_b_k_full = TinyNN.tnn_input_1d_persistent_mmap(@sess, @n_kv * @d_head, 0, kb_off)
+          blk.t_b_v_full = TinyNN.tnn_input_1d_persistent_mmap(@sess, @n_kv * @d_head, 0, vb_off)
+        end
 
         blk.t_b_q = [TinyNN.tnn_input_1d_persistent_mmap(@sess, @d_head, 0, qb_off)]
         hq = 1
@@ -1133,6 +1220,11 @@ class SmolLM2KVFFICache
   # CUDA-MIRROR-STUB:   def trace_tap(_name, t); t; end
   # CUDA-MIRROR-STUB:   def dump_trace; end
   def enable_trace!
+    if @fused
+      puts "FATAL: trace taps need the per-head decode graph; call " +
+           "disable_fused! (KV_FUSED=0) before loading."
+      exit 1
+    end
     @trace_on = true
   end
 
@@ -1318,8 +1410,145 @@ class SmolLM2KVFFICache
     @realized = true
   end
 
+  # toy#206 — fused multi-head step: evaluates `n_tok` tokens at
+  # positions pos .. pos+n_tok-1 in ONE graph of ~40 nodes per layer
+  # (the per-head graph below is ~380 per layer at 28 heads, and on a
+  # GPU the per-node dispatch cost, not the math, sets the token rate).
+  # Same arithmetic as build_block_step, with every head of a layer
+  # carried in one tensor:
+  #   q  [d_head, n_tok, n_heads]      k/v history [d_head, hist, n_kv]
+  #   scores = K'q -> [hist, n_tok, n_heads]  (KV heads broadcast over
+  #   their group of query heads by ggml_mul_mat), softmax over hist
+  #   with a causal mask when n_tok > 1, then V.attn.
+  # Logits are produced for the LAST token only.
+  def build_fused_step(pos, n_tok)
+    eps     = @rms_eps
+    scale   = 1.0 / Math.sqrt(@d_head.to_f)
+    d_model = @d_model
+    d_head  = @d_head
+    bf      = 4
+    d_kv    = @n_kv * d_head
+    row     = d_kv * bf
+    hist    = pos + n_tok
+
+    t_token_id = TinyNN.tnn_input_1d_i32(@sess, n_tok)
+    t_pos      = TinyNN.tnn_input_1d_i32_ctx(@sess, n_tok)
+    t_mask     = TinyNN.tnn_null_ptr
+    if n_tok > 1
+      # rows=n_tok, cols=hist -> ne=[hist, n_tok]
+      t_mask = TinyNN.tnn_input_2d_f32(@sess, n_tok, hist)
+    end
+
+    t_x = TinyNN.tnn_get_rows(@sess, @t_token_embed, t_token_id)   # [d_model, n_tok]
+    if @embed_scale != 1.0
+      t_x = TinyNN.tnn_scale(@sess, t_x, @embed_scale)
+    end
+
+    li = 0
+    while li < @n_layers
+      blk = @kv_blocks_ffi[li]
+      t_h = TinyNN.tnn_rms_norm(@sess, t_x, blk.t_rn1_gamma, eps)
+
+      t_q = TinyNN.tnn_matmul(@sess, blk.t_w_q_full, t_h)          # [n_heads*d_head, n_tok]
+      t_k = TinyNN.tnn_matmul(@sess, blk.t_w_k_full, t_h)          # [d_kv, n_tok]
+      t_v = TinyNN.tnn_matmul(@sess, blk.t_w_v_full, t_h)          # [d_kv, n_tok]
+      if @has_qkv_bias
+        t_q = TinyNN.tnn_add(@sess, t_q, blk.t_b_q_full)
+        t_k = TinyNN.tnn_add(@sess, t_k, blk.t_b_k_full)
+        t_v = TinyNN.tnn_add(@sess, t_v, blk.t_b_v_full)
+      end
+      t_q = TinyNN.tnn_reshape_3d(@sess, t_q, d_head, @n_heads, n_tok)
+      t_k = TinyNN.tnn_reshape_3d(@sess, t_k, d_head, @n_kv, n_tok)
+      if @has_qk_norm
+        # kind 1 only (fused_eligible?): one [d_head] gamma per layer,
+        # normalising each head's vector (ne0) on its own.
+        t_q = TinyNN.tnn_rms_norm(@sess, t_q, blk.t_q_norm_gamma, @rms_eps)
+        t_k = TinyNN.tnn_rms_norm(@sess, t_k, blk.t_k_norm_gamma, @rms_eps)
+      end
+      t_q = TinyNN.tnn_rope_ext(@sess, t_q, t_pos, @d_head,
+                                @rope_base, @rope_scaling.freq_scale,
+                                @rope_scaling.ext_factor,
+                                @rope_scaling.attn_factor,
+                                @rope_scaling.beta_fast,
+                                @rope_scaling.beta_slow,
+                                @t_rope_freq_factors)
+      t_k = TinyNN.tnn_rope_ext(@sess, t_k, t_pos, @d_head,
+                                @rope_base, @rope_scaling.freq_scale,
+                                @rope_scaling.ext_factor,
+                                @rope_scaling.attn_factor,
+                                @rope_scaling.beta_fast,
+                                @rope_scaling.beta_slow,
+                                @t_rope_freq_factors)
+
+      # Cache writes: rows pos .. pos+n_tok-1 of K and V.
+      t_K_slot = TinyNN.tnn_view_2d(@sess, blk.t_K[0], d_kv, n_tok, row, pos * row)
+      t_V_slot = TinyNN.tnn_view_2d(@sess, blk.t_V[0], d_kv, n_tok, row, pos * row)
+      t_k_flat = TinyNN.tnn_reshape_2d(@sess, t_k, d_kv, n_tok)
+      TinyNN.tnn_add_to_graph(@sess, TinyNN.tnn_cpy(@sess, t_k_flat, t_K_slot))
+      TinyNN.tnn_add_to_graph(@sess, TinyNN.tnn_cpy(@sess, t_v, t_V_slot))
+
+      # History views [d_head, n_kv, hist] -> [d_head, hist, n_kv].
+      t_K_v3   = TinyNN.tnn_view_3d(@sess, blk.t_K[0], d_head, @n_kv, hist,
+                                     d_head * bf, row, 0)
+      t_V_v3   = TinyNN.tnn_view_3d(@sess, blk.t_V[0], d_head, @n_kv, hist,
+                                     d_head * bf, row, 0)
+      t_K_hist = TinyNN.tnn_permute(@sess, t_K_v3, 0, 2, 1, 3)
+      t_V_hist = TinyNN.tnn_permute(@sess, t_V_v3, 0, 2, 1, 3)
+      t_qp     = TinyNN.tnn_permute(@sess, t_q, 0, 2, 1, 3)        # [d_head, n_tok, n_heads]
+      t_scores = TinyNN.tnn_matmul(@sess, t_K_hist, t_qp)          # [hist, n_tok, n_heads]
+      t_attn   = TinyNN.tnn_soft_max_ext(@sess, t_scores, t_mask, scale, 0.0)
+      t_V_perm = TinyNN.tnn_permute(@sess, t_V_hist, 1, 0, 2, 3)   # [hist, d_head, n_kv]
+      t_V_T    = TinyNN.tnn_cont(@sess, t_V_perm)
+      t_heads  = TinyNN.tnn_matmul(@sess, t_V_T, t_attn)           # [d_head, n_tok, n_heads]
+      t_hperm  = TinyNN.tnn_permute(@sess, t_heads, 0, 2, 1, 3)    # [d_head, n_heads, n_tok]
+      t_concat = TinyNN.tnn_cont_2d(@sess, t_hperm, @n_heads * d_head, n_tok)
+
+      t_out_proj = TinyNN.tnn_matmul(@sess, blk.t_w_o, t_concat)
+      if @has_post_norms
+        t_out_proj = TinyNN.tnn_rms_norm(@sess, t_out_proj, blk.t_post_attn_norm_gamma, eps)
+      end
+      t_x_attn = TinyNN.tnn_add(@sess, t_x, t_out_proj)
+
+      t_h2    = TinyNN.tnn_rms_norm(@sess, t_x_attn, blk.t_rn2_gamma, eps)
+      t_gate  = TinyNN.tnn_matmul(@sess, blk.t_w_gate, t_h2)
+      t_up    = TinyNN.tnn_matmul(@sess, blk.t_w_up,   t_h2)
+      t_silug = TinyNN.tnn_silu(@sess, t_gate)
+      t_gated = TinyNN.tnn_mul(@sess, t_silug, t_up)
+      t_dn    = TinyNN.tnn_matmul(@sess, blk.t_w_down, t_gated)
+      if @has_post_norms
+        t_dn = TinyNN.tnn_rms_norm(@sess, t_dn, blk.t_post_ffn_norm_gamma, eps)
+      end
+      t_x = TinyNN.tnn_add(@sess, t_x_attn, t_dn)
+      li = li + 1
+    end
+
+    # Last token's column only.
+    if n_tok > 1
+      t_x = TinyNN.tnn_view_2d(@sess, t_x, d_model, 1, d_model * bf,
+                                (n_tok - 1) * d_model * bf)
+    end
+    t_x_final = TinyNN.tnn_rms_norm(@sess, t_x, @t_final_norm_gamma, eps)
+    if @has_untied_output
+      t_kv_logits = TinyNN.tnn_matmul(@sess, @t_output, t_x_final)
+    else
+      t_kv_logits = TinyNN.tnn_matmul(@sess, @t_token_embed, t_x_final)
+    end
+    if @final_softcap > 0.0
+      t_kv_logits = TinyNN.tnn_scale(@sess, t_kv_logits, 1.0 / @final_softcap)
+      t_kv_logits = TinyNN.tnn_tanh(@sess, t_kv_logits)
+      t_kv_logits = TinyNN.tnn_scale(@sess, t_kv_logits, @final_softcap)
+    end
+    TinyNN.tnn_set_output(t_kv_logits)
+    res = SmolLM2KVStepResult.new(t_token_id, t_pos, t_kv_logits)
+    res.t_mask = t_mask
+    res
+  end
+
   # Build the compute graph for one decode position.
   def build_decode_step(pos)
+    if @fused
+      return build_fused_step(pos, 1)
+    end
     eps     = @rms_eps
     scale   = 1.0 / Math.sqrt(@d_head.to_f)
     d_model = @d_model
@@ -1960,11 +2189,12 @@ end
 # Init-param names deliberately differ from the ivar names — same
 # defensive pattern as GPT2KVStepResult.
 class SmolLM2KVStepResult
-  attr_accessor :t_token_id, :t_pos, :kv_step_logits
+  attr_accessor :t_token_id, :t_pos, :kv_step_logits, :t_mask
   def initialize(tok_ptr, pos_ptr, logits_ptr)
     @t_token_id     = tok_ptr
     @t_pos          = pos_ptr
     @kv_step_logits = logits_ptr
+    @t_mask         = TinyNN.tnn_null_ptr   # causal mask input; batched fused steps only
   end
 end
 
@@ -2055,5 +2285,54 @@ module SmolLM2KV
     TinyNN.tnn_compute(kv_cache.sess)
     kv_cache.dump_trace
     TinyNN.download_row_major(kv_cache.sess, step.kv_step_logits, 1, kv_cache.vocab_size)
+  end
+
+  # toy#206 — evaluate token_ids[from, from+count) at positions
+  # pos0 .. pos0+count-1 and return the (1, vocab) logits of the LAST
+  # one. On a fused cache the tokens go through batched steps of up to
+  # kv_cache.batch_max; otherwise this is decode_step in a loop.
+  # count must be >= 1.
+  def self.decode_batch(kv_cache, token_ids, from, count, pos0)
+    logits = Mat.new(1, 1)
+    if !kv_cache.fused
+      i = 0
+      while i < count
+        logits = SmolLM2KV.decode_step(kv_cache, token_ids[from + i], pos0 + i)
+        i = i + 1
+      end
+      return logits
+    end
+    done = 0
+    while done < count
+      n_tok = count - done
+      if n_tok > kv_cache.batch_max
+        n_tok = kv_cache.batch_max
+      end
+      pos = pos0 + done
+      TinyNN.tnn_reset_for_rebuild(kv_cache.sess)
+      step = kv_cache.build_fused_step(pos, n_tok)
+      TinyNN.tnn_realize(kv_cache.sess, step.kv_step_logits)
+      ids = [0]; ids.pop
+      poss = [0]; poss.pop
+      j = 0
+      while j < n_tok
+        ids.push(token_ids[from + done + j].to_i)
+        poss.push(pos + j)
+        j = j + 1
+      end
+      TinyNN.upload_int_array(kv_cache.sess, step.t_token_id, ids)
+      TinyNN.upload_int_array(kv_cache.sess, step.t_pos,      poss)
+      if n_tok > 1
+        rc = TinyNN.tnn_upload_causal_mask(kv_cache.sess, step.t_mask, pos + n_tok, n_tok, pos)
+        if rc != 0
+          puts "FATAL: decode_batch causal mask upload failed rc=" + rc.to_s
+          exit 1
+        end
+      end
+      TinyNN.tnn_compute(kv_cache.sess)
+      logits = TinyNN.download_row_major(kv_cache.sess, step.kv_step_logits, 1, kv_cache.vocab_size)
+      done = done + n_tok
+    end
+    logits
   end
 end

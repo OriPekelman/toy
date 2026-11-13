@@ -47,7 +47,11 @@ end
 end
 
 def infer(runner, path, ids)
-  out, st = Open3.capture2e({ "GGUF" => path, "PROMPT_IDS" => ids, "N_NEW" => "8" }, runner)
+  # KV_BATCH=1: one token per step on both devices. The qwen prompt has a
+  # near-tie at its third generated token (the F32 file picks 448 there, Q8
+  # picks 323, and Q8 on CPU with a batched prompt picks 11), so CPU and CUDA
+  # are compared on the same per-token kernels (toy#206, toy#212).
+  out, st = Open3.capture2e({ "GGUF" => path, "PROMPT_IDS" => ids, "N_NEW" => "8", "KV_BATCH" => "1" }, runner)
   [out[/^ids: (.*)$/, 1].to_s.strip, st, out]
 end
 

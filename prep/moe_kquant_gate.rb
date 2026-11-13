@@ -10,10 +10,21 @@
 # After the fix the same greedy decode is varied/coherent. See
 # docs/notes/mul_mat_id_quants.md and lib/toy_smollm2_ffi_kv.rb#head_nbytes.
 #
-# This is a STRUCTURAL gate, not a byte-exact one: it asserts the continuation
-# is non-degenerate (enough distinct tokens, no long single-token run) rather
-# than pinning exact ids — so it guards "attention didn't collapse" without
-# false-alarming on benign K-quant quant-noise drift across ggml versions.
+# WHAT IT ASSERTS (re-anchored 2026-11-13, toy#206): the FIRST generated
+# token. The prompt is "The capital of France is"; llama.cpp's greedy first
+# token on this file is 36062 ("Paris"), and so is Toy's. With the collapse
+# put back (head_nbytes forced to a zero stride) it is 20065, followed by
+# `20065 20065 20065 42859 …`.
+#
+# The gate used to assert "enough distinct tokens, no long run" over 10
+# tokens. That passed only because `generate` fed the last prompt token twice
+# (fixed in toy#206), which produced varied but wrong text
+# (`2320 658 15 11368 …`). The corrected decode is `36062 8 753 1051` and then
+# a run of newlines, where llama.cpp continues `15 510 38479 1171 49348 …`
+# (". The capital of Spain is Madrid."). So Toy and llama.cpp agree on the
+# first token of this model and DIFFER from the second: an open accuracy gap
+# on OLMoE (the per-head QK-norm approximation is the first suspect), printed
+# below on every run and not asserted on.
 #
 # MODEL-GATED: needs data/OLMoE-1b-7b-0924-Instruct-Q4_K_M.gguf — a ~4 GB
 # gitignored dev artifact (Meshwa/OLMoE-1b-7b-0924-Instruct-gguf). When absent
@@ -31,8 +42,8 @@ GGUF = File.join(ROOT, "data", "OLMoE-1b-7b-0924-Instruct-Q4_K_M.gguf")
 PROMPT_IDS  = "510 38479 1171 33639 261"
 N           = 10
 DEGEN_TOKEN = 20065
-MIN_DISTINCT = 5   # coherent gave 10/10 distinct; degenerate gave 2/10
-MAX_RUN      = 3   # degenerate had runs of 5; coherent has no long single-token run
+FIRST_TOKEN = 36062   # "Paris" — llama.cpp's greedy first token for this prompt
+LLAMA_CPP   = [36062, 15, 510, 38479, 1171, 49348, 261, 19008, 6992, 15].freeze
 
 unless File.executable?(TOY)
   warn "moe-kquant-gate: bin/toy not executable: #{TOY}"
@@ -77,16 +88,20 @@ run = 1
 cont.each_cons(2) { |a, b| run = (a == b ? run + 1 : 1); max_run = [max_run, run].max }
 distinct = cont.uniq.length
 
-degenerate = (cont.first == DEGEN_TOKEN) || (distinct < MIN_DISTINCT) || (max_run > MAX_RUN)
+degenerate = (cont.first == DEGEN_TOKEN) || (cont.first != FIRST_TOKEN)
+agree = 0
+agree += 1 while agree < cont.length && cont[agree] == LLAMA_CPP[agree]
 
 puts "[moe-kquant] continuation: #{cont.join(' ')}"
 puts "[moe-kquant] distinct=#{distinct}/#{cont.length}  max_run=#{max_run}  first=#{cont.first}"
 
+puts "[moe-kquant] llama.cpp    : #{LLAMA_CPP.join(' ')}  (agrees on the first #{agree} of #{cont.length}; open gap, see header)"
+
 if degenerate
-  puts "GATE FAIL [moe-kquant]: degenerate output — attention head collapse regressed."
+  puts "GATE FAIL [moe-kquant]: first token #{cont.first}, expected #{FIRST_TOKEN} — attention head collapse regressed."
   puts "  (pre-fix signature: token #{DEGEN_TOKEN} repeated; head_nbytes returned 0 for K-quants)"
   exit 1
 end
 
-puts "GATE PASS [moe-kquant]: coherent K-quant MoE decode (no head-stride collapse)."
+puts "GATE PASS [moe-kquant]: K-quant MoE decode gives llama.cpp's first token (no head-stride collapse)."
 exit 0
