@@ -820,6 +820,18 @@ gate-decode-fused:
 gate-decode-fused-cuda:
 	ruby prep/decode_fused_gate.rb --device cuda
 
+# Pack gate (toy#211): `toy pack` writes ONE executable carrying the model,
+# config, description and KV prefix. Started with an empty environment, no
+# arguments and an empty directory it serves the packed model with the
+# plain runner's replies; the model is mapped from the executable itself;
+# the KV prefix is restored from it; --describe prints the card and
+# provenance; a damaged pack does not serve.
+.PHONY: gate-pack gate-pack-cuda
+gate-pack:
+	ruby prep/pack_gate.rb
+gate-pack-cuda:
+	ruby prep/pack_gate.rb --device cuda
+
 # P4 — from-scratch TRAINING compute runner (CRuby→runner COMPUTE BRIDGE,
 # same shape as toy-infer). Spinel source lib/toy/run/train.rb; the binary
 # path EQUALS the make target so ToyRoot.ensure_built("libexec/toy-train")

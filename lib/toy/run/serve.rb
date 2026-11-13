@@ -64,7 +64,7 @@ EVENTS      = RUN_DIR.length > 0 ? (RUN_DIR + "/events.jsonl") : ""
 
 # PORT hoisted ABOVE the run_start emit so config.port is available. No side
 # effects, so the hoist is safe (the Tep.run! call below still binds it).
-SERVE_PORT = (ENV["PORT"] || "4567").to_i
+SERVE_PORT = api_port_setting.to_i   # server.rb: --port / PORT / packed default (toy#211)
 
 # run_start at server boot — AFTER server.rb's require has loaded the model
 # (STATE.ready==true, STATE.cfg/STATE.kv.sess populated) and BEFORE Tep.run!.

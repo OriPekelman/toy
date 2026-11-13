@@ -383,6 +383,11 @@ module TinyNN
   ffi_func :tnn_kvf_put_tensor,   [:ptr, :int],             :int
   ffi_func :tnn_kvf_get_tensor,   [:ptr, :int],             :int
   ffi_func :tnn_file_fingerprint, [:str],                   :str
+  # toy pack (toy#211): files carried inside the running executable.
+  ffi_func :tnn_pack_count,       [],                       :int
+  ffi_func :tnn_pack_has,         [:str],                   :int
+  ffi_func :tnn_pack_text,        [:str],                   :str
+  ffi_func :tnn_pack_cfg,         [:str],                   :str
   ffi_func :tnn_read_i32_file,   [:str, :int, :int, :int_array],            :int
   ffi_func :tnn_read_f32_file,   [:str, :int, :int, :float_array],          :int
   # E1.1 — Conv2D + Im2Col (towards GH#13)

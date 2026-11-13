@@ -13,6 +13,36 @@ extern "C" {
  * ggml context that holds tensor headers + data.
  */
 void  *tnn_gguf_load(const char *path);            /* NULL on error */
+
+/* ---- toy pack (toy#211): files carried inside the running executable ----
+ *
+ * `toy pack` appends files to a runner binary:
+ *
+ *   [runner ELF][pad][entry 0][pad][entry 1]...[index][trailer]
+ *
+ * Every entry starts on a TNN_PACK_ALIGN boundary of the file and is
+ * followed by zeros up to the next one. The index is text, one line per
+ * entry: "<name> <offset> <length>\n". The trailer is the last 24 bytes of
+ * the file: "TOYPACK1", then the index offset and the index length as
+ * little-endian u64.
+ *
+ * A path of the form "@pack:<name>" names an entry. tnn_gguf_load,
+ * tnn_kvf_open_r and tnn_file_fingerprint accept such a path; the GGUF is
+ * mapped from the executable at the entry's offset, so its weights are
+ * still read in place. An executable without the trailer has no entries. */
+#define TNN_PACK_ALIGN 65536
+int         tnn_pack_count(void);                 /* 0 when not a pack; -1 for a damaged pack:
+                                                   * a trailer whose index does not read back,
+                                                   * or (ELF) bytes after the image with no trailer */
+int         tnn_pack_has(const char *name);       /* 1 / 0 */
+const char *tnn_pack_text(const char *name);      /* a small text entry; "" when absent */
+const char *tnn_pack_cfg(const char *key);        /* KEY=VALUE line of entry "config"; "" when absent */
+/* Open `path` for reading: a plain file, or a "@pack:<name>" entry. *base
+ * and *len are the region's start and length in the opened file, which is
+ * left positioned at *base. NULL on failure. */
+#include <stdio.h>
+#include <stdint.h>
+FILE       *tnn_pack_fopen(const char *path, int64_t *base, int64_t *len);
 void  *tnn_gguf_load_empty(void);                   /* empty GGUF, 0 tensors */
 void   tnn_gguf_free(void *handle);
 

@@ -37,8 +37,89 @@
 # cheap-to-test smoke; override for any llama-family GGUF.
 # If MODEL_NAME isn't set, it defaults to the basename of MODEL_PATH
 # minus the ".gguf" suffix -- close enough for the /v1/models response.
-GGUF_PATH = ENV["MODEL_PATH"] || "data/smollm2-135m-native.gguf"
-MODEL_NAME_ENV = ENV["MODEL_NAME"] || ""
+#
+# ---- Packed artifact (toy#211) ----
+# `toy pack` appends the model, a config, a description and optionally a
+# KV prefix file to this runner binary (layout: tinynn/tinynn_gguf.h). When
+# the running executable carries a "model" entry the server is a PACK: the
+# model, its name, the context, the stop ids and the KV prefix come from
+# the pack and NOT from the environment, and the command line is read:
+#
+#   <artifact>              serve on the packed port (or PORT, or --port)
+#   <artifact> --port N
+#   <artifact> --describe   print the card and provenance, load nothing
+#
+# An unpacked runner ignores its command line, as before.
+# A cut or damaged pack must not fall back to being a plain runner (it would
+# look for a model in the environment or the working directory).
+if TinyNN.tnn_pack_count < 0
+  puts "[openai_api_llama] this executable carries a damaged pack (truncated or altered file); refusing to start"
+  exit 1
+end
+PACK_ON = TinyNN.tnn_pack_count > 0 && TinyNN.tnn_pack_has("model") == 1
+
+# Reads the pack's command line. Returns the --port value ("" when not
+# given); --describe and --help print and exit here, before any model load.
+def api_pack_args
+  port = ""
+  i = 0
+  while i < ARGV.length
+    a = ARGV[i]
+    if a == "--describe"
+      puts TinyNN.tnn_pack_text("describe")
+      exit 0
+    elsif a == "--help" || a == "-h"
+      puts "usage: " + TinyNN.tnn_pack_cfg("MODEL_NAME") + " [--port N] | --describe"
+      puts "  Serves the packed model over an OpenAI-compatible HTTP API."
+      puts "  Port: --port, else PORT, else the packed default."
+      exit 0
+    elsif a == "--port" && i + 1 < ARGV.length
+      port = ARGV[i + 1]
+      if port.to_i.to_s != port || port.to_i < 1 || port.to_i > 65535
+        puts "not a TCP port: " + port
+        exit 2
+      end
+      i = i + 1
+    else
+      puts "unknown argument: " + a + " (try --help)"
+      exit 2
+    end
+    i = i + 1
+  end
+  port
+end
+PACK_PORT_ARG = PACK_ON ? api_pack_args : ""
+
+# A setting of the serve contract: the pack's config in a pack, otherwise
+# the environment `toy serve` controls.
+def api_setting(key)
+  if PACK_ON
+    return TinyNN.tnn_pack_cfg(key)
+  end
+  ENV[key] || ""
+end
+
+# The port to bind, as a string: --port (pack only), then PORT, then the
+# packed default, then 4567.
+def api_port_setting
+  if PACK_PORT_ARG.length > 0
+    return PACK_PORT_ARG
+  end
+  v = ENV["PORT"] || ""
+  if v.length > 0
+    return v
+  end
+  if PACK_ON
+    v = TinyNN.tnn_pack_cfg("PORT")
+    if v.length > 0
+      return v
+    end
+  end
+  "4567"
+end
+
+GGUF_PATH = PACK_ON ? "@pack:model" : (ENV["MODEL_PATH"] || "data/smollm2-135m-native.gguf")
+MODEL_NAME_ENV = api_setting("MODEL_NAME")
 # Derive a default model name from the GGUF basename when not given.
 # basename: strip everything before the last "/"; then strip ".gguf".
 _mn_last_slash = GGUF_PATH.rindex("/")
@@ -48,12 +129,14 @@ _mn_default    = _mn_dot_gguf == nil ? _mn_basename : _mn_basename[0...(_mn_dot_
 MODEL_NAME = MODEL_NAME_ENV.length > 0 ? MODEL_NAME_ENV : _mn_default
 # toy#207: MAX_T= (the CLI's --ctx) when given, otherwise the model's own
 # context_length clamped to [256, 4096] — it was a literal 256.
-MAX_T      = GGUFLoad.resolve_ctx(GGUF_PATH, ENV["MAX_T"] || "", "toy-serve")
+MAX_T      = GGUFLoad.resolve_ctx(GGUF_PATH, api_setting("MAX_T"), "toy-serve")
 # toy#210 (see the KV prefix block below). KV_REUSE=0 turns off the
 # reuse of cached rows between requests (every prompt is evaluated from
 # position 0, as before); for measurement and for the gate's reference.
-PREFIX_FILE  = ENV["PREFIX_FILE"] || ""
-PREFIX_CACHE = ENV["PREFIX_CACHE"] || ""
+# toy#211: a pack carries the finished KV prefix file as its "kv" entry and
+# no prefix text to rebuild it from.
+PREFIX_FILE  = PACK_ON ? "" : (ENV["PREFIX_FILE"] || "")
+PREFIX_CACHE = PACK_ON ? (TinyNN.tnn_pack_has("kv") == 1 ? "@pack:kv" : "") : (ENV["PREFIX_CACHE"] || "")
 KV_REUSE_OFF = (ENV["KV_REUSE"] || "") == "0"
 
 # ---- Inference state. Class instance held as a CONSTANT so spinel
@@ -282,6 +365,10 @@ end
 # around it cleanly without touching the State class.
 STATE.model_name = MODEL_NAME
 
+if PACK_ON
+  puts "[openai_api_llama] packed artifact: model, config" +
+       (PREFIX_CACHE.length > 0 ? ", KV prefix" : "") + " read from this executable"
+end
 puts "[openai_api_llama] loading config from " + GGUF_PATH
 STATE.cfg = SmolLM2ConfigLoader.read(GGUF_PATH)
 puts "[openai_api_llama] vocab=" + STATE.cfg.vocab.to_s +
@@ -360,7 +447,7 @@ end
 # STOP_IDS: extra end-of-generation token ids, comma-separated (`toy serve
 # --stop-ids`). For a GGUF whose metadata names no eos, or a workload that
 # ends on some other token. Applies with or without a tokenizer.
-_extra_stops = (ENV["STOP_IDS"] || "").split(",")
+_extra_stops = api_setting("STOP_IDS").split(",")
 _es = 0
 while _es < _extra_stops.length
   _piece = _extra_stops[_es].strip
@@ -415,7 +502,7 @@ if PREFIX_FILE.length > 0
   end
 end
 _restored = false
-if PREFIX_CACHE.length > 0 && File.exist?(PREFIX_CACHE)
+if PREFIX_CACHE.length > 0 && (PACK_ON || File.exist?(PREFIX_CACHE))
   _t0 = Time.now.to_f
   _why = api_kv_restore(PREFIX_CACHE)
   if _why.length == 0 && _prefix_ids.length > 0
@@ -443,7 +530,7 @@ if PREFIX_CACHE.length > 0 && File.exist?(PREFIX_CACHE)
     # Nothing to rebuild it from: refuse rather than serve without the
     # prefix the operator asked for.
     puts "[openai_api_llama] KV prefix: cannot use " + PREFIX_CACHE + " (" + _why +
-         "); pass --prefix-file to rebuild it"
+         (PACK_ON ? "); repack the artifact" : "); pass --prefix-file to rebuild it")
     exit 1
   end
 elsif PREFIX_CACHE.length > 0 && _prefix_ids.length == 0
@@ -468,6 +555,13 @@ if !_restored && _prefix_ids.length > 0
 end
 
 STATE.ready = true
+
+# SERVE_BOOT_ONLY=1: load, build and save the KV prefix, then exit without
+# serving. `toy pack` uses it to produce the KV prefix file it embeds.
+if (ENV["SERVE_BOOT_ONLY"] || "") == "1"
+  puts "[openai_api_llama] boot only: not serving"
+  exit 0
+end
 puts "[openai_api_llama] ready; serving"
 
 # ---- Helpers ----
