@@ -2826,3 +2826,220 @@ int tnn_filesystem_mkdir(const char *path) {
     if (errno == EEXIST) return 0;
     return -1;
 }
+
+/* ======================================================================
+ * toy#210 — KV prefix file.
+ *
+ * A sequential record file holding the K/V cache rows of a prompt prefix,
+ * so a server restores them at boot instead of re-evaluating the prefix.
+ * The Ruby side decides WHAT goes in (header strings/ints, then the
+ * tensors in a fixed order); this is the byte layer. One file open at a
+ * time (process-global), like the events emitter.
+ *
+ *   magic "TOYKV\0\1\0"
+ *   records, each tagged: 'S' str | 'I' int array | 'T' tensor rows
+ *
+ * Writes go to <path>.tmp and are renamed on a clean close, so a crash
+ * mid-save never leaves a truncated file under the real name. Every read
+ * checks its tag and sizes; any mismatch is a negative return.
+ * ====================================================================== */
+
+static FILE *g_kvf        = NULL;
+static int   g_kvf_write  = 0;
+static int   g_kvf_err    = 0;
+static char  g_kvf_path[4096];
+static char  g_kvf_str[4096];
+static const char TNN_KVF_MAGIC[8] = { 'T', 'O', 'Y', 'K', 'V', 0, 1, 0 };
+
+int tnn_kvf_open_w(const char *path)
+{
+    if (!path || g_kvf) return -1;
+    if (snprintf(g_kvf_path, sizeof g_kvf_path, "%s", path) >= (int)sizeof g_kvf_path - 8) return -2;
+    char tmp[4104];
+    snprintf(tmp, sizeof tmp, "%s.tmp", g_kvf_path);
+    g_kvf = fopen(tmp, "wb");
+    if (!g_kvf) return -3;
+    g_kvf_write = 1;
+    g_kvf_err   = 0;
+    if (fwrite(TNN_KVF_MAGIC, 1, 8, g_kvf) != 8) g_kvf_err = 1;
+    return 0;
+}
+
+int tnn_kvf_open_r(const char *path)
+{
+    if (!path || g_kvf) return -1;
+    g_kvf = fopen(path, "rb");
+    if (!g_kvf) return -3;
+    g_kvf_write = 0;
+    g_kvf_err   = 0;
+    char magic[8];
+    if (fread(magic, 1, 8, g_kvf) != 8 || memcmp(magic, TNN_KVF_MAGIC, 8) != 0) {
+        fclose(g_kvf);
+        g_kvf = NULL;
+        return -4;   /* not a toy KV file (or another format version) */
+    }
+    return 0;
+}
+
+/* 0 on a clean close. A write that hit any error leaves no file. */
+int tnn_kvf_close(void)
+{
+    if (!g_kvf) return -1;
+    int was_write = g_kvf_write;
+    int err = g_kvf_err;
+    if (was_write && fflush(g_kvf) != 0) err = 1;
+    if (was_write && fsync(fileno(g_kvf)) != 0) err = 1;
+    if (fclose(g_kvf) != 0) err = 1;
+    g_kvf = NULL;
+    if (was_write) {
+        char tmp[4104];
+        snprintf(tmp, sizeof tmp, "%s.tmp", g_kvf_path);
+        if (err) { unlink(tmp); return -2; }
+        if (rename(tmp, g_kvf_path) != 0) { unlink(tmp); return -3; }
+    }
+    return err ? -2 : 0;
+}
+
+int tnn_kvf_put_str(const char *s)
+{
+    if (!g_kvf || !g_kvf_write || !s) return -1;
+    int32_t n = (int32_t)strlen(s);
+    if (fputc('S', g_kvf) == EOF || fwrite(&n, 4, 1, g_kvf) != 1 ||
+        fwrite(s, 1, (size_t)n, g_kvf) != (size_t)n) { g_kvf_err = 1; return -2; }
+    return 0;
+}
+
+/* Next string record; "" on any mismatch (and the file is marked bad, so
+ * the caller's later reads fail too). */
+const char *tnn_kvf_get_str(void)
+{
+    g_kvf_str[0] = 0;
+    if (!g_kvf || g_kvf_write) return g_kvf_str;
+    int32_t n = 0;
+    if (fgetc(g_kvf) != 'S' || fread(&n, 4, 1, g_kvf) != 1 ||
+        n < 0 || n >= (int32_t)sizeof g_kvf_str ||
+        fread(g_kvf_str, 1, (size_t)n, g_kvf) != (size_t)n) {
+        g_kvf_err = 1;
+        g_kvf_str[0] = 0;
+        return g_kvf_str;
+    }
+    g_kvf_str[n] = 0;
+    return g_kvf_str;
+}
+
+/* Spinel's :int_array is int64_t*; stored as int32. */
+int tnn_kvf_put_ints(const int64_t *src, int n)
+{
+    if (!g_kvf || !g_kvf_write || n < 0 || (n > 0 && !src)) return -1;
+    int32_t n32 = (int32_t)n;
+    if (fputc('I', g_kvf) == EOF || fwrite(&n32, 4, 1, g_kvf) != 1) { g_kvf_err = 1; return -2; }
+    for (int i = 0; i < n; i++) {
+        int32_t v = (int32_t)src[i];
+        if (fwrite(&v, 4, 1, g_kvf) != 1) { g_kvf_err = 1; return -2; }
+    }
+    return 0;
+}
+
+/* Length of the next int-array record WITHOUT consuming it; negative on
+ * mismatch. */
+int tnn_kvf_peek_ints(void)
+{
+    if (!g_kvf || g_kvf_write || g_kvf_err) return -1;
+    long at = ftell(g_kvf);
+    int32_t n = 0;
+    if (fgetc(g_kvf) != 'I' || fread(&n, 4, 1, g_kvf) != 1 || n < 0) { g_kvf_err = 1; return -2; }
+    if (fseek(g_kvf, at, SEEK_SET) != 0) { g_kvf_err = 1; return -3; }
+    return (int)n;
+}
+
+/* Reads the next int-array record, which must hold exactly n values. */
+int tnn_kvf_get_ints(int64_t *dst, int n)
+{
+    if (!g_kvf || g_kvf_write || g_kvf_err || n < 0 || (n > 0 && !dst)) return -1;
+    int32_t n32 = 0;
+    if (fgetc(g_kvf) != 'I' || fread(&n32, 4, 1, g_kvf) != 1 || n32 != n) { g_kvf_err = 1; return -2; }
+    for (int i = 0; i < n; i++) {
+        int32_t v;
+        if (fread(&v, 4, 1, g_kvf) != 1) { g_kvf_err = 1; return -3; }
+        dst[i] = (int64_t)v;
+    }
+    return 0;
+}
+
+/* The first n_rows rows (along ne[1]) of a 2-D tensor, read back from
+ * whatever backend holds it. */
+int tnn_kvf_put_tensor(void *tensor, int n_rows)
+{
+    struct ggml_tensor *t = (struct ggml_tensor *)tensor;
+    if (!g_kvf || !g_kvf_write || !t || n_rows < 0 || n_rows > (int)t->ne[1]) return -1;
+    int32_t type = (int32_t)t->type;
+    int64_t ne0  = t->ne[0];
+    int64_t nb   = (int64_t)n_rows * (int64_t)t->nb[1];
+    if (fputc('T', g_kvf) == EOF || fwrite(&type, 4, 1, g_kvf) != 1 ||
+        fwrite(&ne0, 8, 1, g_kvf) != 1 || fwrite(&nb, 8, 1, g_kvf) != 1) { g_kvf_err = 1; return -2; }
+    if (nb == 0) return 0;
+    void *buf = malloc((size_t)nb);
+    if (!buf) { g_kvf_err = 1; return -3; }
+    ggml_backend_tensor_get(t, buf, 0, (size_t)nb);
+    int ok = fwrite(buf, 1, (size_t)nb, g_kvf) == (size_t)nb;
+    free(buf);
+    if (!ok) { g_kvf_err = 1; return -2; }
+    return 0;
+}
+
+/* Writes the next tensor record into the first n_rows rows of `tensor`.
+ * Type, row width and byte count must all match the live tensor. */
+int tnn_kvf_get_tensor(void *tensor, int n_rows)
+{
+    struct ggml_tensor *t = (struct ggml_tensor *)tensor;
+    if (!g_kvf || g_kvf_write || g_kvf_err || !t || n_rows < 0 || n_rows > (int)t->ne[1]) return -1;
+    int32_t type = 0;
+    int64_t ne0 = 0, nb = 0;
+    if (fgetc(g_kvf) != 'T' || fread(&type, 4, 1, g_kvf) != 1 ||
+        fread(&ne0, 8, 1, g_kvf) != 1 || fread(&nb, 8, 1, g_kvf) != 1) { g_kvf_err = 1; return -2; }
+    if (type != (int32_t)t->type || ne0 != t->ne[0] ||
+        nb != (int64_t)n_rows * (int64_t)t->nb[1]) { g_kvf_err = 1; return -4; }
+    if (nb == 0) return 0;
+    void *buf = malloc((size_t)nb);
+    if (!buf) { g_kvf_err = 1; return -3; }
+    if (fread(buf, 1, (size_t)nb, g_kvf) != (size_t)nb) { free(buf); g_kvf_err = 1; return -2; }
+    ggml_backend_tensor_set(t, buf, 0, (size_t)nb);
+    free(buf);
+    return 0;
+}
+
+/* A cheap content fingerprint of a (large) file: its size plus FNV-1a
+ * over up to 1024 chunks of 16 KiB spread evenly from start to end (16 MiB
+ * read at most). Enough to tell two model files apart — including
+ * same-shape, re-trained weights — without reading gigabytes. NOT a full
+ * hash: at 4 GB the samples are ~4 MiB apart, so a change confined to a
+ * smaller span between two samples is not seen.
+ * Returns "" when the file cannot be read. */
+const char *tnn_file_fingerprint(const char *path)
+{
+    static char out[64];
+    out[0] = 0;
+    if (!path) return out;
+    FILE *f = fopen(path, "rb");
+    if (!f) return out;
+    struct stat st;
+    if (fstat(fileno(f), &st) != 0) { fclose(f); return out; }
+    const int64_t size  = (int64_t)st.st_size;
+    const int64_t chunk = 16 * 1024;
+    const int     n     = 1024;
+    unsigned char *buf = (unsigned char *)malloc((size_t)chunk);
+    if (!buf) { fclose(f); return out; }
+    uint64_t h = 1469598103934665603ULL;
+    for (int i = 0; i < n; i++) {
+        int64_t off = 0;
+        if (size > chunk) off = (int64_t)(((double)(size - chunk) / (double)(n - 1)) * (double)i);
+        if (fseeko(f, (off_t)off, SEEK_SET) != 0) break;
+        size_t got = fread(buf, 1, (size_t)chunk, f);
+        for (size_t k = 0; k < got; k++) { h ^= buf[k]; h *= 1099511628211ULL; }
+        if (size <= chunk) break;
+    }
+    free(buf);
+    fclose(f);
+    snprintf(out, sizeof out, "%lld-%016llx", (long long)size, (unsigned long long)h);
+    return out;
+}

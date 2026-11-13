@@ -21,6 +21,7 @@
 #                context_length clamped to [256, 4096]; toy#207)
 #   STOP_IDS     extra end-of-generation token ids, comma-separated
 #                (`toy serve --stop-ids`; toy#209)
+#   PREFIX_FILE / PREFIX_CACHE / KV_REUSE   KV prefix (toy#210), below
 #   PORT         (read in the entrypoint, not here)
 #
 # Spinel hygiene (#16): no #{} interpolation, no Struct.new, String-concat
@@ -48,6 +49,12 @@ MODEL_NAME = MODEL_NAME_ENV.length > 0 ? MODEL_NAME_ENV : _mn_default
 # toy#207: MAX_T= (the CLI's --ctx) when given, otherwise the model's own
 # context_length clamped to [256, 4096] — it was a literal 256.
 MAX_T      = GGUFLoad.resolve_ctx(GGUF_PATH, ENV["MAX_T"] || "", "toy-serve")
+# toy#210 (see the KV prefix block below). KV_REUSE=0 turns off the
+# reuse of cached rows between requests (every prompt is evaluated from
+# position 0, as before); for measurement and for the gate's reference.
+PREFIX_FILE  = ENV["PREFIX_FILE"] || ""
+PREFIX_CACHE = ENV["PREFIX_CACHE"] || ""
+KV_REUSE_OFF = (ENV["KV_REUSE"] || "") == "0"
 
 # ---- Inference state. Class instance held as a CONSTANT so spinel
 #      emits a typed slot for it (same pattern as inference_api.rb /
@@ -64,6 +71,11 @@ class State
   # :finish the finish_reason of the LAST generation ("stop" | "length").
   attr_accessor :cfg, :kv, :gguf, :model_name, :ready, :req_seq
   attr_accessor :tok, :stop_ids, :chat_family, :finish
+  # toy#210: :kv_ids are the token ids whose K/V rows are currently in the
+  # cache (row i holds token kv_ids[i]); :cached is how many of them the
+  # LAST request reused instead of re-evaluating; :model_fp fingerprints
+  # the GGUF for the KV prefix file.
+  attr_accessor :kv_ids, :cached, :model_fp
   def initialize
     @cfg  = nil
     @kv   = nil
@@ -76,6 +88,10 @@ class State
     @stop_ids.pop
     @chat_family = "chatml"
     @finish      = "length"
+    @kv_ids      = [0]
+    @kv_ids.pop
+    @cached      = 0
+    @model_fp    = ""
   end
 end
 STATE = State.new
@@ -91,6 +107,150 @@ def api_stop_id?(id)
     i = i + 1
   end
   false
+end
+
+# ---- KV prefix file (toy#210) ----
+#
+# Layout (tinynn's tnn_kvf_* record file): format tag, model fingerprint,
+# backend name, shape ints [n_layers, n_kv, d_head, kv_type_k, kv_type_v], the prefix
+# token ids, then per layer and kv-head the first n rows of K and of V.
+
+KV_FILE_TAG = "toy-kv-prefix-1"
+
+# Saves the first `n` cached positions. Returns "" on success, otherwise
+# the reason.
+def api_kv_save(path, n)
+  kv = STATE.kv
+  if kv.is_mla
+    return "KV prefix files are not supported for MLA attention models"
+  end
+  if n <= 0 || n > STATE.kv_ids.length
+    return "nothing cached to save"
+  end
+  if TinyNN.tnn_kvf_open_w(path) != 0
+    return "cannot write " + path
+  end
+  TinyNN.tnn_kvf_put_str(KV_FILE_TAG)
+  TinyNN.tnn_kvf_put_str(STATE.model_fp)
+  TinyNN.tnn_kvf_put_str(TinyNN.tnn_backend_name(kv.sess))
+  shape = [kv.n_layers, kv.n_kv, kv.d_head, kv.kv_type_k, kv.kv_type_v]
+  TinyNN.tnn_kvf_put_ints(shape, 5)
+  ids = [0]
+  ids.pop
+  i = 0
+  while i < n
+    ids.push(STATE.kv_ids[i])
+    i = i + 1
+  end
+  TinyNN.tnn_kvf_put_ints(ids, n)
+  li = 0
+  while li < kv.n_layers
+    blk = kv.kv_blocks_ffi[li]
+    h = 0
+    while h < kv.n_kv
+      TinyNN.tnn_kvf_put_tensor(blk.t_K[h], n)
+      TinyNN.tnn_kvf_put_tensor(blk.t_V[h], n)
+      h = h + 1
+    end
+    li = li + 1
+  end
+  if TinyNN.tnn_kvf_close != 0
+    return "write to " + path + " failed"
+  end
+  ""
+end
+
+# Restores a prefix file into the cache and STATE.kv_ids. Returns "" on
+# success, otherwise the reason (the cache is then treated as empty).
+def api_kv_restore(path)
+  kv = STATE.kv
+  if kv.is_mla
+    return "KV prefix files are not supported for MLA attention models"
+  end
+  if TinyNN.tnn_kvf_open_r(path) != 0
+    return "not a toy KV prefix file"
+  end
+  why = api_kv_restore_open(kv)
+  TinyNN.tnn_kvf_close
+  if why.length > 0
+    while STATE.kv_ids.length > 0
+      STATE.kv_ids.pop
+    end
+  end
+  why
+end
+
+def api_kv_restore_open(kv)
+  if TinyNN.tnn_kvf_get_str != KV_FILE_TAG
+    return "unknown KV prefix file version"
+  end
+  if TinyNN.tnn_kvf_get_str != STATE.model_fp
+    return "it was made from a different model file"
+  end
+  # K/V rows computed on another backend differ in the low bits, so a
+  # reply could differ from one this server computes itself.
+  if TinyNN.tnn_kvf_get_str != TinyNN.tnn_backend_name(kv.sess)
+    return "it was made on a different device"
+  end
+  shape = [0, 0, 0, 0, 0]
+  if TinyNN.tnn_kvf_get_ints(shape, 5) != 0
+    return "damaged header"
+  end
+  if shape[0] != kv.n_layers || shape[1] != kv.n_kv || shape[2] != kv.d_head ||
+     shape[3] != kv.kv_type_k || shape[4] != kv.kv_type_v
+    return "its cache layout does not match this server (layers/heads/KV type)"
+  end
+  n = TinyNN.tnn_kvf_peek_ints
+  if n <= 0
+    return "damaged header"
+  end
+  if n >= MAX_T
+    return "its " + n.to_s + "-token prefix does not fit context " + MAX_T.to_s
+  end
+  ids = [0]
+  ids.pop
+  i = 0
+  while i < n
+    ids.push(0)
+    i = i + 1
+  end
+  if TinyNN.tnn_kvf_get_ints(ids, n) != 0
+    return "damaged token list"
+  end
+  while STATE.kv_ids.length > 0
+    STATE.kv_ids.pop
+  end
+  li = 0
+  while li < kv.n_layers
+    blk = kv.kv_blocks_ffi[li]
+    h = 0
+    while h < kv.n_kv
+      if TinyNN.tnn_kvf_get_tensor(blk.t_K[h], n) != 0 ||
+         TinyNN.tnn_kvf_get_tensor(blk.t_V[h], n) != 0
+        return "damaged or truncated tensor data"
+      end
+      h = h + 1
+    end
+    li = li + 1
+  end
+  i = 0
+  while i < n
+    STATE.kv_ids.push(ids[i])
+    i = i + 1
+  end
+  ""
+end
+
+# Evaluate ids[from...] into the cache (no sampling); used for the boot
+# prefix. Positions below `from` must already be cached.
+def api_kv_feed(ids, from)
+  pos = from
+  while pos < ids.length
+    SmolLM2KV.decode_step(STATE.kv, ids[pos], pos)
+    STATE.kv_ids.push(ids[pos])
+    pos = pos + 1
+  end
+  0
 end
 
 # GH#188 -- explicit re-assignment AFTER STATE.new. State#initialize
@@ -192,6 +352,93 @@ if _extra_stops.length > 0
   puts "[openai_api_llama] stop ids: " + STATE.stop_ids.length.to_s + " (with STOP_IDS)"
 end
 
+# ---- KV prefix (toy#210) ----
+# PREFIX_FILE  text of the system message every request starts with. It is
+#              rendered as the chat template's system turn and evaluated
+#              once at boot, so requests only evaluate what follows it.
+# PREFIX_CACHE a KV prefix file: restored at boot when it matches this
+#              model (and PREFIX_FILE, when given), otherwise rebuilt from
+#              PREFIX_FILE and saved.
+STATE.model_fp = TinyNN.tnn_file_fingerprint(GGUF_PATH)
+_prefix_ids = [0]
+_prefix_ids.pop
+if PREFIX_FILE.length > 0
+  if !STATE.tok.present
+    puts "[openai_api_llama] --prefix-file needs a GGUF with an embedded tokenizer"
+    exit 1
+  end
+  if !File.exist?(PREFIX_FILE)
+    puts "[openai_api_llama] no such prefix file: " + PREFIX_FILE
+    exit 1
+  end
+  _ptext = File.read(PREFIX_FILE)
+  # One trailing newline is the editor's, not the prompt's.
+  if _ptext.length > 0 && _ptext[_ptext.length - 1] == "\n"
+    _ptext = _ptext[0, _ptext.length - 1]
+  end
+  _ppairs = [["", ""]]
+  _ppairs.delete_at(0)
+  _ppairs.push(["system", _ptext])
+  _prefix_ids = STATE.tok.encode(ToyChatTemplate.apply(STATE.chat_family, _ppairs, false))
+  if _prefix_ids.length == 0 || _prefix_ids.length >= MAX_T
+    puts "[openai_api_llama] prefix is " + _prefix_ids.length.to_s +
+         " tokens; it must be non-empty and fit context " + MAX_T.to_s
+    exit 1
+  end
+end
+_restored = false
+if PREFIX_CACHE.length > 0 && File.exist?(PREFIX_CACHE)
+  _t0 = Time.now.to_f
+  _why = api_kv_restore(PREFIX_CACHE)
+  if _why.length == 0 && _prefix_ids.length > 0
+    # The file must hold exactly the prefix asked for.
+    _same = STATE.kv_ids.length == _prefix_ids.length
+    _pi = 0
+    while _same && _pi < _prefix_ids.length
+      if STATE.kv_ids[_pi] != _prefix_ids[_pi]; _same = false; end
+      _pi = _pi + 1
+    end
+    if !_same
+      _why = "it holds a different prefix than --prefix-file"
+      while STATE.kv_ids.length > 0
+        STATE.kv_ids.pop
+      end
+    end
+  end
+  if _why.length == 0
+    _restored = true
+    puts "[openai_api_llama] KV prefix: restored " + STATE.kv_ids.length.to_s + " tokens from " +
+         PREFIX_CACHE + " in " + ((Time.now.to_f - _t0) * 1000.0).round(1).to_s + " ms"
+  elsif _prefix_ids.length > 0
+    puts "[openai_api_llama] KV prefix: " + PREFIX_CACHE + " not used (" + _why + "); rebuilding"
+  else
+    # Nothing to rebuild it from: refuse rather than serve without the
+    # prefix the operator asked for.
+    puts "[openai_api_llama] KV prefix: cannot use " + PREFIX_CACHE + " (" + _why +
+         "); pass --prefix-file to rebuild it"
+    exit 1
+  end
+elsif PREFIX_CACHE.length > 0 && _prefix_ids.length == 0
+  puts "[openai_api_llama] KV prefix: " + PREFIX_CACHE + " does not exist and there is no --prefix-file to build it from"
+  exit 1
+end
+if !_restored && _prefix_ids.length > 0
+  _t0 = Time.now.to_f
+  api_kv_feed(_prefix_ids, 0)
+  puts "[openai_api_llama] KV prefix: evaluated " + _prefix_ids.length.to_s + " tokens in " +
+       ((Time.now.to_f - _t0) * 1000.0).round(1).to_s + " ms"
+  if PREFIX_CACHE.length > 0
+    _t0 = Time.now.to_f
+    _why = api_kv_save(PREFIX_CACHE, _prefix_ids.length)
+    if _why.length > 0
+      puts "[openai_api_llama] KV prefix: could not save " + PREFIX_CACHE + " (" + _why + ")"
+      exit 1
+    end
+    puts "[openai_api_llama] KV prefix: saved to " + PREFIX_CACHE + " in " +
+         ((Time.now.to_f - _t0) * 1000.0).round(1).to_s + " ms"
+  end
+end
+
 STATE.ready = true
 puts "[openai_api_llama] ready; serving"
 
@@ -212,10 +459,9 @@ end
 # `n_new` more steps. Returns Array<Int> of the new token IDs (does
 # NOT include the prompt).
 #
-# This routine re-runs the prefill from position 0 every call; the
-# cache's t_K / t_V tensors are persistent and get overwritten in
-# place. (A future optimisation would be a fast prefix-cache for
-# shared prompts.)
+# The cache's t_K / t_V tensors are persistent; rows a prompt shares with
+# what is already cached are kept (toy#210, api_first_id) and the rest are
+# overwritten in place.
 def api_argmax(logits, vocab)
   best_idx = 0
   best_val = logits.flat[0]
@@ -229,12 +475,39 @@ def api_argmax(logits, vocab)
 end
 
 # Prefill the prompt; returns the FIRST generated token id.
+#
+# toy#210: the K/V rows of the longest prefix this prompt shares with what
+# is already in the cache (the previous request, or a restored prefix file)
+# are kept, and evaluation starts after them. The last prompt token is
+# always evaluated, since its logits are what the caller needs. The result
+# is the same ids as a full prefill: the kept rows are the rows a full
+# prefill would write.
 def api_first_id(prompt_ids)
   vocab = STATE.cfg.vocab
+  lcp = 0
+  lim = STATE.kv_ids.length
+  if prompt_ids.length < lim
+    lim = prompt_ids.length
+  end
+  while lcp < lim && STATE.kv_ids[lcp] == prompt_ids[lcp]
+    lcp = lcp + 1
+  end
+  start = lcp
+  if start > prompt_ids.length - 1
+    start = prompt_ids.length - 1
+  end
+  if KV_REUSE_OFF
+    start = 0
+  end
+  STATE.cached = start
+  while STATE.kv_ids.length > start
+    STATE.kv_ids.pop
+  end
   last_logits = Mat.new(1, vocab)
-  prefill_pos = 0
+  prefill_pos = start
   while prefill_pos < prompt_ids.length
     last_logits = SmolLM2KV.decode_step(STATE.kv, prompt_ids[prefill_pos], prefill_pos)
+    STATE.kv_ids.push(prompt_ids[prefill_pos])
     prefill_pos = prefill_pos + 1
   end
   api_argmax(last_logits, vocab)
@@ -242,7 +515,12 @@ end
 
 # Feed `prev_id` at position `pos`; returns the next token id.
 def api_next_id(prev_id, pos)
-  api_argmax(SmolLM2KV.decode_step(STATE.kv, prev_id, pos), STATE.cfg.vocab)
+  while STATE.kv_ids.length > pos
+    STATE.kv_ids.pop
+  end
+  logits = SmolLM2KV.decode_step(STATE.kv, prev_id, pos)
+  STATE.kv_ids.push(prev_id)
+  api_argmax(logits, STATE.cfg.vocab)
 end
 
 # Generates up to `n_new` ids and stops BEFORE a stop id (which is not

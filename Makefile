@@ -797,6 +797,17 @@ gate-serve-chat:
 gate-serve-chat-cuda:
 	ruby prep/serve_chat_gate.rb --device cuda
 
+# KV prefix gate (toy#210): the K/V rows of a prompt prefix already in the
+# cache are reused instead of re-evaluated (between requests, and from a
+# KV prefix file restored at boot), with replies identical to a server that
+# evaluates every prompt from position 0 (KV_REUSE=0). The file is refused
+# for another model, another device, a damaged header or a truncated body.
+.PHONY: gate-kv-prefix gate-kv-prefix-cuda
+gate-kv-prefix:
+	ruby prep/kv_prefix_gate.rb
+gate-kv-prefix-cuda:
+	ruby prep/kv_prefix_gate.rb --device cuda
+
 # P4 — from-scratch TRAINING compute runner (CRuby→runner COMPUTE BRIDGE,
 # same shape as toy-infer). Spinel source lib/toy/run/train.rb; the binary
 # path EQUALS the make target so ToyRoot.ensure_built("libexec/toy-train")

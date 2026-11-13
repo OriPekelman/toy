@@ -192,7 +192,7 @@ They now appear in `toy eval --help` and under a `subcommands` key in
 `toy --manifest`, which is emitted only for commands that have them, so
 existing manifest consumers see no new key.
 
-### `serve <model> [--port PORT] [--name NAME] [--ctx N] [--device cpu|cuda] [--stop-ids N,M]`
+### `serve <model> [--port PORT] [--name NAME] [--ctx N] [--device cpu|cuda] [--stop-ids N,M] [--prefix-file F] [--prefix-cache F]`
 Serve a GGUF model over an OpenAI-compatible HTTP API. Default `--port 4567`;
 `--name` sets the model label in `/v1/models` (default: the GGUF basename).
 `--ctx N` sets the context exactly as for `infer` (same default). `--device
@@ -227,6 +227,42 @@ What the server offers depends on whether the GGUF embeds its tokenizer
   whose prompt fits but whose `max_tokens` does not is cut to what fits.
   Neither takes the server down.
 
+**Prompt prefix reuse (toy#210).** The K/V rows of whatever prefix a
+request shares with the previous one are kept, and only the rest of the
+prompt is evaluated. Replies are the same as without reuse (`KV_REUSE=0`
+in the runner's environment turns it off, for measurement). For a system
+message that every request starts with:
+
+```
+toy serve model.gguf --device cuda --prefix-file system.txt --prefix-cache system.kv
+```
+
+- `--prefix-file` is the text of the system message (one trailing newline
+  is dropped). It is rendered as the chat template's system turn and
+  evaluated once at boot. Requests must send the same system message as
+  their first message to benefit; a request that differs is still answered
+  correctly, it just reuses less.
+- `--prefix-cache` is a KV prefix file. If it exists and matches, it is
+  restored instead of evaluating the prefix; otherwise it is built from
+  `--prefix-file` and saved. Given alone, the file must exist and match, or
+  the server refuses to start.
+- The file is refused when it was made from a different model file, on a
+  different device, with a different KV layout, or holds a different prefix
+  than `--prefix-file`, and when it is damaged or truncated. The model
+  check is a sampled fingerprint (file size plus 1024 chunks of 16 KiB),
+  not a full hash: a change confined to a few MiB between two samples is
+  not seen. The tensor data carries no checksum.
+- Not supported for MLA attention models (DeepSeek-V2).
+- Each request's event carries `cached_tokens`, the number of prompt tokens
+  not re-evaluated.
+
+Measured on the gx10 (CUDA, a 3.98 B Qwen2.5-shaped model in Q8, 269-token
+system turn, ~30-token user message, 24 new tokens): about 14 s per request
+without reuse, about 2.2 s with the prefix. Restoring the 24 MB file takes
+12 ms and saving it 43 ms; evaluating the prefix at boot takes 12 s. The
+first requests after a restore are slower (5–6 s) until each new position
+has been evaluated once.
+
 Three things only tep can change (tep#276), so they are as tep has them:
 `/v1/completions` reads `prompt` as a token-id array only (a string prompt is
 an empty request); the chat reply always says `finish_reason: "stop"`, also
@@ -235,7 +271,8 @@ when it ended on `max_tokens`; and the chat reply `id` is the constant
 
 The serve stack lives at `lib/toy/serve/openai/` and is driven by
 `lib/toy/run/serve.rb` → `libexec/toy-serve`. `make gate-serve`,
-`gate-serve-chat` and `gate-serve-chat-cuda` cover it.
+`gate-serve-chat`, `gate-serve-chat-cuda`, `gate-kv-prefix` and
+`gate-kv-prefix-cuda` cover it.
 
 > **The 0.11.x tep line needs fixes that are only on tep `main`**
 > ([OriPekelman/tep#276](https://github.com/OriPekelman/tep/issues/276)).

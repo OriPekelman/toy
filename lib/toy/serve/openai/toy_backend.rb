@@ -224,6 +224,7 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
       ev = ev +   "\"model\":\"" + @model_name + "\""
       ev = ev +   ",\"prompt_tokens\":"     + n_prompt.to_s
       ev = ev +   ",\"completion_tokens\":" + n_completion.to_s
+      ev = ev +   ",\"cached_tokens\":"     + @state.cached.to_s
       ev = ev +   ",\"latency_us\":"        + latency_us.to_s
       ev = ev +   ",\"sampling\":{\"max_tokens\":" + n_new.to_s + "}"
       ev = ev +   ",\"request_id\":\"" + req_id + "\""

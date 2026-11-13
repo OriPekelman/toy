@@ -116,7 +116,9 @@ module Toy
                   { name: "--name", desc: "model label in /v1/models (default GGUF basename)" },
                   { name: "--ctx", desc: "context length in tokens (default: the model's, clamped to [256, 4096])" },
                   { name: "--device", desc: "cpu (default) | cuda" },
-                  { name: "--stop-ids", desc: "extra end-of-generation token ids, comma-separated" }]
+                  { name: "--stop-ids", desc: "extra end-of-generation token ids, comma-separated" },
+                  { name: "--prefix-file", desc: "system message every request starts with; evaluated once at boot" },
+                  { name: "--prefix-cache", desc: "KV prefix file: restored at boot, or built from --prefix-file and saved" }]
         }
       }.freeze
 
