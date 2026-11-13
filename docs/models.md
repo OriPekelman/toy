@@ -33,8 +33,11 @@ which backend — and the footnotes that keep the table honest.
 | OLMoE-1B-7B-Instr  | Llama + MoE + QK-norm⁂  | 7B (1B act) |     | ✓    | ✓   |          |         | ‡         |
 | Gemma 2-2b-it      | Llama + Gemma extras⁂⁂  | 2B          |     | ✓    | ✓   |          |         | ‡         |
 
-⁂ OLMoE uses OLMoE-style QK-norm (gamma at `[d_model]`, per-head
-sliced) and 64 experts × top-8 routing. MoE expert weights **must be
+⁂ OLMoE uses OLMoE-style QK-norm (gamma at `[d_model]`, an RMSNorm
+over the whole Q / K vector before the head split, as llama.cpp builds
+it; toy#213) and 64 experts × top-8 routing. Its Q4_K_M greedy decode
+equals llama.cpp's ids on CPU and CUDA (`make gate-moe-kquant`,
+`gate-moe-kquant-cuda`). MoE expert weights **must be
 Q8_0** — Q4_K / Q5_K / Q6_K trigger a known ggml `mul_mat_id` bug
 ([ggml#1506](https://github.com/ggml-org/ggml/issues/1506)). The loader
 emits a runtime warning if expert weights are K-quantized.

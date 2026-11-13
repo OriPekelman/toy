@@ -99,9 +99,15 @@ class SmolLM2KVBlockFFI
                 # (aliases of the same mmap bytes the per-head t_w_q[h]
                 # slices point into). Set only when cache.fused.
                 :t_w_q_full, :t_w_k_full, :t_w_v_full,
-                :t_b_q_full, :t_b_k_full, :t_b_v_full
+                :t_b_q_full, :t_b_k_full, :t_b_v_full,
+                # toy#213: full-vector QK-norm (qk_norm_kind == 2). The
+                # normalised whole Q / K vector of the step being built;
+                # the per-head code views its [d_head] slice out of it.
+                :t_qn_step, :t_kn_step
 
   def initialize
+    @t_qn_step = TinyNN.tnn_null_ptr
+    @t_kn_step = TinyNN.tnn_null_ptr
     @t_w_q_full = TinyNN.tnn_null_ptr
     @t_w_k_full = TinyNN.tnn_null_ptr
     @t_w_v_full = TinyNN.tnn_null_ptr
@@ -793,6 +799,20 @@ class SmolLM2KVFFICache
       # ne0. Per-position writes span a contiguous d_head-vector
       # which is Q8-block-aligned at d_head=64 (=2 blocks of 32).
       # See the struct comment on :kv_type_k / :kv_type_v.
+      if @has_qk_norm && @qk_norm_kind == 2 && !@fused
+        # toy#213: full-vector QK-norm needs the whole Q / K projection
+        # before the head split, so alias the whole attn_q / attn_k
+        # weights (the same mmap bytes the per-head slices point into).
+        if @per_head_attn || @lora_q_enabled
+          puts "FATAL: full-vector QK-norm (attn_q_norm of d_model elements) is " +
+               "not supported with per-head attention checkpoints or LoRA-Q. Aborting."
+          exit 1
+        end
+        blk.t_w_q_full = TinyNN.tnn_input_2d_persistent_mmap(@sess,
+                           @n_heads * @d_head, @d_model, q_type, q_off_base)
+        blk.t_w_k_full = TinyNN.tnn_input_2d_persistent_mmap(@sess,
+                           @n_kv * @d_head, @d_model, k_type, k_off_base)
+      end
       if @fused
         # toy#206: one K and one V tensor per layer, every KV head of a
         # position contiguous: ne=[n_kv*d_head, max_T]. Plus whole-weight
@@ -863,7 +883,7 @@ class SmolLM2KVFFICache
         kb_off = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, kb_idx)
         vb_off = TinyNN.tnn_gguf_tensor_file_offset(gguf_handle, vb_idx)
         bias_stride = @d_head * 4  # f32
-        if @fused
+        if @fused || (@has_qk_norm && @qk_norm_kind == 2)
           blk.t_b_q_full = TinyNN.tnn_input_1d_persistent_mmap(@sess, @n_heads * @d_head, 0, qb_off)
           blk.t_b_k_full = TinyNN.tnn_input_1d_persistent_mmap(@sess, @n_kv * @d_head, 0, kb_off)
           blk.t_b_v_full = TinyNN.tnn_input_1d_persistent_mmap(@sess, @n_kv * @d_head, 0, vb_off)
@@ -1622,38 +1642,46 @@ class SmolLM2KVFFICache
     t_h = TinyNN.tnn_rms_norm(@sess, t_x, blk.t_rn1_gamma, eps)
     t_h = trace_tap(tag + "rn1", t_h)
 
+    # toy#213: kind=2 QK-norm (OLMoE / Granite) is an RMSNorm over the
+    # WHOLE Q and K vectors, before the head split, as llama.cpp builds
+    # it. Project and normalise them once here; the per-head code below
+    # views its [d_head] slice.
+    full_qk = @has_qk_norm && @qk_norm_kind == 2
+    if full_qk
+      t_qf = TinyNN.tnn_matmul(@sess, blk.t_w_q_full, t_h)            # ne=[n_heads*d_head, 1]
+      t_kf = TinyNN.tnn_matmul(@sess, blk.t_w_k_full, t_h)            # ne=[n_kv*d_head, 1]
+      if @has_qkv_bias
+        t_qf = TinyNN.tnn_add(@sess, t_qf, blk.t_b_q_full)
+        t_kf = TinyNN.tnn_add(@sess, t_kf, blk.t_b_k_full)
+      end
+      blk.t_qn_step = TinyNN.tnn_rms_norm(@sess, t_qf, blk.t_q_norm_gamma, @rms_eps)
+      blk.t_kn_step = TinyNN.tnn_rms_norm(@sess, t_kf, blk.t_k_norm_gamma, @rms_eps)
+    end
+
     # --- compute K, V for each KV head (n_kv times), rope K, cpy into buffers ---
     hkv = 0
     while hkv < @n_kv
-      t_k_raw = TinyNN.tnn_matmul(@sess, blk.t_w_k[hkv], t_h)         # ne=[d_head, 1]
-      if @has_qkv_bias
-        t_k_pre = TinyNN.tnn_add(@sess, t_k_raw, blk.t_b_k[hkv])
+      if full_qk
+        t_k_pre = TinyNN.tnn_view_2d(@sess, blk.t_kn_step, @d_head, 1,
+                                       @d_head * 4, hkv * @d_head * 4)
       else
-        t_k_pre = t_k_raw
+        t_k_raw = TinyNN.tnn_matmul(@sess, blk.t_w_k[hkv], t_h)         # ne=[d_head, 1]
+        if @has_qkv_bias
+          t_k_pre = TinyNN.tnn_add(@sess, t_k_raw, blk.t_b_k[hkv])
+        else
+          t_k_pre = t_k_raw
+        end
       end
       # Tap K (head 0 only) post-bias, pre-RoPE.
       if hkv == 0
         t_k_pre = trace_tap(tag + "k_pre", t_k_pre)
       end
-      # M1 + #110: QK-norm. Two flavors:
-      #   kind=1 (Qwen3): blk.t_k_norm_gamma is [d_head], shared
-      #     across all KV heads; pass directly.
-      #   kind=2 (OLMoE / Granite, per-head approximation):
-      #     blk.t_k_norm_gamma is [n_kv * d_head] = [d_model_kv];
-      #     view the per-head [d_head] slice at byte offset
-      #     hkv*d_head*4. This computes per-head variance (not the
-      #     true full-Q-vector variance) but applies the correct
-      #     per-element gamma scaling. Cheap and close-enough for
-      #     models where per-head magnitudes are similar (which they
-      #     typically are for projections of a single input).
-      if @has_qk_norm
-        if @qk_norm_kind == 2
-          k_gamma_view = TinyNN.tnn_view_1d(@sess, blk.t_k_norm_gamma,
-                                              @d_head, hkv * @d_head * 4)
-          t_k_pre = TinyNN.tnn_rms_norm(@sess, t_k_pre, k_gamma_view, @rms_eps)
-        else
-          t_k_pre = TinyNN.tnn_rms_norm(@sess, t_k_pre, blk.t_k_norm_gamma, @rms_eps)
-        end
+      # QK-norm. kind=1 (Qwen3): one [d_head] gamma shared by every
+      # head, each head normalised on its own. kind=2 was normalised
+      # as a whole vector above (for kind=2 the k_pre tap is therefore
+      # post-norm).
+      if @has_qk_norm && !full_qk
+        t_k_pre = TinyNN.tnn_rms_norm(@sess, t_k_pre, blk.t_k_norm_gamma, @rms_eps)
       end
       t_k_rot = TinyNN.tnn_rope_ext(@sess, t_k_pre, t_pos, @d_head,
                                     @rope_base, @rope_scaling.freq_scale,
@@ -2066,7 +2094,14 @@ class SmolLM2KVFFICache
       swa_for_this_layer = 0
     end
 
-    t_q_raw = TinyNN.tnn_matmul(@sess, blk.t_w_q[hq], t_h)   # ne=[d_head, 1]
+    full_qk = @has_qk_norm && @qk_norm_kind == 2
+    if full_qk
+      # toy#213: slice of the whole normalised Q built in build_block_step.
+      t_q_raw = TinyNN.tnn_view_2d(@sess, blk.t_qn_step, @d_head, 1,
+                                     @d_head * 4, hq * @d_head * 4)
+    else
+      t_q_raw = TinyNN.tnn_matmul(@sess, blk.t_w_q[hq], t_h)   # ne=[d_head, 1]
+    end
     # F1.2: optional LoRA on Q. Standard placement is BEFORE the bias
     # add (HF LoRA practice — the bias stays a property of the base
     # projection, LoRA only adjusts the linear part). Math:
@@ -2078,7 +2113,7 @@ class SmolLM2KVFFICache
       t_lora_b_a_h  = TinyNN.tnn_matmul(@sess, blk.t_w_lora_b_q[hq], t_lora_a_h)# ne=[d_head, 1]
       t_q_raw       = TinyNN.tnn_add(@sess, t_q_raw, t_lora_b_a_h)
     end
-    if @has_qkv_bias
+    if @has_qkv_bias && !full_qk
       t_q_pre = TinyNN.tnn_add(@sess, t_q_raw, blk.t_b_q[hq])
     else
       t_q_pre = t_q_raw
@@ -2086,17 +2121,8 @@ class SmolLM2KVFFICache
     if tap_this_head
       t_q_pre = trace_tap(tag + "q_pre", t_q_pre)
     end
-    if @has_qk_norm
-      if @qk_norm_kind == 2
-        # OLMoE / Granite per-head gamma slice (see build_block_step's
-        # K-norm comment). The gamma tensor is [d_model]; head hq's
-        # slice lives at byte offset hq*d_head*4.
-        q_gamma_view = TinyNN.tnn_view_1d(@sess, blk.t_q_norm_gamma,
-                                            @d_head, hq * @d_head * 4)
-        t_q_pre = TinyNN.tnn_rms_norm(@sess, t_q_pre, q_gamma_view, @rms_eps)
-      else
-        t_q_pre = TinyNN.tnn_rms_norm(@sess, t_q_pre, blk.t_q_norm_gamma, @rms_eps)
-      end
+    if @has_qk_norm && !full_qk
+      t_q_pre = TinyNN.tnn_rms_norm(@sess, t_q_pre, blk.t_q_norm_gamma, @rms_eps)
     end
     t_q     = TinyNN.tnn_rope_ext(@sess, t_q_pre, t_pos, @d_head,
                                   @rope_base, @rope_scaling.freq_scale,
