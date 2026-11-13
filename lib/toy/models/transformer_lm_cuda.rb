@@ -76,6 +76,14 @@ class ToyLMCuda
     if (ENV["FLASH_ATTN"] || "") == "1"
       kv.enable_flash_attn!
     end
+    # toy#206: KV_FUSED=0 keeps the per-head decode graph; KV_BATCH=<n>
+    # caps the tokens per batched prompt step (see the CPU loader).
+    if (ENV["KV_FUSED"] || "") == "0"
+      kv.disable_fused!
+    end
+    if (ENV["KV_BATCH"] || "").to_i > 0
+      kv.batch_max = (ENV["KV_BATCH"] || "").to_i
+    end
     # MoE — parity with load_cpu. Enables the routed expert FFN. MoE GGUFs
     # (incl. DeepSeek-V2) are standard ggml-native layout but may lack the
     # toy.ggml_native flag, so force the mmap path when MoE is detected.
@@ -150,11 +158,14 @@ class ToyLMCuda
       j = j + 1
     end
 
-    i = 0
-    while i < prompt_ids.length
-      decode_step(prompt_ids[i], i)
-      i = i + 1
+    if prompt_ids.length == 0
+      return ids
     end
+    # Prefill. The logits of the LAST prompt token are the first sampling
+    # target (toy#206: this loop used to drop them and feed that token a
+    # second time at the next position, so every continuation was
+    # conditioned on a duplicated last prompt token).
+    logits = SmolLM2KVCuda.decode_batch(@kv, prompt_ids, 0, prompt_ids.length, 0)
 
     ctx = nil
     if sampler_config != nil
@@ -163,9 +174,6 @@ class ToyLMCuda
 
     n = 0
     while n < n_new
-      pos = ids.length
-      last_id = ids[pos - 1]
-      logits = decode_step(last_id, pos)
       pick = -1
       if sampler_config == nil
         pick = Sampler.argmax(logits)
@@ -182,6 +190,9 @@ class ToyLMCuda
         break
       end
       n = n + 1
+      if n < n_new
+        logits = decode_step(pick, ids.length - 1)
+      end
     end
     ids
   end

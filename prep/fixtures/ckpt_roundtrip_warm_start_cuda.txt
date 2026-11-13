@@ -14,4 +14,9 @@
 # (donor_d_in>0), folded into a STANDARD fused-llama GGUF that CPU `toy infer`
 # loads unchanged — this fixture proves the CUDA->CPU checkpoint round-trip.
 # Re-recorded 2026-07-25 (toy#114 init-quality reset: mixer-seeded stream).
-ids: 1 2 3 297 146 146 524 447
+# Re-recorded 2026-11-13 (toy#206: `generate` no longer feeds the last prompt
+# token twice; the previous line, 1 2 3 297 146 146 524 447, is what a runner
+# with that bug prints for this checkpoint).
+# With the fix the warm-start and from-scratch checkpoints give the SAME five
+# ids, so this line no longer tells the two checkpoints apart.
+ids: 1 2 3 297 320 281 590 81

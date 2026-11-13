@@ -31,8 +31,12 @@ class ToyLM
   # ggml#1506 trace localization: expose the CPU cache so a trace runner can
   # call enable_trace! before decoding. Read-only; harmless when unused.
   attr_reader :kv_cpu
+  # toy#206: set true BEFORE load to keep the per-head decode graph
+  # (trace taps need it). Same effect as KV_FUSED=0.
+  attr_accessor :per_head_kv
 
   def initialize(arch, backend)
+    @per_head_kv = false
     @arch    = arch
     @backend = backend
     @max_T   = 256
@@ -113,6 +117,15 @@ class ToyLM
     if (ENV["FLASH_ATTN"] || "") == "1"
       kv.enable_flash_attn!
     end
+    # toy#206: KV_FUSED=0 keeps the per-head decode graph (the default
+    # is the fused multi-head step wherever the model is eligible).
+    # KV_BATCH=<n> caps how many prompt tokens one step evaluates.
+    if (ENV["KV_FUSED"] || "") == "0" || @per_head_kv
+      kv.disable_fused!
+    end
+    if (ENV["KV_BATCH"] || "").to_i > 0
+      kv.batch_max = (ENV["KV_BATCH"] || "").to_i
+    end
     # MLA-B: KV_MLA_LATENT=1 caches the compressed latent (c_kv + shared
     # k_rope) instead of the expanded per-head K/V — the DeepSeek memory
     # win. Only effective for deepseek2 (is_mla); inert otherwise.
@@ -162,8 +175,9 @@ class ToyLM
       # tensors stay quantized; matmul kernels read them in place.
       kv.set_weight_type(wtype)
       @gguf_handle = TinyNN.tnn_gguf_load(path)
-      kv.realize_for_mmap(@gguf_handle, cfg, @max_T, flags.untied, flags.qkv_bias, qk_norm_on)
+      # swa_window before realize: the fused-step decision reads it.
       kv.swa_window = flags.swa_window
+      kv.realize_for_mmap(@gguf_handle, cfg, @max_T, flags.untied, flags.qkv_bias, qk_norm_on)
     else
       if qk_norm_on
         # #76, fail loud (never mask): realize_for has no QK-norm
@@ -282,11 +296,14 @@ class ToyLM
 
     # Prefill: feed every prompt token through decode_step. Final
     # logits from the last prefill step ARE the first sampling target.
-    i = 0
-    while i < prompt_ids.length
-      decode_step(prompt_ids[i], i)
-      i = i + 1
+    if prompt_ids.length == 0
+      return ids
     end
+    # Prefill. The logits of the LAST prompt token are the first sampling
+    # target (toy#206: this loop used to drop them and feed that token a
+    # second time at the next position, so every continuation was
+    # conditioned on a duplicated last prompt token).
+    logits = SmolLM2KV.decode_batch(@kv_cpu, prompt_ids, 0, prompt_ids.length, 0)
 
     ctx = nil
     if sampler_config != nil
@@ -295,9 +312,6 @@ class ToyLM
 
     n = 0
     while n < n_new
-      pos = ids.length
-      last_id = ids[pos - 1]
-      logits = decode_step(last_id, pos)
       pick = -1
       if sampler_config == nil
         pick = Sampler.argmax(logits)
@@ -314,6 +328,9 @@ class ToyLM
         break
       end
       n = n + 1
+      if n < n_new
+        logits = decode_step(pick, ids.length - 1)
+      end
     end
     ids
   end

@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <time.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -54,8 +55,31 @@ tnn_cuda_buffer_from_ptr_internal(void *host_ptr, size_t size, int device) {
  *   ask=true  → return true to request a post call, false to skip.
  *   ask=false → return true to continue compute, false to ABORT.
  * We never abort: returning true on post is unconditional. */
+/* toy#206 — TNN_STEP_PROFILE=3: per-op wall time, synchronised after
+ * every node (so the totals are inflated by the per-node sync, but the
+ * split between ops is honest). Printed at exit by tnn_sp_report. */
+static int     g_sp_ops = -1;
+static int64_t g_sp_op_us[GGML_OP_COUNT], g_sp_op_n[GGML_OP_COUNT], g_sp_op_t0;
+static int64_t g_sp_mm_us[4], g_sp_mm_n[4];   /* mul_mat: quantized-big, quantized-small, f32 2d, f32 batched */
+static int64_t tnn_sp_now(void);
 static bool tnn_sched_op_eval_cb(struct ggml_tensor *t, bool ask, void *user_data) {
     (void)user_data;
+    if (g_sp_ops < 0) {
+        const char *e = getenv("TNN_STEP_PROFILE");
+        g_sp_ops = (e && atoi(e) >= 3) ? 1 : 0;
+    }
+    if (g_sp_ops) {
+        if (ask) { g_sp_op_t0 = tnn_sp_now(); return true; }
+        int64_t d = tnn_sp_now() - g_sp_op_t0;
+        g_sp_op_us[t->op] += d; g_sp_op_n[t->op]++;
+        if (t->op == GGML_OP_MUL_MAT) {
+            struct ggml_tensor *a = t->src[0];
+            int k = ggml_is_quantized(a->type) ? (ggml_nelements(a) > 4000000 ? 0 : 1)
+                                               : (a->ne[2] > 1 || t->src[1]->ne[2] > 1 ? 3 : 2);
+            g_sp_mm_us[k] += d; g_sp_mm_n[k]++;
+        }
+        return true;
+    }
     if (ask) {
         if (!tnn_trace_op_capture_active()) return false;
         tnn_trace_op_record_begin();
@@ -1188,6 +1212,50 @@ void *tnn_view_2d(void *sess, void *a, int ne0, int ne1, long nb1, long offset)
                                   (size_t)nb1, (size_t)offset);
 }
 
+/* toy#206 — 3-D strided view (the fused multi-head KV history view:
+ * [d_head, n_kv, hist] over a [n_kv*d_head, max_T] cache). */
+void *tnn_view_3d(void *sess, void *a, int ne0, int ne1, int ne2,
+                  long nb1, long nb2, long offset)
+{
+    if (!sess || !a) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_view_3d(s->ctx, (struct ggml_tensor *)a,
+                                  (int64_t)ne0, (int64_t)ne1, (int64_t)ne2,
+                                  (size_t)nb1, (size_t)nb2, (size_t)offset);
+}
+
+/* Make contiguous, keeping the shape (any rank). */
+void *tnn_cont(void *sess, void *a)
+{
+    if (!sess || !a) return NULL;
+    tnn_session *s = (tnn_session *)sess;
+    return (void *)ggml_cont(s->ctx, (struct ggml_tensor *)a);
+}
+
+/* toy#206 — fill + upload the causal mask of a batched decode step.
+ * `tensor` is F32 ne=[hist, n_tok] with hist = pos0 + n_tok: query i
+ * (absolute position pos0 + i) may attend cached positions 0..pos0+i.
+ * Allowed cells are 0, the rest -inf (added to the scores before the
+ * softmax by ggml_soft_max_ext). Returns 0, or negative on bad args. */
+int tnn_upload_causal_mask(void *sess, void *tensor, int hist, int n_tok, int pos0)
+{
+    if (!sess || !tensor) return -1;
+    struct ggml_tensor *t = (struct ggml_tensor *)tensor;
+    if (hist <= 0 || n_tok <= 0 || pos0 < 0 || hist != pos0 + n_tok) return -2;
+    if (t->type != GGML_TYPE_F32 || t->ne[0] != hist || t->ne[1] != n_tok) return -3;
+    size_t n = (size_t)hist * (size_t)n_tok;
+    float *buf = (float *)malloc(n * sizeof(float));
+    if (!buf) return -4;
+    for (int i = 0; i < n_tok; i++) {
+        float *col = buf + (size_t)i * (size_t)hist;
+        int last = pos0 + i;
+        for (int j = 0; j < hist; j++) col[j] = (j <= last) ? 0.0f : -INFINITY;
+    }
+    ggml_backend_tensor_set(t, buf, 0, n * sizeof(float));
+    free(buf);
+    return 0;
+}
+
 /* Reshape a contiguous tensor to (ne0, ne1, ne2). The total element
  * count must match. Used by the sequence-mode forward (M3) to lift
  * Q/K from ne=[d_head, T] to ne=[d_head, 1, T] before ggml_rope_ext —
@@ -1947,15 +2015,76 @@ void *tnn_opt_step_sgd(void *sess, void *a, void *grad, void *params)
                                       (struct ggml_tensor *)params);
 }
 
+/* toy#206 — per-decode-step profile. TNN_STEP_PROFILE=1 prints one
+ * summary line at exit; =2 also prints one line per step. A "step" is
+ * reset_for_rebuild → realize → compute → download. Times in ms:
+ *   build    Ruby-side graph construction (reset .. realize entry)
+ *   expand   ggml_build_forward_expand
+ *   alloc    sched reset + alloc_graph
+ *   compute  sched graph compute (GPU work may still be queued)
+ *   sync     backend synchronize after compute (GPU drain)
+ *   dl       first tensor download after compute */
+static int     g_sp_mode = -1;
+static int64_t g_sp_t_reset, g_sp_steps, g_sp_nodes;
+static int64_t g_sp_build, g_sp_expand, g_sp_alloc, g_sp_compute, g_sp_sync, g_sp_dl;
+static int64_t g_sp_cur[6];
+static int     g_sp_dl_pending;
+static int64_t tnn_sp_now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000 + (int64_t)(ts.tv_nsec / 1000);
+}
+static void tnn_sp_report(void) {
+    if (g_sp_steps == 0) return;
+    double n = (double)g_sp_steps * 1000.0;
+    if (g_sp_ops > 0) {
+        static const char *mm[4] = {"mul_mat quant >4M", "mul_mat quant small", "mul_mat f32 2d", "mul_mat f32 batched"};
+        for (int i = 0; i < GGML_OP_COUNT; i++) {
+            if (g_sp_op_n[i] == 0) continue;
+            fprintf(stderr, "[tnn-op] %-22s n/step=%6.1f ms/step=%7.3f\n", ggml_op_name((enum ggml_op)i),
+                    (double)g_sp_op_n[i] / (double)g_sp_steps, g_sp_op_us[i] / n);
+        }
+        for (int i = 0; i < 4; i++) {
+            if (g_sp_mm_n[i] == 0) continue;
+            fprintf(stderr, "[tnn-op]   %-20s n/step=%6.1f ms/step=%7.3f\n", mm[i],
+                    (double)g_sp_mm_n[i] / (double)g_sp_steps, g_sp_mm_us[i] / n);
+        }
+    }
+    fprintf(stderr, "[tnn-step-profile] steps=%lld nodes/step=%.0f ms/step: build=%.2f expand=%.2f "
+                    "alloc=%.2f compute=%.2f sync=%.2f dl=%.2f total=%.2f\n",
+            (long long)g_sp_steps, (double)g_sp_nodes / (double)g_sp_steps,
+            g_sp_build / n, g_sp_expand / n, g_sp_alloc / n, g_sp_compute / n,
+            g_sp_sync / n, g_sp_dl / n,
+            (g_sp_build + g_sp_expand + g_sp_alloc + g_sp_compute + g_sp_sync + g_sp_dl) / n);
+}
+static int tnn_sp_on(void) {
+    if (g_sp_mode < 0) {
+        const char *e = getenv("TNN_STEP_PROFILE");
+        g_sp_mode = (e && e[0] && e[0] != '0') ? atoi(e) : 0;
+        if (g_sp_mode > 0) atexit(tnn_sp_report);
+    }
+    return g_sp_mode;
+}
+
 int tnn_realize(void *sess, void *result)
 {
     if (!sess || !result) return -1;
     tnn_session *s = (tnn_session *)sess;
     if (s->realized) return -2;
     int64_t _t = tnn_trace_begin("realize");
+    int sp = tnn_sp_on();
+    int64_t sp0 = sp ? tnn_sp_now() : 0;
     ggml_build_forward_expand(s->graph, (struct ggml_tensor *)result);
+    int64_t sp1 = sp ? tnn_sp_now() : 0;
     ggml_backend_sched_reset(s->engine->sched);
     int ok = ggml_backend_sched_alloc_graph(s->engine->sched, s->graph) ? 1 : 0;
+    if (sp) {
+        int64_t sp2 = tnn_sp_now();
+        g_sp_cur[0] = g_sp_t_reset ? sp0 - g_sp_t_reset : 0;
+        g_sp_cur[1] = sp1 - sp0;
+        g_sp_cur[2] = sp2 - sp1;
+        g_sp_nodes += ggml_graph_n_nodes(s->graph);
+    }
     tnn_trace_end("realize", _t);
     if (!ok) return -3;
     s->realized   = 1;
@@ -2185,6 +2314,7 @@ int tnn_reset_for_rebuild(void *sess)
     s->realized = 0;
     s->graph    = ggml_new_graph_custom(s->ctx, (size_t)s->graph_capacity, false);
     s->last_graph = 0;
+    if (tnn_sp_on()) g_sp_t_reset = tnn_sp_now();
     return 0;
 }
 
@@ -2194,7 +2324,16 @@ int tnn_compute(void *sess)
     tnn_session *s = (tnn_session *)sess;
     if (!s->realized) return -2;
     int64_t _t = tnn_trace_begin("compute");
+    int sp = tnn_sp_on();
+    int64_t sp0 = sp ? tnn_sp_now() : 0;
     enum ggml_status rc = ggml_backend_sched_graph_compute(s->engine->sched, s->graph);
+    if (sp) {
+        int64_t sp1 = tnn_sp_now();
+        ggml_backend_synchronize(s->engine->backend);
+        g_sp_cur[3] = sp1 - sp0;
+        g_sp_cur[4] = tnn_sp_now() - sp1;
+        g_sp_dl_pending = 1;
+    }
     tnn_trace_end("compute", _t);
     return (rc == GGML_STATUS_SUCCESS) ? 0 : (int)rc;
 }
@@ -2388,7 +2527,21 @@ int tnn_download(void *sess, void *tensor)
         return -2;
     }
     int64_t _t = tnn_trace_begin("download");
+    int64_t sp0 = (tnn_sp_on() && g_sp_dl_pending) ? tnn_sp_now() : 0;
     ggml_backend_tensor_get(t, s->scratch, 0, nbytes);
+    if (sp0) {
+        g_sp_cur[5] = tnn_sp_now() - sp0;
+        g_sp_dl_pending = 0;
+        g_sp_steps++;
+        g_sp_build += g_sp_cur[0]; g_sp_expand += g_sp_cur[1]; g_sp_alloc += g_sp_cur[2];
+        g_sp_compute += g_sp_cur[3]; g_sp_sync += g_sp_cur[4]; g_sp_dl += g_sp_cur[5];
+        if (g_sp_mode == 2) {
+            fprintf(stderr, "[tnn-step] %lld build=%.2f expand=%.2f alloc=%.2f compute=%.2f sync=%.2f dl=%.2f\n",
+                    (long long)g_sp_steps, g_sp_cur[0] / 1000.0, g_sp_cur[1] / 1000.0,
+                    g_sp_cur[2] / 1000.0, g_sp_cur[3] / 1000.0, g_sp_cur[4] / 1000.0,
+                    g_sp_cur[5] / 1000.0);
+        }
+    }
     tnn_trace_end("download", _t);
     return 0;
 }

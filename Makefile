@@ -808,6 +808,18 @@ gate-kv-prefix:
 gate-kv-prefix-cuda:
 	ruby prep/kv_prefix_gate.rb --device cuda
 
+# Fused decode gate (toy#206): the fused multi-head decode step and batched
+# prompt evaluation give the same ids as the per-head graph (KV_FUSED=0)
+# and as any batch size (KV_BATCH); the fused graph is the small one and
+# the prompt goes in batches (TNN_STEP_PROFILE node and step counts);
+# greedy decoding is self-consistent (k tokens at once == one at a time);
+# uncovered configurations (KV_Q8=1, trace taps) still run per-head.
+.PHONY: gate-decode-fused gate-decode-fused-cuda
+gate-decode-fused:
+	ruby prep/decode_fused_gate.rb
+gate-decode-fused-cuda:
+	ruby prep/decode_fused_gate.rb --device cuda
+
 # P4 — from-scratch TRAINING compute runner (CRuby→runner COMPUTE BRIDGE,
 # same shape as toy-infer). Spinel source lib/toy/run/train.rb; the binary
 # path EQUALS the make target so ToyRoot.ensure_built("libexec/toy-train")
