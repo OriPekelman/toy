@@ -27,14 +27,16 @@ end
 class IndexHandler < Tep::Handler
   def handle(req, res)
     res.headers["Content-Type"] = "text/html; charset=utf-8"
-    "<!doctype html><html><head><title>toy openai-compat (IDs only)</title></head>" +
-    "<body><h1>toy openai-compat API (ID-only)</h1>" +
+    "<!doctype html><html><head><title>toy openai-compat</title></head>" +
+    "<body><h1>toy openai-compat API</h1>" +
     "<p>Model: <code>" + STATE.model_name + "</code> via direct GGUF&rarr;FFI loader.</p>" +
-    "<p>Tokenize client-side; this server speaks integer token IDs only. " +
-    "Run <code>prep/qwen25_tokens.py encode \"...\"</code> to get IDs.</p>" +
+    "<p>Chat and decoded text need a GGUF that embeds its tokenizer; " +
+    "without one the server speaks integer token IDs only.</p>" +
     "<p>Endpoints:</p><ul>" +
-    "<li><code>POST /v1/completions</code> &mdash; body <code>{\"prompt\":[int,...],\"max_tokens\":N}</code></li>" +
-    "<li><code>POST /v1/chat/completions</code> &mdash; 501 (tokenizer required)</li>" +
+    "<li><code>POST /v1/completions</code> &mdash; body <code>{\"prompt\":[int,...],\"max_tokens\":N}</code>; " +
+    "reply carries <code>ids</code> and, with a tokenizer, <code>text</code></li>" +
+    "<li><code>POST /v1/chat/completions</code> &mdash; body <code>{\"messages\":[...],\"max_tokens\":N,\"stream\":bool}</code> " +
+    "(501 without a tokenizer)</li>" +
     "<li><code>POST /v1/embeddings</code> &mdash; body <code>{\"input\":[int,...]}</code> &rarr; mean-pooled vector</li>" +
     "<li><code>GET /v1/models</code></li>" +
     "<li><code>GET /health</code></li>" +

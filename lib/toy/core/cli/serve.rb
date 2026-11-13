@@ -1,6 +1,6 @@
-# lib/toy/core/cli/serve.rb — `toy serve <model.gguf> [--port N] [--name NAME] [--ctx N]`.
+# lib/toy/core/cli/serve.rb — `toy serve <model.gguf> [--port N] [--name NAME] [--ctx N] [--device cpu|cuda] [--stop-ids N,M]`.
 #
-# Serve a GGUF model over an OpenAI-compatible HTTP API (CPU). CRuby ONLY
+# Serve a GGUF model over an OpenAI-compatible HTTP API (CPU or CUDA). CRuby ONLY
 # (the CLI shell) — NO Spinel. Follows the infer/train/eval run-flow for
 # validation + ensure_built, then DIVERGES at the launch step.
 #
@@ -49,6 +49,8 @@ module Toy
           @port = DEFAULT_PORT
           @ctx = nil
           @name = nil
+          @device = "cpu"
+          @stop_ids = nil
         end
 
         def run
@@ -70,10 +72,12 @@ module Toy
             )
           end
 
-          ok, err = ToyRoot.ensure_built(root, RUNNER_TARGET)
+          # toy#209: one binary per device; the CPU target is unchanged.
+          target = @device == "cuda" ? RUNNER_TARGET + "-cuda" : RUNNER_TARGET
+          ok, err = ToyRoot.ensure_built(root, target)
           return fail_out(err) unless ok
 
-          runner = File.join(root, RUNNER_TARGET)
+          runner = File.join(root, target)
           unless File.file?(runner) && File.executable?(runner)
             return fail_out(
               "runner missing after build: #{runner}. Run `toy install` to " \
@@ -118,6 +122,7 @@ module Toy
           # toy#207: only when asked for — unset, the runner derives the
           # context from the GGUF (context_length clamped to [256, 4096]).
           serve_env["MAX_T"] = @ctx.to_s if @ctx
+          serve_env["STOP_IDS"] = @stop_ids if @stop_ids
           Kernel.exec(serve_env, runner)
         end
 
@@ -181,6 +186,24 @@ module Toy
                 return bad_arg("--ctx must be a positive integer, got #{val.inspect}")
               end
               @ctx = val.to_i
+            when "--device"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--device requires a value") if val.nil?
+              d = parse_device(val)
+              return d unless d == true
+            when /\A--device=(.*)\z/
+              d = parse_device($1)
+              return d unless d == true
+            when "--stop-ids"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--stop-ids requires a value") if val.nil?
+              sres = parse_stop_ids(val)
+              return sres unless sres == true
+            when /\A--stop-ids=(.*)\z/
+              sres = parse_stop_ids($1)
+              return sres unless sres == true
             when "--port"
               i += 1
               val = @argv[i]
@@ -212,6 +235,24 @@ module Toy
             return bad_arg("unexpected extra arguments: #{rest[1..].join(' ')}")
           end
           @model = rest.first
+          true
+        end
+
+        # toy#209: cpu or cuda. There is no Metal serve runner.
+        def parse_device(val)
+          unless %w[cpu cuda].include?(val)
+            return bad_arg("--device must be one of cpu, cuda, got #{val.inspect}")
+          end
+          @device = val
+          true
+        end
+
+        # toy#209: extra end-of-generation token ids, "N" or "N,M,...".
+        def parse_stop_ids(val)
+          unless val =~ /\A\d+(,\d+)*\z/
+            return bad_arg("--stop-ids must be comma-separated token ids, got #{val.inspect}")
+          end
+          @stop_ids = val
           true
         end
 

@@ -13,6 +13,8 @@
 #   MODEL_NAME   user-facing label (default = GGUF basename minus .gguf)
 #   MAX_T        KV-cache context (default: GGUF context_length clamped
 #                to [256, 4096]; `toy serve --ctx N` sets it — toy#207)
+#   STOP_IDS     extra end-of-generation token ids, comma-separated
+#                (`toy serve --stop-ids`; toy#209)
 #   PORT         TCP port to bind (NEW -- replaces the old ARGV -p parse;
 #                `toy serve` owns the CLI UX now). Default 4567.
 #
@@ -21,10 +23,12 @@
 # Nothing patches Tep; Toy does not make Tep consume Toy (that "Tep
 # re-adaptation" is DEFERRED until Toy is stable, per user directive).
 #
-# Backend: CPU only, workers=1. Per-process FFI/KV STATE is not fork-safe
-# to assume, and Metal serving was already noted unsupported; multi-worker
-# prefork would change Tep's run_end aggregation -- out of scope. NOT in
-# MIRRORABLE (prep/gen_cuda_mirror.rb): CPU-only, no CUDA mirror.
+# Backend: this file is the CPU runner; libexec/toy-serve-cuda is its
+# MECHANICAL mirror (in MIRRORABLE, prep/gen_cuda_mirror.rb — toy#209), so
+# write backend-sensitive code only as TinyNN.* / SmolLM2KV* here. workers=1:
+# per-process FFI/KV STATE is not fork-safe to assume, and multi-worker
+# prefork would change Tep's run_end aggregation -- out of scope. No Metal
+# serve runner is built.
 
 require_relative "../llm/engine/llama_kv_engine"
 require_relative "../io/json_builder"
@@ -32,6 +36,8 @@ require_relative "../io/json"
 require_relative "../io/json_decoder"
 require_relative "../io/toy_events"
 require_relative "../io/loaders/toy_smollm2_loader"
+require_relative "../io/tokenizer"
+require_relative "../train/toy_chat_template"
 require_relative "../../../vendor/spinel/deps"
 require_relative "../serve/openai/server"
 require_relative "../serve/openai/handlers"
@@ -101,8 +107,9 @@ if EVENTS.length > 0
 end
 
 # Routes (toy#30) -- the four /v1 endpoints come from tep's OpenAI battery:
-# Server.use dispatches ToyBackend (IDs-only: choices[0].ids per tep#209;
-# /v1/chat/completions 501s via supports_chat?=false default). serve!("")
+# Server.use dispatches ToyBackend (choices[0].ids per tep#209; with an
+# embedded tokenizer also text and /v1/chat/completions — toy#209 — and
+# otherwise ids-only with chat 501). serve!("")
 # keeps tep's OWN event stream disabled — the toy/v1 telemetry stays on the
 # C emitter (run_start above; per-request event inside ToyBackend), which
 # serve_events_gate pins. Health + Index remain app-mounted (not battery

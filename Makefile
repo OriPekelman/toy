@@ -189,6 +189,10 @@ vendor-tep:
 	@# f6a189e8). Spinel loads deps via the topo require_relatives; the
 	@# prelude only serves plain-CRuby runs, which toy's serve never does.
 	sed -i '/^\$$LOAD_PATH\.unshift/d' vendor/spinel/deps.rb
+	@# toy#209 / tep#272: three fixes that are on tep main but not in the
+	@# released gem. REMOVE WHEN the Gemfile resolves to a tep that has them
+	@# (the script then reports every edit as already fixed).
+	ruby prep/patch_vendored_tep.rb
 	@# toy#69 — fold the vendored gems' aggregated sig root (advertised
 	@# by vendor/spinel/deps.rb, spinelgems#13) into toy's own --rbs
 	@# root via a gitignored symlink: spinel accepts ONE --rbs dir and
@@ -779,6 +783,20 @@ gate-serve:
 	ruby prep/serve_gate.rb
 	ruby prep/serve_events_gate.rb
 
+# Chat-serving gate (toy#209): with a GGUF that embeds a tokenizer the
+# server is a TEXT endpoint — /v1/completions returns decoded text beside
+# the ids, /v1/chat/completions applies the chat template (specials as
+# single ids), streams, survives non-ASCII bodies, stops at a stop id with
+# finish_reason "stop", and honours max_tokens past the old 256 ceiling.
+# A tokenizer-less GGUF stays ids-only with chat 501. The -cuda twin runs
+# the same checks on libexec/toy-serve-cuda (a mechanical mirror).
+# TOY_GATE_QWEN_GGUF=<chat model> adds a real end-of-turn leg.
+.PHONY: gate-serve-chat gate-serve-chat-cuda
+gate-serve-chat:
+	ruby prep/serve_chat_gate.rb
+gate-serve-chat-cuda:
+	ruby prep/serve_chat_gate.rb --device cuda
+
 # P4 — from-scratch TRAINING compute runner (CRuby→runner COMPUTE BRIDGE,
 # same shape as toy-infer). Spinel source lib/toy/run/train.rb; the binary
 # path EQUALS the make target so ToyRoot.ensure_built("libexec/toy-train")
@@ -1261,10 +1279,26 @@ libexec/toy-serve: lib/toy/run/serve.rb lib/toy/io/json_builder.rb lib/toy/io/js
 		lib/toy/serve/openai/handlers.rb lib/toy/serve/openai/toy_backend.rb \
 		vendor/spinel/tep/lib/tep.rb \
 		lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb \
+		lib/toy/io/tokenizer.rb lib/toy/io/gguf_kv.rb lib/toy/train/toy_chat_template.rb \
 		tinynn/libtinynn_ggml.a $(SPINEL_DEPS) \
 		lib/toy.rb lib/toy/dev/toy_card.rb lib/toy/ffi/tinynn.rb lib/toy/io/gguf_load.rb lib/toy/models/gpt2.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/version.rb | libexec
 	$(SPINEL) $< -o $@
 toy-serve: libexec/toy-serve
+
+# toy#209 — the CUDA serve runner. Same program as libexec/toy-serve: the
+# runner, the serve state and the backend are MECHANICAL mirrors
+# (prep/gen_cuda_mirror.rb), so the two devices cannot drift. `toy serve
+# --device cuda` selects it.
+libexec/toy-serve-cuda: lib/toy/run/serve_cuda.rb lib/toy/io/json_builder.rb lib/toy/io/json.rb lib/toy/io/json_decoder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
+		lib/toy/serve/openai/server_cuda.rb \
+		lib/toy/serve/openai/handlers.rb lib/toy/serve/openai/toy_backend_cuda.rb \
+		vendor/spinel/tep/lib/tep.rb \
+		lib/toy/llm/engine/llama_kv_engine_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb \
+		lib/toy/io/tokenizer.rb lib/toy/io/gguf_kv.rb lib/toy/train/toy_chat_template.rb \
+		lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) \
+		lib/toy.rb lib/toy/dev/toy_card.rb lib/toy/ffi/tinynn.rb lib/toy/io/gguf_load.rb lib/toy/models/gpt2.rb lib/toy/models/toy_smollm2.rb lib/toy/models/transformer.rb lib/toy/version.rb | libexec
+	$(SPINEL) --cc='cc -Wl,-u,tnn_cuda_force_link' $< -o $@
+toy-serve-cuda: libexec/toy-serve-cuda
 
 # toy#gguf-checkpoint-reload (#153) — smoke binary that loads a
 # from-scratch toy GGUF and runs a tiny generation. No tokenizer.
@@ -1725,6 +1759,7 @@ MIRROR_CUDA := \
   lib/toy/llm/engine/llama_seq_engine_cuda.rb lib/toy/llm/engine/gpt2_seq_engine_cuda.rb \
   lib/toy/llm/engine/gtx_engine_cuda.rb lib/toy/llm/recipes/gtx_graph_cuda.rb \
   lib/toy/run/train_gtx_cuda.rb \
+  lib/toy/run/serve_cuda.rb lib/toy/serve/openai/server_cuda.rb lib/toy/serve/openai/toy_backend_cuda.rb \
   lib/toy/llm/recipes/from_scratch_cuda.rb lib/toy/llm/recipes/lora_cuda.rb \
   lib/toy/llm/recipes/warm_start_cuda.rb \
   lib/toy/llm/engine/llama_kv_engine_cuda.rb \

@@ -125,6 +125,17 @@ class Tokenizer
     @n_special = @n_special + 1
   end
 
+  # Id of a registered special token; -1 when `piece` is not one.
+  def special_id(piece)
+    if @n_special == 0
+      return -1
+    end
+    if @special_inv.has_key?(piece)
+      return @special_inv[piece]
+    end
+    -1
+  end
+
   def build_byte_tables
     return if @byte_to_char != nil
     btc = [""]

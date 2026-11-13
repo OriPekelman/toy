@@ -192,33 +192,66 @@ They now appear in `toy eval --help` and under a `subcommands` key in
 `toy --manifest`, which is emitted only for commands that have them, so
 existing manifest consumers see no new key.
 
-### `serve <model> [--port PORT] [--name NAME] [--ctx N]`
-Serve a GGUF model over an OpenAI-compatible HTTP API (CPU). Default
-`--port 4567`; `--name` sets the model label in `/v1/models` (default: the GGUF
-basename). `--ctx N` sets the context exactly as for `infer` (same default). A
-request whose prompt does not fit comes back with no tokens and
-`finish_reason: "context_length_exceeded"` — tep's backend API has no error
-channel yet, so it is not an HTTP 400 — and one whose prompt fits but whose
-`max_tokens` does not is cut to what fits (`finish_reason: "length"`). Neither
-takes the server down. The serve stack lives at `lib/toy/serve/openai/` and is driven by
-`lib/toy/run/serve.rb` → `libexec/toy-serve`.
+### `serve <model> [--port PORT] [--name NAME] [--ctx N] [--device cpu|cuda] [--stop-ids N,M]`
+Serve a GGUF model over an OpenAI-compatible HTTP API. Default `--port 4567`;
+`--name` sets the model label in `/v1/models` (default: the GGUF basename).
+`--ctx N` sets the context exactly as for `infer` (same default). `--device
+cuda` runs `libexec/toy-serve-cuda`, a generated mirror of the CPU runner.
 
-> At the current Spinel pin (`2026.10.25`) `libexec/toy-serve` compiles and
-> both serve gates pass, with one condition: vendored tep 0.11.7 must have its
-> stock-Ruby guard corrected. Spinel now defines `RUBY_ENGINE` (`"spinel"`),
-> so the guard at the top of `vendor/spinel/tep/lib/tep.rb` fires inside the
-> compiled binary and the server exits at boot with "tep is a Spinel-AOT
-> framework, not a CRuby library". Until a tep release carries the fix
-> ([OriPekelman/tep#272](https://github.com/OriPekelman/tep/issues/272)),
-> re-apply it after every `make vendor-tep` (`vendor/` is gitignored):
+What the server offers depends on whether the GGUF embeds its tokenizer
+(`prep/convert_smollm2_to_gguf.py --with-tokenizer`, or any llama.cpp file):
+
+| | with a tokenizer | without |
+| --- | --- | --- |
+| `POST /v1/chat/completions` | messages in, text out; `"stream": true` supported | 501 |
+| `POST /v1/completions` | token ids in; `ids` and decoded `text` out | token ids in; `ids` out, `text` is `""` |
+| end of generation | stops at the model's end token, `finish_reason: "stop"` | runs to `max_tokens`, `"length"` |
+
+- **Chat template.** There is no Jinja evaluator; the template is one of four
+  built-in families (ChatML, Llama-3, Gemma 2, Mistral), chosen from the
+  special tokens in the vocabulary. Messages are rendered exactly as sent: a
+  default system message that a model's own template would add (Qwen's "You
+  are Qwen…") is not added.
+- **Stop tokens.** The GGUF's `eos_token_id`, plus `<|im_end|>`,
+  `<|endoftext|>`, `<|eot_id|>`, `<|end_of_text|>` and `<end_of_turn>` where
+  the vocabulary has them. `--stop-ids N,M` adds token ids. The stop token is
+  not part of the reply. The OpenAI `stop` request field is not read.
+- **`max_tokens`.** Limited by the context only (it was capped at 256).
+  Absent, `/v1/completions` generates 16 tokens and chat generates until a
+  stop token or the end of the context.
+- **Sampling.** Greedy only: `temperature`, `top_p` and `logprobs` are not
+  honoured.
+- **Context.** A request whose prompt does not fit comes back with no tokens
+  and `finish_reason: "context_length_exceeded"` on `/v1/completions` — tep's
+  backend API has no error channel yet, so it is not an HTTP 400 — and one
+  whose prompt fits but whose `max_tokens` does not is cut to what fits.
+  Neither takes the server down.
+
+Three things only tep can change (tep#276), so they are as tep has them:
+`/v1/completions` reads `prompt` as a token-id array only (a string prompt is
+an empty request); the chat reply always says `finish_reason: "stop"`, also
+when it ended on `max_tokens`; and the chat reply `id` is the constant
+`chatcmpl-tep`.
+
+The serve stack lives at `lib/toy/serve/openai/` and is driven by
+`lib/toy/run/serve.rb` → `libexec/toy-serve`. `make gate-serve`,
+`gate-serve-chat` and `gate-serve-chat-cuda` cover it.
+
+> **The 0.11.x tep line needs fixes that are only on tep `main`**
+> ([OriPekelman/tep#276](https://github.com/OriPekelman/tep/issues/276)).
+> `make vendor-tep` applies them (`prep/patch_vendored_tep.rb`), so nothing
+> has to be done by hand:
 >
-> ```ruby
-> if defined?(RUBY_ENGINE) && RUBY_ENGINE != "spinel"
-> ```
+> - a request body with a non-ASCII byte is never read to the end, so the
+>   request stalls (0.11.7 and 0.11.8);
+> - a reply with non-ASCII text is cut short, because `Content-Length`
+>   counted characters (0.11.7 and 0.11.8);
+> - the stock-Ruby guard fires inside every compiled app at Spinel
+>   `2026.10.25`, which defines `RUBY_ENGINE`, and the server exits at boot
+>   (0.11.7 only; fixed in 0.11.8,
+>   [OriPekelman/tep#272](https://github.com/OriPekelman/tep/issues/272)).
 >
-> `infer`/`train`/`eval` don't link tep and are unaffected. (The older note
-> here, about `toy-serve` not compiling at the pin, described the 2026-06
-> pins and stopped being true before this one.)
+> `infer`/`train`/`eval` don't link tep and are unaffected.
 
 ## Project config — `toy.yml`
 
@@ -264,7 +297,7 @@ Spinel-compiled runner. The mapping:
 | `infer` | `lib/toy/run/infer.rb` | `libexec/toy-infer` |
 | `train` | `lib/toy/run/train.rb` | `libexec/toy-train` |
 | `eval`  | `lib/toy/run/eval.rb`  | `libexec/toy-eval` |
-| `serve` | `lib/toy/serve/openai/` (via `lib/toy/run/serve.rb`) | `libexec/toy-serve` |
+| `serve` | `lib/toy/serve/openai/` (via `lib/toy/run/serve.rb`) | `libexec/toy-serve`, `libexec/toy-serve-cuda` |
 
 A command builds its runner on demand (`make <target>`, e.g.
 `make libexec/toy-train`) or you can build them all up front with `toy install`.
@@ -275,7 +308,8 @@ cannot leak in.
 `infer` / `train` / `eval` accept `--device cuda|metal`, which selects a separate
 per-device runner binary (e.g. `libexec/toy-infer-cuda`, `libexec/toy-train-cuda`;
 `metal` is macOS-only). They are single-type binaries by Spinel necessity (one
-backend module per binary), built on demand the same way. `serve` is CPU-only.
+backend module per binary), built on demand the same way. `serve` accepts
+`--device cuda` (no Metal runner).
 
 ## Examples
 
