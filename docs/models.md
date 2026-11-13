@@ -61,12 +61,16 @@ the mapping. Qwen2.5-0.5B Q8 (`d_ff` 4864) and a pruned model with
 zero tail, and these files load on CUDA and decode the CPU's ids
 (`make gate-q8-tail-cuda`).
 
-**Open (found 2026-11-12, not fixed):** SmolLM2-135M converted with
-`--ggml-native --quantize q8_0` loads on CUDA but decodes different ids
-from the CPU, which agrees with F32. The legacy-layout Q8 of the same
-model is correct on CUDA, and so is the native file with any single
-tensor quantized. The runner from before toy#205 behaves the same.
-Cause not yet known.
+Quantized weights do not give bit-equal logits on CPU and CUDA:
+ggml-cuda's quantized matmul also quantizes the activations to Q8_1,
+the CPU kernel does not. Greedy ids therefore agree except where the
+top two logits are nearly tied. Example (toy#212): SmolLM2-135M native
+Q8, prompt ids `6403 1980 253 655 28`, where the reference F32 logits
+of the top two tokens are 12.997 and 12.836. CPU Q8 picks the first,
+CUDA Q8 the second, and so does the CPU when only `attn_v` is
+quantized. On four other prompts CUDA Q8 and CPU Q8 ids are identical.
+A gate that compares CUDA and CPU ids on quantized weights needs a
+prompt with a clear margin.
 
 ※ These cells used to read ✗: Qwen3 CUDA decode was degenerate while
 CPU was coherent (caught by the 2026-06-11 re-verification, toy#76).
