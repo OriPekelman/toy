@@ -655,16 +655,18 @@ else
 	  || { echo "GATE FAIL [projection-lens-metal]"; exit 1; }
 endif
 
-# K-quant MoE attention regression gate (the bug long misfiled as ggml#1506):
-# head_nbytes returned 0 for K-quant attention weights → per-head mmap stride
-# collapsed every head onto head 0 → degenerate repeating decode on OLMoE
-# Q4_K_M. Structural assertion (distinct-count + max single-token run), not
-# byte-exact, so it survives benign K-quant drift. MODEL-GATED: needs the ~4 GB
-# data/OLMoE-1b-7b-0924-Instruct-Q4_K_M.gguf (gitignored); SKIPs loudly when
-# absent. bin/toy auto-builds the infer runner. See docs/notes/mul_mat_id_quants.md.
-.PHONY: gate-moe-kquant
+# OLMoE Q4_K_M decode against llama.cpp's ids. Guards the K-quant attention
+# head-stride collapse (the bug long misfiled as ggml#1506; head_nbytes returned
+# 0 for K-quant attention weights) and the per-head QK-norm (toy#213; OLMoE
+# normalises the whole Q/K vector). Asserts the 10 greedy ids equal llama.cpp's.
+# MODEL-GATED: needs the ~4 GB data/OLMoE-1b-7b-0924-Instruct-Q4_K_M.gguf
+# (gitignored); SKIPs loudly when absent. bin/toy auto-builds the infer runner.
+# See docs/notes/mul_mat_id_quants.md.
+.PHONY: gate-moe-kquant gate-moe-kquant-cuda
 gate-moe-kquant:
 	ruby prep/moe_kquant_gate.rb
+gate-moe-kquant-cuda:
+	ruby prep/moe_kquant_gate.rb --device cuda
 
 # llama.cpp-labelled GGUF gate (toy#203): a file written by llama.cpp's own
 # converter (qwen2.* keys, native layout, no toy.ggml_native) must resolve

@@ -185,13 +185,13 @@ failing CI:
 
 - `make gate-full-finetune` (`prep/full_finetune_gate.rb`) — needs
   `data/smollm2-135m-native.gguf`; byte-exact engine full-finetune CE curve.
-- `make gate-moe-kquant` (`prep/moe_kquant_gate.rb`) — needs
-  `data/OLMoE-1b-7b-0924-Instruct-Q4_K_M.gguf` (~4 GB). Regression guard for
-  the K-quant MoE attention head-stride collapse (`head_nbytes` returning 0 for
-  K-quants — the bug long misfiled as ggml#1506; see
-  `docs/notes/mul_mat_id_quants.md`). STRUCTURAL assertion (distinct-id count +
-  max single-token run on a greedy OLMoE Q4_K_M decode), not byte-exact, so it
-  guards "attention didn't collapse" without false-alarming on K-quant drift.
+- `make gate-moe-kquant` / `gate-moe-kquant-cuda` (`prep/moe_kquant_gate.rb`)
+  — needs `data/OLMoE-1b-7b-0924-Instruct-Q4_K_M.gguf` (~4 GB). Asserts the
+  10 greedy ids for "The capital of France is" equal llama.cpp's on the same
+  file. Guards the K-quant attention head-stride collapse (`head_nbytes`
+  returning 0 for K-quants — the bug long misfiled as ggml#1506; see
+  `docs/notes/mul_mat_id_quants.md`) and the per-head QK-norm (toy#213); the
+  failure message names which of the two signatures it saw.
 
 ## Poly-degradation gate
 

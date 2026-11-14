@@ -1,73 +1,70 @@
 #!/usr/bin/env ruby
-# prep/moe_kquant_gate.rb — regression guard for the K-quant MoE attention
-# head-stride collapse (the bug long misfiled as ggml#1506).
+# prep/moe_kquant_gate.rb — OLMoE-1B-7B Q4_K_M greedy decode against
+# llama.cpp's ids. Guards two bugs that both gave plausible wrong text:
 #
-# THE BUG: head_nbytes() returned 0 for K-quant attention weights, so the
-# per-head mmap slice offset `off_base + hq*0` made every attention head read
-# head 0's weight slice. On OLMoE-1B-7B Q4_K_M (forced down realize_for_mmap as
-# a MoE model) that collapsed multi-head attention into degenerate, repeating
-# output: `… 261 | 20065 20065 20065 20065 20065 42859 42859 42859 42859 42859`.
-# After the fix the same greedy decode is varied/coherent. See
-# docs/notes/mul_mat_id_quants.md and lib/toy_smollm2_ffi_kv.rb#head_nbytes.
+#   1. K-quant attention head-stride collapse (the bug long misfiled as
+#      ggml#1506): head_nbytes() returned 0 for K-quant attention weights, so
+#      every attention head read head 0's weight slice. Signature: first
+#      token 20065, then `20065 20065 20065 42859 …`. See
+#      docs/notes/mul_mat_id_quants.md.
+#   2. Per-head QK-norm (toy#213): OLMoE's attn_q_norm / attn_k_norm are an
+#      RMSNorm over the WHOLE Q / K vector (d_model wide) before the head
+#      split. Toy normalised each head's d_head slice on its own. Signature:
+#      the first token still matches (36062, "Paris"), then `8 753 1051` and
+#      a run of newlines.
 #
-# WHAT IT ASSERTS (re-anchored 2026-11-13, toy#206): the FIRST generated
-# token. The prompt is "The capital of France is"; llama.cpp's greedy first
-# token on this file is 36062 ("Paris"), and so is Toy's. With the collapse
-# put back (head_nbytes forced to a zero stride) it is 20065, followed by
-# `20065 20065 20065 42859 …`.
-#
-# The gate used to assert "enough distinct tokens, no long run" over 10
-# tokens. That passed only because `generate` fed the last prompt token twice
-# (fixed in toy#206), which produced varied but wrong text
-# (`2320 658 15 11368 …`). The corrected decode is `36062 8 753 1051` and then
-# a run of newlines, where llama.cpp continues `15 510 38479 1171 49348 …`
-# (". The capital of Spain is Madrid."). So Toy and llama.cpp agree on the
-# first token of this model and DIFFER from the second: an open accuracy gap
-# on OLMoE (the per-head QK-norm approximation is the first suspect), printed
-# below on every run and not asserted on.
+# WHAT IT ASSERTS: the 10 greedy ids for "The capital of France is" equal
+# llama.cpp's (`ghcr.io/ggml-org/llama.cpp:full-cuda`, 2026-11-13, same file):
+# "Paris. The capital of Spain is Madrid." A K-quant file on another machine
+# could in principle flip a near-tie; if this fails only at a late index,
+# check the top-2 margin there before calling it a regression (toy#212).
 #
 # MODEL-GATED: needs data/OLMoE-1b-7b-0924-Instruct-Q4_K_M.gguf — a ~4 GB
 # gitignored dev artifact (Meshwa/OLMoE-1b-7b-0924-Instruct-gguf). When absent
 # the gate SKIPs loudly (exit 0) rather than failing a fixture-only checkout.
 #
-#   ruby prep/moe_kquant_gate.rb
+#   ruby prep/moe_kquant_gate.rb [--device cuda]
 require "open3"
 
-ROOT = File.expand_path("..", __dir__)
-TOY  = File.join(ROOT, "bin", "toy")
-GGUF = File.join(ROOT, "data", "OLMoE-1b-7b-0924-Instruct-Q4_K_M.gguf")
+ROOT   = File.expand_path("..", __dir__)
+TOY    = File.join(ROOT, "bin", "toy")
+GGUF   = File.join(ROOT, "data", "OLMoE-1b-7b-0924-Instruct-Q4_K_M.gguf")
+DEVICE = (i = ARGV.index("--device")) ? ARGV[i + 1].to_s : "cpu"
+LABEL  = DEVICE == "cuda" ? "moe-kquant-cuda" : "moe-kquant"
 
-# The exact prompt + the degenerate token recorded pre-fix (token 20065 = "Dub",
-# repeated). Greedy decode, no sampler → deterministic.
 PROMPT_IDS  = "510 38479 1171 33639 261"
 N           = 10
-DEGEN_TOKEN = 20065
-FIRST_TOKEN = 36062   # "Paris" — llama.cpp's greedy first token for this prompt
+DEGEN_TOKEN = 20065   # head-collapse signature (bug 1)
 LLAMA_CPP   = [36062, 15, 510, 38479, 1171, 49348, 261, 19008, 6992, 15].freeze
+PER_HEAD_QK = [36062, 8, 753].freeze   # per-head QK-norm signature (bug 2)
 
+unless %w[cpu cuda].include?(DEVICE)
+  warn "moe-kquant-gate: --device must be cpu or cuda"
+  exit 2
+end
 unless File.executable?(TOY)
   warn "moe-kquant-gate: bin/toy not executable: #{TOY}"
   exit 2
 end
 
 unless File.exist?(GGUF)
-  puts "SKIP [moe-kquant]: model absent (#{GGUF})."
+  puts "SKIP [#{LABEL}]: model absent (#{GGUF})."
   puts "  This gate needs the ~4 GB OLMoE-1B-7B Q4_K_M dev GGUF (gitignored)."
   puts "  Pull it from Meshwa/OLMoE-1b-7b-0924-Instruct-gguf to run the gate."
   exit 0
 end
 
-out, st = Open3.capture2e(TOY, "infer", GGUF,
+out, st = Open3.capture2e(TOY, "infer", GGUF, "--device", DEVICE,
                           "--prompt-ids", PROMPT_IDS, "--n", N.to_s, chdir: ROOT)
 unless st.success?
-  puts "GATE FAIL [moe-kquant]: `toy infer` exited #{st.exitstatus}"
+  puts "GATE FAIL [#{LABEL}]: `toy infer` exited #{st.exitstatus}"
   puts out
   exit 1
 end
 
 line = out.lines.find { |l| l.start_with?("ids:") }
 unless line
-  puts "GATE FAIL [moe-kquant]: no `ids:` line in output"
+  puts "GATE FAIL [#{LABEL}]: no `ids:` line in output"
   puts out
   exit 1
 end
@@ -76,32 +73,24 @@ all_ids = line.sub("ids:", "").split.map(&:to_i)
 prompt  = PROMPT_IDS.split.map(&:to_i)
 cont    = all_ids[prompt.length..] || []
 
-if cont.length < N
-  puts "GATE FAIL [moe-kquant]: expected #{N} continuation ids, got #{cont.length}"
-  puts "  ids: #{all_ids.join(' ')}"
-  exit 1
-end
-
-# longest run of a single repeated token in the continuation
-max_run = 1
-run = 1
-cont.each_cons(2) { |a, b| run = (a == b ? run + 1 : 1); max_run = [max_run, run].max }
-distinct = cont.uniq.length
-
-degenerate = (cont.first == DEGEN_TOKEN) || (cont.first != FIRST_TOKEN)
 agree = 0
-agree += 1 while agree < cont.length && cont[agree] == LLAMA_CPP[agree]
+agree += 1 while agree < [cont.length, N].min && cont[agree] == LLAMA_CPP[agree]
 
-puts "[moe-kquant] continuation: #{cont.join(' ')}"
-puts "[moe-kquant] distinct=#{distinct}/#{cont.length}  max_run=#{max_run}  first=#{cont.first}"
+puts "[#{LABEL}] continuation: #{cont.join(' ')}"
+puts "[#{LABEL}] llama.cpp   : #{LLAMA_CPP.join(' ')}"
 
-puts "[moe-kquant] llama.cpp    : #{LLAMA_CPP.join(' ')}  (agrees on the first #{agree} of #{cont.length}; open gap, see header)"
-
-if degenerate
-  puts "GATE FAIL [moe-kquant]: first token #{cont.first}, expected #{FIRST_TOKEN} — attention head collapse regressed."
-  puts "  (pre-fix signature: token #{DEGEN_TOKEN} repeated; head_nbytes returned 0 for K-quants)"
-  exit 1
+if cont == LLAMA_CPP
+  puts "GATE PASS [#{LABEL}]: OLMoE Q4_K_M decodes llama.cpp's #{N} ids on #{DEVICE}."
+  exit 0
 end
 
-puts "GATE PASS [moe-kquant]: K-quant MoE decode gives llama.cpp's first token (no head-stride collapse)."
-exit 0
+why =
+  if cont.first == DEGEN_TOKEN
+    "attention head collapse regressed (head_nbytes returning a zero stride for K-quants)"
+  elsif cont.first(3) == PER_HEAD_QK
+    "QK-norm is being applied per head again instead of over the whole Q/K vector (toy#213)"
+  else
+    "ids differ from llama.cpp at index #{agree} (got #{cont[agree].inspect}, expected #{LLAMA_CPP[agree]})"
+  end
+puts "GATE FAIL [#{LABEL}]: #{why}; agrees on the first #{agree} of #{N}."
+exit 1
