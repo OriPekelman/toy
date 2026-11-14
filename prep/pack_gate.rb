@@ -108,6 +108,26 @@ end
 at_exit { stop_server; FileUtils.rm_rf(TMP) unless ENV["PACK_GATE_KEEP"] == "1" }
 %w[INT TERM].each { |s| trap(s) { stop_server; exit 130 } }
 
+# Where a process that neither exited nor served is sitting: per-thread
+# state and kernel wait channel, and a gdb backtrace when gdb is installed.
+# Written to a file next to the gate's scratch directory, which is kept.
+def hang_report(pid)
+  path = "#{TMP}-hang.txt"
+  out = +""
+  Dir.glob("/proc/#{pid}/task/*").each do |t|
+    comm  = File.read("#{t}/comm").strip rescue "?"
+    state = File.read("#{t}/stat").split(") ").last.to_s.split.first rescue "?"
+    wchan = File.read("#{t}/wchan").strip rescue "?"
+    out << "thread #{File.basename(t)} #{comm} state=#{state} wchan=#{wchan}\n"
+  end
+  bt, = Open3.capture2e("gdb", "-p", pid.to_s, "-batch", "-ex", "thread apply all bt 20") rescue nil
+  out << bt.to_s
+  File.write(path, out)
+  "; thread states and backtrace in #{path}"
+rescue StandardError => e
+  "; no hang report (#{e.class})"
+end
+
 def free_port
   s = TCPServer.new("127.0.0.1", 0)
   p = s.addr[1]
@@ -121,8 +141,12 @@ def boot(argv, env, port, chdir:, clean:)
   stop_server
   @boots += 1
   @log = File.join(TMP, "srv#{@boots}.log")
-  @pid = Process.spawn(env, *STDBUF, *argv, chdir: chdir, pgroup: true, out: @log, err: @log,
-                       unsetenv_others: clean)
+  # One descriptor for both streams: two separate opens of the same file
+  # overwrite each other's lines.
+  File.open(@log, "w") do |lf|
+    @pid = Process.spawn(env, *STDBUF, *argv, chdir: chdir, pgroup: true, out: lf, err: lf,
+                         in: File::NULL, unsetenv_others: clean)
+  end
   deadline = Time.now + 180
   while Time.now < deadline
     if Process.waitpid(@pid, Process::WNOHANG)
@@ -137,8 +161,9 @@ def boot(argv, env, port, chdir:, clean:)
     end
     sleep 0.25
   end
-  tail = File.exist?(@log) ? File.readlines(@log).last(4).map(&:strip).join(" | ") : "no log"
-  raise "server never became ready on port #{port} (#{File.basename(argv.first)}; log ends: #{tail})"
+  tail = File.exist?(@log) ? File.readlines(@log).last(6).map(&:strip).join(" | ") : "no log"
+  where = hang_report(@pid)
+  raise "server never became ready on port #{port} (#{File.basename(argv.first)}; log ends: #{tail})#{where}"
 end
 
 def post(port, path, payload)
