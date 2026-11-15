@@ -12,6 +12,15 @@
 #   reslen   Content-Length of a response is its character count: a reply
 #            with non-ASCII text is cut short (toy#209).
 #
+#   seedfd   tep.rb's boot-time type seeds build a Stream and two WebSocket
+#            drivers on file descriptor 0 and write test frames to it (8
+#            sendto(0, ...) calls per process start). On a pipe, a file or
+#            a terminal they fail with ENOTSOCK and nothing shows. When
+#            stdin IS a socket they land in it, and once an unread socket
+#            fills, the next start blocks forever before the server's
+#            first line (the gate-pack-cuda "never became ready" timeout).
+#            The seeds now use descriptor -1.
+#
 # Run by `make vendor-tep` after the vendor step; vendor/ is gitignored, so
 # without this every re-vendor silently loses the fixes. Each edit is exact
 # text: already fixed -> left alone; original text -> replaced; neither ->
@@ -48,6 +57,18 @@ EDITS = [
   ["reslen", "tep/server_scheduled.rb",
    "\"Content-Length: \" + msg.length.to_s",
    "\"Content-Length: \" + msg.bytesize.to_s"],
+  ["seedfd", "tep.rb",
+   "  _tep_seed_stream = Stream.new(0)\n",
+   "  _tep_seed_stream = Stream.new(-1)\n"],
+  ["seedfd", "tep.rb",
+   "_tep_seed_res.start_websocket(\"\", Tep::WebSocket::Driver.new(0))",
+   "_tep_seed_res.start_websocket(\"\", Tep::WebSocket::Driver.new(-1))"],
+  ["seedfd", "tep.rb",
+   "_tep_seed_llm_stream = Tep::Stream.new(0)",
+   "_tep_seed_llm_stream = Tep::Stream.new(-1)"],
+  ["seedfd", "tep.rb",
+   "_tep_seed_ws_drv = Tep::WebSocket::Driver.new(0)",
+   "_tep_seed_ws_drv = Tep::WebSocket::Driver.new(-1)"],
 ].freeze
 
 applied = 0

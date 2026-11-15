@@ -25,6 +25,7 @@
 #             beats PORT
 #   describe  --describe prints the model's sha256 and the toy and ggml
 #             commits, loads nothing, exits 0; an unknown argument exits 2
+#   stdin     a start writes nothing to a socket on its standard input
 #   damaged   a pack whose trailer is damaged or cut refuses to start and
 #             says so (it does not turn into a plain runner looking for a
 #             model elsewhere); a pack whose KV entry was made from another
@@ -326,6 +327,31 @@ begin
     ok.call("describe", "card, model sha256, toy and ggml commits; nothing loaded; unknown argument exits 2")
   else
     d.each { |m| failures << "describe: #{m}" }
+  end
+
+  # ---- stdin ----
+  # A start must not write to its standard input. tep's boot-time seeds
+  # used to send test frames to descriptor 0; with a socket there (some
+  # supervisors and harnesses pass one) they landed in it, and once an
+  # unread socket filled, the next start blocked before its first line.
+  sa, sb = UNIXSocket.pair
+  qpid = Process.spawn(art, "--describe", chdir: EMPTY, unsetenv_others: true,
+                       in: sa, out: File::NULL, err: File::NULL)
+  Process.wait(qpid)
+  st = $?
+  got = begin
+    sb.read_nonblock(4096)
+  rescue IO::WaitReadable
+    ""
+  end
+  sa.close
+  sb.close
+  if st.success? && got.empty?
+    ok.call("stdin", "a start writes nothing to a socket on its standard input")
+  else
+    failures << "stdin: a start wrote #{got.bytesize} byte(s) to its standard input " \
+                "(#{got[0, 24].inspect}); run `make vendor-tep` or `ruby prep/patch_vendored_tep.rb`" unless got.empty?
+    failures << "stdin: --describe with a socket on stdin exited #{st.exitstatus}" unless st.success?
   end
 
   # ---- damaged ----
