@@ -70,7 +70,11 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
     # context, applied in run_generation (it was a literal 256).
     n_new = sampling.max_tokens
     if n_new <= 0; n_new = 16; end
-    run_generation(comp, token_ids, n_new)
+    begin
+      run_generation(comp, token_ids, n_new)
+    rescue => e
+      request_failed(comp, e.message)
+    end
     comp
   end
 
@@ -84,7 +88,11 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
     if token_ids.length == 0
       return comp
     end
-    run_generation(comp, token_ids, chat_max_tokens(body, token_ids.length))
+    begin
+      run_generation(comp, token_ids, chat_max_tokens(body, token_ids.length))
+    rescue => e
+      request_failed(comp, e.message)
+    end
     # A chat reply is text; the ids stay out of the chat envelope.
     comp.token_ids = [0]
     comp.token_ids.delete_at(0)
@@ -107,23 +115,31 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
     out_ids = [0]
     out_ids.pop
     emitted = 0
-    id = api_first_id(token_ids)
-    step = 0
-    while step < n_new
-      if api_stop_id?(id)
-        break
+    begin
+      if SERVE_TEST_FAULT_AT > 0 && token_ids.length == SERVE_TEST_FAULT_AT
+        raise "injected test fault (SERVE_TEST_FAULT_AT)"
       end
-      out_ids.push(id)
-      text = @state.tok.decode(out_ids)
-      safe = api_utf8_safe_len(text)
-      if safe > emitted
-        sink.emit_token(text.byteslice(emitted, safe - emitted))
-        emitted = safe
+      id = api_first_id(token_ids)
+      step = 0
+      while step < n_new
+        if api_stop_id?(id)
+          break
+        end
+        out_ids.push(id)
+        text = @state.tok.decode(out_ids)
+        safe = api_utf8_safe_len(text)
+        if safe > emitted
+          sink.emit_token(text.byteslice(emitted, safe - emitted))
+          emitted = safe
+        end
+        step = step + 1
+        if step < n_new
+          id = api_next_id(id, token_ids.length + out_ids.length - 1)
+        end
       end
-      step = step + 1
-      if step < n_new
-        id = api_next_id(id, token_ids.length + out_ids.length - 1)
-      end
+    rescue => e
+      # toy#214: the stream ends with what was sent so far; see request_failed.
+      puts "[openai_api_llama] request failed: " + e.message
     end
     t_end = TinyNN.tnn_events_now_seconds
     emit_request_event(token_ids.length, out_ids.length,
@@ -132,6 +148,21 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
   end
 
   # ---- shared pieces ----
+
+  # toy#214: an exception inside one request must not end the process (a
+  # packed artifact has no supervisor). tep's backend API has no error
+  # channel, so the reply is an empty completion with finish_reason
+  # "error", and the reason goes to the log. The KV bookkeeping stays
+  # valid: STATE.kv_ids only ever lists rows that were written.
+  def request_failed(comp, msg)
+    puts "[openai_api_llama] request failed: " + msg
+    comp.text = ""
+    comp.token_ids = [0]
+    comp.token_ids.delete_at(0)
+    comp.completion_tokens = 0
+    comp.finish_reason = "error"
+    0
+  end
 
   # Messages -> template text -> ids. Empty when the body has no messages.
   def chat_prompt_ids(body)
@@ -194,6 +225,9 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
       return 0
     end
 
+    if SERVE_TEST_FAULT_AT > 0 && token_ids.length == SERVE_TEST_FAULT_AT
+      raise "injected test fault (SERVE_TEST_FAULT_AT)"
+    end
     t_start = TinyNN.tnn_events_now_seconds
     new_ids = api_generate_ids(token_ids, n_new)
     t_end   = TinyNN.tnn_events_now_seconds

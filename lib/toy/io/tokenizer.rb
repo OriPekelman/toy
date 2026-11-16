@@ -242,6 +242,12 @@ class Tokenizer
       end
       j = j + 1
     end
+    # Nothing decoded (every id was skipped, or an empty piece): `out` is
+    # still the frozen "" literal, which force_encoding cannot retag
+    # (toy#214: FrozenError took the whole server down).
+    if out.length == 0
+      return ""
+    end
     # Assembled byte by byte (binary); it IS UTF-8 text. See cp_to_utf8.
     out.force_encoding("UTF-8")
   end
@@ -296,6 +302,12 @@ class Tokenizer
         end
       end
       i = i + 1
+    end
+    # Nothing decoded (every id was skipped, or an empty piece): `out` is
+    # still the frozen "" literal, which force_encoding cannot retag
+    # (toy#214: FrozenError took the whole server down).
+    if out.length == 0
+      return ""
     end
     # Assembled byte by byte (binary); it IS UTF-8 text. See cp_to_utf8.
     out.force_encoding("UTF-8")

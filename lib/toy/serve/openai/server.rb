@@ -138,6 +138,10 @@ MAX_T      = GGUFLoad.resolve_ctx(GGUF_PATH, api_setting("MAX_T"), "toy-serve")
 PREFIX_FILE  = PACK_ON ? "" : (ENV["PREFIX_FILE"] || "")
 PREFIX_CACHE = PACK_ON ? (TinyNN.tnn_pack_has("kv") == 1 ? "@pack:kv" : "") : (ENV["PREFIX_CACHE"] || "")
 KV_REUSE_OFF = (ENV["KV_REUSE"] || "") == "0"
+# Test hook for the request-failure path (prep/serve_chat_gate.rb): a
+# request whose prompt is exactly this many tokens raises inside generation.
+# 0 (the default) never matches.
+SERVE_TEST_FAULT_AT = (ENV["SERVE_TEST_FAULT_AT"] || "0").to_i
 
 # ---- Inference state. Class instance held as a CONSTANT so spinel
 #      emits a typed slot for it (same pattern as inference_api.rb /
