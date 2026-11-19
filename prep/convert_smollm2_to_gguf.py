@@ -139,7 +139,35 @@ def is_quantizable(name: str, shape, quantize_embd: bool = False) -> bool:
     return True
 
 
-def embed_tokenizer(w: "gguf.GGUFWriter", src: "Source") -> None:
+def bpe_pre_kind(tjson: dict):
+    """llama.cpp's pre-tokenizer name for a BPE tokenizer.json, or None.
+
+      Split on the cl100k-style regex with \\p{N}{1,3}   -> "llama-bpe"
+      the same regex with a single \\p{N}                -> "qwen2"
+      Digits(individual_digits) + ByteLevel              -> "smollm"
+      ByteLevel alone                                    -> "gpt-2"
+    """
+    pre = tjson.get("pre_tokenizer") or {}
+    parts = pre.get("pretokenizers", []) if pre.get("type") == "Sequence" else [pre]
+    types = [p.get("type") for p in parts]
+    for p in parts:
+        if p.get("type") == "Split":
+            rx = (p.get("pattern") or {}).get("Regex", "")
+            if "[^\\r\\n\\p{L}\\p{N}]?\\p{L}+" not in rx:
+                return None
+            if "|\\p{N}{1,3}|" in rx:
+                return "llama-bpe"
+            if "|\\p{N}|" in rx:
+                return "qwen2"
+            return None
+    if types == ["Digits", "ByteLevel"] and parts[0].get("individual_digits"):
+        return "smollm"
+    if types == ["ByteLevel"]:
+        return "gpt-2"
+    return None
+
+
+def embed_tokenizer(w: "gguf.GGUFWriter", src: "Source", pre_override=None) -> None:
     """Pull the model's tokenizer from HF and embed vocab + merges +
     special-token IDs + chat template into the GGUF.
 
@@ -192,10 +220,23 @@ def embed_tokenizer(w: "gguf.GGUFWriter", src: "Source") -> None:
     tokenizer_kind = "llama" if is_spm else "gpt2"
     w.add_tokenizer_model(tokenizer_kind)
 
-    # Pre-tokenizer hint. "llama-bpe" = cl100k_base-style regex
-    # (Llama-3 / Qwen / SmolLM2 / Qwen3). "default" = SentencePiece
-    # metaspace replacement (Llama-1/2 / Mistral / TinyLlama).
-    pre_kind = "default" if is_spm else "llama-bpe"
+    # Pre-tokenizer name, in llama.cpp's vocabulary. It selects the
+    # splitting rules on the reading side (lib/toy/io/tokenizer.rb set_pre,
+    # and llama.cpp), so it is read from tokenizer.json rather than
+    # assumed: before toy#215 every BPE model was labelled "llama-bpe",
+    # which groups digits in threes where Qwen and SmolLM2 split them one
+    # by one. "default" = SentencePiece (Llama-1/2 / Mistral / TinyLlama).
+    if is_spm:
+        pre_kind = "default"
+    elif pre_override:
+        pre_kind = pre_override
+    else:
+        pre_kind = bpe_pre_kind(tjson)
+        if pre_kind is None:
+            raise SystemExit("convert: tokenizer.json has a pre_tokenizer this converter does not "
+                     "recognise:\n  " + json.dumps(tjson.get("pre_tokenizer"))[:300] +
+                     "\nState the rules with --pre llama-bpe|qwen2|smollm|gpt-2 "
+                     "(the names llama.cpp uses).")
     w.add_string("tokenizer.ggml.pre", pre_kind)
     print(f"    tokenizer kind = {tokenizer_kind} ({pre_kind})")
 
@@ -286,6 +327,11 @@ def main():
                          "loader picks this path automatically via the "
                          "'toy.ggml_native' metadata key. NOT compatible "
                          "with the old transposed loader path.")
+    ap.add_argument("--pre", default=None, choices=["llama-bpe", "qwen2", "smollm", "gpt-2"],
+                    help="With --with-tokenizer: state the BPE pre-tokenizer name "
+                         "(tokenizer.ggml.pre) instead of reading it from "
+                         "tokenizer.json. Needed only when the converter says it "
+                         "does not recognise the tokenizer's pre_tokenizer.")
     ap.add_argument("--with-tokenizer", action="store_true",
                     help="Embed the model's tokenizer (vocab + merges + "
                          "special token IDs + chat template) into the "
@@ -465,7 +511,7 @@ def main():
     # template) when --with-tokenizer. Required for Ruby-side
     # encode/decode via lib/tokenizer.rb.
     if args.with_tokenizer:
-        embed_tokenizer(w, src)
+        embed_tokenizer(w, src, args.pre)
 
     # Quantize 2-D weight tensors when --quantize is set. add() wraps
     # w.add_tensor so quantization is transparent at the call sites.

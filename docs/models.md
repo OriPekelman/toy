@@ -199,6 +199,34 @@ Three tokenizer flavors are auto-detected from the GGUF:
   Greedy longest-match; auto-prepends BOS when
   `tokenizer.ggml.add_bos_token` is set.
 
+**Byte-level BPE pre-tokenizer.** Before BPE runs, text is split by the
+rules `tokenizer.ggml.pre` names, using llama.cpp's names:
+
+| `tokenizer.ggml.pre` | Rules | Models |
+|---|---|---|
+| `llama-bpe`, `llama3`, `llama-v3`, `falcon3`, or absent | cl100k-style, digits in runs of 1 to 3 | Llama-3.x |
+| `qwen2` (also `stablelm2`, `megrez`) | the same, one digit a piece; `qwen2` also composes decomposed accents (NFC) | Qwen2.5, Qwen3 |
+| `smollm` | each digit isolated, then GPT-2 | SmolLM2 |
+| `gpt-2`, `gpt2`, `phi-2` | GPT-2 | GPT-2 family |
+
+Letters, digits and whitespace are Unicode classes, so `été` reaches BPE
+as one piece and encodes to its one vocabulary entry. Each rule set gives
+the HuggingFace ids for its own tokenizer (`make gate-tokenizer-pre`); an
+unrecognised name is reported and takes the `llama-bpe` rules.
+
+- The converter reads the name from `tokenizer.json` and refuses a
+  `pre_tokenizer` it does not recognise unless `--pre NAME` states it.
+  **Files converted before toy#215 are all labelled `llama-bpe`**, which
+  gives Qwen digits in threes and no accent composition, and SmolLM2
+  Llama-3's handling of newlines after punctuation and of spaces before a
+  digit. Re-convert them to get the model's own rules. GGUFs written by
+  llama.cpp's converter already carry the right name.
+- The accent composition is not full NFC: it joins a letter and a
+  directly following combining mark from U+0300–U+036F (Latin, Greek,
+  Cyrillic, Vietnamese). It does not reorder marks or compose Hangul.
+  llama.cpp does not normalise at all, so on decomposed text Toy follows
+  HuggingFace and differs from llama.cpp.
+
 RoPE scaling (YaRN / llama3-style / linear) propagates through the
 converter and loader, so Llama-3.x and Qwen3 long-context
 configurations work without extra wiring.

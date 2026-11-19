@@ -33,6 +33,8 @@
 #             toy-infer decodes from it; --quantize-embd alone is refused
 #   tokenizer --with-tokenizer reads tokenizer.json and chat_template.jinja
 #             from the directory
+#   pre       tokenizer.ggml.pre is read from tokenizer.json's pre_tokenizer
+#             (toy#215); an unrecognised one is refused unless --pre states it
 #
 #   uv run --script prep/converter_gate.py     # exit 0 pass, 1 fail, 2 unusable
 #
@@ -119,6 +121,24 @@ def make_dir(root: Path, name: str, rope: dict, shards: bool = False) -> Path:
         (d / "model.safetensors.index.json").write_text(
             json.dumps({"metadata": {}, "weight_map": wmap}))
     return d
+
+
+CL100K = ("(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|%s| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*"
+          "|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+")
+
+
+def set_pre(d: Path, kind: str) -> None:
+    """Rewrite the directory's tokenizer.json with another pre_tokenizer."""
+    from tokenizers import Tokenizer, Regex, pre_tokenizers as P
+    tok = Tokenizer.from_file(str(d / "tokenizer.json"))
+    bl = P.ByteLevel(add_prefix_space=False, use_regex=False)
+    tok.pre_tokenizer = {
+        "llama-bpe": lambda: P.Sequence([P.Split(Regex(CL100K % "\\p{N}{1,3}"), "isolated"), bl]),
+        "qwen2":     lambda: P.Sequence([P.Split(Regex(CL100K % "\\p{N}"), "isolated"), bl]),
+        "smollm":    lambda: P.Sequence([P.Digits(individual_digits=True), P.ByteLevel(add_prefix_space=False)]),
+        "other":     lambda: P.Whitespace(),
+    }[kind]()
+    tok.save(str(d / "tokenizer.json"))
 
 
 def add_tokenizer(d: Path) -> None:
@@ -320,8 +340,33 @@ def main() -> int:
                 fail("tokenizer", "chat_template.jinja not embedded")
             elif eos != V - 1:
                 fail("tokenizer", f"eos id is {eos}, expected {V - 1}")
+            elif kv(gt, "tokenizer.ggml.pre") != "gpt-2":
+                fail("tokenizer", f"ByteLevel pre_tokenizer labelled {kv(gt, 'tokenizer.ggml.pre')!r}, expected 'gpt-2'")
             else:
                 ok("tokenizer", "tokenizer.json and chat_template.jinja read from the directory")
+
+        # ---- pre (toy#215) ----
+        bad = []
+        for kind in ("llama-bpe", "qwen2", "smollm"):
+            set_pre(d5, kind)
+            gp = root / f"pre-{kind}.gguf"
+            rc, out = convert(d5, gp, "--with-tokenizer")
+            got = kv(gp, "tokenizer.ggml.pre") if rc == 0 else f"conversion failed: {last(out)}"
+            if got != kind:
+                bad.append(f"{kind} pre_tokenizer labelled {got!r}")
+        set_pre(d5, "other")
+        gu = root / "pre-unknown.gguf"
+        rc, out = convert(d5, gu, "--with-tokenizer")
+        if rc == 0 or gu.exists() or "--pre" not in out:
+            bad.append("an unrecognised pre_tokenizer was not refused with a pointer to --pre")
+        rc, out = convert(d5, gu, "--with-tokenizer", "--pre", "qwen2")
+        if rc != 0 or kv(gu, "tokenizer.ggml.pre") != "qwen2":
+            bad.append("--pre qwen2 did not label an unrecognised pre_tokenizer")
+        if bad:
+            fail("pre", "; ".join(bad))
+        else:
+            ok("pre", "tokenizer.ggml.pre follows tokenizer.json (llama-bpe, qwen2, smollm, gpt-2); "
+                      "an unrecognised one is refused unless --pre states it")
 
     if not failures:
         print("GATE PASS [converter]: a local checkpoint converts with its own rope base, "
