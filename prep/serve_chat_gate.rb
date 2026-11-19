@@ -18,6 +18,11 @@
 #   stop      with STOP_IDS the same request ends early with finish_reason
 #             "stop" and the stop id is not in the reply; without it the
 #             request runs to max_tokens with "length"
+#   empty     a zero-token reply (first id is a stop id) is answered and the
+#             server keeps serving (toy#214: decoding nothing raised
+#             FrozenError and ended the process)
+#   fault     a request that raises inside generation is answered with
+#             finish_reason "error" and the next request is unaffected
 #   idsonly   a GGUF with no tokenizer: text "", chat 501 (unchanged)
 #   qwen      (TOY_GATE_QWEN_GGUF=<file>) a real chat model stops at its own
 #             end-of-turn token before max_tokens
@@ -62,6 +67,11 @@ targets.each do |t|
   exit 2
 end
 
+# The runner's stdout is block-buffered into a file; line-buffer it when
+# stdbuf is there so the `fault` leg can read the server's log line.
+STDBUF_BIN = %w[/usr/bin/stdbuf /bin/stdbuf /opt/homebrew/bin/gstdbuf].find { |b| File.executable?(b) }
+STDBUF = STDBUF_BIN ? [STDBUF_BIN, "-oL"].freeze : [].freeze
+
 # ---- server lifecycle (one at a time; always torn down) --------------------
 
 @pid = nil
@@ -100,7 +110,10 @@ def start_server(gguf, extra_env = {})
   sock.close
   @logf = File.join(Dir.tmpdir, "serve_chat_gate_#{Process.pid}_#{port}.log")
   env = { "MODEL_PATH" => gguf, "MODEL_NAME" => "gate", "PORT" => port.to_s }.merge(extra_env)
-  @pid = Process.spawn(env, RUNNER, chdir: ROOT, pgroup: true, out: @logf, err: @logf)
+  # One descriptor for both streams, and no inherited stdin (tep#283).
+  File.open(@logf, "w") do |lf|
+    @pid = Process.spawn(env, *STDBUF, RUNNER, chdir: ROOT, pgroup: true, out: lf, err: lf, in: File::NULL)
+  end
   deadline = Time.now + 180
   while Time.now < deadline
     if Process.waitpid(@pid, Process::WNOHANG)
@@ -256,6 +269,47 @@ begin
     failures << "stop: ids #{got.inspect}, expected #{plain_ids[0, cut].inspect} (cut before #{stop_id})"
   else
     ok.call("stop", "ends before id #{stop_id} after #{cut} of 10 tokens, finish_reason \"stop\"")
+  end
+
+  # ---- empty (toy#214) ----
+  # A reply of zero tokens: the first generated id is a stop id. Decoding
+  # nothing used to raise FrozenError and take the whole server down.
+  port = start_server(TOK_GGUF, "STOP_IDS" => plain_ids[0].to_s)
+  r = post(port, "/v1/completions", "model" => "gate", "prompt" => PROMPT, "max_tokens" => 10)
+  c = r.code == "200" ? JSON.parse(r.body)["choices"][0] : {}
+  e = []
+  e << "completion: HTTP #{r.code}" unless r.code == "200"
+  e << "completion: ids #{c["ids"].inspect} text #{c["text"].inspect} finish #{c["finish_reason"].inspect}, " \
+       "expected [] \"\" \"stop\"" unless c["ids"].to_a == [] && c["text"].to_s == "" && c["finish_reason"] == "stop"
+  first_chat = post(port, "/v1/chat/completions", "model" => "gate", "messages" => msgs, "max_tokens" => 1)
+  e << "chat after an empty reply: HTTP #{first_chat.code}" unless first_chat.code == "200"
+  if e.empty?
+    ok.call("empty", "a zero-token reply is answered (ids [], text \"\", \"stop\") and the server keeps serving")
+  else
+    e.each { |m| failures << "empty: #{m}" }
+  end
+
+  # ---- fault (toy#214) ----
+  # An exception inside one request becomes an "error" reply, is logged,
+  # and the next request gets the same answer as on a fresh server.
+  # (/v1/completions: tep's chat envelope does not carry the backend's
+  # finish_reason, tep#276.)
+  port = start_server(TOK_GGUF, "SERVE_TEST_FAULT_AT" => PROMPT.length.to_s)
+  r = post(port, "/v1/completions", "model" => "gate", "prompt" => PROMPT, "max_tokens" => 10)
+  c = r.code == "200" ? JSON.parse(r.body)["choices"][0] : {}
+  f = []
+  f << "faulted request: HTTP #{r.code}, finish #{c["finish_reason"].inspect}, ids #{c["ids"].inspect}; " \
+       "expected 200, \"error\", none" unless r.code == "200" && c["finish_reason"] == "error" && c["ids"].to_a == []
+  if STDBUF_BIN && !File.read(@logf).include?("request failed: injected test fault")
+    f << "no 'request failed' line in the server log"
+  end
+  r2 = post(port, "/v1/chat/completions", "model" => "gate", "messages" => msgs, "max_tokens" => 12)
+  after = r2.code == "200" ? JSON.parse(r2.body).dig("choices", 0, "message", "content") : nil
+  f << "the request after the fault gave #{after.inspect}, expected #{chat_content.inspect}" unless after == chat_content
+  if f.empty?
+    ok.call("fault", "a request that raises is answered with finish_reason \"error\", logged, and the next request is unaffected")
+  else
+    f.each { |m| failures << "fault: #{m}" }
   end
 
   # ---- idsonly + long ----
