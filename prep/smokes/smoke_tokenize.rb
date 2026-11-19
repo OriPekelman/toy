@@ -7,33 +7,52 @@
 #   GGUF=model.gguf TEXT='<|im_start|>user' prep/smokes/smoke_tokenize
 #   PLAIN=1 …    # encode_plain: no special-token parsing
 #
-# Output (two lines, both always printed):
+#   TEXT_FILE=f  # one text per line (\\n = newline), one ids line each
+#
+# Output:
 #   specials: <count of CONTROL/USER_DEFINED tokens registered>
-#   ids: <space-separated ids>
+#   pre: <pre-tokenizer kind: 0 llama-bpe, 1 qwen2, 2 smollm, 3 gpt-2>
+#   ids: <space-separated ids>   (one line per text)
 
 require_relative "../../lib/toy/io/tokenizer"
 
 GGUF  = ENV["GGUF"] || ""
 TEXT  = ENV["TEXT"] || ""
 PLAIN = ENV["PLAIN"] || ""
+TEXT_FILE = ENV["TEXT_FILE"] || ""
 
 tok = Tokenizer.from_gguf(GGUF)
 if !tok.present
   puts "smoke_tokenize: no embedded tokenizer in " + GGUF
   exit 1
 end
-ids = [0]
-ids.pop
-if PLAIN == "1"
-  ids = tok.encode_plain(TEXT)
-else
-  ids = tok.encode(TEXT)
+def show(tok, text)
+  ids = [0]
+  ids.pop
+  if PLAIN == "1"
+    ids = tok.encode_plain(text)
+  else
+    ids = tok.encode(text)
+  end
+  line = "ids:"
+  i = 0
+  while i < ids.length
+    line = line + " " + ids[i].to_s
+    i = i + 1
+  end
+  puts line
 end
-line = "ids:"
-i = 0
-while i < ids.length
-  line = line + " " + ids[i].to_s
-  i = i + 1
-end
+
 puts "specials: " + tok.n_special.to_s
-puts line
+puts "pre: " + tok.pre_kind.to_s
+if TEXT_FILE != ""
+  # One text per line; the two characters \n inside a line are a newline.
+  lines = File.read(TEXT_FILE).split("\n")
+  li = 0
+  while li < lines.length
+    show(tok, lines[li].gsub("\\n", "\n"))
+    li = li + 1
+  end
+else
+  show(tok, TEXT)
+end

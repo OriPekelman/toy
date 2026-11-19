@@ -102,6 +102,141 @@ class Tokenizer
     @special_first.pop
     @special_max   = 0
     @n_special     = 0
+
+    # Pre-tokenizer flavour (toy#215), from tokenizer.ggml.pre via set_pre.
+    # 0 = Llama-3 regex (also the default when the key is absent).
+    @pre_kind = 0
+    # NFC normalizer (Qwen's tokenizer.json has one; the others here do
+    # not). Off unless set_pre sees "qwen2". @nfc_map is built on first use.
+    @nfc      = false
+    @nfc_map  = {}
+    @nfc_mark = {}
+  end
+
+  # Select the BPE pre-tokenizer from the GGUF's tokenizer.ggml.pre value.
+  # The names and the regexes are llama.cpp's (and so HF's, per model):
+  #   llama-bpe / llama3 / llama-v3 / falcon3   digits in runs of 1..3
+  #   qwen2 / stablelm2 / megrez                the same with ONE digit a piece
+  #   smollm                                    each digit isolated, then GPT-2
+  #   gpt-2 / gpt2 / phi-2                      GPT-2
+  # An absent key means Llama-3. An unrecognised name is reported once and
+  # also takes Llama-3, as llama.cpp falls back with a warning.
+  def set_pre(name)
+    if name == "" || name == "llama-bpe" || name == "llama3" || name == "llama-v3" || name == "falcon3"
+      @pre_kind = 0
+    elsif name == "qwen2" || name == "stablelm2" || name == "megrez"
+      @pre_kind = 1
+      if name == "qwen2"
+        @nfc = true
+      end
+    elsif name == "smollm"
+      @pre_kind = 2
+    elsif name == "gpt-2" || name == "gpt2" || name == "phi-2"
+      @pre_kind = 3
+    else
+      puts "WARN: tokenizer: unknown pre-tokenizer " + name.inspect +
+           " (tokenizer.ggml.pre) — using the llama-bpe rules; ids may differ from the reference tokenizer"
+      @pre_kind = 0
+    end
+  end
+
+  def pre_kind
+    @pre_kind
+  end
+
+  # Canonical compositions whose second character is a combining mark in
+  # U+0300..U+036F (Latin, Greek, Cyrillic, Vietnamese …): base, mark,
+  # composed, three characters an entry. Generated from Python's
+  # unicodedata (every 2-character canonical decomposition that NFC puts
+  # back together), so composition exclusions are already left out.
+  NFC_PAIRS = "ÀÀ ÁÁ ÂÂ ÃÃ ÄÄ ÅÅ ÇÇ ÈÈ ÉÉ ÊÊ ËË ÌÌ ÍÍ ÎÎ ÏÏ ÑÑ ÒÒ ÓÓ ÔÔ ÕÕ ÖÖ ÙÙ ÚÚ ÛÛ ÜÜ ÝÝ àà áá ââ ãã ää åå çç èè éé êê ëë ìì íí îî ïï ññ òò óó ôô õõ öö ùù úú ûû üü ýý ÿÿ ĀĀ āā ĂĂ ăă ĄĄ ąą ĆĆ ćć ĈĈ ĉĉ ĊĊ ċċ ČČ čč ĎĎ ďď ĒĒ ēē ĔĔ ĕĕ ĖĖ ėė ĘĘ ęę ĚĚ ěě ĜĜ ĝĝ ĞĞ ğğ ĠĠ ġġ ĢĢ ģģ ĤĤ ĥĥ ĨĨ ĩĩ ĪĪ īī ĬĬ ĭĭ ĮĮ įį İİ ĴĴ ĵĵ ĶĶ ķķ ĹĹ ĺĺ ĻĻ ļļ ĽĽ ľľ ŃŃ ńń ŅŅ ņņ ŇŇ ňň ŌŌ ōō ŎŎ ŏŏ ŐŐ őő ŔŔ ŕŕ ŖŖ ŗŗ ŘŘ řř ŚŚ śś ŜŜ ŝŝ ŞŞ şş ŠŠ šš ŢŢ ţţ ŤŤ ťť ŨŨ ũũ ŪŪ ūū ŬŬ ŭŭ ŮŮ ůů ŰŰ űű ŲŲ ųų ŴŴ ŵŵ ŶŶ ŷŷ ŸŸ ŹŹ źź ŻŻ żż ŽŽ žž ƠƠ ơơ ƯƯ ưư ǍǍ ǎǎ ǏǏ ǐǐ ǑǑ ǒǒ ǓǓ ǔǔ ǕǕ ǖǖ ǗǗ ǘǘ ǙǙ ǚǚ ǛǛ ǜǜ ǞǞ ǟǟ ǠǠ ǡǡ ǢǢ ǣǣ ǦǦ ǧǧ ǨǨ ǩǩ ǪǪ ǫǫ ǬǬ ǭǭ ǮǮ ǯǯ ǰǰ ǴǴ ǵǵ ǸǸ ǹǹ ǺǺ ǻǻ ǼǼ ǽǽ ǾǾ ǿǿ ȀȀ ȁȁ ȂȂ ȃȃ ȄȄ ȅȅ ȆȆ ȇȇ ȈȈ ȉȉ ȊȊ ȋȋ ȌȌ ȍȍ ȎȎ ȏȏ ȐȐ ȑȑ ȒȒ ȓȓ ȔȔ ȕȕ ȖȖ ȗȗ ȘȘ șș ȚȚ țț ȞȞ ȟȟ ȦȦ ȧȧ ȨȨ ȩȩ ȪȪ ȫȫ ȬȬ ȭȭ ȮȮ ȯȯ ȰȰ ȱȱ ȲȲ ȳȳ ΅΅ ΆΆ ΈΈ ΉΉ ΊΊ ΌΌ ΎΎ ΏΏ ΐΐ ΪΪ ΫΫ άά έέ ήή ίί ΰΰ ϊϊ ϋϋ όό ύύ ώώ ϓϓ ϔϔ ЀЀ ЁЁ ЃЃ ЇЇ ЌЌ ЍЍ ЎЎ ЙЙ йй ѐѐ ёё ѓѓ її ќќ ѝѝ ўў ѶѶ ѷѷ ӁӁ ӂӂ ӐӐ ӑӑ ӒӒ ӓӓ ӖӖ ӗӗ ӚӚ ӛӛ ӜӜ ӝӝ ӞӞ ӟӟ ӢӢ ӣӣ ӤӤ ӥӥ ӦӦ ӧӧ ӪӪ ӫӫ ӬӬ ӭӭ ӮӮ ӯӯ ӰӰ ӱӱ ӲӲ ӳӳ ӴӴ ӵӵ ӸӸ ӹӹ ḀḀ ḁḁ ḂḂ ḃḃ ḄḄ ḅḅ ḆḆ ḇḇ ḈḈ ḉḉ ḊḊ ḋḋ ḌḌ ḍḍ ḎḎ ḏḏ ḐḐ ḑḑ ḒḒ ḓḓ ḔḔ ḕḕ ḖḖ ḗḗ ḘḘ ḙḙ ḚḚ ḛḛ ḜḜ ḝḝ ḞḞ ḟḟ ḠḠ ḡḡ ḢḢ ḣḣ ḤḤ ḥḥ ḦḦ ḧḧ ḨḨ ḩḩ ḪḪ ḫḫ ḬḬ ḭḭ ḮḮ ḯḯ ḰḰ ḱḱ ḲḲ ḳḳ ḴḴ ḵḵ ḶḶ ḷḷ ḸḸ ḹḹ ḺḺ ḻḻ ḼḼ ḽḽ ḾḾ ḿḿ ṀṀ ṁṁ ṂṂ ṃṃ ṄṄ ṅṅ ṆṆ ṇṇ ṈṈ ṉṉ ṊṊ ṋṋ ṌṌ ṍṍ ṎṎ ṏṏ ṐṐ ṑṑ ṒṒ ṓṓ ṔṔ ṕṕ ṖṖ ṗṗ ṘṘ ṙṙ ṚṚ ṛṛ ṜṜ ṝṝ ṞṞ ṟṟ ṠṠ ṡṡ ṢṢ ṣṣ ṤṤ ṥṥ ṦṦ ṧṧ ṨṨ ṩṩ ṪṪ ṫṫ ṬṬ ṭṭ ṮṮ ṯṯ ṰṰ ṱṱ ṲṲ ṳṳ ṴṴ ṵṵ ṶṶ ṷṷ ṸṸ ṹṹ ṺṺ ṻṻ ṼṼ ṽṽ ṾṾ ṿṿ ẀẀ ẁẁ ẂẂ ẃẃ ẄẄ ẅẅ ẆẆ ẇẇ ẈẈ ẉẉ ẊẊ ẋẋ ẌẌ ẍẍ ẎẎ ẏẏ ẐẐ ẑẑ ẒẒ ẓẓ ẔẔ ẕẕ ẖẖ ẗẗ ẘẘ ẙẙ ẛẛ ẠẠ ạạ ẢẢ ảả ẤẤ ấấ ẦẦ ầầ ẨẨ ẩẩ ẪẪ ẫẫ ẬẬ ậậ ẮẮ ắắ ẰẰ ằằ ẲẲ ẳẳ ẴẴ ẵẵ ẶẶ ặặ ẸẸ ẹẹ ẺẺ ẻẻ ẼẼ ẽẽ ẾẾ ếế ỀỀ ềề ỂỂ ểể ỄỄ ễễ ỆỆ ệệ ỈỈ ỉỉ ỊỊ ịị ỌỌ ọọ ỎỎ ỏỏ ỐỐ ốố ỒỒ ồồ ỔỔ ổổ ỖỖ ỗỗ ỘỘ ộộ ỚỚ ớớ ỜỜ ờờ ỞỞ ởở ỠỠ ỡỡ ỢỢ ợợ ỤỤ ụụ ỦỦ ủủ ỨỨ ứứ ỪỪ ừừ ỬỬ ửử ỮỮ ữữ ỰỰ ựự ỲỲ ỳỳ ỴỴ ỵỵ ỶỶ ỷỷ ỸỸ ỹỹ ἀἀ ἁἁ ἂἂ ἃἃ ἄἄ ἅἅ ἆἆ ἇἇ ἈἈ ἉἉ ἊἊ ἋἋ ἌἌ ἍἍ ἎἎ ἏἏ ἐἐ ἑἑ ἒἒ ἓἓ ἔἔ ἕἕ ἘἘ ἙἙ ἚἚ ἛἛ ἜἜ ἝἝ ἠἠ ἡἡ ἢἢ ἣἣ ἤἤ ἥἥ ἦἦ ἧἧ ἨἨ ἩἩ ἪἪ ἫἫ ἬἬ ἭἭ ἮἮ ἯἯ ἰἰ ἱἱ ἲἲ ἳἳ ἴἴ ἵἵ ἶἶ ἷἷ ἸἸ ἹἹ ἺἺ ἻἻ ἼἼ ἽἽ ἾἾ ἿἿ ὀὀ ὁὁ ὂὂ ὃὃ ὄὄ ὅὅ ὈὈ ὉὉ ὊὊ ὋὋ ὌὌ ὍὍ ὐὐ ὑὑ ὒὒ ὓὓ ὔὔ ὕὕ ὖὖ ὗὗ ὙὙ ὛὛ ὝὝ ὟὟ ὠὠ ὡὡ ὢὢ ὣὣ ὤὤ ὥὥ ὦὦ ὧὧ ὨὨ ὩὩ ὪὪ ὫὫ ὬὬ ὭὭ ὮὮ ὯὯ ὰὰ ὲὲ ὴὴ ὶὶ ὸὸ ὺὺ ὼὼ ᾀᾀ ᾁᾁ ᾂᾂ ᾃᾃ ᾄᾄ ᾅᾅ ᾆᾆ ᾇᾇ ᾈᾈ ᾉᾉ ᾊᾊ ᾋᾋ ᾌᾌ ᾍᾍ ᾎᾎ ᾏᾏ ᾐᾐ ᾑᾑ ᾒᾒ ᾓᾓ ᾔᾔ ᾕᾕ ᾖᾖ ᾗᾗ ᾘᾘ ᾙᾙ ᾚᾚ ᾛᾛ ᾜᾜ ᾝᾝ ᾞᾞ ᾟᾟ ᾠᾠ ᾡᾡ ᾢᾢ ᾣᾣ ᾤᾤ ᾥᾥ ᾦᾦ ᾧᾧ ᾨᾨ ᾩᾩ ᾪᾪ ᾫᾫ ᾬᾬ ᾭᾭ ᾮᾮ ᾯᾯ ᾰᾰ ᾱᾱ ᾲᾲ ᾳᾳ ᾴᾴ ᾶᾶ ᾷᾷ ᾸᾸ ᾹᾹ ᾺᾺ ᾼᾼ ῁῁ ῂῂ ῃῃ ῄῄ ῆῆ ῇῇ ῈῈ ῊῊ ῌῌ ῍῍ ῎῎ ῏῏ ῐῐ ῑῑ ῒῒ ῖῖ ῗῗ ῘῘ ῙῙ ῚῚ ῝῝ ῞῞ ῟῟ ῠῠ ῡῡ ῢῢ ῤῤ ῥῥ ῦῦ ῧῧ ῨῨ ῩῩ ῪῪ ῬῬ ῭῭ ῲῲ ῳῳ ῴῴ ῶῶ ῷῷ ῸῸ ῺῺ ῼῼ ↚↚ ↛↛ ↮↮ ⇍⇍ ⇎⇎ ⇏⇏ ∄∄ ∉∉ ∌∌ ∤∤ ∦∦ ≁≁ ≄≄ ≇≇ ≉≉ ≠≠ ≢≢ ≭≭ ≮≮ ≯≯ ≰≰ ≱≱ ≴≴ ≵≵ ≸≸ ≹≹ ⊀⊀ ⊁⊁ ⊄⊄ ⊅⊅ ⊈⊈ ⊉⊉ ⊬⊬ ⊭⊭ ⊮⊮ ⊯⊯ ⋠⋠ ⋡⋡ ⋢⋢ ⋣⋣ ⋪⋪ ⋫⋫ ⋬⋬ ⋭⋭"
+
+  # Compose "e" + U+0301 into "é" and the like, as the NFC normalizer in
+  # Qwen's tokenizer.json does before anything else: decomposed text
+  # (macOS file names, some scraped pages) otherwise reaches BPE as a bare
+  # letter plus a mark and costs a token or two per accent.
+  #
+  # This is the composing half of NFC for marks in U+0300..U+036F only. It
+  # does not reorder marks, does not compose Hangul jamo or marks outside
+  # that block, and composes a mark only when it directly follows its base
+  # or a mark just composed into it.
+  def nfc_compose(text)
+    # Every mark in the block starts with byte 0xCC or 0xCD.
+    n = text.bytesize
+    i = 0
+    seen = false
+    while i < n
+      b = text.getbyte(i)
+      if b == 0xCC || b == 0xCD
+        seen = true
+        break
+      end
+      i = i + 1
+    end
+    if !seen
+      return text
+    end
+    if @nfc_map.length == 0
+      ents = NFC_PAIRS.split(" ")
+      ei = 0
+      while ei < ents.length
+        cs = ents[ei].chars
+        @nfc_map[cs[0] + cs[1]] = cs[2]
+        @nfc_mark[cs[1]] = 1
+        ei = ei + 1
+      end
+    end
+    cs = text.chars
+    out = ""
+    base = ""          # the pending character a following mark may join
+    ci = 0
+    while ci < cs.length
+      c = cs[ci]
+      if base != "" && @nfc_mark.has_key?(c) && @nfc_map.has_key?(base + c)
+        base = @nfc_map[base + c]
+      else
+        out = out + base
+        base = c
+      end
+      ci = ci + 1
+    end
+    out + base
+  end
+
+  # Split ordinary text into the pieces BPE runs on. Letters and digits are
+  # Unicode classes (\p{L}, \p{N}) and whitespace is [[:space:]] — Ruby's
+  # \s is ASCII-only, the reference tokenizers' is not. Before toy#215 the
+  # classes were a-zA-Z / 0-9, so "été" was cut at each accent and came
+  # out as more tokens than its one vocabulary entry.
+  def pre_chunks(text)
+    if @pre_kind == 1
+      return text.scan(/'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD]|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^[:space:]\p{L}\p{N}]+[\r\n]*|[[:space:]]*[\r\n]+|[[:space:]]+(?![^[:space:]])|[[:space:]]+/)
+    end
+    if @pre_kind == 2
+      # HF: Digits(individual_digits) first, then ByteLevel's GPT-2 regex
+      # inside each run between digits (so whitespace before a digit is
+      # the END of its run).
+      out = [""]
+      out.pop
+      runs = text.scan(/\p{N}|[^\p{N}]+/)
+      ri = 0
+      while ri < runs.length
+        run = runs[ri]
+        if run =~ /\A\p{N}\z/
+          out.push(run)
+        else
+          sub = run.scan(/'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?[^[:space:]\p{L}\p{N}]+|[[:space:]]+(?![^[:space:]])|[[:space:]]+/)
+          si = 0
+          while si < sub.length; out.push(sub[si]); si = si + 1; end
+        end
+        ri = ri + 1
+      end
+      return out
+    end
+    if @pre_kind == 3
+      return text.scan(/'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^[:space:]\p{L}\p{N}]+|[[:space:]]+(?![^[:space:]])|[[:space:]]+/)
+    end
+    text.scan(/'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD]|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^[:space:]\p{L}\p{N}]+[\r\n]*|[[:space:]]*[\r\n]+|[[:space:]]+(?![^[:space:]])|[[:space:]]+/)
   end
 
   # Register one special token. `piece` is the vocab string, `id` its id.
@@ -443,9 +578,10 @@ class Tokenizer
     build_byte_tables
     ids = [0]
     ids.pop
-    # Pre-tokenizer regex (Llama-3 / cl100k_base style, ASCII fallback).
-    pre_re = /'s|'t|'re|'ve|'m|'ll|'d|'S|'T|'RE|'VE|'M|'LL|'D|[^\r\na-zA-Z0-9]?[a-zA-Z]+|[0-9]{1,3}| ?[^\sa-zA-Z0-9]+[\r\n]*|\s+/
-    chunks = text.scan(pre_re)
+    if @nfc
+      text = nfc_compose(text)
+    end
+    chunks = pre_chunks(text)
     ci = 0
     while ci < chunks.length
       chunk = chunks[ci]
@@ -733,6 +869,8 @@ class Tokenizer
     # heuristic when model_name is empty.
     model_name = GgufKV.tnn_gguf_get_str(handle, "tokenizer.ggml.model")
     if model_name == nil; model_name = ""; end
+    pre_name = GgufKV.tnn_gguf_get_str(handle, "tokenizer.ggml.pre")
+    if pre_name == nil; pre_name = ""; end
     # add_bos_token: per-arch flag (Gemma 2 sets this to true).
     # Returns -1 when the key is missing; treat as false.
     add_bos_v = GgufKV.tnn_gguf_get_bool(handle, "tokenizer.ggml.add_bos_token")
@@ -790,6 +928,7 @@ class Tokenizer
 
     GgufKV.tnn_gguf_free(handle)
     tok = Tokenizer.new(vocab, merges, bos, eos, pad, unk, model_name, add_bos)
+    tok.set_pre(pre_name)
     i = 0
     while i < special_ids.length
       sid = special_ids[i]

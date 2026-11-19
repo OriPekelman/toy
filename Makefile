@@ -703,6 +703,15 @@ gate-q8-tail-cuda:
 gate-special-tokens:
 	ruby prep/special_tokens_gate.rb
 
+# Pre-tokenizer gate (toy#215): text is split by the rules tokenizer.ggml.pre
+# names (llama-bpe, qwen2, smollm, gpt-2) with Unicode letter/digit/space
+# classes, so "été" is not cut at its accents. Expected ids are HuggingFace
+# tokenizers output. TOY_GATE_QWEN_GGUF=<file> adds the issue's strings on a
+# real Qwen2.5 tokenizer.
+.PHONY: gate-tokenizer-pre
+gate-tokenizer-pre:
+	ruby prep/tokenizer_pre_gate.rb
+
 # Converter gate (toy#204): prep/convert_smollm2_to_gguf.py converts a LOCAL
 # checkpoint directory (--model-dir), takes the rope base from the
 # transformers-5 `rope_parameters` form as well as top-level `rope_theta`

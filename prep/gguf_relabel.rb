@@ -3,11 +3,12 @@
 # converter would have labelled it, leaving every tensor byte untouched.
 #
 #   ruby prep/gguf_relabel.rb IN.gguf OUT.gguf --prefix qwen2 [--drop KEY]...
-#                             [--q8-last TENSOR]
+#                             [--set-str KEY=VALUE]... [--q8-last TENSOR]
 #
 # Renames every "<old>.*" architecture key to "<prefix>.*" (old = the
 # file's general.architecture), sets general.architecture = <prefix>, and
-# drops any --drop keys. Used by prep/llamacpp_gguf_gate.rb (toy#203) to
+# drops any --drop keys; --set-str replaces the value of an EXISTING string
+# key (prep/tokenizer_pre_gate.rb relabels tokenizer.ggml.pre). Used by prep/llamacpp_gguf_gate.rb (toy#203) to
 # manufacture, from a small toy-native fixture, exactly the file shape
 # llama.cpp's convert_hf_to_gguf.py emits — "qwen2.*" keys, no
 # toy.ggml_native — without committing a second model or depending on
@@ -94,12 +95,17 @@ end
 src, dst = ARGV[0], ARGV[1]
 prefix = nil
 drops = []
+sets = {}
 q8_last = nil
 i = 2
 while i < ARGV.length
   case ARGV[i]
   when "--prefix" then prefix = ARGV[i + 1]; i += 2
   when "--drop"   then drops << ARGV[i + 1]; i += 2
+  when "--set-str"
+    k, v = ARGV[i + 1].to_s.split("=", 2)
+    abort "gguf_relabel: --set-str wants KEY=VALUE" unless k && v
+    sets[k] = v; i += 2
   when "--q8-last" then q8_last = ARGV[i + 1]; i += 2
   else abort "gguf_relabel: unknown argument #{ARGV[i]}"
   end
@@ -135,12 +141,17 @@ File.open(src, "rb") do |io|
   out = kvs.reject { |k, _, _| drops.include?(k) }.map do |k, t, raw|
     if k == "general.architecture"
       [k, t, wr_str(prefix)]
+    elsif sets.key?(k)
+      abort "gguf_relabel: #{k} is not a string key" unless t == 8
+      [k, t, wr_str(sets.delete(k))]
     elsif k.start_with?(old + ".")
       [prefix + k[old.length..], t, raw]
     else
       [k, t, raw]
     end
   end
+
+  abort "gguf_relabel: --set-str key not in the file: #{sets.keys.join(', ')}" unless sets.empty?
 
   # Tensor offsets are relative to the (aligned) start of the data
   # section, so a header of a different length only needs re-padding.

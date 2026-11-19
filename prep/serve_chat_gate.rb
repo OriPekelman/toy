@@ -13,6 +13,9 @@
 #             as ONE id
 #   nonascii  a message with non-ASCII content answers (tep read the body by
 #             character count and stalled) and counts its prompt correctly
+#   escapes   the same message with non-ASCII written as \\uXXXX escapes
+#             (surrogate pair included) is the same request (toy#215: the
+#             JSON decoder turned each escape into "?")
 #   stream    "stream":true frames concatenate to the non-streamed content,
 #             every frame is valid JSON, and the stream ends with [DONE]
 #   stop      with STOP_IDS the same request ends early with finish_reason
@@ -221,6 +224,33 @@ begin
   rescue Net::ReadTimeout
     failures << "nonascii: request with a non-ASCII body stalled (tep reads the body by character count before 0.11.8)"
     port = start_server(TOK_GGUF)
+  end
+
+  # ---- escapes ----
+  # The same body with every non-ASCII character written as a \\uXXXX
+  # escape (what Python's json.dumps sends by default; 😀 is a surrogate
+  # pair) must be the same request.
+  emsgs = [{ "role" => "user", "content" => "Répète: été cœur 日本語 ☃ 😀" }]
+  ebody = { "model" => "gate", "messages" => emsgs, "max_tokens" => 6 }
+  want = encode(TOK_GGUF, chatml(emsgs)).length
+  got = [JSON.generate(ebody), JSON.generate(ebody, ascii_only: true)].map do |raw|
+    r = Net::HTTP.start("127.0.0.1", port, open_timeout: 2, read_timeout: 30) do |h|
+      req = Net::HTTP::Post.new("/v1/chat/completions", "Content-Type" => "application/json")
+      req.body = raw
+      h.request(req)
+    end
+    j = r.code == "200" ? JSON.parse(r.body) : {}
+    [j.dig("usage", "prompt_tokens"), j.dig("choices", 0, "message", "content")]
+  end
+  if JSON.generate(ebody, ascii_only: true) !~ /\\ud83d\\ude00/i
+    failures << "escapes: the escaped body does not contain a surrogate pair (gate bug)"
+  elsif got[0][0] != want
+    failures << "escapes: raw body gave #{got[0][0].inspect} prompt tokens, the ChatML text is #{want}"
+  elsif got[1] != got[0]
+    failures << "escapes: the \\u-escaped body gave #{got[1][0].inspect} prompt tokens and #{got[1][1].inspect}, " \
+                "the raw body #{got[0][0]} and #{got[0][1].inspect}"
+  else
+    ok.call("escapes", "a \\u-escaped body is the same request as raw UTF-8 (#{want} prompt tokens)")
   end
 
   # ---- stream ----
