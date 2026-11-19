@@ -18,9 +18,13 @@
 # stream stays disabled (its run_start lacks phase/schema and its
 # latency is second-resolution; serve_events_gate pins ours).
 #
-# Empty prompt: tep's handler has no error channel to 400 through (tep
-# issue filed), so an empty token_ids returns an EMPTY completion
-# (deterministic, no junk generation) instead of the old handler's 400.
+# toy#216: the non-streamed /v1/completions and /v1/chat/completions are
+# answered by ToyCompletionsHandler / ToyChatHandler at the end of this
+# file (serve_text / serve_chat), which add logprobs, stop strings, a
+# forced answer prefix and HTTP error replies. generate_from_tokens and
+# chat_completion remain as the tep Backend interface but no route reaches
+# them; streamed requests still go through tep's handlers to the *_stream
+# methods here.
 #
 # Spinel hygiene (#16): String-concat JSON, no #{} interpolation; typed
 # empty-array seeds; pure while loops in the pooling path.
@@ -115,6 +119,18 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
     out_ids = [0]
     out_ids.pop
     emitted = 0
+    # toy#216: stop strings. Text that could still turn out to be the start
+    # of a stop string is held back (`hold` bytes) until more arrives.
+    @state.stop_strs = api_json_str_list(body, "stop")
+    hold = 0
+    si = 0
+    while si < @state.stop_strs.length
+      if @state.stop_strs[si].bytesize - 1 > hold
+        hold = @state.stop_strs[si].bytesize - 1
+      end
+      si = si + 1
+    end
+    cut = -1
     begin
       if SERVE_TEST_FAULT_AT > 0 && token_ids.length == SERVE_TEST_FAULT_AT
         raise "injected test fault (SERVE_TEST_FAULT_AT)"
@@ -127,20 +143,43 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
         end
         out_ids.push(id)
         text = @state.tok.decode(out_ids)
-        safe = api_utf8_safe_len(text)
+        lim = text.bytesize - hold
+        if hold > 0
+          cut = api_stop_cut(text)
+          if cut >= 0
+            lim = cut
+          end
+        end
+        if lim < 0
+          lim = 0
+        end
+        safe = api_utf8_safe_len(text.byteslice(0, lim))
         if safe > emitted
           sink.emit_token(text.byteslice(emitted, safe - emitted))
           emitted = safe
+        end
+        if cut >= 0
+          break
         end
         step = step + 1
         if step < n_new
           id = api_next_id(id, token_ids.length + out_ids.length - 1)
         end
       end
+      if cut < 0 && hold > 0
+        # No stop string came: send the text that was being held back.
+        text = @state.tok.decode(out_ids)
+        safe = api_utf8_safe_len(text)
+        if safe > emitted
+          sink.emit_token(text.byteslice(emitted, safe - emitted))
+          emitted = safe
+        end
+      end
     rescue => e
-      # toy#214: the stream ends with what was sent so far; see request_failed.
+      # toy#214: the stream ends with what was sent so far.
       puts "[openai_api_llama] request failed: " + e.message
     end
+    @state.stop_strs.clear
     t_end = TinyNN.tnn_events_now_seconds
     emit_request_event(token_ids.length, out_ids.length,
                        ((t_end - t_start) * 1.0e6).to_i, n_new)
@@ -179,7 +218,196 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
       empty.pop
       return empty
     end
+    # toy#216: a LAST message with role "assistant" is a partial answer to
+    # continue (a forced answer prefix). The template is rendered for the
+    # messages before it, the assistant turn is opened, and the partial
+    # text follows with no end-of-turn marker; the reply is what comes next.
+    last = pairs[pairs.length - 1]
+    if last[0] == "assistant"
+      pairs.pop
+      return @state.tok.encode(ToyChatTemplate.apply(@state.chat_family, pairs, true) + last[1])
+    end
     @state.tok.encode(ToyChatTemplate.apply(@state.chat_family, pairs, true))
+  end
+
+  # ---- toy#216: toy's own /v1/completions and /v1/chat/completions ----
+  #
+  # The two non-streamed endpoints are answered by ToyChatHandler /
+  # ToyCompletionsHandler (below) instead of tep's handlers, because the
+  # reply needs fields tep's envelope has no place for (logprobs, the
+  # backend's finish_reason on chat) and real error responses.
+
+  # POST /v1/chat/completions, not streamed.
+  def serve_chat(body)
+    rep = ToyReply.new
+    rep.id = api_gen_id("chatcmpl")
+    token_ids = chat_prompt_ids(body)
+    if token_ids.length == 0
+      return rep.fail(400, "invalid_request_error", "messages must be a non-empty array")
+    end
+    serve_generate(rep, body, token_ids, chat_max_tokens(body, token_ids.length))
+    rep
+  end
+
+  # POST /v1/completions, not streamed. `prompt` is an array of token ids
+  # or (toy#216, with an embedded tokenizer) a text, in which special
+  # tokens written out ("<|im_start|>") are their single ids.
+  def serve_text(body)
+    rep = ToyReply.new
+    rep.id = api_gen_id("cmpl")
+    token_ids = [0]
+    token_ids.pop
+    pos = SpinelKit::Json.find_value_start(body, "prompt")
+    if pos >= 0 && pos < body.length && body[pos] == "\""
+      if !@state.tok.present
+        return rep.fail(400, "invalid_request_error",
+                        "a text prompt needs a GGUF with an embedded tokenizer; send token ids")
+      end
+      token_ids = @state.tok.encode(SpinelKit::Json.parse_str_value(body, pos))
+    else
+      token_ids = SpinelKit::Json.get_int_array(body, "prompt")
+    end
+    if token_ids.length == 0
+      return rep.fail(400, "invalid_request_error",
+                      "prompt must be a non-empty text or array of token ids")
+    end
+    n_new = SpinelKit::Json.get_int(body, "max_tokens")
+    if n_new <= 0; n_new = 16; end
+    serve_generate(rep, body, token_ids, n_new)
+    rep.with_ids = true
+    rep
+  end
+
+  # How many alternatives the request wants log-probabilities for: -1 when
+  # it asks for none. Chat form: "logprobs": true with "top_logprobs": n.
+  # Completions form: "logprobs": n.
+  def lp_request(body)
+    pos = SpinelKit::Json.find_value_start(body, "logprobs")
+    if pos < 0 || pos >= body.length
+      return -1
+    end
+    n = 0
+    c = body[pos]
+    if c == "t"
+      n = 0
+    elsif c >= "0" && c <= "9"
+      n = SpinelKit::Json.parse_int_value(body, pos)
+    else
+      return -1
+    end
+    if SpinelKit::Json.has_key?(body, "top_logprobs")
+      n = SpinelKit::Json.get_int(body, "top_logprobs")
+    end
+    if n < 0; n = 0; end
+    if n > 20; n = 20; end
+    n
+  end
+
+  # Generate into `rep` with the request's options: stop strings and
+  # log-probabilities (toy#216), the context check (toy#207), and one
+  # request event. A Ruby exception becomes a 500 reply (toy#214).
+  def serve_generate(rep, body, token_ids, n_new_req)
+    rep.prompt_tokens = token_ids.length
+    stops = api_json_str_list(body, "stop")
+    top   = lp_request(body)
+    if (stops.length > 0 || top >= 0) && !@state.tok.present
+      return rep.fail(400, "invalid_request_error",
+                      "stop strings and logprobs need a GGUF with an embedded tokenizer")
+    end
+    n_new = fit_context(token_ids.length, n_new_req)
+    if n_new <= 0
+      return rep.fail(400, "context_length_exceeded",
+                      "the prompt is " + token_ids.length.to_s + " tokens and the context is " +
+                      MAX_T.to_s + " (start the server with --ctx N)")
+    end
+    @state.stop_strs = stops
+    @state.lp_top = top
+    begin
+      if SERVE_TEST_FAULT_AT > 0 && token_ids.length == SERVE_TEST_FAULT_AT
+        raise "injected test fault (SERVE_TEST_FAULT_AT)"
+      end
+      t_start = TinyNN.tnn_events_now_seconds
+      new_ids = api_generate_ids(token_ids, n_new)
+      t_end   = TinyNN.tnn_events_now_seconds
+      emit_request_event(token_ids.length, new_ids.length,
+                         ((t_end - t_start) * 1.0e6).to_i, n_new)
+      rep.completion_tokens = new_ids.length
+      rep.finish = @state.finish
+      if @state.tok.present
+        text = @state.tok.decode(new_ids)
+        if @state.stop_cut >= 0
+          # The reply ends where the stop string began. Ids that reach
+          # past that point are dropped from `ids` and from logprobs;
+          # completion_tokens still counts every token generated.
+          text = text.byteslice(0, @state.stop_cut)
+          while new_ids.length > 0 && @state.tok.decode(new_ids).bytesize > @state.stop_cut
+            new_ids.pop
+          end
+        end
+        rep.text = text
+        if top >= 0
+          rep.lp_json = lp_json(new_ids, top)
+        end
+      end
+      rep.ids = new_ids
+    rescue => e
+      puts "[openai_api_llama] request failed: " + e.message
+      rep.fail(500, "server_error", e.message)
+    end
+    @state.lp_top = -1
+    @state.lp_tok.clear
+    @state.lp_alt_ids.clear
+    @state.lp_alt_lps.clear
+    @state.stop_strs.clear
+    0
+  end
+
+  # One token as a logprobs entry body: "token", "id", "logprob", "bytes".
+  # "token" is "" when the token's bytes are not a whole number of UTF-8
+  # characters on their own; "bytes" always carries them.
+  def lp_fields(id, lp)
+    piece = @state.tok.decode([id])
+    bytes = "["
+    i = 0
+    while i < piece.bytesize
+      if i > 0; bytes = bytes + ","; end
+      bytes = bytes + piece.getbyte(i).to_s
+      i = i + 1
+    end
+    bytes = bytes + "]"
+    shown = piece
+    if !api_utf8_valid?(piece)
+      shown = ""
+    end
+    SpinelKit::Json.encode_pair_str("token", shown) + "," +
+      SpinelKit::Json.encode_pair_int("id", id) + "," +
+      "\"logprob\":" + lp.to_s + "," +
+      "\"bytes\":" + bytes
+  end
+
+  # OpenAI's chat `logprobs` object for the reply's ids, from what the
+  # decode loop recorded in the state.
+  def lp_json(ids, top)
+    out = "{\"content\":["
+    i = 0
+    while i < ids.length && i < @state.lp_tok.length
+      if i > 0; out = out + ","; end
+      out = out + "{" + lp_fields(ids[i], @state.lp_tok[i]) + ",\"top_logprobs\":["
+      k = 0
+      n = 0
+      while k < top
+        aid = @state.lp_alt_ids[i * top + k]
+        if aid >= 0
+          if n > 0; out = out + ","; end
+          out = out + "{" + lp_fields(aid, @state.lp_alt_lps[i * top + k]) + "}"
+          n = n + 1
+        end
+        k = k + 1
+      end
+      out = out + "]}"
+      i = i + 1
+    end
+    out + "]}"
   end
 
   # Chat max_tokens: `max_completion_tokens` or `max_tokens` when given,
@@ -322,5 +550,138 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
       kk = kk + 1
     end
     out
+  end
+end
+
+# What one non-streamed request produced (toy#216). `status` 200 carries a
+# completion; anything else carries an error message and type.
+class ToyReply
+  attr_accessor :status, :err_type, :err_msg, :id, :text, :ids, :with_ids
+  attr_accessor :prompt_tokens, :completion_tokens, :finish, :lp_json
+
+  def initialize
+    @status   = 200
+    @err_type = ""
+    @err_msg  = ""
+    @id       = ""
+    @text     = ""
+    @ids      = [0]
+    @ids.pop
+    @with_ids = false
+    @prompt_tokens     = 0
+    @completion_tokens = 0
+    @finish   = "stop"
+    @lp_json  = ""
+  end
+
+  def fail(status, type, msg)
+    @status   = status
+    @err_type = type
+    @err_msg  = msg
+    self
+  end
+
+  def error_json
+    "{\"error\":{" +
+      SpinelKit::Json.encode_pair_str("message", @err_msg) + "," +
+      SpinelKit::Json.encode_pair_str("type", @err_type) +
+    "}}"
+  end
+
+  def usage_json
+    "\"usage\":{" +
+      SpinelKit::Json.encode_pair_int("prompt_tokens", @prompt_tokens) + "," +
+      SpinelKit::Json.encode_pair_int("completion_tokens", @completion_tokens) + "," +
+      SpinelKit::Json.encode_pair_int("total_tokens", @prompt_tokens + @completion_tokens) +
+    "}"
+  end
+
+  # `"logprobs":{...},` when the request asked for them, "" otherwise.
+  def lp_frag
+    if @lp_json.length == 0
+      return ""
+    end
+    "\"logprobs\":" + @lp_json + ","
+  end
+end
+
+def api_wants_stream?(body)
+  Tep.str_find(body, "\"stream\":true", 0) >= 0 || Tep.str_find(body, "\"stream\": true", 0) >= 0
+end
+
+# POST /v1/chat/completions. Streamed requests go to tep's handler (which
+# drives ToyBackend#chat_completion_stream); the rest is answered here.
+class ToyChatHandler < Tep::Handler
+  def initialize(backend)
+    @backend = backend
+    @stream  = Tep::Llm::OpenAI::ChatCompletionsHandler.new
+  end
+
+  def handle(req, res)
+    body = req.raw_body
+    if !@backend.supports_chat? || api_wants_stream?(body)
+      return @stream.handle(req, res)
+    end
+    res.headers["Content-Type"] = "application/json"
+    rep = @backend.serve_chat(body)
+    if rep.status != 200
+      res.set_status(rep.status)
+      return rep.error_json
+    end
+    "{" +
+      SpinelKit::Json.encode_pair_str("id", rep.id) + "," +
+      SpinelKit::Json.encode_pair_str("object", "chat.completion") + "," +
+      SpinelKit::Json.encode_pair_int("created", Time.now.to_i) + "," +
+      SpinelKit::Json.encode_pair_str("model", SpinelKit::Json.get_str(body, "model")) + "," +
+      "\"choices\":[{" +
+        SpinelKit::Json.encode_pair_int("index", 0) + "," +
+        "\"message\":{" +
+          SpinelKit::Json.encode_pair_str("role", "assistant") + "," +
+          SpinelKit::Json.encode_pair_str("content", rep.text) +
+        "}," +
+        rep.lp_frag +
+        SpinelKit::Json.encode_pair_str("finish_reason", rep.finish) +
+      "}]," +
+      rep.usage_json +
+    "}"
+  end
+end
+
+# POST /v1/completions. Streamed requests go to tep's handler.
+class ToyCompletionsHandler < Tep::Handler
+  def initialize(backend)
+    @backend = backend
+    @stream  = Tep::Llm::OpenAI::CompletionsHandler.new
+  end
+
+  def handle(req, res)
+    body = req.raw_body
+    if api_wants_stream?(body)
+      return @stream.handle(req, res)
+    end
+    res.headers["Content-Type"] = "application/json"
+    rep = @backend.serve_text(body)
+    if rep.status != 200
+      res.set_status(rep.status)
+      return rep.error_json
+    end
+    ids_frag = ""
+    if rep.with_ids && rep.ids.length > 0
+      ids_frag = "\"ids\":" + SpinelKit::Json.from_int_array(rep.ids) + ","
+    end
+    "{" +
+      SpinelKit::Json.encode_pair_str("id", rep.id) + "," +
+      SpinelKit::Json.encode_pair_str("object", "text_completion") + "," +
+      SpinelKit::Json.encode_pair_int("created", Time.now.to_i) + "," +
+      SpinelKit::Json.encode_pair_str("model", SpinelKit::Json.get_str(body, "model")) + "," +
+      "\"choices\":[{" +
+        SpinelKit::Json.encode_pair_int("index", 0) + "," +
+        SpinelKit::Json.encode_pair_str("text", rep.text) + "," +
+        ids_frag +
+        rep.lp_frag +
+        SpinelKit::Json.encode_pair_str("finish_reason", rep.finish) +
+      "}]," +
+      rep.usage_json +
+    "}"
   end
 end

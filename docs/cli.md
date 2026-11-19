@@ -215,17 +215,38 @@ What the server offers depends on whether the GGUF embeds its tokenizer
 - **Stop tokens.** The GGUF's `eos_token_id`, plus `<|im_end|>`,
   `<|endoftext|>`, `<|eot_id|>`, `<|end_of_text|>` and `<end_of_turn>` where
   the vocabulary has them. `--stop-ids N,M` adds token ids. The stop token is
-  not part of the reply. The OpenAI `stop` request field is not read.
+  not part of the reply.
+- **`stop` strings.** `"stop": "text"` or an array of texts ends the reply
+  where the first of them begins; the text itself is not returned and
+  `finish_reason` is `"stop"`. Streamed replies hold back the few bytes
+  that could still be the start of a stop string. `completion_tokens`
+  counts every token generated, including the ones that spelled it.
 - **`max_tokens`.** Limited by the context only (it was capped at 256).
   Absent, `/v1/completions` generates 16 tokens and chat generates until a
   stop token or the end of the context.
-- **Sampling.** Greedy only: `temperature`, `top_p` and `logprobs` are not
-  honoured.
-- **Context.** A request whose prompt does not fit comes back with no tokens
-  and `finish_reason: "context_length_exceeded"` on `/v1/completions` — tep's
-  backend API has no error channel yet, so it is not an HTTP 400 — and one
-  whose prompt fits but whose `max_tokens` does not is cut to what fits.
-  Neither takes the server down.
+- **Sampling.** Greedy only: `temperature` and `top_p` are not honoured.
+  `response_format` is accepted and not enforced.
+- **Log-probabilities.** `"logprobs": true` (with `"top_logprobs": n`, up
+  to 20) on chat, or `"logprobs": n` on `/v1/completions`, adds
+  `choices[0].logprobs.content`: one entry per reply token with `token`,
+  `id`, `logprob`, `bytes` and the `n` most likely alternatives, best
+  first. `token` is `""` when the token's bytes are not whole UTF-8
+  characters; `bytes` always has them. Not available on streamed replies.
+- **Forced answer prefix.** Two ways to make the model continue a text
+  you wrote: a chat request whose last message has role `assistant` (its
+  content is continued and the reply is only what follows), or a text
+  `"prompt"` on `/v1/completions`, in which special tokens written out
+  (`<|im_start|>`) are their single ids. With prefix reuse (below), a
+  request that extends the previous one evaluates only the new tokens.
+- **Errors.** No messages, an empty prompt, or a prompt that does not fit
+  the context are HTTP 400 with `{"error": {"message", "type"}}`; an
+  exception while generating is HTTP 500 and is logged. The server keeps
+  serving. Streamed requests end their stream instead.
+- **One request at a time.** Requests are answered in turn by one worker
+  with one cached sequence; there is no batching across requests.
+- **Context.** A request whose prompt does not fit is an HTTP 400 of type
+  `context_length_exceeded`; one whose prompt fits but whose `max_tokens`
+  does not is cut to what fits. Neither takes the server down.
 
 **Prompt prefix reuse (toy#210).** The K/V rows of whatever prefix a
 request shares with the previous one are kept, and only the rest of the
