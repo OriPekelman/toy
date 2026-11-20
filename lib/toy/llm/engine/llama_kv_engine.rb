@@ -259,9 +259,13 @@ class SmolLM2KVFFICache
                 #                ne=[n_kv*d_head, max_T].
                 # fused_wanted — false after disable_fused!.
                 # batch_max    — most tokens one batched step evaluates.
-                :fused, :fused_wanted, :batch_max
+                :fused, :fused_wanted, :batch_max,
+                # toy#217: how many cells the fused K/V tensors hold
+                # (0 = max_T, one sequence). Set before realize.
+                :kv_cells
 
   def initialize
+    @kv_cells     = 0
     @fused        = false
     @fused_wanted = true
     @batch_max    = 512
@@ -818,8 +822,11 @@ class SmolLM2KVFFICache
         # position contiguous: ne=[n_kv*d_head, max_T]. Plus whole-weight
         # aliases of attn_q/k/v (per_head_attn is false here, so
         # q/k/v_off_base are the whole tensors' offsets).
-        blk.t_K = [TinyNN.tnn_input_2d_f32_persistent(@sess, max_T, @n_kv * @d_head)]
-        blk.t_V = [TinyNN.tnn_input_2d_f32_persistent(@sess, max_T, @n_kv * @d_head)]
+        if @kv_cells < max_T
+          @kv_cells = max_T
+        end
+        blk.t_K = [TinyNN.tnn_input_2d_f32_persistent(@sess, @kv_cells, @n_kv * @d_head)]
+        blk.t_V = [TinyNN.tnn_input_2d_f32_persistent(@sess, @kv_cells, @n_kv * @d_head)]
         blk.t_w_q_full = TinyNN.tnn_input_2d_persistent_mmap(@sess,
                            @n_heads * @d_head, @d_model, q_type, q_off_base)
         blk.t_w_k_full = TinyNN.tnn_input_2d_persistent_mmap(@sess,
@@ -1115,6 +1122,21 @@ class SmolLM2KVFFICache
       kv_zero_k = Mat.new(max_T, @d_head)
       kv_zero_v = kv_zero_k
       n_kv_buf  = @n_kv
+    end
+    if @fused
+      # One K and one V tensor per layer, @kv_cells cells each. A cell can
+      # be masked out of a step without ever having been written (toy#217),
+      # and a masked NaN would still poison the attention sum, so the whole
+      # tensors start as zeros.
+      li = 0
+      while li < @n_layers
+        blk_f = @kv_blocks_ffi[li]
+        TinyNN.tnn_zero_tensor(@sess, blk_f.t_K[0])
+        TinyNN.tnn_zero_tensor(@sess, blk_f.t_V[0])
+        li = li + 1
+      end
+      @realized = true
+      return
     end
     li = 0
     while li < @n_layers
@@ -1442,6 +1464,25 @@ class SmolLM2KVFFICache
   #   with a causal mask when n_tok > 1, then V.attn.
   # Logits are produced for the LAST token only.
   def build_fused_step(pos, n_tok)
+    build_cells_step(n_tok, 1, pos + n_tok, pos, n_tok > 1)
+  end
+
+  # toy#217 — the fused step over a pool of cache CELLS instead of one
+  # sequence's positions. The K/V tensors hold `@kv_cells` cells; which
+  # sequence and position a cell holds is the caller's bookkeeping, and
+  # reaches the graph only as the visibility mask (ne=[hi, n_tok],
+  # TinyNN.tnn_upload_cell_mask) and the RoPE positions. So one step can
+  # carry tokens of several sequences, at different positions each.
+  #   n_tok     tokens in the step
+  #   n_out     logits are produced for the LAST n_out tokens
+  #   hi        the step attends cells 0 .. hi-1 (every cell in use)
+  #   cell0     >= 0: the tokens are written to cells cell0 .. cell0+n_tok-1;
+  #             -1: to the cells uploaded to the result's t_cells
+  #   use_mask  false only when every cell below hi is visible to every
+  #             token (a single token continuing the only sequence)
+  # build_fused_step(pos, n_tok) is this with cell == position.
+  def build_cells_step(n_tok, n_out, hi, cell0, use_mask)
+    pos     = cell0
     eps     = @rms_eps
     scale   = 1.0 / Math.sqrt(@d_head.to_f)
     d_model = @d_model
@@ -1449,12 +1490,16 @@ class SmolLM2KVFFICache
     bf      = 4
     d_kv    = @n_kv * d_head
     row     = d_kv * bf
-    hist    = pos + n_tok
+    hist    = hi
 
     t_token_id = TinyNN.tnn_input_1d_i32(@sess, n_tok)
     t_pos      = TinyNN.tnn_input_1d_i32_ctx(@sess, n_tok)
+    t_cells    = TinyNN.tnn_null_ptr
+    if cell0 < 0
+      t_cells = TinyNN.tnn_input_1d_i32(@sess, n_tok)
+    end
     t_mask     = TinyNN.tnn_null_ptr
-    if n_tok > 1
+    if use_mask
       # rows=n_tok, cols=hist -> ne=[hist, n_tok]
       t_mask = TinyNN.tnn_input_2d_f32(@sess, n_tok, hist)
     end
@@ -1500,12 +1545,18 @@ class SmolLM2KVFFICache
                                 @rope_scaling.beta_slow,
                                 @t_rope_freq_factors)
 
-      # Cache writes: rows pos .. pos+n_tok-1 of K and V.
-      t_K_slot = TinyNN.tnn_view_2d(@sess, blk.t_K[0], d_kv, n_tok, row, pos * row)
-      t_V_slot = TinyNN.tnn_view_2d(@sess, blk.t_V[0], d_kv, n_tok, row, pos * row)
+      # Cache writes: rows pos .. pos+n_tok-1 of K and V, or (cell0 < 0)
+      # the rows listed in t_cells.
       t_k_flat = TinyNN.tnn_reshape_2d(@sess, t_k, d_kv, n_tok)
-      TinyNN.tnn_add_to_graph(@sess, TinyNN.tnn_cpy(@sess, t_k_flat, t_K_slot))
-      TinyNN.tnn_add_to_graph(@sess, TinyNN.tnn_cpy(@sess, t_v, t_V_slot))
+      if cell0 >= 0
+        t_K_slot = TinyNN.tnn_view_2d(@sess, blk.t_K[0], d_kv, n_tok, row, pos * row)
+        t_V_slot = TinyNN.tnn_view_2d(@sess, blk.t_V[0], d_kv, n_tok, row, pos * row)
+        TinyNN.tnn_add_to_graph(@sess, TinyNN.tnn_cpy(@sess, t_k_flat, t_K_slot))
+        TinyNN.tnn_add_to_graph(@sess, TinyNN.tnn_cpy(@sess, t_v, t_V_slot))
+      else
+        TinyNN.tnn_add_to_graph(@sess, TinyNN.tnn_set_rows(@sess, blk.t_K[0], t_k_flat, t_cells))
+        TinyNN.tnn_add_to_graph(@sess, TinyNN.tnn_set_rows(@sess, blk.t_V[0], t_v, t_cells))
+      end
 
       # History views [d_head, n_kv, hist] -> [d_head, hist, n_kv].
       t_K_v3   = TinyNN.tnn_view_3d(@sess, blk.t_K[0], d_head, @n_kv, hist,
@@ -1542,10 +1593,10 @@ class SmolLM2KVFFICache
       li = li + 1
     end
 
-    # Last token's column only.
-    if n_tok > 1
-      t_x = TinyNN.tnn_view_2d(@sess, t_x, d_model, 1, d_model * bf,
-                                (n_tok - 1) * d_model * bf)
+    # The last n_out tokens' columns only.
+    if n_tok > n_out
+      t_x = TinyNN.tnn_view_2d(@sess, t_x, d_model, n_out, d_model * bf,
+                                (n_tok - n_out) * d_model * bf)
     end
     t_x_final = TinyNN.tnn_rms_norm(@sess, t_x, @t_final_norm_gamma, eps)
     if @has_untied_output
@@ -1561,6 +1612,7 @@ class SmolLM2KVFFICache
     TinyNN.tnn_set_output(t_kv_logits)
     res = SmolLM2KVStepResult.new(t_token_id, t_pos, t_kv_logits)
     res.t_mask = t_mask
+    res.t_cells = t_cells
     res
   end
 
@@ -2215,12 +2267,13 @@ end
 # Init-param names deliberately differ from the ivar names — same
 # defensive pattern as GPT2KVStepResult.
 class SmolLM2KVStepResult
-  attr_accessor :t_token_id, :t_pos, :kv_step_logits, :t_mask
+  attr_accessor :t_token_id, :t_pos, :kv_step_logits, :t_mask, :t_cells
   def initialize(tok_ptr, pos_ptr, logits_ptr)
     @t_token_id     = tok_ptr
     @t_pos          = pos_ptr
     @kv_step_logits = logits_ptr
     @t_mask         = TinyNN.tnn_null_ptr   # causal mask input; batched fused steps only
+    @t_cells        = TinyNN.tnn_null_ptr   # cache rows to write (toy#217); nil = contiguous
   end
 end
 
@@ -2295,6 +2348,13 @@ module SmolLM2KV
   # logits Mat for the new position. If `kv_cache.trace_on` is set the
   # rebuild path inserts taps and we dump stats before reading logits.
   def self.decode_step(kv_cache, token_id, pos)
+    t_logits = SmolLM2KV.decode_step_run(kv_cache, token_id, pos)
+    TinyNN.download_row_major(kv_cache.sess, t_logits, 1, kv_cache.vocab_size)
+  end
+
+  # decode_step without the download: returns the step's logits TENSOR
+  # (ne=[vocab, 1]), valid until the next step is built.
+  def self.decode_step_run(kv_cache, token_id, pos)
     TinyNN.tnn_reset_for_rebuild(kv_cache.sess)
     step = kv_cache.build_decode_step(pos)
     TinyNN.tnn_realize(kv_cache.sess, step.kv_step_logits)
@@ -2310,7 +2370,7 @@ module SmolLM2KV
     TinyNN.upload_int_array(kv_cache.sess, step.t_pos,      [pos])
     TinyNN.tnn_compute(kv_cache.sess)
     kv_cache.dump_trace
-    TinyNN.download_row_major(kv_cache.sess, step.kv_step_logits, 1, kv_cache.vocab_size)
+    step.kv_step_logits
   end
 
   # toy#206 — evaluate token_ids[from, from+count) at positions
@@ -2360,5 +2420,43 @@ module SmolLM2KV
       done = done + n_tok
     end
     logits
+  end
+
+  # toy#217 — one step over the cell pool (fused caches only): token i has
+  # id ids[i], RoPE position poss[i], and is written to cell cells[i]. The
+  # visibility mask comes from the pool's bookkeeping (cell_owner /
+  # cell_pos, with the step's own cells already entered) and each token's
+  # sequence (tok_owner) and shared-prefix length (tok_shared); see
+  # tnn_upload_cell_mask. Returns the logits TENSOR of the last n_out
+  # tokens (ne=[vocab, n_out]), valid until the next step is built.
+  def self.decode_cells(kv_cache, ids, poss, cells, n_out, hi, use_mask,
+                        cell_owner, cell_pos, tok_owner, tok_shared)
+    n_tok = ids.length
+    # Consecutive cells take the cpy-into-a-view write of build_fused_step.
+    cell0 = cells[0]
+    i = 1
+    while i < n_tok
+      if cells[i] != cells[0] + i
+        cell0 = -1
+      end
+      i = i + 1
+    end
+    TinyNN.tnn_reset_for_rebuild(kv_cache.sess)
+    step = kv_cache.build_cells_step(n_tok, n_out, hi, cell0, use_mask)
+    TinyNN.tnn_realize(kv_cache.sess, step.kv_step_logits)
+    TinyNN.upload_int_array(kv_cache.sess, step.t_token_id, ids)
+    TinyNN.upload_int_array(kv_cache.sess, step.t_pos,      poss)
+    if cell0 < 0
+      TinyNN.upload_int_array(kv_cache.sess, step.t_cells, cells)
+    end
+    if use_mask
+      rc = TinyNN.tnn_upload_cell_mask(kv_cache.sess, step.t_mask, hi, n_tok,
+                                       cell_owner, cell_pos, tok_owner, poss, tok_shared)
+      if rc != 0
+        raise "decode_cells: mask upload failed rc=" + rc.to_s
+      end
+    end
+    TinyNN.tnn_compute(kv_cache.sess)
+    step.kv_step_logits
   end
 end

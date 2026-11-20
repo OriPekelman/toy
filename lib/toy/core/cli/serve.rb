@@ -1,4 +1,4 @@
-# lib/toy/core/cli/serve.rb — `toy serve <model.gguf> [--port N] [--name NAME] [--ctx N] [--device cpu|cuda] [--stop-ids N,M] [--prefix-file F] [--prefix-cache F]`.
+# lib/toy/core/cli/serve.rb — `toy serve <model.gguf> [--port N] [--name NAME] [--ctx N] [--device cpu|cuda] [--stop-ids N,M] [--prefix-file F] [--prefix-cache F] [--slots N]`.
 #
 # Serve a GGUF model over an OpenAI-compatible HTTP API (CPU or CUDA). CRuby ONLY
 # (the CLI shell) — NO Spinel. Follows the infer/train/eval run-flow for
@@ -51,6 +51,7 @@ module Toy
           @name = nil
           @device = "cpu"
           @stop_ids = nil
+          @slots = nil
           @prefix_file = nil
           @prefix_cache = nil
         end
@@ -134,6 +135,8 @@ module Toy
           # context from the GGUF (context_length clamped to [256, 4096]).
           serve_env["MAX_T"] = @ctx.to_s if @ctx
           serve_env["STOP_IDS"] = @stop_ids if @stop_ids
+          # toy#217: requests decoded at the same time (unset: one).
+          serve_env["SLOTS"] = @slots.to_s if @slots
           serve_env["PREFIX_FILE"]  = File.expand_path(@prefix_file)  if @prefix_file
           serve_env["PREFIX_CACHE"] = File.expand_path(@prefix_cache) if @prefix_cache
           Kernel.exec(serve_env, runner)
@@ -199,6 +202,20 @@ module Toy
                 return bad_arg("--ctx must be a positive integer, got #{val.inspect}")
               end
               @ctx = val.to_i
+            when "--slots"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--slots requires a value") if val.nil?
+              unless val =~ /\A\d+\z/ && (1..64).cover?(val.to_i)
+                return bad_arg("--slots must be an integer from 1 to 64, got #{val.inspect}")
+              end
+              @slots = val.to_i
+            when /\A--slots=(.*)\z/
+              val = $1
+              unless val =~ /\A\d+\z/ && (1..64).cover?(val.to_i)
+                return bad_arg("--slots must be an integer from 1 to 64, got #{val.inspect}")
+              end
+              @slots = val.to_i
             when "--device"
               i += 1
               val = @argv[i]

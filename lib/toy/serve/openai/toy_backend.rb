@@ -8,8 +8,10 @@
 # Without one it is ids-only, as before. Constructed with (state, model_name)
 # so no cross-file constant resolution (same pattern as the retired
 # EmbeddingsHandler). Generation + id minting reuse the top-level helpers
-# in server.rb (api_generate_ids / api_gen_id) — the greedy argmax path
-# the serve gate's recorded baseline pins.
+# in server.rb (the slot engine: api_slot_wait / api_slot_run, and
+# api_gen_id) — the greedy argmax path the serve gate's recorded baseline
+# pins. toy#217: a request holds a SLOT while it decodes; the decode steps
+# are shared by every busy slot.
 #
 # The per-request toy/v1 event moves here from the retired handler,
 # byte-identical (kind:eval phase:serve name:request, req-N request_id
@@ -116,74 +118,74 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
       return 0
     end
     t_start = TinyNN.tnn_events_now_seconds
-    out_ids = [0]
-    out_ids.pop
     emitted = 0
+    n_out   = 0
+    cached  = 0
+    shared  = 0
     # toy#216: stop strings. Text that could still turn out to be the start
     # of a stop string is held back (`hold` bytes) until more arrives.
-    @state.stop_strs = api_json_str_list(body, "stop")
+    stops = api_json_str_list(body, "stop")
     hold = 0
     si = 0
-    while si < @state.stop_strs.length
-      if @state.stop_strs[si].bytesize - 1 > hold
-        hold = @state.stop_strs[si].bytesize - 1
+    while si < stops.length
+      if stops[si].bytesize - 1 > hold
+        hold = stops[si].bytesize - 1
       end
       si = si + 1
     end
-    cut = -1
+    slot_i = -1
     begin
       if SERVE_TEST_FAULT_AT > 0 && token_ids.length == SERVE_TEST_FAULT_AT
         raise "injected test fault (SERVE_TEST_FAULT_AT)"
       end
-      id = api_first_id(token_ids)
-      step = 0
-      while step < n_new
-        if api_stop_id?(id)
-          break
+      slot_i = api_slot_wait(token_ids, n_new)
+      slot = SLOTS[slot_i]
+      slot.stop_strs = stops
+      cached = slot.cached
+      seen = 0
+      while true
+        api_slot_turn(slot)
+        if slot.err.length > 0
+          raise slot.err
         end
-        out_ids.push(id)
-        text = @state.tok.decode(out_ids)
-        lim = text.bytesize - hold
-        if hold > 0
-          cut = api_stop_cut(text)
-          if cut >= 0
-            lim = cut
+        if slot.out_ids.length > seen || slot.done
+          # Send what is new, up to a stop string and up to the last whole
+          # UTF-8 character; the last `hold` bytes wait unless this is the end.
+          seen = slot.out_ids.length
+          text = @state.tok.decode(slot.out_ids)
+          lim = text.bytesize
+          if slot.stop_cut >= 0
+            lim = slot.stop_cut
+          elsif !slot.done
+            lim = lim - hold
+          end
+          if lim < 0
+            lim = 0
+          end
+          safe = api_utf8_safe_len(text.byteslice(0, lim))
+          if safe > emitted
+            sink.emit_token(text.byteslice(emitted, safe - emitted))
+            emitted = safe
           end
         end
-        if lim < 0
-          lim = 0
-        end
-        safe = api_utf8_safe_len(text.byteslice(0, lim))
-        if safe > emitted
-          sink.emit_token(text.byteslice(emitted, safe - emitted))
-          emitted = safe
-        end
-        if cut >= 0
+        if slot.done
           break
         end
-        step = step + 1
-        if step < n_new
-          id = api_next_id(id, token_ids.length + out_ids.length - 1)
-        end
+        api_yield
       end
-      if cut < 0 && hold > 0
-        # No stop string came: send the text that was being held back.
-        text = @state.tok.decode(out_ids)
-        safe = api_utf8_safe_len(text)
-        if safe > emitted
-          sink.emit_token(text.byteslice(emitted, safe - emitted))
-          emitted = safe
-        end
-      end
+      n_out  = slot.out_ids.length
+      shared = slot.shared_steps
     rescue => e
       # toy#214: the stream ends with what was sent so far.
       puts "[openai_api_llama] request failed: " + e.message
     end
-    @state.stop_strs.clear
+    if slot_i >= 0
+      api_slot_release(SLOTS[slot_i])
+    end
     t_end = TinyNN.tnn_events_now_seconds
-    emit_request_event(token_ids.length, out_ids.length,
-                       ((t_end - t_start) * 1.0e6).to_i, n_new)
-    out_ids.length
+    emit_request_event(token_ids.length, n_out,
+                       ((t_end - t_start) * 1.0e6).to_i, n_new, cached, slot_i, shared)
+    n_out
   end
 
   # ---- shared pieces ----
@@ -192,7 +194,7 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
   # packed artifact has no supervisor). tep's backend API has no error
   # channel, so the reply is an empty completion with finish_reason
   # "error", and the reason goes to the log. The KV bookkeeping stays
-  # valid: STATE.kv_ids only ever lists rows that were written.
+  # valid: a slot only lists rows that were written (api_pump).
   def request_failed(comp, msg)
     puts "[openai_api_llama] request failed: " + msg
     comp.text = ""
@@ -320,33 +322,40 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
                       "the prompt is " + token_ids.length.to_s + " tokens and the context is " +
                       MAX_T.to_s + " (start the server with --ctx N)")
     end
-    @state.stop_strs = stops
-    @state.lp_top = top
+    slot_i = -1
     begin
       if SERVE_TEST_FAULT_AT > 0 && token_ids.length == SERVE_TEST_FAULT_AT
         raise "injected test fault (SERVE_TEST_FAULT_AT)"
       end
       t_start = TinyNN.tnn_events_now_seconds
-      new_ids = api_generate_ids(token_ids, n_new)
+      slot_i = api_slot_wait(token_ids, n_new)
+      slot = SLOTS[slot_i]
+      slot.stop_strs = stops
+      slot.lp_top    = top
+      api_slot_run(slot)
+      if slot.err.length > 0
+        raise slot.err
+      end
+      new_ids = slot.out_ids
       t_end   = TinyNN.tnn_events_now_seconds
       emit_request_event(token_ids.length, new_ids.length,
-                         ((t_end - t_start) * 1.0e6).to_i, n_new)
+                         ((t_end - t_start) * 1.0e6).to_i, n_new, slot.cached, slot_i, slot.shared_steps)
       rep.completion_tokens = new_ids.length
-      rep.finish = @state.finish
+      rep.finish = slot.finish
       if @state.tok.present
         text = @state.tok.decode(new_ids)
-        if @state.stop_cut >= 0
+        if slot.stop_cut >= 0
           # The reply ends where the stop string began. Ids that reach
           # past that point are dropped from `ids` and from logprobs;
           # completion_tokens still counts every token generated.
-          text = text.byteslice(0, @state.stop_cut)
-          while new_ids.length > 0 && @state.tok.decode(new_ids).bytesize > @state.stop_cut
+          text = text.byteslice(0, slot.stop_cut)
+          while new_ids.length > 0 && @state.tok.decode(new_ids).bytesize > slot.stop_cut
             new_ids.pop
           end
         end
         rep.text = text
         if top >= 0
-          rep.lp_json = lp_json(new_ids, top)
+          rep.lp_json = lp_json(slot, new_ids, top)
         end
       end
       rep.ids = new_ids
@@ -354,11 +363,9 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
       puts "[openai_api_llama] request failed: " + e.message
       rep.fail(500, "server_error", e.message)
     end
-    @state.lp_top = -1
-    @state.lp_tok.clear
-    @state.lp_alt_ids.clear
-    @state.lp_alt_lps.clear
-    @state.stop_strs.clear
+    if slot_i >= 0
+      api_slot_release(SLOTS[slot_i])
+    end
     0
   end
 
@@ -386,20 +393,20 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
   end
 
   # OpenAI's chat `logprobs` object for the reply's ids, from what the
-  # decode loop recorded in the state.
-  def lp_json(ids, top)
+  # decode steps recorded in the slot.
+  def lp_json(slot, ids, top)
     out = "{\"content\":["
     i = 0
-    while i < ids.length && i < @state.lp_tok.length
+    while i < ids.length && i < slot.lp_tok.length
       if i > 0; out = out + ","; end
-      out = out + "{" + lp_fields(ids[i], @state.lp_tok[i]) + ",\"top_logprobs\":["
+      out = out + "{" + lp_fields(ids[i], slot.lp_tok[i]) + ",\"top_logprobs\":["
       k = 0
       n = 0
       while k < top
-        aid = @state.lp_alt_ids[i * top + k]
+        aid = slot.lp_alt_ids[i * top + k]
         if aid >= 0
           if n > 0; out = out + ","; end
-          out = out + "{" + lp_fields(aid, @state.lp_alt_lps[i * top + k]) + "}"
+          out = out + "{" + lp_fields(aid, slot.lp_alt_lps[i * top + k]) + "}"
           n = n + 1
         end
         k = k + 1
@@ -457,15 +464,21 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
       raise "injected test fault (SERVE_TEST_FAULT_AT)"
     end
     t_start = TinyNN.tnn_events_now_seconds
-    new_ids = api_generate_ids(token_ids, n_new)
+    slot = SLOTS[api_slot_wait(token_ids, n_new)]
+    api_slot_run(slot)
+    api_slot_release(slot)
+    if slot.err.length > 0
+      raise slot.err
+    end
+    new_ids = slot.out_ids
     t_end   = TinyNN.tnn_events_now_seconds
     emit_request_event(token_ids.length, new_ids.length,
-                       ((t_end - t_start) * 1.0e6).to_i, n_new)
+                       ((t_end - t_start) * 1.0e6).to_i, n_new, slot.cached, slot.idx, slot.shared_steps)
 
     comp.token_ids         = new_ids
     comp.prompt_tokens     = token_ids.length
     comp.completion_tokens = new_ids.length
-    comp.finish_reason     = @state.finish
+    comp.finish_reason     = slot.finish
     if @state.tok.present
       comp.text = @state.tok.decode(new_ids)
     end
@@ -475,7 +488,9 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
   # ONE eval/serve/request event per completion (toy/v1). FILE-only side
   # effect; response bytes unaffected. Guarded by the process-global C
   # events state. Byte-identical to the retired handler's.
-  def emit_request_event(n_prompt, n_completion, latency_us, n_new)
+  # toy#217: `slot` is the slot that served it and `shared_steps` the decode
+  # steps it shared with at least one other request.
+  def emit_request_event(n_prompt, n_completion, latency_us, n_new, cached, slot, shared_steps)
     if TinyNN.tnn_events_active == 1
       @state.req_seq = @state.req_seq + 1
       req_id = "req-" + @state.req_seq.to_s
@@ -486,7 +501,9 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
       ev = ev +   "\"model\":\"" + @model_name + "\""
       ev = ev +   ",\"prompt_tokens\":"     + n_prompt.to_s
       ev = ev +   ",\"completion_tokens\":" + n_completion.to_s
-      ev = ev +   ",\"cached_tokens\":"     + @state.cached.to_s
+      ev = ev +   ",\"cached_tokens\":"     + cached.to_s
+      ev = ev +   ",\"slot\":"              + slot.to_s
+      ev = ev +   ",\"shared_steps\":"      + shared_steps.to_s
       ev = ev +   ",\"latency_us\":"        + latency_us.to_s
       ev = ev +   ",\"sampling\":{\"max_tokens\":" + n_new.to_s + "}"
       ev = ev +   ",\"request_id\":\"" + req_id + "\""

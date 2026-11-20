@@ -808,6 +808,18 @@ gate-serve-chat:
 gate-serve-chat-cuda:
 	ruby prep/serve_chat_gate.rb --device cuda
 
+# Slots gate (toy#217): `toy serve --slots N` decodes concurrent requests as
+# one batch. Requests sent at once return the ids a one-slot server gives
+# them one at a time, their events show they shared decode steps, requests
+# beyond the slot count queue, streams and per-request options stay apart,
+# a boot prefix is shared by every slot, and one failing request does not
+# touch the others. The -cuda twin runs the same checks on the CUDA runner.
+.PHONY: gate-serve-slots gate-serve-slots-cuda
+gate-serve-slots:
+	ruby prep/serve_slots_gate.rb
+gate-serve-slots-cuda:
+	ruby prep/serve_slots_gate.rb --device cuda
+
 # KV prefix gate (toy#210): the K/V rows of a prompt prefix already in the
 # cache are reused instead of re-evaluated (between requests, and from a
 # KV prefix file restored at boot), with replies identical to a server that

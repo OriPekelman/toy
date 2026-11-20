@@ -175,6 +175,8 @@ module TinyNNMetal
   ffi_func :tnn_view_3d,          [:ptr, :ptr, :int, :int, :int, :long, :long, :long], :ptr
   ffi_func :tnn_cont,             [:ptr, :ptr], :ptr
   ffi_func :tnn_upload_causal_mask, [:ptr, :ptr, :int, :int, :int], :int
+  ffi_func :tnn_logits_pick, [:ptr, :ptr, :int, :int, :int, :int_array, :float_array, :int_array, :float_array], :int
+  ffi_func :tnn_upload_cell_mask, [:ptr, :ptr, :int, :int, :int_array, :int_array, :int_array, :int_array, :int_array], :int
   ffi_func :tnn_reshape_3d,       [:ptr, :ptr, :int, :int, :int], :ptr
   ffi_func :tnn_reshape_2d,       [:ptr, :ptr, :int, :int],       :ptr
   ffi_func :tnn_cpy,              [:ptr, :ptr, :ptr],       :ptr
