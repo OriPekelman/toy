@@ -163,6 +163,17 @@ class State
   # LAST request reused instead of re-evaluating; :model_fp fingerprints
   # the GGUF for the KV prefix file.
   attr_accessor :kv_ids, :cached, :model_fp
+  # toy#216, per-request generation options and their results (set by the
+  # backend before a generation, reset after it):
+  #   :lp_top     -1 = no log-probabilities; n >= 0 = record the chosen
+  #               token's log-probability and the n most likely tokens
+  #   :lp_tok     log-probability of each token picked (one per argmax)
+  #   :lp_alt_ids / :lp_alt_lps   the n most likely ids / their
+  #               log-probabilities, n entries per argmax, best first
+  #   :stop_strs  strings that end the reply when they appear in its text
+  #   :stop_cut   byte offset in the decoded reply where a stop string
+  #               began (-1: none matched)
+  attr_accessor :lp_top, :lp_tok, :lp_alt_ids, :lp_alt_lps, :stop_strs, :stop_cut
   def initialize
     @cfg  = nil
     @kv   = nil
@@ -179,6 +190,16 @@ class State
     @kv_ids.pop
     @cached      = 0
     @model_fp    = ""
+    @lp_top      = -1
+    @lp_tok      = [0.0]
+    @lp_tok.pop
+    @lp_alt_ids  = [0]
+    @lp_alt_ids.pop
+    @lp_alt_lps  = [0.0]
+    @lp_alt_lps.pop
+    @stop_strs   = [""]
+    @stop_strs.pop
+    @stop_cut    = -1
   end
 end
 STATE = State.new
@@ -600,6 +621,173 @@ def api_argmax(logits, vocab)
   best_idx
 end
 
+# toy#216: log-probabilities of one decode step. Appends to STATE.lp_tok the
+# log-probability of `best` (the id just picked) and to STATE.lp_alt_ids /
+# lp_alt_lps the STATE.lp_top most likely ids, best first. One pass over
+# the logits: the log-sum-exp for the normaliser and a small insertion sort
+# for the top entries.
+def api_record_lp(logits, vocab, best)
+  top = STATE.lp_top
+  mx = logits.flat[best]
+  sum = 0.0
+  ids = [0]
+  ids.pop
+  vals = [0.0]
+  vals.pop
+  i = 0
+  while i < vocab
+    v = logits.flat[i]
+    sum = sum + Math.exp(v - mx)
+    if top > 0 && (ids.length < top || v > vals[ids.length - 1])
+      k = ids.length
+      if k < top
+        ids.push(i)
+        vals.push(v)
+      else
+        k = top - 1
+        ids[k] = i
+        vals[k] = v
+      end
+      while k > 0 && vals[k] > vals[k - 1]
+        tv = vals[k]; vals[k] = vals[k - 1]; vals[k - 1] = tv
+        ti = ids[k];  ids[k] = ids[k - 1];   ids[k - 1] = ti
+        k = k - 1
+      end
+    end
+    i = i + 1
+  end
+  lse = mx + Math.log(sum)
+  STATE.lp_tok.push(mx - lse)
+  k = 0
+  while k < top
+    if k < ids.length
+      STATE.lp_alt_ids.push(ids[k])
+      STATE.lp_alt_lps.push(vals[k] - lse)
+    else
+      STATE.lp_alt_ids.push(-1)
+      STATE.lp_alt_lps.push(0.0)
+    end
+    k = k + 1
+  end
+  0
+end
+
+# A request field that is one string or an array of strings (OpenAI's
+# `stop`) as an array; empty when the key is absent or holds anything else.
+def api_json_str_list(body, key)
+  out = [""]
+  out.pop
+  pos = SpinelKit::Json.find_value_start(body, key)
+  if pos < 0 || pos >= body.length
+    return out
+  end
+  if body[pos] == "\""
+    one = SpinelKit::Json.parse_str_value(body, pos)
+    if one.bytesize > 0
+      out.push(one)
+    end
+    return out
+  end
+  if body[pos] != "["
+    return out
+  end
+  pos = pos + 1
+  while pos < body.length
+    pos = SpinelKit::Json.skip_ws(body, pos)
+    if pos >= body.length || body[pos] == "]"
+      return out
+    end
+    if body[pos] == "\""
+      one = SpinelKit::Json.parse_str_value(body, pos)
+      if one.bytesize > 0
+        out.push(one)
+      end
+      pos = SpinelKit::Json.skip_str(body, pos)
+      if pos < 0
+        return out
+      end
+    elsif body[pos] == ","
+      pos = pos + 1
+    else
+      pos = SpinelKit::Json.skip_value(body, pos)
+    end
+  end
+  out
+end
+
+# True when `s` is well-formed UTF-8 (a single BPE token may not be).
+def api_utf8_valid?(s)
+  n = s.bytesize
+  i = 0
+  while i < n
+    b = s.getbyte(i)
+    need = 0
+    if b < 128
+      need = 0
+    elsif b >= 194 && b < 224
+      need = 1
+    elsif b >= 224 && b < 240
+      need = 2
+    elsif b >= 240 && b < 245
+      need = 3
+    else
+      return false
+    end
+    if i + need > n - 1
+      return false
+    end
+    j = 1
+    while j <= need
+      c = s.getbyte(i + j)
+      if c < 128 || c >= 192
+        return false
+      end
+      j = j + 1
+    end
+    i = i + need + 1
+  end
+  true
+end
+
+# Byte offset of the first occurrence of `needle` in `hay`, or -1.
+def api_byte_find(hay, needle)
+  n = hay.bytesize
+  m = needle.bytesize
+  if m == 0 || m > n
+    return -1
+  end
+  first = needle.getbyte(0)
+  i = 0
+  while i <= n - m
+    if hay.getbyte(i) == first
+      j = 1
+      while j < m && hay.getbyte(i + j) == needle.getbyte(j)
+        j = j + 1
+      end
+      if j == m
+        return i
+      end
+    end
+    i = i + 1
+  end
+  -1
+end
+
+# Earliest byte offset in `text` where one of STATE.stop_strs begins; -1
+# when none is there.
+def api_stop_cut(text)
+  cut = -1
+  i = 0
+  while i < STATE.stop_strs.length
+    at = api_byte_find(text, STATE.stop_strs[i])
+    if at >= 0 && (cut < 0 || at < cut)
+      cut = at
+    end
+    i = i + 1
+  end
+  cut
+end
+
 # Prefill the prompt; returns the FIRST generated token id.
 #
 # toy#210: the K/V rows of the longest prefix this prompt shares with what
@@ -638,7 +826,11 @@ def api_first_id(prompt_ids)
     STATE.kv_ids.push(prompt_ids[prefill_pos])
     prefill_pos = prefill_pos + 1
   end
-  api_argmax(last_logits, vocab)
+  best = api_argmax(last_logits, vocab)
+  if STATE.lp_top >= 0
+    api_record_lp(last_logits, vocab, best)
+  end
+  best
 end
 
 # Feed `prev_id` at position `pos`; returns the next token id.
@@ -648,7 +840,11 @@ def api_next_id(prev_id, pos)
   end
   logits = SmolLM2KV.decode_step(STATE.kv, prev_id, pos)
   STATE.kv_ids.push(prev_id)
-  api_argmax(logits, STATE.cfg.vocab)
+  best = api_argmax(logits, STATE.cfg.vocab)
+  if STATE.lp_top >= 0
+    api_record_lp(logits, STATE.cfg.vocab, best)
+  end
+  best
 end
 
 # Generates up to `n_new` ids and stops BEFORE a stop id (which is not
@@ -657,6 +853,7 @@ def api_generate_ids(prompt_ids, n_new)
   out_ids = [0]
   out_ids.pop
   STATE.finish = "length"
+  STATE.stop_cut = -1
   if n_new <= 0
     return out_ids
   end
@@ -669,6 +866,16 @@ def api_generate_ids(prompt_ids, n_new)
       return out_ids
     end
     out_ids.push(id)
+    # toy#216: a stop string in the text so far ends the reply. The ids
+    # that spell it stay in out_ids; the caller cuts the text at stop_cut.
+    if STATE.stop_strs.length > 0
+      cut = api_stop_cut(STATE.tok.decode(out_ids))
+      if cut >= 0
+        STATE.stop_cut = cut
+        STATE.finish = "stop"
+        return out_ids
+      end
+    end
     step = step + 1
     if step < n_new
       id = api_next_id(id, prompt_ids.length + out_ids.length - 1)

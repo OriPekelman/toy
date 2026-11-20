@@ -1,6 +1,9 @@
 # lib/toy/serve/openai/handlers.rb -- the app-mounted Tep::Handler
 # subclasses: Health (/health) + Index (/).
 #
+# toy#216: /v1/completions and /v1/chat/completions are toy's again
+# (ToyCompletionsHandler / ToyChatHandler in toy_backend.rb); models and
+# embeddings stay on tep's battery. History:
 # The four /v1 endpoints moved to tep's OpenAI battery (toy#30):
 # Server.use(ToyBackend) + serve! mounts models/completions/chat/
 # embeddings — see toy_backend.rb. The hand-rolled Models/Completions/
@@ -33,10 +36,11 @@ class IndexHandler < Tep::Handler
     "<p>Chat and decoded text need a GGUF that embeds its tokenizer; " +
     "without one the server speaks integer token IDs only.</p>" +
     "<p>Endpoints:</p><ul>" +
-    "<li><code>POST /v1/completions</code> &mdash; body <code>{\"prompt\":[int,...],\"max_tokens\":N}</code>; " +
+    "<li><code>POST /v1/completions</code> &mdash; body <code>{\"prompt\":[int,...] or \"text\",\"max_tokens\":N}</code>; " +
     "reply carries <code>ids</code> and, with a tokenizer, <code>text</code></li>" +
     "<li><code>POST /v1/chat/completions</code> &mdash; body <code>{\"messages\":[...],\"max_tokens\":N,\"stream\":bool}</code> " +
-    "(501 without a tokenizer)</li>" +
+    "(501 without a tokenizer); a last message with role assistant is continued</li>" +
+    "<li>both take <code>\"stop\"</code> strings and <code>\"logprobs\"</code></li>" +
     "<li><code>POST /v1/embeddings</code> &mdash; body <code>{\"input\":[int,...]}</code> &rarr; mean-pooled vector</li>" +
     "<li><code>GET /v1/models</code></li>" +
     "<li><code>GET /health</code></li>" +

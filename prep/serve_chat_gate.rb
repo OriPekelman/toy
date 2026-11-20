@@ -25,7 +25,23 @@
 #             server keeps serving (toy#214: decoding nothing raised
 #             FrozenError and ended the process)
 #   fault     a request that raises inside generation is answered with
-#             finish_reason "error" and the next request is unaffected
+#             HTTP 500 and an error object; the next request is unaffected
+#   logprobs  (toy#216) "logprobs":true,"top_logprobs":n gives one entry per
+#             reply token: the token picked is the most likely alternative,
+#             the alternatives are sorted, their probabilities sum to at
+#             most 1, the bytes spell the content, and the content is the
+#             one the request gives without logprobs
+#   prefix    (toy#216) a trailing partial assistant message is continued:
+#             the first 4 tokens of a reply, sent back as that message,
+#             give the rest of the reply, and the prompt is 4 tokens longer
+#   textprompt (toy#216) /v1/completions with the ChatML text as "prompt"
+#             gives the chat reply and the chat prompt token count
+#   stopstr   (toy#216) a "stop" string cuts the reply where it begins with
+#             finish_reason "stop", streamed or not; one that never occurs
+#             changes nothing
+#   errors    (toy#216) empty messages / empty prompt are HTTP 400 with an
+#             error object, and chat finish_reason is the backend's
+#             ("length" at max_tokens)
 #   idsonly   a GGUF with no tokenizer: text "", chat 501 (unchanged)
 #   qwen      (TOY_GATE_QWEN_GGUF=<file>) a real chat model stops at its own
 #             end-of-turn token before max_tokens
@@ -253,6 +269,126 @@ begin
     ok.call("escapes", "a \\u-escaped body is the same request as raw UTF-8 (#{want} prompt tokens)")
   end
 
+  # ---- logprobs (toy#216) ----
+  chat_req = { "model" => "gate", "messages" => msgs, "max_tokens" => 12 }
+  r = post(port, "/v1/chat/completions", chat_req.merge("logprobs" => true, "top_logprobs" => 5))
+  j = r.code == "200" ? JSON.parse(r.body) : {}
+  lp = j.dig("choices", 0, "logprobs", "content").to_a
+  e = []
+  e << "HTTP #{r.code}" unless r.code == "200"
+  e << "content #{j.dig("choices", 0, "message", "content").inspect} differs from the reply without logprobs" \
+    unless j.dig("choices", 0, "message", "content") == chat_content
+  e << "#{lp.length} entries for 12 tokens" unless lp.length == 12
+  if lp.length == 12
+    e << "the entries' bytes do not spell the content" \
+      unless lp.flat_map { |t| t["bytes"] }.pack("C*").force_encoding("UTF-8") == chat_content
+    lp.each_with_index do |t, i|
+      alts = t["top_logprobs"].to_a
+      vals = alts.map { |a| a["logprob"] }
+      e << "token #{i}: #{alts.length} alternatives, expected 5" unless alts.length == 5
+      e << "token #{i}: the token picked (id #{t["id"]}) is not the first alternative" \
+        unless alts.first && alts.first["id"] == t["id"] && alts.first["logprob"] == t["logprob"]
+      e << "token #{i}: alternatives not sorted or not <= 0: #{vals.inspect}" \
+        unless vals == vals.sort.reverse && vals.all? { |v| v.is_a?(Numeric) && v <= 0 }
+      mass = vals.sum { |v| Math.exp(v) }
+      e << "token #{i}: alternatives' probabilities sum to #{mass.round(4)}" unless mass > 0.01 && mass <= 1.0 + 1e-9
+    end
+  end
+  r0 = post(port, "/v1/chat/completions", chat_req)
+  e << "the plain reply carries a logprobs field" if r0.body.include?("\"logprobs\"")
+  if e.empty?
+    ok.call("logprobs", "12 tokens, each with its log-probability and 5 sorted alternatives (first token p=#{Math.exp(lp[0]["logprob"]).round(3)})")
+  else
+    e.first(4).each { |m| failures << "logprobs: #{m}" }
+  end
+
+  # ---- prefix (toy#216) ----
+  if lp.length == 12
+    head = lp.first(4).flat_map { |t| t["bytes"] }.pack("C*").force_encoding("UTF-8")
+    r = post(port, "/v1/chat/completions",
+             chat_req.merge("messages" => msgs + [{ "role" => "assistant", "content" => head }], "max_tokens" => 8))
+    j = r.code == "200" ? JSON.parse(r.body) : {}
+    rest = j.dig("choices", 0, "message", "content")
+    if r.code != "200"
+      failures << "prefix: HTTP #{r.code}: #{r.body.to_s[0, 160]}"
+    elsif head + rest.to_s != chat_content
+      failures << "prefix: #{head.inspect} continued with #{rest.inspect}, expected the rest of #{chat_content.inspect}"
+    elsif j.dig("usage", "prompt_tokens") != want_prompt + 4
+      failures << "prefix: prompt_tokens #{j.dig("usage", "prompt_tokens")}, expected #{want_prompt + 4} (the prompt plus the 4-token prefix)"
+    else
+      ok.call("prefix", "a partial assistant message #{head.inspect} is continued with the rest of the reply")
+    end
+  else
+    failures << "prefix: not run (no logprobs to take a token boundary from)"
+  end
+
+  # ---- textprompt (toy#216) ----
+  r = post(port, "/v1/completions", "model" => "gate", "prompt" => chatml(msgs), "max_tokens" => 12)
+  j = r.code == "200" ? JSON.parse(r.body) : {}
+  if r.code != "200"
+    failures << "textprompt: HTTP #{r.code}: #{r.body.to_s[0, 160]}"
+  elsif j.dig("choices", 0, "text") != chat_content
+    failures << "textprompt: text #{j.dig("choices", 0, "text").inspect}, the chat reply is #{chat_content.inspect}"
+  elsif j.dig("usage", "prompt_tokens") != want_prompt
+    failures << "textprompt: prompt_tokens #{j.dig("usage", "prompt_tokens")}, expected #{want_prompt}"
+  else
+    ok.call("textprompt", "a text prompt on /v1/completions gives the chat reply (#{want_prompt} prompt tokens)")
+  end
+
+  # ---- stopstr (toy#216) ----
+  if lp.length == 12
+    # A stop string that begins inside the reply: tokens 6..8 of it.
+    stop_s = lp[6, 3].flat_map { |t| t["bytes"] }.pack("C*").force_encoding("UTF-8")
+    at = chat_content.index(stop_s)
+    want_cut = chat_content[0, at]
+    e = []
+    r = post(port, "/v1/chat/completions", chat_req.merge("stop" => ["\u0000never", stop_s]))
+    j = r.code == "200" ? JSON.parse(r.body) : {}
+    e << "content #{j.dig("choices", 0, "message", "content").inspect} with stop #{stop_s.inspect}, expected #{want_cut.inspect}" \
+      unless j.dig("choices", 0, "message", "content") == want_cut
+    e << "finish_reason #{j.dig("choices", 0, "finish_reason").inspect}, expected \"stop\"" unless j.dig("choices", 0, "finish_reason") == "stop"
+    e << "completion_tokens #{j.dig("usage", "completion_tokens")}, expected fewer than 12" unless j.dig("usage", "completion_tokens").to_i.between?(1, 11)
+    r = post(port, "/v1/chat/completions", chat_req.merge("stop" => "no such text \u2603"))
+    j = r.code == "200" ? JSON.parse(r.body) : {}
+    e << "a stop string that never occurs changed the reply" \
+      unless j.dig("choices", 0, "message", "content") == chat_content && j.dig("choices", 0, "finish_reason") == "length"
+    sbuf = +""
+    Net::HTTP.start("127.0.0.1", port, open_timeout: 2, read_timeout: 120) do |h|
+      req = Net::HTTP::Post.new("/v1/chat/completions", "Content-Type" => "application/json")
+      req.body = JSON.dump(chat_req.merge("stream" => true, "stop" => stop_s))
+      h.request(req) { |resp| resp.read_body { |chunk| sbuf << chunk } }
+    end
+    sgot = sbuf.split("\n\n").map { |ev| ev.sub(/\Adata: /, "") }.reject { |d| d.strip.empty? || d.strip == "[DONE]" }
+               .map { |d| JSON.parse(d).dig("choices", 0, "delta", "content").to_s }.join
+    e << "streamed with the stop string: #{sgot.inspect}, expected #{want_cut.inspect}" unless sgot == want_cut
+    if at.nil? || at == 0
+      failures << "stopstr: could not pick a stop string from #{chat_content.inspect}"
+    elsif e.empty?
+      ok.call("stopstr", "stop #{stop_s.inspect} cuts the reply to #{want_cut.inspect}, streamed too; an absent one changes nothing")
+    else
+      e.each { |m| failures << "stopstr: #{m}" }
+    end
+  else
+    failures << "stopstr: not run (no logprobs to take a token boundary from)"
+  end
+
+  # ---- errors (toy#216) ----
+  e = []
+  r = post(port, "/v1/chat/completions", "model" => "gate", "messages" => [])
+  e << "empty messages: HTTP #{r.code}" unless r.code == "400" && (JSON.parse(r.body).dig("error", "type") rescue nil) == "invalid_request_error"
+  r = post(port, "/v1/completions", "model" => "gate", "prompt" => [])
+  e << "empty prompt: HTTP #{r.code}" unless r.code == "400" && (JSON.parse(r.body).dig("error", "type") rescue nil) == "invalid_request_error"
+  e << "chat finish_reason at max_tokens is #{JSON.parse(r0.body).dig("choices", 0, "finish_reason").inspect}, expected \"length\"" \
+    unless JSON.parse(r0.body).dig("choices", 0, "finish_reason") == "length"
+  r = post(port, "/v1/chat/completions", chat_req)
+  e << "the server did not answer normally after the error replies" \
+    unless r.code == "200" && JSON.parse(r.body).dig("choices", 0, "message", "content") == chat_content
+  if e.empty?
+    ok.call("errors", "empty messages and an empty prompt are HTTP 400 with an error object; chat reports \"length\" at max_tokens")
+  else
+    e.each { |m| failures << "errors: #{m}" }
+  end
+
   # ---- stream ----
   frames = []
   done = false
@@ -320,16 +456,16 @@ begin
   end
 
   # ---- fault (toy#214) ----
-  # An exception inside one request becomes an "error" reply, is logged,
+  # An exception inside one request becomes an HTTP 500 with an error
+  # object (toy#216; it was a 200 with finish_reason "error"), is logged,
   # and the next request gets the same answer as on a fresh server.
-  # (/v1/completions: tep's chat envelope does not carry the backend's
-  # finish_reason, tep#276.)
   port = start_server(TOK_GGUF, "SERVE_TEST_FAULT_AT" => PROMPT.length.to_s)
   r = post(port, "/v1/completions", "model" => "gate", "prompt" => PROMPT, "max_tokens" => 10)
-  c = r.code == "200" ? JSON.parse(r.body)["choices"][0] : {}
+  err = (JSON.parse(r.body)["error"] rescue nil) || {}
   f = []
-  f << "faulted request: HTTP #{r.code}, finish #{c["finish_reason"].inspect}, ids #{c["ids"].inspect}; " \
-       "expected 200, \"error\", none" unless r.code == "200" && c["finish_reason"] == "error" && c["ids"].to_a == []
+  f << "faulted request: HTTP #{r.code}, error #{err.inspect}; expected 500 with type \"server_error\" " \
+       "and the exception's message" unless r.code == "500" && err["type"] == "server_error" &&
+                                            err["message"].to_s.include?("injected test fault")
   if STDBUF_BIN && !File.read(@logf).include?("request failed: injected test fault")
     f << "no 'request failed' line in the server log"
   end
@@ -337,7 +473,7 @@ begin
   after = r2.code == "200" ? JSON.parse(r2.body).dig("choices", 0, "message", "content") : nil
   f << "the request after the fault gave #{after.inspect}, expected #{chat_content.inspect}" unless after == chat_content
   if f.empty?
-    ok.call("fault", "a request that raises is answered with finish_reason \"error\", logged, and the next request is unaffected")
+    ok.call("fault", "a request that raises is answered with HTTP 500 and an error object, logged, and the next request is unaffected")
   else
     f.each { |m| failures << "fault: #{m}" }
   end

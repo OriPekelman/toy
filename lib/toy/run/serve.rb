@@ -118,8 +118,18 @@ end
 # empty completion, not a 400 (tep#249 — Backend has no error channel).
 Tep.get  "/",                     IndexHandler.new
 Tep.get  "/health",               HealthHandler.new
-Tep::Llm::OpenAI::Server.use(ToyBackend.new(STATE, MODEL_NAME))
-Tep::Llm::OpenAI::Server.serve!("")
+# toy#216: models and embeddings are tep's handlers; the two completion
+# endpoints are toy's (ToyChatHandler / ToyCompletionsHandler), which hand
+# streamed requests on to tep's. Server.serve! would mount tep's handlers on
+# the same two paths, so the routes are mounted here and tep's (disabled)
+# event sink is set directly — the streamers write to it.
+SERVE_BACKEND = ToyBackend.new(STATE, MODEL_NAME)
+Tep::Llm::OpenAI::Server.use(SERVE_BACKEND)
+Tep::APP.set_openai_events(Tep::Events.new(""))
+Tep.get  "/v1/models",           Tep::Llm::OpenAI::ModelsHandler.new
+Tep.post "/v1/completions",      ToyCompletionsHandler.new(SERVE_BACKEND)
+Tep.post "/v1/chat/completions", ToyChatHandler.new(SERVE_BACKEND)
+Tep.post "/v1/embeddings",       Tep::Llm::OpenAI::EmbeddingsHandler.new
 
 # PORT from the controlled env (NEW; replaces the ARGV -p/-w/-q parse the
 # tep_demo binary used -- `toy serve` owns the UX). CPU-only, workers=1,
