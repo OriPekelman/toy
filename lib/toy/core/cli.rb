@@ -119,6 +119,7 @@ module Toy
                   { name: "--device", desc: "cpu (default) | cuda" },
                   { name: "--stop-ids", desc: "extra end-of-generation token ids, comma-separated" },
                   { name: "--slots", desc: "requests decoded at the same time, 1-64 (default 1)" },
+                  { name: "--adapter", desc: "LoRA GGUF (llama.cpp format) applied beside the weights; a request scales it with lora_scale" },
                   { name: "--prefix-file", desc: "system message every request starts with; evaluated once at boot" },
                   { name: "--prefix-cache", desc: "KV prefix file: restored at boot, or built from --prefix-file and saved" }]
         },

@@ -103,9 +103,20 @@ class SmolLM2KVBlockFFI
                 # toy#213: full-vector QK-norm (qk_norm_kind == 2). The
                 # normalised whole Q / K vector of the step being built;
                 # the per-head code views its [d_head] slice out of it.
-                :t_qn_step, :t_kn_step
+                :t_qn_step, :t_kn_step,
+                # toy#218: an inference adapter (low-rank delta B.A beside
+                # a weight matrix), by target: 0 attn_q, 1 attn_k, 2 attn_v,
+                # 3 attn_output, 4 ffn_gate, 5 ffn_up, 6 ffn_down.
+                # ad_rank 0 = the matrix has no delta; ad_mul = alpha/rank.
+                :t_ad_a, :t_ad_b, :ad_rank, :ad_mul
 
   def initialize
+    @t_ad_a  = [TinyNN.tnn_null_ptr, TinyNN.tnn_null_ptr, TinyNN.tnn_null_ptr, TinyNN.tnn_null_ptr,
+                TinyNN.tnn_null_ptr, TinyNN.tnn_null_ptr, TinyNN.tnn_null_ptr]
+    @t_ad_b  = [TinyNN.tnn_null_ptr, TinyNN.tnn_null_ptr, TinyNN.tnn_null_ptr, TinyNN.tnn_null_ptr,
+                TinyNN.tnn_null_ptr, TinyNN.tnn_null_ptr, TinyNN.tnn_null_ptr]
+    @ad_rank = [0, 0, 0, 0, 0, 0, 0]
+    @ad_mul  = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
     @t_qn_step = TinyNN.tnn_null_ptr
     @t_kn_step = TinyNN.tnn_null_ptr
     @t_w_q_full = TinyNN.tnn_null_ptr
@@ -262,9 +273,20 @@ class SmolLM2KVFFICache
                 :fused, :fused_wanted, :batch_max,
                 # toy#217: how many cells the fused K/V tensors hold
                 # (0 = max_T, one sequence). Set before realize.
-                :kv_cells
+                :kv_cells,
+                # toy#218: adapter_path — a llama.cpp-format LoRA GGUF to
+                # load beside the model ("" = none; set before realize;
+                # fused graph only). adapter_n — matrices it gave a delta.
+                # last_taps — the hidden-state tensors of the last
+                # decode_cells step, one per requested layer.
+                :adapter_path, :adapter_n, :adapter_gguf, :last_taps
 
   def initialize
+    @adapter_path = ""
+    @adapter_n    = 0
+    @adapter_gguf = TinyNN.tnn_null_ptr
+    @last_taps    = [TinyNN.tnn_null_ptr]
+    @last_taps.pop
     @kv_cells     = 0
     @fused        = false
     @fused_wanted = true
@@ -1045,10 +1067,12 @@ class SmolLM2KVFFICache
       end
     end
 
+    adapter_alloc
     # Finalize the regular persistent context (K/V cache buffers).
     # Mmap'd tensors don't need finalization — they were allocated
     # against weights_buf_mmap inline.
     TinyNN.tnn_finalize_weights(@sess)
+    adapter_load
 
     # Upload llama3-style RoPE freq_factors once the backend buffer
     # for @t_rope_freq_factors exists (post-finalize). The values are
@@ -1464,7 +1488,9 @@ class SmolLM2KVFFICache
   #   with a causal mask when n_tok > 1, then V.attn.
   # Logits are produced for the LAST token only.
   def build_fused_step(pos, n_tok)
-    build_cells_step(n_tok, 1, pos + n_tok, pos, n_tok > 1)
+    no_taps = [0]
+    no_taps.pop
+    build_cells_step(n_tok, 1, pos + n_tok, pos, n_tok > 1, false, no_taps)
   end
 
   # toy#217 — the fused step over a pool of cache CELLS instead of one
@@ -1481,7 +1507,173 @@ class SmolLM2KVFFICache
   #   use_mask  false only when every cell below hi is visible to every
   #             token (a single token continuing the only sequence)
   # build_fused_step(pos, n_tok) is this with cell == position.
-  def build_cells_step(n_tok, n_out, hi, cell0, use_mask)
+  # toy#218: the adapter's tensor name for target `ti` of layer `li`
+  # (llama.cpp's LoRA GGUF naming), without the .lora_a / .lora_b suffix.
+  def adapter_name(li, ti)
+    base = "attn_q"
+    if ti == 1
+      base = "attn_k"
+    elsif ti == 2
+      base = "attn_v"
+    elsif ti == 3
+      base = "attn_output"
+    elsif ti == 4
+      base = "ffn_gate"
+    elsif ti == 5
+      base = "ffn_up"
+    elsif ti == 6
+      base = "ffn_down"
+    end
+    "blk." + li.to_s + "." + base + ".weight"
+  end
+
+  # Input / output width of target `ti`'s weight matrix.
+  def adapter_d_in(ti)
+    if ti == 3
+      return @n_heads * @d_head
+    end
+    if ti == 6
+      return @d_ff
+    end
+    @d_model
+  end
+
+  def adapter_d_out(ti)
+    if ti == 0
+      return @n_heads * @d_head
+    end
+    if ti == 1 || ti == 2
+      return @n_kv * @d_head
+    end
+    if ti == 4 || ti == 5
+      return @d_ff
+    end
+    @d_model
+  end
+
+  # toy#218: allocates the adapter's A / B tensors (before the weights are
+  # finalized). The file is a llama.cpp LoRA GGUF: per adapted matrix
+  # `<name>.lora_a` (ne=[d_in, r]) and `<name>.lora_b` (ne=[r, d_out]),
+  # scaled by adapter.lora.alpha / r. Anything in it this graph cannot
+  # apply is an error, not skipped.
+  def adapter_alloc
+    @adapter_n = 0
+    if @adapter_path.length == 0
+      return 0
+    end
+    if !@fused
+      raise "adapter: needs the fused decode graph, which this model or configuration does not use"
+    end
+    h = TinyNN.tnn_gguf_load(@adapter_path)
+    n_all = TinyNN.tnn_gguf_n_tensors(h)
+    if n_all <= 0
+      raise "adapter: no tensors in " + @adapter_path
+    end
+    alpha = TinyNN.tnn_gguf_get_f32(h, "adapter.lora.alpha")
+    li = 0
+    while li < @n_layers
+      blk = @kv_blocks_ffi[li]
+      ti = 0
+      while ti < 7
+        nm = adapter_name(li, ti)
+        ia = TinyNN.tnn_gguf_find_index(h, nm + ".lora_a")
+        ib = TinyNN.tnn_gguf_find_index(h, nm + ".lora_b")
+        if ia >= 0 && ib >= 0
+          d_in  = TinyNN.tnn_gguf_tensor_ne(h, ia, 0)
+          r     = TinyNN.tnn_gguf_tensor_ne(h, ia, 1)
+          r_b   = TinyNN.tnn_gguf_tensor_ne(h, ib, 0)
+          d_out = TinyNN.tnn_gguf_tensor_ne(h, ib, 1)
+          if r != r_b || r <= 0 || d_in != adapter_d_in(ti) || d_out != adapter_d_out(ti)
+            raise "adapter: " + nm + " is " + d_in.to_s + " -> " + r.to_s + " / " + r_b.to_s +
+                  " -> " + d_out.to_s + ", the model's matrix is " + adapter_d_in(ti).to_s +
+                  " -> " + adapter_d_out(ti).to_s
+          end
+          blk.t_ad_a[ti]  = TinyNN.tnn_input_2d_f32_persistent(@sess, r, d_in)
+          blk.t_ad_b[ti]  = TinyNN.tnn_input_2d_f32_persistent(@sess, d_out, r)
+          blk.ad_rank[ti] = r
+          if alpha > 0.0
+            blk.ad_mul[ti] = alpha / r.to_f
+          end
+          @adapter_n = @adapter_n + 1
+        elsif ia >= 0 || ib >= 0
+          raise "adapter: " + nm + " has only one of lora_a / lora_b"
+        end
+        ti = ti + 1
+      end
+      li = li + 1
+    end
+    if @adapter_n * 2 != n_all
+      raise "adapter: " + n_all.to_s + " tensors in " + @adapter_path + ", " +
+            (@adapter_n * 2).to_s + " of them are lora_a / lora_b pairs on blk.N.{attn_q,attn_k," +
+            "attn_v,attn_output,ffn_gate,ffn_up,ffn_down}.weight; the rest cannot be applied"
+    end
+    @adapter_gguf = h
+    0
+  end
+
+  # Fills the adapter tensors (after the weights are finalized).
+  def adapter_load
+    if @adapter_n == 0
+      return 0
+    end
+    h = @adapter_gguf
+    li = 0
+    while li < @n_layers
+      blk = @kv_blocks_ffi[li]
+      ti = 0
+      while ti < 7
+        if blk.ad_rank[ti] > 0
+          nm = adapter_name(li, ti)
+          ia = TinyNN.tnn_gguf_find_index(h, nm + ".lora_a")
+          ib = TinyNN.tnn_gguf_find_index(h, nm + ".lora_b")
+          rc_a = TinyNN.tnn_gguf_copy_to_persistent(h, ia, @sess, blk.t_ad_a[ti])
+          rc_b = TinyNN.tnn_gguf_copy_to_persistent(h, ib, @sess, blk.t_ad_b[ti])
+          if rc_a != 0 || rc_b != 0
+            raise "adapter: reading " + nm + " failed (rc " + rc_a.to_s + " / " + rc_b.to_s + ")"
+          end
+        end
+        ti = ti + 1
+      end
+      li = li + 1
+    end
+    TinyNN.tnn_gguf_free(h)
+    @adapter_gguf = TinyNN.tnn_null_ptr
+    0
+  end
+
+  # t_out + gate * (alpha/r) * B (A t_in): the low-rank delta of target
+  # `ti` beside its matrix. t_gate is ne=[1, n_tok], each token's scale.
+  def ad_apply(t_out, t_in, blk, ti, t_gate)
+    if blk.ad_rank[ti] == 0
+      return t_out
+    end
+    t_d = TinyNN.tnn_matmul(@sess, blk.t_ad_a[ti], t_in)
+    t_d = TinyNN.tnn_matmul(@sess, blk.t_ad_b[ti], t_d)
+    if blk.ad_mul[ti] != 1.0
+      t_d = TinyNN.tnn_scale(@sess, t_d, blk.ad_mul[ti])
+    end
+    t_d = TinyNN.tnn_mul(@sess, t_d, t_gate)
+    TinyNN.tnn_add(@sess, t_out, t_d)
+  end
+
+  # A copy of the last n_out columns of the residual stream t_x, kept as a
+  # graph output so it can be read after the step.
+  def tap_columns(t_x, n_tok, n_out)
+    t_v = t_x
+    if n_tok > n_out
+      t_v = TinyNN.tnn_view_2d(@sess, t_x, @d_model, n_out, @d_model * 4,
+                                (n_tok - n_out) * @d_model * 4)
+    end
+    t_c = TinyNN.tnn_cont(@sess, t_v)
+    TinyNN.tnn_set_output(t_c)
+    TinyNN.tnn_add_to_graph(@sess, t_c)
+    t_c
+  end
+
+  # use_ad: apply the adapter, each token scaled by the t_ad input.
+  # tap_layers: residual-stream layers to keep for reading (0 = the
+  # embeddings, i = after block i), for the last n_out tokens.
+  def build_cells_step(n_tok, n_out, hi, cell0, use_mask, use_ad, tap_layers)
     pos     = cell0
     eps     = @rms_eps
     scale   = 1.0 / Math.sqrt(@d_head.to_f)
@@ -1503,10 +1695,23 @@ class SmolLM2KVFFICache
       # rows=n_tok, cols=hist -> ne=[hist, n_tok]
       t_mask = TinyNN.tnn_input_2d_f32(@sess, n_tok, hist)
     end
+    t_ad = TinyNN.tnn_null_ptr
+    if use_ad
+      t_ad = TinyNN.tnn_input_2d_f32(@sess, n_tok, 1)              # ne=[1, n_tok]
+    end
+    t_taps = [TinyNN.tnn_null_ptr]
+    t_taps.pop
 
     t_x = TinyNN.tnn_get_rows(@sess, @t_token_embed, t_token_id)   # [d_model, n_tok]
     if @embed_scale != 1.0
       t_x = TinyNN.tnn_scale(@sess, t_x, @embed_scale)
+    end
+    tl = 0
+    while tl < tap_layers.length
+      if tap_layers[tl] == 0
+        t_taps.push(tap_columns(t_x, n_tok, n_out))
+      end
+      tl = tl + 1
     end
 
     li = 0
@@ -1517,6 +1722,11 @@ class SmolLM2KVFFICache
       t_q = TinyNN.tnn_matmul(@sess, blk.t_w_q_full, t_h)          # [n_heads*d_head, n_tok]
       t_k = TinyNN.tnn_matmul(@sess, blk.t_w_k_full, t_h)          # [d_kv, n_tok]
       t_v = TinyNN.tnn_matmul(@sess, blk.t_w_v_full, t_h)          # [d_kv, n_tok]
+      if use_ad
+        t_q = ad_apply(t_q, t_h, blk, 0, t_ad)
+        t_k = ad_apply(t_k, t_h, blk, 1, t_ad)
+        t_v = ad_apply(t_v, t_h, blk, 2, t_ad)
+      end
       if @has_qkv_bias
         t_q = TinyNN.tnn_add(@sess, t_q, blk.t_b_q_full)
         t_k = TinyNN.tnn_add(@sess, t_k, blk.t_b_k_full)
@@ -1575,6 +1785,9 @@ class SmolLM2KVFFICache
       t_concat = TinyNN.tnn_cont_2d(@sess, t_hperm, @n_heads * d_head, n_tok)
 
       t_out_proj = TinyNN.tnn_matmul(@sess, blk.t_w_o, t_concat)
+      if use_ad
+        t_out_proj = ad_apply(t_out_proj, t_concat, blk, 3, t_ad)
+      end
       if @has_post_norms
         t_out_proj = TinyNN.tnn_rms_norm(@sess, t_out_proj, blk.t_post_attn_norm_gamma, eps)
       end
@@ -1583,13 +1796,27 @@ class SmolLM2KVFFICache
       t_h2    = TinyNN.tnn_rms_norm(@sess, t_x_attn, blk.t_rn2_gamma, eps)
       t_gate  = TinyNN.tnn_matmul(@sess, blk.t_w_gate, t_h2)
       t_up    = TinyNN.tnn_matmul(@sess, blk.t_w_up,   t_h2)
+      if use_ad
+        t_gate = ad_apply(t_gate, t_h2, blk, 4, t_ad)
+        t_up   = ad_apply(t_up,   t_h2, blk, 5, t_ad)
+      end
       t_silug = TinyNN.tnn_silu(@sess, t_gate)
       t_gated = TinyNN.tnn_mul(@sess, t_silug, t_up)
       t_dn    = TinyNN.tnn_matmul(@sess, blk.t_w_down, t_gated)
+      if use_ad
+        t_dn = ad_apply(t_dn, t_gated, blk, 6, t_ad)
+      end
       if @has_post_norms
         t_dn = TinyNN.tnn_rms_norm(@sess, t_dn, blk.t_post_ffn_norm_gamma, eps)
       end
       t_x = TinyNN.tnn_add(@sess, t_x_attn, t_dn)
+      tl = 0
+      while tl < tap_layers.length
+        if tap_layers[tl] == li + 1
+          t_taps.push(tap_columns(t_x, n_tok, n_out))
+        end
+        tl = tl + 1
+      end
       li = li + 1
     end
 
@@ -1613,6 +1840,8 @@ class SmolLM2KVFFICache
     res = SmolLM2KVStepResult.new(t_token_id, t_pos, t_kv_logits)
     res.t_mask = t_mask
     res.t_cells = t_cells
+    res.t_ad = t_ad
+    res.t_taps = t_taps
     res
   end
 
@@ -2267,13 +2496,16 @@ end
 # Init-param names deliberately differ from the ivar names — same
 # defensive pattern as GPT2KVStepResult.
 class SmolLM2KVStepResult
-  attr_accessor :t_token_id, :t_pos, :kv_step_logits, :t_mask, :t_cells
+  attr_accessor :t_token_id, :t_pos, :kv_step_logits, :t_mask, :t_cells, :t_ad, :t_taps
   def initialize(tok_ptr, pos_ptr, logits_ptr)
     @t_token_id     = tok_ptr
     @t_pos          = pos_ptr
     @kv_step_logits = logits_ptr
     @t_mask         = TinyNN.tnn_null_ptr   # causal mask input; batched fused steps only
     @t_cells        = TinyNN.tnn_null_ptr   # cache rows to write (toy#217); nil = contiguous
+    @t_ad           = TinyNN.tnn_null_ptr   # per-token adapter scale (toy#218); nil = no adapter
+    @t_taps         = [TinyNN.tnn_null_ptr] # hidden-state outputs, in layer order (toy#218)
+    @t_taps.pop
   end
 end
 
@@ -2429,8 +2661,13 @@ module SmolLM2KV
   # sequence (tok_owner) and shared-prefix length (tok_shared); see
   # tnn_upload_cell_mask. Returns the logits TENSOR of the last n_out
   # tokens (ne=[vocab, n_out]), valid until the next step is built.
+  #
+  # toy#218: `gates` is each token's adapter scale (empty = no adapter in
+  # this step); `tap_layers` (ascending, distinct) are residual-stream
+  # layers whose state for the last n_out tokens is left in
+  # kv_cache.last_taps, one ne=[d_model, n_out] tensor per layer.
   def self.decode_cells(kv_cache, ids, poss, cells, n_out, hi, use_mask,
-                        cell_owner, cell_pos, tok_owner, tok_shared)
+                        cell_owner, cell_pos, tok_owner, tok_shared, gates, tap_layers)
     n_tok = ids.length
     # Consecutive cells take the cpy-into-a-view write of build_fused_step.
     cell0 = cells[0]
@@ -2442,10 +2679,15 @@ module SmolLM2KV
       i = i + 1
     end
     TinyNN.tnn_reset_for_rebuild(kv_cache.sess)
-    step = kv_cache.build_cells_step(n_tok, n_out, hi, cell0, use_mask)
+    use_ad = gates.length > 0
+    step = kv_cache.build_cells_step(n_tok, n_out, hi, cell0, use_mask, use_ad, tap_layers)
     TinyNN.tnn_realize(kv_cache.sess, step.kv_step_logits)
     TinyNN.upload_int_array(kv_cache.sess, step.t_token_id, ids)
     TinyNN.upload_int_array(kv_cache.sess, step.t_pos,      poss)
+    if use_ad
+      TinyNN.tnn_upload_from_float_array(kv_cache.sess, step.t_ad, gates, n_tok)
+    end
+    kv_cache.last_taps = step.t_taps
     if cell0 < 0
       TinyNN.upload_int_array(kv_cache.sess, step.t_cells, cells)
     end

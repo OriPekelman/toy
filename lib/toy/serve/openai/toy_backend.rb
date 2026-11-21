@@ -138,7 +138,7 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
       if SERVE_TEST_FAULT_AT > 0 && token_ids.length == SERVE_TEST_FAULT_AT
         raise "injected test fault (SERVE_TEST_FAULT_AT)"
       end
-      slot_i = api_slot_wait(token_ids, n_new)
+      slot_i = api_slot_wait(token_ids, n_new, ad_request(body))
       slot = SLOTS[slot_i]
       slot.stop_strs = stops
       cached = slot.cached
@@ -305,6 +305,172 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
     n
   end
 
+  # toy#218: the adapter scale a request asks for: "lora_scale" when given,
+  # otherwise 1 (the adapter as loaded). Always 0 without an adapter.
+  def ad_request(body)
+    if @state.kv.adapter_n == 0
+      return 0.0
+    end
+    if body.length > 0 && SpinelKit::Json.has_key?(body, "lora_scale")
+      return SpinelKit::Json.get_float(body, "lora_scale")
+    end
+    1.0
+  end
+
+  # POST /v1/hidden (toy#218): the residual stream at the last token of a
+  # prompt. The prompt is `messages` (chat template applied, as in chat) or
+  # `prompt` (text or token ids, as in completions). `layers` lists what to
+  # return: 0 is the embedding output, i the stream after block i (the
+  # numbering of HF `output_hidden_states`); default every block, 1..L.
+  # `position` cuts the prompt after that token index first (negative
+  # counts from the end; default -1, the whole prompt). Nothing is
+  # generated. Returns the JSON reply in rep.text.
+  def serve_hidden(body)
+    rep = ToyReply.new
+    if !@state.kv.fused
+      return rep.fail(501, "not_supported",
+                      "hidden states need the fused decode graph, which this model or configuration does not use")
+    end
+    token_ids = [0]
+    token_ids.pop
+    if SpinelKit::Json.has_key?(body, "messages")
+      if !@state.tok.present
+        return rep.fail(400, "invalid_request_error",
+                        "messages need a GGUF with an embedded tokenizer; send prompt token ids")
+      end
+      token_ids = chat_prompt_ids(body)
+    else
+      pos = SpinelKit::Json.find_value_start(body, "prompt")
+      if pos >= 0 && pos < body.length && body[pos] == "\""
+        if !@state.tok.present
+          return rep.fail(400, "invalid_request_error",
+                          "a text prompt needs a GGUF with an embedded tokenizer; send token ids")
+        end
+        token_ids = @state.tok.encode(SpinelKit::Json.parse_str_value(body, pos))
+      else
+        token_ids = SpinelKit::Json.get_int_array(body, "prompt")
+      end
+    end
+    if token_ids.length == 0
+      return rep.fail(400, "invalid_request_error",
+                      "give messages, or prompt as a non-empty text or array of token ids")
+    end
+    at = token_ids.length - 1
+    if SpinelKit::Json.has_key?(body, "position")
+      at = SpinelKit::Json.get_int(body, "position")
+      if at < 0
+        at = token_ids.length + at
+      end
+      if at < 0 || at >= token_ids.length
+        return rep.fail(400, "invalid_request_error",
+                        "position is outside the prompt's " + token_ids.length.to_s + " tokens")
+      end
+      while token_ids.length > at + 1
+        token_ids.pop
+      end
+    end
+    n_layers = @state.cfg.n_layers
+    layers = [0]
+    layers.pop
+    if SpinelKit::Json.has_key?(body, "layers")
+      asked = SpinelKit::Json.get_int_array(body, "layers")
+      # Ascending and distinct, which is the order the reply uses.
+      lay = 0
+      while lay <= n_layers
+        i = 0
+        hit = false
+        while i < asked.length
+          if asked[i] == lay
+            hit = true
+          end
+          i = i + 1
+        end
+        if hit
+          layers.push(lay)
+        end
+        lay = lay + 1
+      end
+      i = 0
+      while i < asked.length
+        if asked[i] < 0 || asked[i] > n_layers
+          return rep.fail(400, "invalid_request_error",
+                          "layers are 0 (embeddings) to " + n_layers.to_s + " (after the last block)")
+        end
+        i = i + 1
+      end
+      if layers.length == 0
+        return rep.fail(400, "invalid_request_error", "layers must be a non-empty array of integers")
+      end
+    else
+      lay = 1
+      while lay <= n_layers
+        layers.push(lay)
+        lay = lay + 1
+      end
+    end
+    if fit_context(token_ids.length, 1) <= 0
+      return rep.fail(400, "context_length_exceeded",
+                      "the prompt is " + token_ids.length.to_s + " tokens and the context is " +
+                      MAX_T.to_s + " (start the server with --ctx N)")
+    end
+    scale = ad_request(body)
+    slot_i = -1
+    begin
+      t_start = TinyNN.tnn_events_now_seconds
+      slot_i = api_slot_wait(token_ids, 1, scale)
+      slot = SLOTS[slot_i]
+      slot.tap_layers = layers
+      api_slot_run(slot)
+      if slot.err.length > 0
+        raise slot.err
+      end
+      d = @state.cfg.d_model
+      if slot.hidden.length != layers.length * d
+        raise "hidden-state read returned " + slot.hidden.length.to_s + " values for " +
+              layers.length.to_s + " layers of " + d.to_s
+      end
+      t_end = TinyNN.tnn_events_now_seconds
+      emit_request_event(token_ids.length, 0, ((t_end - t_start) * 1.0e6).to_i, 0,
+                         slot.cached, slot_i, slot.shared_steps)
+      out = "{" + SpinelKit::Json.encode_pair_str("object", "hidden_states") + "," +
+            SpinelKit::Json.encode_pair_str("model", SpinelKit::Json.get_str(body, "model")) + "," +
+            "\"layers\":" + SpinelKit::Json.from_int_array(layers) + "," +
+            SpinelKit::Json.encode_pair_int("position", at) + "," +
+            SpinelKit::Json.encode_pair_int("prompt_tokens", token_ids.length) + "," +
+            SpinelKit::Json.encode_pair_int("d_model", d) + "," +
+            "\"lora_scale\":" + scale.to_s + "," +
+            "\"data\":["
+      li = 0
+      while li < layers.length
+        # One layer's row is built on its own: appending 3-4 thousand
+        # numbers to the whole reply would copy it each time.
+        row = "["
+        x = 0
+        while x < d
+          if x > 0
+            row = row + ","
+          end
+          row = row + slot.hidden[li * d + x].to_s
+          x = x + 1
+        end
+        if li > 0
+          out = out + ","
+        end
+        out = out + row + "]"
+        li = li + 1
+      end
+      rep.text = out + "]}"
+      rep.prompt_tokens = token_ids.length
+    rescue => e
+      puts "[openai_api_llama] request failed: " + e.message
+      rep.fail(500, "server_error", e.message)
+    end
+    if slot_i >= 0
+      api_slot_release(SLOTS[slot_i])
+    end
+    rep
+  end
+
   # Generate into `rep` with the request's options: stop strings and
   # log-probabilities (toy#216), the context check (toy#207), and one
   # request event. A Ruby exception becomes a 500 reply (toy#214).
@@ -328,7 +494,7 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
         raise "injected test fault (SERVE_TEST_FAULT_AT)"
       end
       t_start = TinyNN.tnn_events_now_seconds
-      slot_i = api_slot_wait(token_ids, n_new)
+      slot_i = api_slot_wait(token_ids, n_new, ad_request(body))
       slot = SLOTS[slot_i]
       slot.stop_strs = stops
       slot.lp_top    = top
@@ -464,7 +630,7 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
       raise "injected test fault (SERVE_TEST_FAULT_AT)"
     end
     t_start = TinyNN.tnn_events_now_seconds
-    slot = SLOTS[api_slot_wait(token_ids, n_new)]
+    slot = SLOTS[api_slot_wait(token_ids, n_new, ad_request(""))]
     api_slot_run(slot)
     api_slot_release(slot)
     if slot.err.length > 0
@@ -700,5 +866,22 @@ class ToyCompletionsHandler < Tep::Handler
       "}]," +
       rep.usage_json +
     "}"
+  end
+end
+
+# POST /v1/hidden (toy#218): see ToyBackend#serve_hidden.
+class ToyHiddenHandler < Tep::Handler
+  def initialize(backend)
+    @backend = backend
+  end
+
+  def handle(req, res)
+    res.headers["Content-Type"] = "application/json"
+    rep = @backend.serve_hidden(req.raw_body)
+    if rep.status != 200
+      res.set_status(rep.status)
+      return rep.error_json
+    end
+    rep.text
   end
 end
