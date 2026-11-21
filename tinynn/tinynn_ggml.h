@@ -320,6 +320,12 @@ void  *tnn_view_2d(void *sess, void *a, int ne0, int ne1, long nb1, long offset)
 void  *tnn_view_3d(void *sess, void *a, int ne0, int ne1, int ne2, long nb1, long nb2, long offset);
 void  *tnn_cont(void *sess, void *a);
 int    tnn_upload_causal_mask(void *sess, void *tensor, int hist, int n_tok, int pos0);
+int    tnn_logits_pick(void *sess, void *tensor, int n_rows, int vocab, int top,
+                       long *out_best, double *out_lp, long *out_alt_ids, double *out_alt_lps);
+int    tnn_upload_cell_mask(void *sess, void *tensor, int hi, int n_tok,
+                            const long *cell_owner, const long *cell_pos,
+                            const long *tok_owner, const long *tok_pos,
+                            const long *tok_shared);
 void  *tnn_cpy(void *sess, void *a, void *b);
 
 /* Reshape a contiguous tensor to a new shape with the same total

@@ -1256,6 +1256,42 @@ int tnn_upload_causal_mask(void *sess, void *tensor, int hist, int n_tok, int po
     return 0;
 }
 
+/* toy#217 — fill + upload the visibility mask of a step over a shared pool
+ * of KV cells. `tensor` is F32 ne=[hi, n_tok]: column t is token t, row c is
+ * cache cell c. A cell is visible to a token (0, otherwise -inf) when
+ *   - it belongs to the token's sequence and holds a position <= the
+ *     token's (cell_owner[c] == tok_owner[t] && cell_pos[c] <= tok_pos[t]), or
+ *   - it is a shared-prefix cell (cell_owner[c] == -1) below the number of
+ *     prefix positions the token's sequence starts with
+ *     (cell_pos[c] < tok_shared[t]).
+ * Free cells carry owner -2 and are visible to nobody. Returns 0, or
+ * negative on bad args. */
+int tnn_upload_cell_mask(void *sess, void *tensor, int hi, int n_tok,
+                         const long *cell_owner, const long *cell_pos,
+                         const long *tok_owner, const long *tok_pos,
+                         const long *tok_shared)
+{
+    if (!sess || !tensor || !cell_owner || !cell_pos || !tok_owner || !tok_pos || !tok_shared) return -1;
+    struct ggml_tensor *t = (struct ggml_tensor *)tensor;
+    if (hi <= 0 || n_tok <= 0) return -2;
+    if (t->type != GGML_TYPE_F32 || t->ne[0] != hi || t->ne[1] != n_tok) return -3;
+    size_t n = (size_t)hi * (size_t)n_tok;
+    float *buf = (float *)malloc(n * sizeof(float));
+    if (!buf) return -4;
+    for (int i = 0; i < n_tok; i++) {
+        float *col = buf + (size_t)i * (size_t)hi;
+        long own = tok_owner[i], pos = tok_pos[i], sh = tok_shared[i];
+        for (int c = 0; c < hi; c++) {
+            long o = cell_owner[c];
+            int vis = (o == own && cell_pos[c] <= pos) || (o == -1 && cell_pos[c] < sh);
+            col[c] = vis ? 0.0f : -INFINITY;
+        }
+    }
+    ggml_backend_tensor_set(t, buf, 0, n * sizeof(float));
+    free(buf);
+    return 0;
+}
+
 /* Reshape a contiguous tensor to (ne0, ne1, ne2). The total element
  * count must match. Used by the sequence-mode forward (M3) to lift
  * Q/K from ne=[d_head, T] to ne=[d_head, 1, T] before ggml_rope_ext —
@@ -2543,6 +2579,100 @@ int tnn_download(void *sess, void *tensor)
         }
     }
     tnn_trace_end("download", _t);
+    return 0;
+}
+
+/* toy#217 — greedy pick (and log-probabilities) from a logits tensor of
+ * ne=[vocab, n_rows], one row per sequence in a batched decode step, read
+ * straight from the backend instead of through a (rows, vocab) Mat.
+ *   out_best[r]   argmax of row r (the first of equal maxima)
+ * and when top >= 0:
+ *   out_lp[r]                   log-probability of that id
+ *   out_alt_ids[r*top + k]      the k-th most likely id of row r (-1 when
+ *   out_alt_lps[r*top + k]      the vocabulary is smaller than top), and its
+ *                               log-probability
+ * Arithmetic is in double over the f32 logits, one pass per row: the
+ * log-sum-exp relative to the maximum, and an insertion sort for the top
+ * entries. Returns 0, or negative on bad args. */
+int tnn_logits_pick(void *sess, void *tensor, int n_rows, int vocab, int top,
+                    long *out_best, double *out_lp, long *out_alt_ids, double *out_alt_lps)
+{
+    if (!sess || !tensor || !out_best) return -1;
+    struct ggml_tensor *t = (struct ggml_tensor *)tensor;
+    if (n_rows <= 0 || vocab <= 0) return -2;
+    if (t->type != GGML_TYPE_F32 || ggml_nelements(t) != (int64_t)n_rows * (int64_t)vocab) return -3;
+    if (top >= 0 && (!out_lp || (top > 0 && (!out_alt_ids || !out_alt_lps)))) return -1;
+    if (top > 64) return -2;
+    size_t n = (size_t)n_rows * (size_t)vocab;
+    /* One buffer, kept and grown: a fresh 16+ MiB allocation per step is
+     * newly mapped memory every time, and the backend's copy into it then
+     * costs ~130 ms instead of ~10 (measured on CUDA at 27+ rows of a
+     * 151k vocabulary). */
+    static float *buf = NULL;
+    static size_t buf_n = 0;
+    if (n > buf_n) {
+        free(buf);
+        buf = (float *)malloc(n * sizeof(float));
+        if (!buf) { buf_n = 0; return -4; }
+        memset(buf, 0, n * sizeof(float));
+        buf_n = n;
+    }
+    int64_t sp0 = (tnn_sp_on() && g_sp_dl_pending) ? tnn_sp_now() : 0;
+    ggml_backend_tensor_get(t, buf, 0, n * sizeof(float));
+    for (int r = 0; r < n_rows; r++) {
+        const float *row = buf + (size_t)r * (size_t)vocab;
+        int best = 0;
+        float bv = row[0];
+        for (int i = 1; i < vocab; i++) {
+            if (row[i] > bv) { bv = row[i]; best = i; }
+        }
+        out_best[r] = best;
+        if (top < 0) continue;
+        double mx = (double)bv, sum = 0.0;
+        long   ids[64];
+        double vals[64];
+        int    cnt = 0;
+        for (int i = 0; i < vocab; i++) {
+            double v = (double)row[i];
+            sum += exp(v - mx);
+            if (top > 0 && (cnt < top || v > vals[cnt - 1])) {
+                int k;
+                if (cnt < top) { k = cnt; cnt++; } else { k = top - 1; }
+                ids[k] = i; vals[k] = v;
+                while (k > 0 && vals[k] > vals[k - 1]) {
+                    double tv = vals[k]; vals[k] = vals[k - 1]; vals[k - 1] = tv;
+                    long   ti = ids[k];  ids[k]  = ids[k - 1];  ids[k - 1]  = ti;
+                    k--;
+                }
+            }
+        }
+        double lse = mx + log(sum);
+        out_lp[r] = mx - lse;
+        for (int k = 0; k < top; k++) {
+            if (k < cnt) {
+                out_alt_ids[(size_t)r * top + k] = ids[k];
+                out_alt_lps[(size_t)r * top + k] = vals[k] - lse;
+            } else {
+                out_alt_ids[(size_t)r * top + k] = -1;
+                out_alt_lps[(size_t)r * top + k] = 0.0;
+            }
+        }
+    }
+    if (sp0) {
+        /* TNN_STEP_PROFILE: this read closes the step, as tnn_download does;
+         * "dl" then includes the pick. */
+        g_sp_cur[5] = tnn_sp_now() - sp0;
+        g_sp_dl_pending = 0;
+        g_sp_steps++;
+        g_sp_build += g_sp_cur[0]; g_sp_expand += g_sp_cur[1]; g_sp_alloc += g_sp_cur[2];
+        g_sp_compute += g_sp_cur[3]; g_sp_sync += g_sp_cur[4]; g_sp_dl += g_sp_cur[5];
+        if (g_sp_mode == 2) {
+            fprintf(stderr, "[tnn-step] %lld build=%.2f expand=%.2f alloc=%.2f compute=%.2f sync=%.2f dl=%.2f\n",
+                    (long long)g_sp_steps, g_sp_cur[0] / 1000.0, g_sp_cur[1] / 1000.0,
+                    g_sp_cur[2] / 1000.0, g_sp_cur[3] / 1000.0, g_sp_cur[4] / 1000.0,
+                    g_sp_cur[5] / 1000.0);
+        }
+    }
     return 0;
 }
 

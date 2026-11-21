@@ -118,6 +118,7 @@ module Toy
                   { name: "--ctx", desc: "context length in tokens (default: the model's, clamped to [256, 4096])" },
                   { name: "--device", desc: "cpu (default) | cuda" },
                   { name: "--stop-ids", desc: "extra end-of-generation token ids, comma-separated" },
+                  { name: "--slots", desc: "requests decoded at the same time, 1-64 (default 1)" },
                   { name: "--prefix-file", desc: "system message every request starts with; evaluated once at boot" },
                   { name: "--prefix-cache", desc: "KV prefix file: restored at boot, or built from --prefix-file and saved" }]
         },
@@ -131,7 +132,8 @@ module Toy
                   { name: "--device", desc: "cpu (default) | cuda" },
                   { name: "--ctx", desc: "context length in tokens (default: the model's, clamped to [256, 4096])" },
                   { name: "--port", desc: "default TCP port of the artifact (default 4567)" },
-                  { name: "--stop-ids", desc: "extra end-of-generation token ids, comma-separated" }]
+                  { name: "--stop-ids", desc: "extra end-of-generation token ids, comma-separated" },
+                  { name: "--slots", desc: "requests decoded at the same time, 1-64 (default 1)" }]
         }
       }.freeze
 

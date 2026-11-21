@@ -15,6 +15,8 @@
 #                to [256, 4096]; `toy serve --ctx N` sets it — toy#207)
 #   STOP_IDS     extra end-of-generation token ids, comma-separated
 #                (`toy serve --stop-ids`; toy#209)
+#   SLOTS        requests decoded at the same time (`toy serve --slots`;
+#                default 1; toy#217)
 #   PORT         TCP port to bind (NEW -- replaces the old ARGV -p parse;
 #                `toy serve` owns the CLI UX now). Default 4567.
 #
@@ -136,7 +138,11 @@ Tep.post "/v1/embeddings",       Tep::Llm::OpenAI::EmbeddingsHandler.new
 # not quiet (the child streams its boot chatter so `toy serve` users see
 # progress). Tep.run! blocks until SIGINT/SIGTERM. SERVE_PORT is hoisted
 # above the run_start emit (its value feeds config.port).
-Tep.run!(SERVE_PORT, 1, false)
+# toy#217: with more than one slot the server is tep's fiber-per-connection
+# one (still one process), so several requests are in their handlers at once
+# and their slots decode as one batch; a handler yields between decode steps
+# (api_yield). One slot keeps the blocking server.
+Tep.run!(SERVE_PORT, 1, false, SERVE_SLOTS > 1)
 
 # ============================================================================
 # LOUD KNOWN GAP — run_end is NOT reliably emitted on shutdown.  (NOT masked.)

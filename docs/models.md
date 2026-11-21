@@ -254,6 +254,11 @@ attention (Gemma 2), OLMoE/Granite-style QK-norm, per-head checkpoints
 written by `toy train`, legacy-layout GGUFs, LoRA adapters, and
 `KV_Q8=1` / `FLASH_ATTN=1`.
 
+`toy serve --slots N` (several requests decoded as one batch, toy#217) is
+built on the fused graph: its K/V tensors become a pool of cells shared by
+all requests, and a per-step mask says which cells each token may attend.
+Models on the per-head graph serve one request at a time.
+
 Fused and per-head give the same token ids on the fixtures the gate runs
 (`make gate-decode-fused`, `gate-decode-fused-cuda`). They are not
 bit-identical in general: the order of floating-point operations differs,

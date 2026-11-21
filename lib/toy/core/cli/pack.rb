@@ -1,4 +1,4 @@
-# lib/toy/core/cli/pack.rb — `toy pack <model.gguf> -o <artifact> [--prefix F] [--name NAME] [--device cpu|cuda] [--ctx N] [--port N] [--stop-ids N,M]`.
+# lib/toy/core/cli/pack.rb — `toy pack <model.gguf> -o <artifact> [--prefix F] [--name NAME] [--device cpu|cuda] [--ctx N] [--port N] [--stop-ids N,M] [--slots N]`.
 #
 # Builds ONE executable that carries the model, its tokenizer (inside the
 # GGUF), a fixed serve config, a description, and optionally a precomputed
@@ -50,6 +50,7 @@ module Toy
           @ctx = nil
           @port = DEFAULT_PORT
           @stop_ids = nil
+          @slots = nil
         end
 
         def run
@@ -82,7 +83,7 @@ module Toy
               $stderr.puts "toy pack: evaluating the prefix on #{@device}..."
               env = { "MODEL_PATH" => model, "MODEL_NAME" => name, "PREFIX_FILE" => prefix,
                       "PREFIX_CACHE" => kv, "SERVE_BOOT_ONLY" => "1",
-                      "KV_FUSED" => nil, "KV_BATCH" => nil, "KV_REUSE" => nil,
+                      "KV_FUSED" => nil, "KV_BATCH" => nil, "KV_REUSE" => nil, "SLOTS" => nil,
                       "TOY_RUN_DIR" => nil, "TAO_RUN_DIR" => nil, "STOP_IDS" => @stop_ids }
               env["MAX_T"] = @ctx ? @ctx.to_s : nil
               log, st = Open3.capture2e(env, runner)
@@ -96,6 +97,7 @@ module Toy
             config = +"MODEL_NAME=#{name}\nPORT=#{@port}\nDEVICE=#{@device}\n"
             config << "MAX_T=#{@ctx}\n" if @ctx
             config << "STOP_IDS=#{@stop_ids}\n" if @stop_ids
+            config << "SLOTS=#{@slots}\n" if @slots
             $stderr.puts "toy pack: hashing the model..."
             describe = describe_text(root, model, name, runner, target, prefix, prefix_tokens, config)
 
@@ -264,6 +266,10 @@ module Toy
               v = take.call(tok)
               return bad_arg("--stop-ids must be comma-separated token ids, got #{v.inspect}") unless v =~ /\A\d+(,\d+)*\z/
               @stop_ids = v
+            when "--slots"
+              v = take.call(tok)
+              return bad_arg("--slots must be an integer from 1 to 64, got #{v.inspect}") unless v =~ /\A\d+\z/ && (1..64).cover?(v.to_i)
+              @slots = v.to_i
             when /\A-/ then return bad_arg("unknown flag #{tok.inspect}")
             else rest << tok
             end

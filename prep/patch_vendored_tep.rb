@@ -27,6 +27,16 @@
 #            default, had "été" reach the model as "?t?" (toy#215). The
 #            escape is now decoded to UTF-8, surrogate pairs included.
 #
+#   fairtick Tep::Scheduler.tick resumes the ready fiber with the smallest
+#            wake_at and breaks ties by the lowest index. wake_at is in
+#            whole seconds, so a fiber that yields with pause(0) ties with
+#            every other ready fiber and, having the lowest index, is
+#            resumed again and again until the second changes: the others
+#            (a connection with a request waiting, a stream with tokens to
+#            send) wait up to a second. Ties now go round-robin, starting
+#            after the fiber resumed last (toy#217: several requests
+#            decoding as one batch yield after every step; tep#291).
+#
 # Run by `make vendor-tep` after the vendor step; vendor/ is gitignored, so
 # without this every re-vendor silently loses the fixes. Each edit is exact
 # text: already fixed -> left alone; original text -> replaced; neither ->
@@ -79,6 +89,23 @@ EDITS = [
   ["seedfd", "tep.rb",
    "_tep_seed_ws_drv = Tep::WebSocket::Driver.new(0)",
    "_tep_seed_ws_drv = Tep::WebSocket::Driver.new(-1)"],
+  ["fairtick", "tep/app.rb",
+   "    attr_accessor :sched_fibers, :sched_wake_at, :sched_current\n",
+   "    attr_accessor :sched_fibers, :sched_wake_at, :sched_current, :sched_last\n"],
+  ["fairtick", "tep/app.rb",
+   "      @sched_current  = -1               # currently-running fiber idx\n",
+   "      @sched_last     = -1               # fiber idx resumed last (round-robin ties)\n" \
+   "      @sched_current  = -1               # currently-running fiber idx\n"],
+  ["fairtick", "tep/scheduler.rb",
+   "        if Tep::APP.sched_fibers[i].f.alive? && Tep::APP.sched_wake_at[i] <= now\n" \
+   "          if best < 0 || Tep::APP.sched_wake_at[i] < Tep::APP.sched_wake_at[best]\n            best = i\n",
+   "        if Tep::APP.sched_fibers[i].f.alive? && Tep::APP.sched_wake_at[i] <= now\n" \
+   "          if best < 0 || Tep::APP.sched_wake_at[i] < Tep::APP.sched_wake_at[best] ||\n" \
+   "             (Tep::APP.sched_wake_at[i] == Tep::APP.sched_wake_at[best] &&\n" \
+   "              best <= Tep::APP.sched_last && i > Tep::APP.sched_last)\n            best = i\n"],
+  ["fairtick", "tep/scheduler.rb",
+   "      Tep::APP.sched_current = best\n      Tep::APP.sched_wake_at[best] = -1\n",
+   "      Tep::APP.sched_current = best\n      Tep::APP.sched_last    = best\n      Tep::APP.sched_wake_at[best] = -1\n"],
   ["jsonu", "spinel_kit/json_decoder.rb",
    JSONU_FROM,
    JSONU_TO],

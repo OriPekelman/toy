@@ -29,8 +29,8 @@
 #   - CONSTANT-held STATE (so Spinel emits a typed slot)
 #   - explicit STATE.model_name re-assign AFTER STATE.new
 #   - rindex-based basename derivation (the rindex landmine workaround)
-# Greedy api_generate_ids: pure argmax, first-max-wins, NO rand/seed/
-# temperature -- CONFIRMED deterministic (this is what the HTTP gate
+# Greedy decode (api_pump / tnn_logits_pick): pure argmax, first-max-wins,
+# NO rand/seed/temperature -- CONFIRMED deterministic (this is what the HTTP gate
 # reproduces byte-for-byte).
 
 # GH#188 -- model selection via env. Defaults to SmolLM2-135M for a
@@ -61,7 +61,8 @@ PACK_ON = TinyNN.tnn_pack_count > 0 && TinyNN.tnn_pack_has("model") == 1
 # Reads the pack's command line. Returns the --port value ("" when not
 # given); --describe and --help print and exit here, before any model load.
 def api_pack_args
-  port = ""
+  port  = ""
+  slots = ""
   i = 0
   while i < ARGV.length
     a = ARGV[i]
@@ -69,14 +70,22 @@ def api_pack_args
       puts TinyNN.tnn_pack_text("describe")
       exit 0
     elsif a == "--help" || a == "-h"
-      puts "usage: " + TinyNN.tnn_pack_cfg("MODEL_NAME") + " [--port N] | --describe"
+      puts "usage: " + TinyNN.tnn_pack_cfg("MODEL_NAME") + " [--port N] [--slots N] | --describe"
       puts "  Serves the packed model over an OpenAI-compatible HTTP API."
       puts "  Port: --port, else PORT, else the packed default."
+      puts "  Requests decoded at the same time: --slots, else SLOTS, else the packed default."
       exit 0
     elsif a == "--port" && i + 1 < ARGV.length
       port = ARGV[i + 1]
       if port.to_i.to_s != port || port.to_i < 1 || port.to_i > 65535
         puts "not a TCP port: " + port
+        exit 2
+      end
+      i = i + 1
+    elsif a == "--slots" && i + 1 < ARGV.length
+      slots = ARGV[i + 1]
+      if slots.to_i.to_s != slots || slots.to_i < 1
+        puts "not a number of slots: " + slots
         exit 2
       end
       i = i + 1
@@ -86,9 +95,11 @@ def api_pack_args
     end
     i = i + 1
   end
-  port
+  [port, slots]
 end
-PACK_PORT_ARG = PACK_ON ? api_pack_args : ""
+PACK_ARGS      = PACK_ON ? api_pack_args : ["", ""]
+PACK_PORT_ARG  = PACK_ARGS[0]
+PACK_SLOTS_ARG = PACK_ARGS[1]
 
 # A setting of the serve contract: the pack's config in a pack, otherwise
 # the environment `toy serve` controls.
@@ -138,6 +149,29 @@ MAX_T      = GGUFLoad.resolve_ctx(GGUF_PATH, api_setting("MAX_T"), "toy-serve")
 PREFIX_FILE  = PACK_ON ? "" : (ENV["PREFIX_FILE"] || "")
 PREFIX_CACHE = PACK_ON ? (TinyNN.tnn_pack_has("kv") == 1 ? "@pack:kv" : "") : (ENV["PREFIX_CACHE"] || "")
 KV_REUSE_OFF = (ENV["KV_REUSE"] || "") == "0"
+# toy#217: how many requests are decoded at the same time (`toy serve
+# --slots N`; in a pack --slots, then SLOTS, then the packed default).
+# 1 serves one request at a time, as before.
+SLOTS_MAX = 64
+def api_slots_setting
+  v = PACK_SLOTS_ARG
+  if v.length == 0
+    v = ENV["SLOTS"] || ""
+  end
+  if v.length == 0 && PACK_ON
+    v = TinyNN.tnn_pack_cfg("SLOTS")
+  end
+  if v.length == 0
+    return 1
+  end
+  n = v.to_i
+  if n.to_s != v || n < 1 || n > SLOTS_MAX
+    puts "[openai_api_llama] SLOTS must be a number from 1 to " + SLOTS_MAX.to_s + ": " + v
+    exit 1
+  end
+  n
+end
+SERVE_SLOTS = api_slots_setting
 # Test hook for the request-failure path (prep/serve_chat_gate.rb): a
 # request whose prompt is exactly this many tokens raises inside generation.
 # 0 (the default) never matches.
@@ -154,26 +188,20 @@ class State
   # so Spinel emits a typed slot; NO new polymorphic accessor (landmine #16).
   # toy#209: :tok is the GGUF's embedded tokenizer (present == false when
   # the file has none: the server then stays ids-only). :stop_ids are the
-  # end-of-generation token ids, :chat_family the template family, and
-  # :finish the finish_reason of the LAST generation ("stop" | "length").
+  # end-of-generation token ids and :chat_family the template family.
   attr_accessor :cfg, :kv, :gguf, :model_name, :ready, :req_seq
-  attr_accessor :tok, :stop_ids, :chat_family, :finish
-  # toy#210: :kv_ids are the token ids whose K/V rows are currently in the
-  # cache (row i holds token kv_ids[i]); :cached is how many of them the
-  # LAST request reused instead of re-evaluating; :model_fp fingerprints
-  # the GGUF for the KV prefix file.
-  attr_accessor :kv_ids, :cached, :model_fp
-  # toy#216, per-request generation options and their results (set by the
-  # backend before a generation, reset after it):
-  #   :lp_top     -1 = no log-probabilities; n >= 0 = record the chosen
-  #               token's log-probability and the n most likely tokens
-  #   :lp_tok     log-probability of each token picked (one per argmax)
-  #   :lp_alt_ids / :lp_alt_lps   the n most likely ids / their
-  #               log-probabilities, n entries per argmax, best first
-  #   :stop_strs  strings that end the reply when they appear in its text
-  #   :stop_cut   byte offset in the decoded reply where a stop string
-  #               began (-1: none matched)
-  attr_accessor :lp_top, :lp_tok, :lp_alt_ids, :lp_alt_lps, :stop_strs, :stop_cut
+  attr_accessor :tok, :stop_ids, :chat_family
+  # toy#210: :kv_ids are the token ids of the SHARED PREFIX: the K/V rows
+  # evaluated or restored at boot, cache cells 0 .. kv_ids.length-1, which
+  # every request that starts with those ids reads instead of evaluating
+  # them. :model_fp fingerprints the GGUF for the KV prefix file.
+  attr_accessor :kv_ids, :model_fp
+  # toy#217, the cell pool. The K/V tensors hold :n_cells cells; cell c
+  # holds position :cell_pos[c] of the sequence :cell_owner[c] (a slot
+  # index; -1 = the shared prefix; -2 = free). :cell_hi is one past the
+  # highest cell in use, :cell_lo a lower bound on the lowest free one.
+  # :step_seq counts decode steps (api_pump).
+  attr_accessor :n_cells, :cell_owner, :cell_pos, :cell_hi, :cell_lo, :step_seq
   def initialize
     @cfg  = nil
     @kv   = nil
@@ -185,21 +213,17 @@ class State
     @stop_ids    = [0]
     @stop_ids.pop
     @chat_family = "chatml"
-    @finish      = "length"
     @kv_ids      = [0]
     @kv_ids.pop
-    @cached      = 0
     @model_fp    = ""
-    @lp_top      = -1
-    @lp_tok      = [0.0]
-    @lp_tok.pop
-    @lp_alt_ids  = [0]
-    @lp_alt_ids.pop
-    @lp_alt_lps  = [0.0]
-    @lp_alt_lps.pop
-    @stop_strs   = [""]
-    @stop_strs.pop
-    @stop_cut    = -1
+    @n_cells     = 0
+    @cell_owner  = [0]
+    @cell_owner.pop
+    @cell_pos    = [0]
+    @cell_pos.pop
+    @cell_hi     = 0
+    @cell_lo     = 0
+    @step_seq    = 0
   end
 end
 STATE = State.new
@@ -420,7 +444,20 @@ end
 if (ENV["KV_BATCH"] || "").to_i > 0
   STATE.kv.batch_max = (ENV["KV_BATCH"] || "").to_i
 end
+# toy#217: a full context of cells per slot, plus one more when a boot
+# prefix is configured (its cells are shared and never given to a slot, and
+# it is shorter than the context).
+STATE.kv.kv_cells = MAX_T * SERVE_SLOTS
+if PREFIX_FILE.length > 0 || PREFIX_CACHE.length > 0
+  STATE.kv.kv_cells = STATE.kv.kv_cells + MAX_T
+end
 STATE.gguf = STATE.kv.realize_and_load_auto(GGUF_PATH, MAX_T, STATE.cfg, flags)
+if SERVE_SLOTS > 1 && !STATE.kv.fused
+  puts "[openai_api_llama] --slots " + SERVE_SLOTS.to_s + " needs the fused decode graph, which this " +
+       "model or configuration does not use (MoE, MLA, a quantized KV cache, KV_FUSED=0, ...); " +
+       "start with one slot"
+  exit 1
+end
 
 # toy#209: the embedded tokenizer, when the GGUF has one. It gives text
 # out (/v1/completions `text`), chat (/v1/chat/completions) and the stop
@@ -579,6 +616,27 @@ if !_restored && _prefix_ids.length > 0
   end
 end
 
+# ---- Cell pool and slots (toy#217) ----
+# The boot prefix holds cells 0 .. P-1 as the shared sequence (owner -1);
+# everything else is free.
+STATE.n_cells = STATE.kv.fused ? STATE.kv.kv_cells : MAX_T
+_ci = 0
+while _ci < STATE.n_cells
+  if _ci < STATE.kv_ids.length
+    STATE.cell_owner.push(-1)
+    STATE.cell_pos.push(_ci)
+  else
+    STATE.cell_owner.push(-2)
+    STATE.cell_pos.push(0)
+  end
+  _ci = _ci + 1
+end
+STATE.cell_hi = STATE.kv_ids.length
+STATE.cell_lo = STATE.kv_ids.length
+if SERVE_SLOTS > 1
+  puts "[openai_api_llama] slots: " + SERVE_SLOTS.to_s + " (" + STATE.n_cells.to_s + " cache cells)"
+end
+
 STATE.ready = true
 
 # SERVE_BOOT_ONLY=1: load, build and save the KV prefix, then exit without
@@ -599,77 +657,6 @@ def api_gen_id(prefix)
   t = Time.now
   v = (t.to_i * 1_000_003) ^ ((t.to_f - t.to_i).to_f * 1.0e9).to_i
   prefix + "-" + v.to_s
-end
-
-# Greedy generation from a pre-tokenized prompt. KV-cache decode:
-# prefill the prompt (batched, toy#206), then sample greedily for
-# `n_new` more steps. Returns Array<Int> of the new token IDs (does
-# NOT include the prompt).
-#
-# The cache's t_K / t_V tensors are persistent; rows a prompt shares with
-# what is already cached are kept (toy#210, api_first_id) and the rest are
-# overwritten in place.
-def api_argmax(logits, vocab)
-  best_idx = 0
-  best_val = logits.flat[0]
-  v_iter = 1
-  while v_iter < vocab
-    val = logits.flat[v_iter]
-    if val > best_val; best_val = val; best_idx = v_iter; end
-    v_iter = v_iter + 1
-  end
-  best_idx
-end
-
-# toy#216: log-probabilities of one decode step. Appends to STATE.lp_tok the
-# log-probability of `best` (the id just picked) and to STATE.lp_alt_ids /
-# lp_alt_lps the STATE.lp_top most likely ids, best first. One pass over
-# the logits: the log-sum-exp for the normaliser and a small insertion sort
-# for the top entries.
-def api_record_lp(logits, vocab, best)
-  top = STATE.lp_top
-  mx = logits.flat[best]
-  sum = 0.0
-  ids = [0]
-  ids.pop
-  vals = [0.0]
-  vals.pop
-  i = 0
-  while i < vocab
-    v = logits.flat[i]
-    sum = sum + Math.exp(v - mx)
-    if top > 0 && (ids.length < top || v > vals[ids.length - 1])
-      k = ids.length
-      if k < top
-        ids.push(i)
-        vals.push(v)
-      else
-        k = top - 1
-        ids[k] = i
-        vals[k] = v
-      end
-      while k > 0 && vals[k] > vals[k - 1]
-        tv = vals[k]; vals[k] = vals[k - 1]; vals[k - 1] = tv
-        ti = ids[k];  ids[k] = ids[k - 1];   ids[k - 1] = ti
-        k = k - 1
-      end
-    end
-    i = i + 1
-  end
-  lse = mx + Math.log(sum)
-  STATE.lp_tok.push(mx - lse)
-  k = 0
-  while k < top
-    if k < ids.length
-      STATE.lp_alt_ids.push(ids[k])
-      STATE.lp_alt_lps.push(vals[k] - lse)
-    else
-      STATE.lp_alt_ids.push(-1)
-      STATE.lp_alt_lps.push(0.0)
-    end
-    k = k + 1
-  end
-  0
 end
 
 # A request field that is one string or an array of strings (OpenAI's
@@ -773,13 +760,13 @@ def api_byte_find(hay, needle)
   -1
 end
 
-# Earliest byte offset in `text` where one of STATE.stop_strs begins; -1
-# when none is there.
-def api_stop_cut(text)
+# Earliest byte offset in `text` where one of `strs` begins; -1 when none
+# is there.
+def api_stop_cut(text, strs)
   cut = -1
   i = 0
-  while i < STATE.stop_strs.length
-    at = api_byte_find(text, STATE.stop_strs[i])
+  while i < strs.length
+    at = api_byte_find(text, strs[i])
     if at >= 0 && (cut < 0 || at < cut)
       cut = at
     end
@@ -788,100 +775,508 @@ def api_stop_cut(text)
   cut
 end
 
-# Prefill the prompt; returns the FIRST generated token id.
+# ---- Slots (toy#217) ----
 #
-# toy#210: the K/V rows of the longest prefix this prompt shares with what
-# is already in the cache (the previous request, or a restored prefix file)
-# are kept, and evaluation starts after them. The last prompt token is
-# always evaluated, since its logits are what the caller needs. The result
-# is the same ids as a full prefill: the kept rows are the rows a full
-# prefill would write.
-def api_first_id(prompt_ids)
-  vocab = STATE.cfg.vocab
-  lcp = 0
-  lim = STATE.kv_ids.length
-  if prompt_ids.length < lim
-    lim = prompt_ids.length
+# A SLOT is one sequence being decoded: the request it serves and the cache
+# cells that hold its K/V rows. Every slot shares one pool of cells (the
+# fused cache's K/V tensors); a decode step (api_pump) carries the pending
+# tokens of ALL busy slots through one graph, and the visibility mask keeps
+# each token to the cells of its own sequence and of the shared prefix. So
+# N requests cost one graph evaluation per token position, not N.
+#
+# A slot keeps its cells after its request ends: the next request that
+# starts with the same ids reuses them (toy#210). A request takes the idle
+# slot whose cached ids share the longest prefix with its prompt.
+#
+# Per-head caches (MoE, MLA, quantized KV, ...) have one slot, and there a
+# cell is a position: the step is the per-head decode, one token at a time.
+class Slot
+  # :busy      a request holds the slot
+  # :seq_ids   ids whose K/V rows are cached for this slot, by position
+  # :shared_n  how many leading positions are the shared prefix's cells
+  # :cells     the cell of each later position (cells[i] holds position
+  #            shared_n + i)
+  attr_accessor :idx, :busy, :seq_ids, :shared_n, :cells
+  # The request:
+  #   :prompt_ids / :fed   the prompt, and how many of its ids are cached
+  #   :n_new      most tokens to generate
+  #   :out_ids    generated so far (a stop id is not included)
+  #   :next_id    the id to feed in the next step (generation phase)
+  #   :phase      0 = evaluating the prompt, 1 = generating, 2 = done
+  #   :finish     "stop" | "length"
+  #   :cached     prompt positions reused instead of evaluated
+  #   :err        why the request failed ("" = it did not)
+  #   :seen       the last decode step this request's handler looked at
+  #   :shared_steps  decode steps this request shared with another one
+  attr_accessor :prompt_ids, :fed, :n_new, :out_ids, :next_id, :phase
+  attr_accessor :finish, :cached, :err, :seen, :shared_steps, :step_mark
+  # toy#216, per-request options and their results:
+  #   :lp_top     -1 = no log-probabilities; n >= 0 = record each picked
+  #               token's log-probability and the n most likely tokens
+  #   :lp_tok     log-probability of each token picked
+  #   :lp_alt_ids / :lp_alt_lps   the n most likely ids / their
+  #               log-probabilities, n entries per pick, best first
+  #   :stop_strs  strings that end the reply when they appear in its text
+  #   :stop_cut   byte offset in the decoded reply where a stop string
+  #               began (-1: none matched)
+  attr_accessor :lp_top, :lp_tok, :lp_alt_ids, :lp_alt_lps, :stop_strs, :stop_cut
+  def initialize(idx)
+    @idx      = idx
+    @busy     = false
+    @seq_ids  = [0]
+    @seq_ids.pop
+    @shared_n = 0
+    @cells    = [0]
+    @cells.pop
+    @prompt_ids = [0]
+    @prompt_ids.pop
+    @fed      = 0
+    @n_new    = 0
+    @out_ids  = [0]
+    @out_ids.pop
+    @next_id  = 0
+    @phase    = 2
+    @finish   = "length"
+    @cached   = 0
+    @err      = ""
+    @seen     = 0
+    @shared_steps = 0
+    @step_mark    = 0
+    @lp_top   = -1
+    @lp_tok   = [0.0]
+    @lp_tok.pop
+    @lp_alt_ids = [0]
+    @lp_alt_ids.pop
+    @lp_alt_lps = [0.0]
+    @lp_alt_lps.pop
+    @stop_strs = [""]
+    @stop_strs.pop
+    @stop_cut  = -1
   end
-  while lcp < lim && STATE.kv_ids[lcp] == prompt_ids[lcp]
-    lcp = lcp + 1
+
+  def done
+    @phase == 2
   end
-  start = lcp
+end
+
+SLOTS = [Slot.new(0)]
+_sl = 1
+while _sl < SERVE_SLOTS
+  SLOTS.push(Slot.new(_sl))
+  _sl = _sl + 1
+end
+
+# Takes the lowest free cell for position `pos` of sequence `owner`.
+def api_cell_take(owner, pos)
+  c = STATE.cell_lo
+  while c < STATE.n_cells && STATE.cell_owner[c] != -2
+    c = c + 1
+  end
+  if c >= STATE.n_cells
+    raise "KV cell pool exhausted (" + STATE.n_cells.to_s + " cells)"
+  end
+  STATE.cell_owner[c] = owner
+  STATE.cell_pos[c]   = pos
+  STATE.cell_lo = c + 1
+  if c + 1 > STATE.cell_hi
+    STATE.cell_hi = c + 1
+  end
+  c
+end
+
+def api_cell_free(c)
+  STATE.cell_owner[c] = -2
+  if c < STATE.cell_lo
+    STATE.cell_lo = c
+  end
+  while STATE.cell_hi > 0 && STATE.cell_owner[STATE.cell_hi - 1] == -2
+    STATE.cell_hi = STATE.cell_hi - 1
+  end
+  0
+end
+
+# Forgets the slot's cached positions from `keep` on (their cells go back
+# to the pool). Positions below shared_n are the shared prefix's and stay
+# where they are; keeping fewer than shared_n of them lowers shared_n.
+def api_slot_truncate(slot, keep)
+  own_keep = keep - slot.shared_n
+  if own_keep < 0
+    own_keep = 0
+  end
+  while slot.cells.length > own_keep
+    api_cell_free(slot.cells.pop)
+  end
+  while slot.seq_ids.length > keep
+    slot.seq_ids.pop
+  end
+  if slot.shared_n > keep
+    slot.shared_n = keep
+  end
+  0
+end
+
+# Length of the common prefix of two id lists.
+def api_lcp(a, b)
+  lim = a.length
+  if b.length < lim
+    lim = b.length
+  end
+  n = 0
+  while n < lim && a[n] == b[n]
+    n = n + 1
+  end
+  n
+end
+
+# Gives a request an idle slot, primed with what the cache already holds of
+# its prompt. Returns the slot's index; -1 when every slot is busy.
+#
+# toy#210: the K/V rows of the longest prefix the prompt shares with the
+# slot's cached ids, or with the shared boot prefix, are kept, and
+# evaluation starts after them. The last prompt token is always evaluated,
+# since its logits are what the request needs. The result is the same ids
+# as a full prefill: the kept rows are the rows a full prefill would write.
+def api_slot_acquire(prompt_ids, n_new)
+  best = -1
+  best_lcp = -1
+  i = 0
+  while i < SLOTS.length
+    if !SLOTS[i].busy
+      l = api_lcp(SLOTS[i].seq_ids, prompt_ids)
+      if l > best_lcp
+        best_lcp = l
+        best = i
+      end
+    end
+    i = i + 1
+  end
+  if best < 0
+    return -1
+  end
+  slot = SLOTS[best]
+  pre_lcp = api_lcp(STATE.kv_ids, prompt_ids)
+  if KV_REUSE_OFF
+    best_lcp = 0
+    pre_lcp  = 0
+  end
+  start = best_lcp
+  if pre_lcp > best_lcp
+    # The boot prefix covers more of this prompt than the slot's own
+    # sequence: drop that and read the prefix cells.
+    api_slot_truncate(slot, 0)
+    start = pre_lcp
+  end
   if start > prompt_ids.length - 1
     start = prompt_ids.length - 1
   end
-  if KV_REUSE_OFF
-    start = 0
-  end
-  STATE.cached = start
-  while STATE.kv_ids.length > start
-    STATE.kv_ids.pop
-  end
-  # toy#206: the uncached part of the prompt goes through batched steps
-  # (one token at a time on a per-head cache).
-  last_logits = SmolLM2KV.decode_batch(STATE.kv, prompt_ids, start,
-                                       prompt_ids.length - start, start)
-  prefill_pos = start
-  while prefill_pos < prompt_ids.length
-    STATE.kv_ids.push(prompt_ids[prefill_pos])
-    prefill_pos = prefill_pos + 1
-  end
-  best = api_argmax(last_logits, vocab)
-  if STATE.lp_top >= 0
-    api_record_lp(last_logits, vocab, best)
-  end
-  best
-end
-
-# Feed `prev_id` at position `pos`; returns the next token id.
-def api_next_id(prev_id, pos)
-  while STATE.kv_ids.length > pos
-    STATE.kv_ids.pop
-  end
-  logits = SmolLM2KV.decode_step(STATE.kv, prev_id, pos)
-  STATE.kv_ids.push(prev_id)
-  best = api_argmax(logits, STATE.cfg.vocab)
-  if STATE.lp_top >= 0
-    api_record_lp(logits, STATE.cfg.vocab, best)
-  end
-  best
-end
-
-# Generates up to `n_new` ids and stops BEFORE a stop id (which is not
-# returned). STATE.finish says which happened: "stop" or "length".
-def api_generate_ids(prompt_ids, n_new)
-  out_ids = [0]
-  out_ids.pop
-  STATE.finish = "length"
-  STATE.stop_cut = -1
-  if n_new <= 0
-    return out_ids
-  end
-
-  id = api_first_id(prompt_ids)
-  step = 0
-  while step < n_new
-    if api_stop_id?(id)
-      STATE.finish = "stop"
-      return out_ids
+  if pre_lcp > best_lcp
+    slot.shared_n = start
+    k = 0
+    while k < start
+      slot.seq_ids.push(prompt_ids[k])
+      k = k + 1
     end
-    out_ids.push(id)
-    # toy#216: a stop string in the text so far ends the reply. The ids
-    # that spell it stay in out_ids; the caller cuts the text at stop_cut.
-    if STATE.stop_strs.length > 0
-      cut = api_stop_cut(STATE.tok.decode(out_ids))
-      if cut >= 0
-        STATE.stop_cut = cut
-        STATE.finish = "stop"
-        return out_ids
+  else
+    api_slot_truncate(slot, start)
+  end
+  if !STATE.kv.fused && slot.shared_n < STATE.kv_ids.length
+    # Per-head cache: a cell is a position, so a prompt that leaves the
+    # boot prefix early overwrites the rest of it, as before toy#217.
+    while STATE.kv_ids.length > slot.shared_n
+      api_cell_free(STATE.kv_ids.length - 1)
+      STATE.kv_ids.pop
+    end
+  end
+  slot.busy       = true
+  slot.prompt_ids = prompt_ids
+  slot.fed        = start
+  slot.cached     = start
+  slot.n_new      = n_new
+  slot.out_ids    = [0]
+  slot.out_ids.pop
+  slot.phase      = 0
+  slot.finish     = "length"
+  slot.err        = ""
+  slot.seen       = STATE.step_seq
+  slot.shared_steps = 0
+  slot.lp_top     = -1
+  slot.lp_tok.clear
+  slot.lp_alt_ids.clear
+  slot.lp_alt_lps.clear
+  slot.stop_strs.clear
+  slot.stop_cut   = -1
+  best
+end
+
+# Ends the slot's request. Its cached positions stay for the next one.
+def api_slot_release(slot)
+  slot.busy  = false
+  slot.phase = 2
+  0
+end
+
+# One generated id for the slot: ends the request at a stop id (not
+# returned), at a stop string, or at n_new ids; otherwise the id is fed in
+# the next step.
+def api_slot_take(slot, id)
+  slot.phase = 1
+  if api_stop_id?(id)
+    slot.finish = "stop"
+    slot.phase  = 2
+    return 0
+  end
+  slot.out_ids.push(id)
+  # toy#216: a stop string in the text so far ends the reply. The ids that
+  # spell it stay in out_ids; the caller cuts the text at stop_cut.
+  if slot.stop_strs.length > 0
+    cut = api_stop_cut(STATE.tok.decode(slot.out_ids), slot.stop_strs)
+    if cut >= 0
+      slot.stop_cut = cut
+      slot.finish   = "stop"
+      slot.phase    = 2
+      return 0
+    end
+  end
+  if slot.out_ids.length >= slot.n_new
+    slot.finish = "length"
+    slot.phase  = 2
+    return 0
+  end
+  slot.next_id = id
+  0
+end
+
+# One decode step for every busy slot: a generating slot feeds its last id,
+# a slot still on its prompt feeds as much of it as the step has room for
+# (kv.batch_max tokens in all). Tokens that need logits (the last prompt
+# token, every generated one) go last in the step. Does nothing when no
+# slot has a token to feed. A failure fails every request in the step.
+def api_pump
+  kv = STATE.kv
+  # Non-output tokens (a_*) then output tokens (b_*).
+  a_ids = [0];  a_ids.pop
+  a_pos = [0];  a_pos.pop
+  a_own = [0];  a_own.pop
+  b_ids = [0];  b_ids.pop
+  b_pos = [0];  b_pos.pop
+  b_own = [0];  b_own.pop
+  room = kv.batch_max
+  si = 0
+  while si < SLOTS.length
+    slot = SLOTS[si]
+    if slot.busy && slot.phase == 1 && room > 0
+      b_ids.push(slot.next_id)
+      b_pos.push(slot.seq_ids.length)
+      b_own.push(si)
+      room = room - 1
+    end
+    si = si + 1
+  end
+  si = 0
+  while si < SLOTS.length
+    slot = SLOTS[si]
+    if slot.busy && slot.phase == 0 && room > 0
+      take = slot.prompt_ids.length - slot.fed
+      if take > room
+        take = room
+      end
+      k = 0
+      while k < take
+        at = slot.fed + k
+        if at == slot.prompt_ids.length - 1
+          b_ids.push(slot.prompt_ids[at].to_i)
+          b_pos.push(at)
+          b_own.push(si)
+        else
+          a_ids.push(slot.prompt_ids[at].to_i)
+          a_pos.push(at)
+          a_own.push(si)
+        end
+        k = k + 1
+      end
+      room = room - take
+    end
+    si = si + 1
+  end
+  n_out = b_ids.length
+  n_tok = a_ids.length + n_out
+  if n_tok == 0
+    return 0
+  end
+  STATE.step_seq = STATE.step_seq + 1
+  ids = a_ids
+  pos = a_pos
+  own = a_own
+  k = 0
+  while k < n_out
+    ids.push(b_ids[k])
+    pos.push(b_pos[k])
+    own.push(b_own[k])
+    k = k + 1
+  end
+  begin
+    # Enter the step's tokens in the pool and in their slots.
+    cells  = [0]; cells.pop
+    shared = [0]; shared.pop
+    several = false
+    k = 1
+    while k < n_tok
+      if own[k] != own[0]
+        several = true
+      end
+      k = k + 1
+    end
+    k = 0
+    while k < n_tok
+      slot = SLOTS[own[k]]
+      if several && slot.step_mark != STATE.step_seq
+        slot.step_mark    = STATE.step_seq
+        slot.shared_steps = slot.shared_steps + 1
+      end
+      c = api_cell_take(own[k], pos[k])
+      slot.cells.push(c)
+      slot.seq_ids.push(ids[k])
+      if slot.phase == 0
+        slot.fed = slot.fed + 1
+      end
+      cells.push(c)
+      shared.push(slot.shared_n)
+      k = k + 1
+    end
+    rows = n_out
+    if rows == 0
+      rows = 1   # a step needs an output: the last token's logits, unused
+    end
+    t_logits = TinyNN.tnn_null_ptr
+    if kv.fused
+      # A single token that sees every cell in use needs no mask.
+      one = SLOTS[own[0]]
+      use_mask = n_tok > 1 || one.cells.length + one.shared_n != STATE.cell_hi
+      t_logits = SmolLM2KV.decode_cells(kv, ids, pos, cells, rows, STATE.cell_hi, use_mask,
+                                        STATE.cell_owner, STATE.cell_pos, own, shared)
+    else
+      k = 0
+      while k < n_tok
+        if own[k] != 0 || cells[k] != pos[k]
+          raise "per-head KV cache: cell " + cells[k].to_s + " is not position " + pos[k].to_s
+        end
+        t_logits = SmolLM2KV.decode_step_run(kv, ids[k], pos[k])
+        k = k + 1
       end
     end
-    step = step + 1
-    if step < n_new
-      id = api_next_id(id, prompt_ids.length + out_ids.length - 1)
+    if n_out > 0
+      top = -1
+      k = 0
+      while k < n_out
+        if SLOTS[b_own[k]].lp_top > top
+          top = SLOTS[b_own[k]].lp_top
+        end
+        k = k + 1
+      end
+      best = [0];    best.pop
+      lps  = [0.0];  lps.pop
+      alt_ids = [0];   alt_ids.pop
+      alt_lps = [0.0]; alt_lps.pop
+      k = 0
+      while k < n_out
+        best.push(0)
+        lps.push(0.0)
+        j = 0
+        while j < top
+          alt_ids.push(-1)
+          alt_lps.push(0.0)
+          j = j + 1
+        end
+        k = k + 1
+      end
+      if alt_ids.length == 0
+        alt_ids.push(-1)
+        alt_lps.push(0.0)
+      end
+      rc = TinyNN.tnn_logits_pick(kv.sess, t_logits, n_out, STATE.cfg.vocab, top,
+                                  best, lps, alt_ids, alt_lps)
+      if rc != 0
+        raise "logits pick failed rc=" + rc.to_s
+      end
+      k = 0
+      while k < n_out
+        slot = SLOTS[b_own[k]]
+        if slot.lp_top >= 0
+          slot.lp_tok.push(lps[k])
+          j = 0
+          while j < slot.lp_top
+            slot.lp_alt_ids.push(alt_ids[k * top + j])
+            slot.lp_alt_lps.push(alt_lps[k * top + j])
+            j = j + 1
+          end
+        end
+        api_slot_take(slot, best[k])
+        k = k + 1
+      end
+    end
+  rescue => e
+    # Which cells the failed step wrote is unknown: every request in it
+    # fails, and their slots forget what they had cached.
+    puts "[openai_api_llama] decode step failed: " + e.message
+    k = 0
+    while k < n_tok
+      slot = SLOTS[own[k]]
+      slot.err   = e.message
+      slot.phase = 2
+      api_slot_truncate(slot, 0)
+      k = k + 1
     end
   end
-  out_ids
+  n_tok
+end
+
+# Hands the processor to the other requests' fibers (the fiber server,
+# SLOTS > 1). On the blocking server there is nobody to hand it to.
+def api_yield
+  if Tep::Scheduler.scheduled_context?
+    Tep::Scheduler.pause(0)
+  end
+  0
+end
+
+# One turn of a request waiting on `slot`: when it has already seen the
+# latest decode step it runs the next one (for every busy slot), otherwise
+# another request's turn ran a step since and this one only catches up.
+# With the scheduler resuming waiting requests in rotation that is one step
+# per round, seen by each of them.
+def api_slot_turn(slot)
+  if slot.seen == STATE.step_seq
+    api_pump
+  end
+  slot.seen = STATE.step_seq
+  0
+end
+
+# Waits for an idle slot and returns its index (requests beyond SERVE_SLOTS
+# queue here, keeping the busy slots decoding while they wait).
+def api_slot_wait(prompt_ids, n_new)
+  si = api_slot_acquire(prompt_ids, n_new)
+  seen = STATE.step_seq
+  while si < 0
+    if seen == STATE.step_seq
+      api_pump
+    end
+    seen = STATE.step_seq
+    api_yield
+    si = api_slot_acquire(prompt_ids, n_new)
+  end
+  si
+end
+
+# Runs the slot's request to its end.
+def api_slot_run(slot)
+  while !slot.done
+    api_slot_turn(slot)
+    if !slot.done
+      api_yield
+    end
+  end
+  0
 end
 
 # Byte length of the longest prefix of `s` that does not end inside a

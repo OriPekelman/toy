@@ -192,7 +192,7 @@ They now appear in `toy eval --help` and under a `subcommands` key in
 `toy --manifest`, which is emitted only for commands that have them, so
 existing manifest consumers see no new key.
 
-### `serve <model> [--port PORT] [--name NAME] [--ctx N] [--device cpu|cuda] [--stop-ids N,M] [--prefix-file F] [--prefix-cache F]`
+### `serve <model> [--port PORT] [--name NAME] [--ctx N] [--device cpu|cuda] [--stop-ids N,M] [--prefix-file F] [--prefix-cache F] [--slots N]`
 Serve a GGUF model over an OpenAI-compatible HTTP API. Default `--port 4567`;
 `--name` sets the model label in `/v1/models` (default: the GGUF basename).
 `--ctx N` sets the context exactly as for `infer` (same default). `--device
@@ -242,8 +242,9 @@ What the server offers depends on whether the GGUF embeds its tokenizer
   the context are HTTP 400 with `{"error": {"message", "type"}}`; an
   exception while generating is HTTP 500 and is logged. The server keeps
   serving. Streamed requests end their stream instead.
-- **One request at a time.** Requests are answered in turn by one worker
-  with one cached sequence; there is no batching across requests.
+- **Concurrent requests.** By default requests are answered in turn.
+  `--slots N` decodes up to N of them as one batch; see "Concurrent
+  requests" below.
 - **Context.** A request whose prompt does not fit is an HTTP 400 of type
   `context_length_exceeded`; one whose prompt fits but whose `max_tokens`
   does not is cut to what fits. Neither takes the server down.
@@ -284,6 +285,52 @@ llama-server takes 0.57 s and 0.45 s on the same requests. Evaluating the
 prefix at boot takes 0.34 s, saving the 68 MB file 0.22 s and restoring it
 14 ms.
 
+**Concurrent requests (toy#217).** `--slots N` (1 to 64, default 1) lets N
+requests decode at the same time. Each decode step carries one token of
+every active request through a single graph, so N requests cost one graph
+evaluation per token, not N. Requests beyond N wait for a slot.
+
+```
+toy serve model.gguf --device cuda --ctx 1024 --slots 32 --prefix-file system.txt
+```
+
+- **One cache, shared.** The K/V rows of all slots live in one pool of
+  `ctx × slots` cells (plus `ctx` more with a boot prefix). The boot
+  prefix is stored once and read by every request that starts with it. A
+  slot keeps its rows when its request ends, and a new request takes the
+  idle slot whose cached ids share the longest prefix with its prompt, so
+  prefix reuse works per slot. Memory for the pool is allocated at boot:
+  `2 × layers × kv_heads × head_dim × 4` bytes per cell (24 KiB on the model
+  below, so 1024 × 32 cells are about 0.8 GiB).
+- **Same replies?** On F32 weights, requests sent at once return the ids
+  they return alone (CPU and CUDA; `gate-serve-slots` asserts it). On
+  quantized weights under CUDA they can differ at near-ties, because ggml
+  picks a different matmul kernel for a different batch size; llama.cpp
+  behaves the same way. On the shrink student (Q8, CUDA,
+  200 held-out events) 164 and 173 replies of 200 were the same text at 8
+  and 32 slots as at one, and the task scores were identical at all three
+  (type agreement with the teacher 87.0 %).
+- **Everything else is per request**: `stop`, `logprobs`, `max_tokens`,
+  streaming, errors. A request that fails does not affect the others,
+  unless the decode step itself fails, which fails every request in it.
+- **Which server.** With one slot the HTTP server is tep's blocking one, as
+  before. With more it is tep's fiber-per-connection server, still one
+  process; handlers yield to each other after every decode step.
+- **Needs the fused decode graph.** Models and options that run on the
+  per-head graph (MoE, MLA, a quantized KV cache, `KV_FUSED=0`; see
+  [`models.md`](models.md)) refuse `--slots` above 1 at boot.
+- Each request's event carries `slot` and `shared_steps`, the number of
+  decode steps it shared with another request.
+- Cost grows faster than linearly past a point: every token's attention
+  runs over all cells in use, its own slot's or not (the others are masked
+  out, not skipped). Measured on the gx10 (same model as
+  above, CUDA, ~360-token prompts sharing a 257-token boot prefix, ~58 new
+  tokens, GPU otherwise idle): 0.67 requests/s one at a time, 4.0 at 8
+  slots, 7.0–7.2 at 32, 5.9 at 64. A decode step takes 26 ms for one
+  request, 30 ms for 8 and about 56 ms for 32. `llama-server --parallel 32`
+  on the same file and requests gave 6.4 requests/s (one run; the GPU is
+  shared, and runs disturbed by another job came out near 3–4 for both).
+
 **Decode speed (toy#206).** Prompts are evaluated in batches of up to 512
 tokens, and each generated token is one small graph covering every
 attention head of a layer. On the model above that is about 40 tokens/s
@@ -292,16 +339,18 @@ prompt in about 0.2 s. Models and options the fused step does not cover
 run on the older per-head graph, which is several times slower on a GPU;
 see "Decode graphs" in [`models.md`](models.md).
 
-Three things only tep can change (tep#276), so they are as tep has them:
-`/v1/completions` reads `prompt` as a token-id array only (a string prompt is
-an empty request); the chat reply always says `finish_reason: "stop"`, also
-when it ended on `max_tokens`; and the chat reply `id` is the constant
-`chatcmpl-tep`.
+Streamed replies still go through tep's handlers (tep#276), so three
+things are as tep has them there: a streamed `/v1/completions` reads
+`prompt` as a token-id array only; a streamed chat reply always ends with
+`finish_reason: "stop"`, also when it ended on `max_tokens`; and its `id`
+is the constant `chatcmpl-tep`. Non-streamed replies are toy's own
+(toy#216) and have none of the three.
 
 The serve stack lives at `lib/toy/serve/openai/` and is driven by
 `lib/toy/run/serve.rb` → `libexec/toy-serve`. `make gate-serve`,
-`gate-serve-chat`, `gate-serve-chat-cuda`, `gate-kv-prefix` and
-`gate-kv-prefix-cuda` cover it.
+`gate-serve-chat`, `gate-serve-chat-cuda`, `gate-serve-slots`,
+`gate-serve-slots-cuda`, `gate-kv-prefix` and `gate-kv-prefix-cuda` cover
+it.
 
 > **The 0.11.x tep line needs fixes that are only on tep `main`**
 > ([OriPekelman/tep#276](https://github.com/OriPekelman/tep/issues/276)).
@@ -315,11 +364,14 @@ The serve stack lives at `lib/toy/serve/openai/` and is driven by
 > - the stock-Ruby guard fires inside every compiled app at Spinel
 >   `2026.10.25`, which defines `RUBY_ENGINE`, and the server exits at boot
 >   (0.11.7 only; fixed in 0.11.8,
->   [OriPekelman/tep#272](https://github.com/OriPekelman/tep/issues/272)).
+>   [OriPekelman/tep#272](https://github.com/OriPekelman/tep/issues/272));
+> - the fiber scheduler resumes the lowest-numbered ready fiber on a tie,
+>   so with `--slots` one request ran alone while the others waited; ties
+>   now go round-robin ([OriPekelman/tep#291](https://github.com/OriPekelman/tep/issues/291)).
 >
 > `infer`/`train`/`eval` don't link tep and are unaffected.
 
-### `pack <model> -o <artifact> [--prefix F] [--name NAME] [--device cpu|cuda] [--ctx N] [--port PORT] [--stop-ids N,M]`
+### `pack <model> -o <artifact> [--prefix F] [--name NAME] [--device cpu|cuda] [--ctx N] [--port PORT] [--stop-ids N,M] [--slots N]`
 Build one executable that carries the model and serves it with no arguments
 (toy#211).
 
@@ -327,6 +379,7 @@ Build one executable that carries the model and serves it with no arguments
 toy pack student.gguf --prefix system.txt --name support-desk --device cuda -o support-desk
 ./support-desk                # serves on the packed port (default 4567)
 ./support-desk --port 8080    # or PORT=8080
+./support-desk --slots 16     # or SLOTS=16; default: the packed --slots, else 1
 ./support-desk --describe     # card and provenance; loads nothing
 ```
 
@@ -338,7 +391,8 @@ What is inside:
   computed once at pack time on `--device`. The artifact restores it at boot
   instead of evaluating it. Requests that start with that system message
   skip it, as with `toy serve --prefix-cache`.
-- **A fixed config**: name, context, stop ids, default port.
+- **A fixed config**: name, context, stop ids, default port, default
+  number of slots.
 - **A description**: the `toy describe` card, the model's sha256, the toy,
   spinel and ggml commits, the runner's hash, the prefix's hash and token
   count, and the shared libraries the artifact needs.
