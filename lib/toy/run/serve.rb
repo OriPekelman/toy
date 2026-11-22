@@ -20,6 +20,9 @@
 #   ADAPTER      a llama.cpp-format LoRA GGUF applied beside the weights
 #                (`toy serve --adapter`; a request scales it with
 #                "lora_scale"; toy#218)
+#   MODEL_SHA256 / ADAPTER_SHA256  sha256 of the model and adapter files,
+#                echoed in each reply's "toy" object (`toy serve` computes
+#                them; toy#221)
 #   PORT         TCP port to bind (NEW -- replaces the old ARGV -p parse;
 #                `toy serve` owns the CLI UX now). Default 4567.
 #
@@ -93,6 +96,7 @@ if EVENTS.length > 0
     model = Toy::Json::Builder.new
     model.add_str("arch", "llama")
     model.add_str("name", STATE.model_name)
+    model.add_str("sha256", MODEL_SHA256)
     model.add_num("vocab",    STATE.cfg.vocab)
     model.add_num("d_model",  STATE.cfg.d_model)
     model.add_num("n_layers", STATE.cfg.n_layers)
@@ -104,6 +108,7 @@ if EVENTS.length > 0
     config = Toy::Json::Builder.new
     config.add_num("max_t", MAX_T)
     config.add_num("port",  SERVE_PORT)
+    config.add_str("adapter_sha256", ADAPTER_SHA256)
     rs.add_obj("config", config)
     TinyNN.tnn_events_emit(rs.dump)
   else

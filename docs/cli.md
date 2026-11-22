@@ -359,6 +359,15 @@ change with forward passes:
   `{"layers":[...],"position":p,"prompt_tokens":n,"d_model":d,"lora_scale":s,"data":[[d floats],...]}`,
   one row per layer in ascending order. A batch of prompts is a batch of
   requests (`--slots`).
+- **Every reply names its weights (toy#221).** Non-streamed
+  `/v1/completions`, `/v1/chat/completions` and `/v1/hidden` replies carry
+  `"toy":{"model_sha256":"...","adapter_sha256":"...","lora_scale":s}`:
+  the sha256 of the model file, of the adapter file (`""` without one) and
+  the scale the request ran at, so a paired trace shows which weight state
+  produced each result. `toy serve` hashes the two files at start and
+  `toy pack` stores the model's hash in the artifact; a runner started
+  without either reports `""`. The `run_start` event records both hashes
+  and each request event the scale. Streamed replies are not labelled.
 
 What it costs and what it does not do:
 
