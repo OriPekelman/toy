@@ -192,7 +192,7 @@ They now appear in `toy eval --help` and under a `subcommands` key in
 `toy --manifest`, which is emitted only for commands that have them, so
 existing manifest consumers see no new key.
 
-### `serve <model> [--port PORT] [--name NAME] [--ctx N] [--device cpu|cuda] [--stop-ids N,M] [--prefix-file F] [--prefix-cache F] [--slots N]`
+### `serve <model> [--port PORT] [--name NAME] [--ctx N] [--device cpu|cuda] [--stop-ids N,M] [--prefix-file F] [--prefix-cache F] [--slots N] [--adapter F]`
 Serve a GGUF model over an OpenAI-compatible HTTP API. Default `--port 4567`;
 `--name` sets the model label in `/v1/models` (default: the GGUF basename).
 `--ctx N` sets the context exactly as for `infer` (same default). `--device
@@ -331,6 +331,56 @@ toy serve model.gguf --device cuda --ctx 1024 --slots 32 --prefix-file system.tx
   on the same file and requests gave 6.4 requests/s (one run; the GPU is
   shared, and runs disturbed by another job came out near 3–4 for both).
 
+**Weight edits at inference and hidden states (toy#218).** Two things for
+experiments that change a model's weights without training and test the
+change with forward passes:
+
+- **`--adapter F`** loads a LoRA adapter in llama.cpp's GGUF format (the
+  file `llama-server --lora` takes): per adapted matrix
+  `blk.N.<name>.weight.lora_a` (`[r, d_in]`) and `.lora_b` (`[d_out, r]`),
+  `<name>` one of `attn_q`, `attn_k`, `attn_v`, `attn_output`, `ffn_gate`,
+  `ffn_up`, `ffn_down`, scaled by `adapter.lora.alpha / r`. The base
+  weights are not touched, quantized or not: the delta is computed beside
+  them, `W x + (alpha/r) B (A x)`. A rank-one edit `W <- W + c w uᵀ W` is
+  the adapter `B = c w`, `A = uᵀ W`.
+- **`"lora_scale": s`** on a request (`/v1/completions`,
+  `/v1/chat/completions`, `/v1/hidden`) scales the adapter for that
+  request: 1 is the default, 0 is the unedited model. Both weight sets
+  therefore answer from one process and one copy of the model, and with
+  `--slots` base and edited requests are decoded in the same batch. That,
+  with a forced answer prefix and `logprobs` (toy#216), is a paired test.
+- **`POST /v1/hidden`** returns the residual stream at the last token of a
+  prompt and generates nothing. Body: `messages` (the chat template is
+  applied, as in chat) or `prompt` (text or token ids); `layers`, a list
+  where 0 is the embedding output and `i` the stream after block `i`
+  (the numbering of Hugging Face `output_hidden_states`; default every
+  block, 1 to L); `position`, a token index to read instead of the last
+  one (negative counts from the end); `lora_scale`. Reply:
+  `{"layers":[...],"position":p,"prompt_tokens":n,"d_model":d,"lora_scale":s,"data":[[d floats],...]}`,
+  one row per layer in ascending order. A batch of prompts is a batch of
+  requests (`--slots`).
+
+What it costs and what it does not do:
+
+- An edited request reads neither the boot prefix nor rows cached under
+  another scale (they were computed by other weights), so it evaluates its
+  whole prompt; a slot keeps the scale of what it cached.
+- The adapter adds two small matrix products per adapted matrix to a
+  decode step that contains an edited request, and nothing otherwise.
+- One adapter per server, chosen at start. The file must be F32 or F16,
+  and every tensor in it must be one of the pairs above (anything else is
+  refused at boot rather than skipped).
+- Fused decode graph only (as `--slots`); `toy pack` does not embed an
+  adapter.
+- Measured: on the F32 fixture the adapter and a model with the delta
+  written into its weights give the same ids, log-probabilities within
+  5e-6 and hidden states within 5e-7 on CPU (5e-3 and 1e-3 on CUDA, where
+  results already vary that much with batch composition). On the Q8
+  student on CUDA, an adapter on block 10's two output matrices moves the
+  log-probabilities of the next token by up to 1.1, and
+  `llama-server --lora` with the same file moves them by the same amounts
+  to within 0.04 (the two engines differ by 0.03 without any adapter).
+
 **Decode speed (toy#206).** Prompts are evaluated in batches of up to 512
 tokens, and each generated token is one small graph covering every
 attention head of a layer. On the model above that is about 40 tokens/s
@@ -349,8 +399,8 @@ is the constant `chatcmpl-tep`. Non-streamed replies are toy's own
 The serve stack lives at `lib/toy/serve/openai/` and is driven by
 `lib/toy/run/serve.rb` → `libexec/toy-serve`. `make gate-serve`,
 `gate-serve-chat`, `gate-serve-chat-cuda`, `gate-serve-slots`,
-`gate-serve-slots-cuda`, `gate-kv-prefix` and `gate-kv-prefix-cuda` cover
-it.
+`gate-serve-slots-cuda`, `gate-serve-adapter`, `gate-serve-adapter-cuda`,
+`gate-kv-prefix` and `gate-kv-prefix-cuda` cover it.
 
 > **The 0.11.x tep line needs fixes that are only on tep `main`**
 > ([OriPekelman/tep#276](https://github.com/OriPekelman/tep/issues/276)).

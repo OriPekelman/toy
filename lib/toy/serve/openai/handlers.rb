@@ -41,6 +41,8 @@ class IndexHandler < Tep::Handler
     "<li><code>POST /v1/chat/completions</code> &mdash; body <code>{\"messages\":[...],\"max_tokens\":N,\"stream\":bool}</code> " +
     "(501 without a tokenizer); a last message with role assistant is continued</li>" +
     "<li>both take <code>\"stop\"</code> strings and <code>\"logprobs\"</code></li>" +
+    "<li><code>POST /v1/hidden</code> &mdash; body <code>{\"prompt\" or \"messages\",\"layers\":[int,...]}</code> &rarr; " +
+    "the residual stream at the last token; with <code>--adapter</code>, <code>\"lora_scale\"</code> scales the weight delta per request</li>" +
     "<li><code>POST /v1/embeddings</code> &mdash; body <code>{\"input\":[int,...]}</code> &rarr; mean-pooled vector</li>" +
     "<li><code>GET /v1/models</code></li>" +
     "<li><code>GET /health</code></li>" +

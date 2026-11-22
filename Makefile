@@ -820,6 +820,17 @@ gate-serve-slots:
 gate-serve-slots-cuda:
 	ruby prep/serve_slots_gate.rb --device cuda
 
+# Weight edits at inference (toy#218): a llama.cpp-format LoRA adapter beside
+# the weights (--adapter, per-request "lora_scale") equals a model with the
+# delta written into its weights; scale 0 is the unedited model; base and
+# edited requests share a batch; POST /v1/hidden returns the residual stream
+# at a layer (checked against the GGUF's embedding and output matrices).
+.PHONY: gate-serve-adapter gate-serve-adapter-cuda
+gate-serve-adapter:
+	ruby prep/serve_adapter_gate.rb
+gate-serve-adapter-cuda:
+	ruby prep/serve_adapter_gate.rb --device cuda
+
 # KV prefix gate (toy#210): the K/V rows of a prompt prefix already in the
 # cache are reused instead of re-evaluated (between requests, and from a
 # KV prefix file restored at boot), with replies identical to a server that

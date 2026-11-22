@@ -149,6 +149,10 @@ MAX_T      = GGUFLoad.resolve_ctx(GGUF_PATH, api_setting("MAX_T"), "toy-serve")
 PREFIX_FILE  = PACK_ON ? "" : (ENV["PREFIX_FILE"] || "")
 PREFIX_CACHE = PACK_ON ? (TinyNN.tnn_pack_has("kv") == 1 ? "@pack:kv" : "") : (ENV["PREFIX_CACHE"] || "")
 KV_REUSE_OFF = (ENV["KV_REUSE"] || "") == "0"
+# toy#218: a llama.cpp-format LoRA GGUF applied beside the model's weights
+# (`toy serve --adapter`). A request scales it with "lora_scale" (default
+# 1; 0 = the unedited model), so both weight sets answer from one process.
+ADAPTER_PATH = ENV["ADAPTER"] || ""
 # toy#217: how many requests are decoded at the same time (`toy serve
 # --slots N`; in a pack --slots, then SLOTS, then the packed default).
 # 1 serves one request at a time, as before.
@@ -451,7 +455,16 @@ STATE.kv.kv_cells = MAX_T * SERVE_SLOTS
 if PREFIX_FILE.length > 0 || PREFIX_CACHE.length > 0
   STATE.kv.kv_cells = STATE.kv.kv_cells + MAX_T
 end
+STATE.kv.adapter_path = ADAPTER_PATH
 STATE.gguf = STATE.kv.realize_and_load_auto(GGUF_PATH, MAX_T, STATE.cfg, flags)
+if ADAPTER_PATH.length > 0
+  if STATE.kv.adapter_n == 0
+    puts "[openai_api_llama] --adapter needs the fused decode graph on a natively laid out GGUF, " +
+         "which this model or configuration does not use; start without it"
+    exit 1
+  end
+  puts "[openai_api_llama] adapter: " + STATE.kv.adapter_n.to_s + " matrices from " + ADAPTER_PATH
+end
 if SERVE_SLOTS > 1 && !STATE.kv.fused
   puts "[openai_api_llama] --slots " + SERVE_SLOTS.to_s + " needs the fused decode graph, which this " +
        "model or configuration does not use (MoE, MLA, a quantized KV cache, KV_FUSED=0, ...); " +
@@ -820,7 +833,20 @@ class Slot
   #   :stop_cut   byte offset in the decoded reply where a stop string
   #               began (-1: none matched)
   attr_accessor :lp_top, :lp_tok, :lp_alt_ids, :lp_alt_lps, :stop_strs, :stop_cut
+  # toy#218:
+  #   :ad_scale    the adapter scale of the request (0 = the unedited model),
+  #                which is also the scale the slot's cached rows were
+  #                computed under
+  #   :tap_layers  residual-stream layers to read at the last prompt token
+  #                (0 = embeddings, i = after block i), ascending
+  #   :hidden      their states, d_model values per layer, in that order
+  attr_accessor :ad_scale, :tap_layers, :hidden
   def initialize(idx)
+    @ad_scale   = 0.0
+    @tap_layers = [0]
+    @tap_layers.pop
+    @hidden     = [0.0]
+    @hidden.pop
     @idx      = idx
     @busy     = false
     @seq_ids  = [0]
@@ -936,14 +962,23 @@ end
 # evaluation starts after them. The last prompt token is always evaluated,
 # since its logits are what the request needs. The result is the same ids
 # as a full prefill: the kept rows are the rows a full prefill would write.
-def api_slot_acquire(prompt_ids, n_new)
+#
+# toy#218: rows computed under another adapter scale are not this request's
+# (`ad_scale`), so such a slot counts as sharing nothing, and the boot
+# prefix (computed by the unedited model) serves scale 0 only. Among slots
+# sharing equally much, the one with the least cached is taken, which
+# leaves a base and an edited sequence side by side when there is room.
+def api_slot_acquire(prompt_ids, n_new, ad_scale)
   best = -1
   best_lcp = -1
   i = 0
   while i < SLOTS.length
     if !SLOTS[i].busy
-      l = api_lcp(SLOTS[i].seq_ids, prompt_ids)
-      if l > best_lcp
+      l = 0
+      if SLOTS[i].ad_scale == ad_scale
+        l = api_lcp(SLOTS[i].seq_ids, prompt_ids)
+      end
+      if l > best_lcp || (l == best_lcp && SLOTS[i].seq_ids.length < SLOTS[best].seq_ids.length)
         best_lcp = l
         best = i
       end
@@ -954,7 +989,10 @@ def api_slot_acquire(prompt_ids, n_new)
     return -1
   end
   slot = SLOTS[best]
-  pre_lcp = api_lcp(STATE.kv_ids, prompt_ids)
+  pre_lcp = 0
+  if ad_scale == 0.0
+    pre_lcp = api_lcp(STATE.kv_ids, prompt_ids)
+  end
   if KV_REUSE_OFF
     best_lcp = 0
     pre_lcp  = 0
@@ -1005,6 +1043,9 @@ def api_slot_acquire(prompt_ids, n_new)
   slot.lp_alt_lps.clear
   slot.stop_strs.clear
   slot.stop_cut   = -1
+  slot.ad_scale   = ad_scale
+  slot.tap_layers.clear
+  slot.hidden.clear
   best
 end
 
@@ -1143,6 +1184,48 @@ def api_pump
       shared.push(slot.shared_n)
       k = k + 1
     end
+    # toy#218: each token's adapter scale, when any is not 0.
+    gates = [0.0]; gates.pop
+    any_ad = false
+    k = 0
+    while k < n_tok
+      if SLOTS[own[k]].ad_scale != 0.0
+        any_ad = true
+      end
+      k = k + 1
+    end
+    if any_ad
+      k = 0
+      while k < n_tok
+        gates.push(SLOTS[own[k]].ad_scale)
+        k = k + 1
+      end
+    end
+    # toy#218: the layers to read in this step, for the requests whose last
+    # prompt token is in it (their slot is still in phase 0), ascending.
+    taps = [0]; taps.pop
+    lay = 0
+    while lay <= STATE.cfg.n_layers
+      want = false
+      k = 0
+      while k < n_out
+        ts = SLOTS[b_own[k]]
+        if ts.phase == 0
+          j = 0
+          while j < ts.tap_layers.length
+            if ts.tap_layers[j] == lay
+              want = true
+            end
+            j = j + 1
+          end
+        end
+        k = k + 1
+      end
+      if want
+        taps.push(lay)
+      end
+      lay = lay + 1
+    end
     rows = n_out
     if rows == 0
       rows = 1   # a step needs an output: the last token's logits, unused
@@ -1153,7 +1236,42 @@ def api_pump
       one = SLOTS[own[0]]
       use_mask = n_tok > 1 || one.cells.length + one.shared_n != STATE.cell_hi
       t_logits = SmolLM2KV.decode_cells(kv, ids, pos, cells, rows, STATE.cell_hi, use_mask,
-                                        STATE.cell_owner, STATE.cell_pos, own, shared)
+                                        STATE.cell_owner, STATE.cell_pos, own, shared, gates, taps)
+      if taps.length > 0
+        d = STATE.cfg.d_model
+        buf = [0.0]; buf.pop
+        k = 0
+        while k < n_out * d
+          buf.push(0.0)
+          k = k + 1
+        end
+        ti = 0
+        while ti < taps.length
+          rc = TinyNN.tnn_download_to_f64_array(kv.sess, kv.last_taps[ti], buf, n_out * d)
+          if rc != 0
+            raise "hidden-state read failed rc=" + rc.to_s
+          end
+          k = 0
+          while k < n_out
+            ts = SLOTS[b_own[k]]
+            if ts.phase == 0
+              j = 0
+              while j < ts.tap_layers.length
+                if ts.tap_layers[j] == taps[ti]
+                  x = 0
+                  while x < d
+                    ts.hidden.push(buf[k * d + x])
+                    x = x + 1
+                  end
+                end
+                j = j + 1
+              end
+            end
+            k = k + 1
+          end
+          ti = ti + 1
+        end
+      end
     else
       k = 0
       while k < n_tok
@@ -1254,8 +1372,8 @@ end
 
 # Waits for an idle slot and returns its index (requests beyond SERVE_SLOTS
 # queue here, keeping the busy slots decoding while they wait).
-def api_slot_wait(prompt_ids, n_new)
-  si = api_slot_acquire(prompt_ids, n_new)
+def api_slot_wait(prompt_ids, n_new, ad_scale)
+  si = api_slot_acquire(prompt_ids, n_new, ad_scale)
   seen = STATE.step_seq
   while si < 0
     if seen == STATE.step_seq
@@ -1263,7 +1381,7 @@ def api_slot_wait(prompt_ids, n_new)
     end
     seen = STATE.step_seq
     api_yield
-    si = api_slot_acquire(prompt_ids, n_new)
+    si = api_slot_acquire(prompt_ids, n_new, ad_scale)
   end
   si
 end

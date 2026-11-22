@@ -1,4 +1,4 @@
-# lib/toy/core/cli/serve.rb — `toy serve <model.gguf> [--port N] [--name NAME] [--ctx N] [--device cpu|cuda] [--stop-ids N,M] [--prefix-file F] [--prefix-cache F] [--slots N]`.
+# lib/toy/core/cli/serve.rb — `toy serve <model.gguf> [--port N] [--name NAME] [--ctx N] [--device cpu|cuda] [--stop-ids N,M] [--prefix-file F] [--prefix-cache F] [--slots N] [--adapter F]`.
 #
 # Serve a GGUF model over an OpenAI-compatible HTTP API (CPU or CUDA). CRuby ONLY
 # (the CLI shell) — NO Spinel. Follows the infer/train/eval run-flow for
@@ -52,6 +52,7 @@ module Toy
           @device = "cpu"
           @stop_ids = nil
           @slots = nil
+          @adapter = nil
           @prefix_file = nil
           @prefix_cache = nil
         end
@@ -137,6 +138,8 @@ module Toy
           serve_env["STOP_IDS"] = @stop_ids if @stop_ids
           # toy#217: requests decoded at the same time (unset: one).
           serve_env["SLOTS"] = @slots.to_s if @slots
+          # toy#218: a LoRA GGUF applied beside the weights.
+          serve_env["ADAPTER"] = File.expand_path(@adapter) if @adapter
           serve_env["PREFIX_FILE"]  = File.expand_path(@prefix_file)  if @prefix_file
           serve_env["PREFIX_CACHE"] = File.expand_path(@prefix_cache) if @prefix_cache
           Kernel.exec(serve_env, runner)
@@ -202,6 +205,16 @@ module Toy
                 return bad_arg("--ctx must be a positive integer, got #{val.inspect}")
               end
               @ctx = val.to_i
+            when "--adapter"
+              i += 1
+              val = @argv[i]
+              return bad_arg("--adapter requires a value") if val.nil?
+              return bad_arg("no such file: #{val} (--adapter)") unless File.file?(val)
+              @adapter = val
+            when /\A--adapter=(.*)\z/
+              val = $1
+              return bad_arg("no such file: #{val} (--adapter)") unless File.file?(val)
+              @adapter = val
             when "--slots"
               i += 1
               val = @argv[i]

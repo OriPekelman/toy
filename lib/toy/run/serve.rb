@@ -17,6 +17,9 @@
 #                (`toy serve --stop-ids`; toy#209)
 #   SLOTS        requests decoded at the same time (`toy serve --slots`;
 #                default 1; toy#217)
+#   ADAPTER      a llama.cpp-format LoRA GGUF applied beside the weights
+#                (`toy serve --adapter`; a request scales it with
+#                "lora_scale"; toy#218)
 #   PORT         TCP port to bind (NEW -- replaces the old ARGV -p parse;
 #                `toy serve` owns the CLI UX now). Default 4567.
 #
@@ -132,6 +135,8 @@ Tep.get  "/v1/models",           Tep::Llm::OpenAI::ModelsHandler.new
 Tep.post "/v1/completions",      ToyCompletionsHandler.new(SERVE_BACKEND)
 Tep.post "/v1/chat/completions", ToyChatHandler.new(SERVE_BACKEND)
 Tep.post "/v1/embeddings",       Tep::Llm::OpenAI::EmbeddingsHandler.new
+# toy#218: the residual stream at a prompt's last token.
+Tep.post "/v1/hidden",           ToyHiddenHandler.new(SERVE_BACKEND)
 
 # PORT from the controlled env (NEW; replaces the ARGV -p/-w/-q parse the
 # tep_demo binary used -- `toy serve` owns the UX). CPU-only, workers=1,
