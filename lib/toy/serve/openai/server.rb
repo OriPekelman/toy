@@ -131,6 +131,11 @@ end
 
 GGUF_PATH = PACK_ON ? "@pack:model" : (ENV["MODEL_PATH"] || "data/smollm2-135m-native.gguf")
 MODEL_NAME_ENV = api_setting("MODEL_NAME")
+# toy#221: which weights answer, for the "toy" object in replies: the sha256
+# of the model file (`toy serve` hashes it; a pack carries it in its config)
+# and of the adapter file. "" when the runner was not told.
+MODEL_SHA256   = api_setting("MODEL_SHA256")
+ADAPTER_SHA256 = PACK_ON ? "" : (ENV["ADAPTER_SHA256"] || "")
 # Derive a default model name from the GGUF basename when not given.
 # basename: strip everything before the last "/"; then strip ".gguf".
 _mn_last_slash = GGUF_PATH.rindex("/")

@@ -34,12 +34,17 @@
 #   reuse     on one slot, a base request after an edited one with the same
 #             prompt reuses none of its cached rows, and a repeat at the
 #             same scale reuses them
+#   label     (toy#221) every reply names its weights: the "toy" object of
+#             completions, chat and hidden replies carries the sha256 of
+#             the model file, of the adapter file ("" without one) and
+#             the scale; the request event carries the scale
 #   refuse    an adapter whose matrix has the wrong width, one carrying a
 #             tensor that cannot be applied, and an adapter on the per-head
 #             graph (KV_FUSED=0) each exit with a message
 #
 #   ruby prep/serve_adapter_gate.rb [--device cuda]   # exit 0 pass, 1 fail, 2 unusable
 
+require "digest"
 require "net/http"
 require "json"
 require "socket"
@@ -119,7 +124,9 @@ def start_server(extra_env = {}, model = GGUF)
   FileUtils.mkdir_p(@run_dir)
   @logf = File.join(WORK, "serve_#{port}.log")
   env = { "MODEL_PATH" => model, "MODEL_NAME" => "gate", "PORT" => port.to_s,
-          "TOY_RUN_DIR" => @run_dir, "TOY_RUN_ID" => "adapter-gate" }.merge(extra_env)
+          "TOY_RUN_DIR" => @run_dir, "TOY_RUN_ID" => "adapter-gate",
+          "MODEL_SHA256" => Digest::SHA256.file(model).hexdigest }.merge(extra_env)
+  env["ADAPTER_SHA256"] = Digest::SHA256.file(env["ADAPTER"]).hexdigest if env["ADAPTER"] && File.file?(env["ADAPTER"])
   File.open(@logf, "w") do |lf|
     @pid = Process.spawn(env, *STDBUF, RUNNER, chdir: ROOT, pgroup: true, out: lf, err: lf, in: File::NULL)
   end
@@ -327,6 +334,18 @@ def gen(port, prompt, extra = {})
   [c["ids"], c.dig("logprobs", "content").map { |e| e["logprob"] }]
 end
 
+# The "toy" object of a completions, a chat and a hidden reply (toy#221).
+def labels(port, extra = {})
+  reqs = [["/v1/completions", { model: "gate", prompt: PROMPTS[0], max_tokens: 2 }],
+          ["/v1/chat/completions", { model: "gate", max_tokens: 2, messages: [{ role: "user", content: USERS[0] }] }],
+          ["/v1/hidden", { model: "gate", prompt: PROMPTS[0], layers: [1] }]]
+  reqs.map do |path, body|
+    code, out = post(port, path, body.merge(extra))
+    raise "#{path} HTTP #{code}: #{out[0, 200]}" unless code == 200
+    JSON.parse(out)["toy"]
+  end
+end
+
 # { layer => [d_model floats] } plus the reply's other fields under :meta.
 def hidden(port, prompt, extra = {})
   code, body = post(port, "/v1/hidden", { model: "gate", prompt: prompt }.merge(extra))
@@ -367,6 +386,7 @@ begin
   port = start_server
   ref_gen = PROMPTS.map { |p| gen(port, p) }
   ref_hid = PROMPTS.map { |p| hidden(port, p, layers: ALL) }
+  plain_labels = labels(port)
   port = start_server({}, MERGED)
   mer_gen = PROMPTS.map { |p| gen(port, p) }
   mer_hid = PROMPTS.map { |p| hidden(port, p, layers: ALL) }
@@ -505,6 +525,23 @@ begin
     ok.call("mixed", "#{jobs.length} base and edited requests at once on 2 slots each give what they give alone (generation and hidden state); #{shared} of them shared decode steps")
   else
     bad.call("mixed", "replies right #{right}; #{shared}/#{jobs.length} requests shared steps")
+  end
+
+  # label
+  sha_m = Digest::SHA256.file(GGUF).hexdigest
+  sha_a = Digest::SHA256.file(ADAPTER).hexdigest
+  want = ->(a, s) { { "model_sha256" => sha_m, "adapter_sha256" => a, "lora_scale" => s } }
+  n0 = request_events.length
+  got = { "no adapter" => [plain_labels, want.call("", 0.0)],
+          "adapter, no scale given" => [labels(port), want.call(sha_a, 1.0)],
+          "adapter, lora_scale 0" => [labels(port, lora_scale: 0), want.call(sha_a, 0.0)],
+          "adapter, lora_scale 0.5" => [labels(port, lora_scale: 0.5), want.call(sha_a, 0.5)] }
+  ev_scales = request_events[n0..].map { |e| e["lora_scale"] }
+  wrong_l = got.reject { |_, (g, w)| g.length == 3 && g.all? { |x| x == w } }
+  if wrong_l.empty? && ev_scales == [1.0] * 3 + [0.0] * 3 + [0.5] * 3 && sha_m != sha_a
+    ok.call("label", "completions, chat and hidden replies name the model file, the adapter file and the scale in 4 cases; 9 request events carry the scale")
+  else
+    bad.call("label", "wrong: #{wrong_l.map { |k, (g, w)| "#{k}: got #{g.inspect}, want #{w.inspect}" }.join('; ')}; event scales #{ev_scales.inspect}")
   end
   stop_server
 

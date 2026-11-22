@@ -184,7 +184,7 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
     end
     t_end = TinyNN.tnn_events_now_seconds
     emit_request_event(token_ids.length, n_out,
-                       ((t_end - t_start) * 1.0e6).to_i, n_new, cached, slot_i, shared)
+                       ((t_end - t_start) * 1.0e6).to_i, n_new, cached, slot_i, shared, ad_request(body))
     n_out
   end
 
@@ -317,6 +317,16 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
     1.0
   end
 
+  # toy#221: the weights a reply came from: the model file, the adapter
+  # file ("" without one) and the scale the adapter was applied at.
+  def prov_json(scale)
+    "\"toy\":{" +
+      SpinelKit::Json.encode_pair_str("model_sha256", MODEL_SHA256) + "," +
+      SpinelKit::Json.encode_pair_str("adapter_sha256", ADAPTER_SHA256) + "," +
+      "\"lora_scale\":" + scale.to_s +
+    "}"
+  end
+
   # POST /v1/hidden (toy#218): the residual stream at the last token of a
   # prompt. The prompt is `messages` (chat template applied, as in chat) or
   # `prompt` (text or token ids, as in completions). `layers` lists what to
@@ -431,7 +441,7 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
       end
       t_end = TinyNN.tnn_events_now_seconds
       emit_request_event(token_ids.length, 0, ((t_end - t_start) * 1.0e6).to_i, 0,
-                         slot.cached, slot_i, slot.shared_steps)
+                         slot.cached, slot_i, slot.shared_steps, scale)
       out = "{" + SpinelKit::Json.encode_pair_str("object", "hidden_states") + "," +
             SpinelKit::Json.encode_pair_str("model", SpinelKit::Json.get_str(body, "model")) + "," +
             "\"layers\":" + SpinelKit::Json.from_int_array(layers) + "," +
@@ -439,6 +449,7 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
             SpinelKit::Json.encode_pair_int("prompt_tokens", token_ids.length) + "," +
             SpinelKit::Json.encode_pair_int("d_model", d) + "," +
             "\"lora_scale\":" + scale.to_s + "," +
+            prov_json(scale) + "," +
             "\"data\":["
       li = 0
       while li < layers.length
@@ -476,6 +487,8 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
   # request event. A Ruby exception becomes a 500 reply (toy#214).
   def serve_generate(rep, body, token_ids, n_new_req)
     rep.prompt_tokens = token_ids.length
+    scale = ad_request(body)
+    rep.prov = prov_json(scale)
     stops = api_json_str_list(body, "stop")
     top   = lp_request(body)
     if (stops.length > 0 || top >= 0) && !@state.tok.present
@@ -505,7 +518,7 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
       new_ids = slot.out_ids
       t_end   = TinyNN.tnn_events_now_seconds
       emit_request_event(token_ids.length, new_ids.length,
-                         ((t_end - t_start) * 1.0e6).to_i, n_new, slot.cached, slot_i, slot.shared_steps)
+                         ((t_end - t_start) * 1.0e6).to_i, n_new, slot.cached, slot_i, slot.shared_steps, scale)
       rep.completion_tokens = new_ids.length
       rep.finish = slot.finish
       if @state.tok.present
@@ -639,7 +652,7 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
     new_ids = slot.out_ids
     t_end   = TinyNN.tnn_events_now_seconds
     emit_request_event(token_ids.length, new_ids.length,
-                       ((t_end - t_start) * 1.0e6).to_i, n_new, slot.cached, slot.idx, slot.shared_steps)
+                       ((t_end - t_start) * 1.0e6).to_i, n_new, slot.cached, slot.idx, slot.shared_steps, ad_request(""))
 
     comp.token_ids         = new_ids
     comp.prompt_tokens     = token_ids.length
@@ -656,7 +669,7 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
   # events state. Byte-identical to the retired handler's.
   # toy#217: `slot` is the slot that served it and `shared_steps` the decode
   # steps it shared with at least one other request.
-  def emit_request_event(n_prompt, n_completion, latency_us, n_new, cached, slot, shared_steps)
+  def emit_request_event(n_prompt, n_completion, latency_us, n_new, cached, slot, shared_steps, scale)
     if TinyNN.tnn_events_active == 1
       @state.req_seq = @state.req_seq + 1
       req_id = "req-" + @state.req_seq.to_s
@@ -670,6 +683,7 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
       ev = ev +   ",\"cached_tokens\":"     + cached.to_s
       ev = ev +   ",\"slot\":"              + slot.to_s
       ev = ev +   ",\"shared_steps\":"      + shared_steps.to_s
+      ev = ev +   ",\"lora_scale\":"        + scale.to_s
       ev = ev +   ",\"latency_us\":"        + latency_us.to_s
       ev = ev +   ",\"sampling\":{\"max_tokens\":" + n_new.to_s + "}"
       ev = ev +   ",\"request_id\":\"" + req_id + "\""
@@ -740,7 +754,7 @@ end
 # completion; anything else carries an error message and type.
 class ToyReply
   attr_accessor :status, :err_type, :err_msg, :id, :text, :ids, :with_ids
-  attr_accessor :prompt_tokens, :completion_tokens, :finish, :lp_json
+  attr_accessor :prompt_tokens, :completion_tokens, :finish, :lp_json, :prov
 
   def initialize
     @status   = 200
@@ -755,6 +769,7 @@ class ToyReply
     @completion_tokens = 0
     @finish   = "stop"
     @lp_json  = ""
+    @prov     = ""
   end
 
   def fail(status, type, msg)
@@ -825,7 +840,8 @@ class ToyChatHandler < Tep::Handler
         rep.lp_frag +
         SpinelKit::Json.encode_pair_str("finish_reason", rep.finish) +
       "}]," +
-      rep.usage_json +
+      rep.usage_json + "," +
+      rep.prov +
     "}"
   end
 end
@@ -864,7 +880,8 @@ class ToyCompletionsHandler < Tep::Handler
         rep.lp_frag +
         SpinelKit::Json.encode_pair_str("finish_reason", rep.finish) +
       "}]," +
-      rep.usage_json +
+      rep.usage_json + "," +
+      rep.prov +
     "}"
   end
 end

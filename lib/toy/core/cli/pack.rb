@@ -99,6 +99,8 @@ module Toy
             config << "STOP_IDS=#{@stop_ids}\n" if @stop_ids
             config << "SLOTS=#{@slots}\n" if @slots
             $stderr.puts "toy pack: hashing the model..."
+            # toy#221: replies name the weights that produced them.
+            config << "MODEL_SHA256=#{Digest::SHA256.file(model).hexdigest}\n"
             describe = describe_text(root, model, name, runner, target, prefix, prefix_tokens, config)
 
             entries = [["model", model]]

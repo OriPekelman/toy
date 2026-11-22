@@ -28,6 +28,7 @@
 #
 # NO --json: serve is persistent and returns no result envelope.
 
+require "digest"
 require "fileutils"
 require_relative "exit_codes"
 require_relative "../toy_root"
@@ -140,6 +141,9 @@ module Toy
           serve_env["SLOTS"] = @slots.to_s if @slots
           # toy#218: a LoRA GGUF applied beside the weights.
           serve_env["ADAPTER"] = File.expand_path(@adapter) if @adapter
+          # toy#221: replies name the weights that produced them.
+          serve_env["MODEL_SHA256"]   = Digest::SHA256.file(path).hexdigest
+          serve_env["ADAPTER_SHA256"] = Digest::SHA256.file(@adapter).hexdigest if @adapter
           serve_env["PREFIX_FILE"]  = File.expand_path(@prefix_file)  if @prefix_file
           serve_env["PREFIX_CACHE"] = File.expand_path(@prefix_cache) if @prefix_cache
           Kernel.exec(serve_env, runner)

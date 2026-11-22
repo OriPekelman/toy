@@ -277,6 +277,15 @@ begin
     failures << "same: replies differ from the plain runner's (packed #{got.inspect} vs #{ref.inspect})"
   end
 
+  # ---- label (toy#221) ----
+  lab = post(port, "/v1/completions", "model" => "gate", "prompt" => PROMPT_IDS, "max_tokens" => 1)["toy"]
+  sha = Digest::SHA256.file(GGUF).hexdigest
+  if lab == { "model_sha256" => sha, "adapter_sha256" => "", "lora_scale" => 0.0 }
+    ok.call("label", "a reply names the packed model by the sha256 of the GGUF it was packed from")
+  else
+    failures << "label: the reply's \"toy\" object is #{lab.inspect}; expected model_sha256 #{sha}"
+  end
+
   # ---- prefix ----
   restored = packed_log[/KV prefix: restored (\d+) tokens from @pack:kv/, 1].to_i
   p = []
