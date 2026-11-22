@@ -42,11 +42,9 @@ series of commits as the pin move:
   (`train_franken_moe_cli.rb`'s placeholder batch).
 - **Byte-assembled strings are binary**, as in CRuby; the tokenizer's
   GPT-2 byte map depended on the old behaviour.
-- **`RUBY_ENGINE` is defined** (`"spinel"`), which trips vendored tep
-  0.11.7's stock-Ruby guard — see the note under `serve` in
-  [`cli.md`](cli.md) and OriPekelman/tep#272. This one is NOT fixed in
-  the tree: `vendor/` is gitignored, so the one-line patch has to be
-  re-applied after `make vendor-tep` until tep ships it.
+- **`RUBY_ENGINE` is defined** (`"spinel"`), which tripped vendored tep
+  0.11.7's stock-Ruby guard (OriPekelman/tep#272). Fixed in tep 0.11.8;
+  the Gemfile requires `~> 0.11.10`.
 - **One compiler bug**, worked around with an RBS seed in
   `sig/toy.rbs`: matz/spinel#11623 (a `.seed` call on an untyped
   receiver resolves to `Random#seed` and the C does not compile; still

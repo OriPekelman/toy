@@ -238,7 +238,7 @@ begin
       ok.call("nonascii", "non-ASCII message answered, #{want} prompt tokens")
     end
   rescue Net::ReadTimeout
-    failures << "nonascii: request with a non-ASCII body stalled (tep reads the body by character count before 0.11.8)"
+    failures << "nonascii: request with a non-ASCII body stalled (tep reads the body by character count before 0.11.9)"
     port = start_server(TOK_GGUF)
   end
 

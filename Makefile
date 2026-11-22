@@ -189,9 +189,10 @@ vendor-tep:
 	@# f6a189e8). Spinel loads deps via the topo require_relatives; the
 	@# prelude only serves plain-CRuby runs, which toy's serve never does.
 	sed -i '/^\$$LOAD_PATH\.unshift/d' vendor/spinel/deps.rb
-	@# toy#209 / tep#272: three fixes that are on tep main but not in the
-	@# released gem. REMOVE WHEN the Gemfile resolves to a tep that has them
-	@# (the script then reports every edit as already fixed).
+	@# Two fixes not in a released gem yet: scheduler tie fairness (tep#291)
+	@# and \\uXXXX decoding in SpinelKit::Json (toy#215). REMOVE WHEN the
+	@# Gemfile resolves to releases that have them (the script then reports
+	@# every edit as already fixed).
 	ruby prep/patch_vendored_tep.rb
 	@# toy#69 — fold the vendored gems' aggregated sig root (advertised
 	@# by vendor/spinel/deps.rb, spinelgems#13) into toy's own --rbs
