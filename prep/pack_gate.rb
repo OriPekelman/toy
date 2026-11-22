@@ -350,7 +350,7 @@ begin
     ok.call("stdin", "a start writes nothing to a socket on its standard input")
   else
     failures << "stdin: a start wrote #{got.bytesize} byte(s) to its standard input " \
-                "(#{got[0, 24].inspect}); run `make vendor-tep` or `ruby prep/patch_vendored_tep.rb`" unless got.empty?
+                "(#{got[0, 24].inspect}); needs tep >= 0.11.10 (tep#283): run `make vendor-tep`" unless got.empty?
     failures << "stdin: --describe with a socket on stdin exited #{st.exitstatus}" unless st.success?
   end
 

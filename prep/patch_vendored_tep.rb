@@ -1,25 +1,10 @@
 #!/usr/bin/env ruby
-# prep/patch_vendored_tep.rb — carry tep fixes that are on tep `main` but
-# not in the 0.11.x gem that `make vendor-tep` pulls (asked for in tep#276).
+# prep/patch_vendored_tep.rb — carry fixes to the vendored tep and
+# spinel_kit that are not in a released gem yet.
 #
-#   guard    tep.rb's stock-Ruby guard fires inside every compiled app at
-#            Spinel 2026.10.25, which defines RUBY_ENGINE ("spinel"): the
-#            server exits at boot (tep#272). Fixed in 0.11.8; kept so a
-#            lock still at 0.11.7 works.
-#   reqbody  the request body is read until its CHARACTER count reaches
-#            Content-Length (bytes): any request with a non-ASCII byte in
-#            the body stalls until the client gives up (toy#209).
-#   reslen   Content-Length of a response is its character count: a reply
-#            with non-ASCII text is cut short (toy#209).
-#
-#   seedfd   tep.rb's boot-time type seeds build a Stream and two WebSocket
-#            drivers on file descriptor 0 and write test frames to it (8
-#            sendto(0, ...) calls per process start). On a pipe, a file or
-#            a terminal they fail with ENOTSOCK and nothing shows. When
-#            stdin IS a socket they land in it, and once an unread socket
-#            fills, the next start blocks forever before the server's
-#            first line (the gate-pack-cuda "never became ready" timeout).
-#            The seeds now use descriptor -1.
+# The byte-length, stock-Ruby-guard and seed-descriptor edits that used to
+# be here shipped in tep 0.11.8 - 0.11.10 (tep#272, tep#276, tep#283) and
+# were dropped when the Gemfile moved to `~> 0.11.10`. Two remain:
 #
 #   jsonu    the JSON decoder tep and toy share (SpinelKit::Json, vendored
 #            twice) turned every \\uXXXX escape above ASCII into "?": a
@@ -42,8 +27,9 @@
 # text: already fixed -> left alone; original text -> replaced; neither ->
 # exit 1 (tep changed under us — re-check and update or delete this file).
 #
-# DELETE THIS FILE and its vendor-tep line once the Gemfile resolves to a
-# tep release that reports "already fixed" for every edit.
+# DELETE THIS FILE and its vendor-tep line once the Gemfile resolves to
+# tep and spinel_kit releases that report "already fixed" for every edit
+# (fairtick: tep#291; jsonu: toy#215).
 
 ROOT = File.expand_path("..", __dir__)
 LIB  = File.join(ROOT, "vendor", "spinel", "tep", "lib")
@@ -53,42 +39,6 @@ JSONU_TO = "          elsif esc == \"u\"\n            # \\uXXXX -> the UTF-8 byt
 JSONU_HELPERS = "    # Four hex digits at s[at, 4] as an integer; -1 when they are not there.\n    def self.hex4(s, at)\n      if at + 3 >= s.length\n        return -1\n      end\n      v = 0\n      i = 0\n      while i < 4\n        h = Json.hex_nibble(s[at + i])\n        if h < 0\n          return -1\n        end\n        v = v * 16 + h\n        i += 1\n      end\n      v\n    end\n\n    # A code point as UTF-8. A surrogate on its own is U+FFFD.\n    def self.cp_to_utf8(cp)\n      if cp < 0x80\n        return cp.chr\n      end\n      if cp >= 0xD800 && cp <= 0xDFFF\n        cp = 0xFFFD\n      end\n      if cp < 0x800\n        return ((0xC0 | (cp >> 6)).chr + (0x80 | (cp & 0x3F)).chr).force_encoding(\"UTF-8\")\n      end\n      if cp < 0x10000\n        return ((0xE0 | (cp >> 12)).chr + (0x80 | ((cp >> 6) & 0x3F)).chr +\n                (0x80 | (cp & 0x3F)).chr).force_encoding(\"UTF-8\")\n      end\n      ((0xF0 | (cp >> 18)).chr + (0x80 | ((cp >> 12) & 0x3F)).chr +\n       (0x80 | ((cp >> 6) & 0x3F)).chr + (0x80 | (cp & 0x3F)).chr).force_encoding(\"UTF-8\")\n    end\n\n    def self.hex_nibble(c)\n"
 
 EDITS = [
-  ["guard", "tep.rb",
-   "if defined?(RUBY_ENGINE)\n",
-   "if defined?(RUBY_ENGINE) && RUBY_ENGINE != \"spinel\"\n"],
-  ["reqbody", "tep/request.rb",
-   "      already = @raw_body.length\n",
-   "      already = @raw_body.bytesize\n"],
-  ["reqbody", "tep/request.rb",
-   "      while @raw_body.length < cl\n",
-   "      while @raw_body.bytesize < cl\n"],
-  ["reqbody", "tep/request.rb",
-   "cl - @raw_body.length)\n        if chunk.length == 0",
-   "cl - @raw_body.bytesize)\n        if chunk.bytesize == 0"],
-  ["reslen", "tep/server.rb",
-   "res.headers[\"Content-Length\"] = res.body.length.to_s",
-   "res.headers[\"Content-Length\"] = res.body.bytesize.to_s"],
-  ["reslen", "tep/server.rb",
-   "\"Content-Length: \" + body.length.to_s",
-   "\"Content-Length: \" + body.bytesize.to_s"],
-  ["reslen", "tep/server_scheduled.rb",
-   "\"Content-Length: \" + res.body.length.to_s",
-   "\"Content-Length: \" + res.body.bytesize.to_s"],
-  ["reslen", "tep/server_scheduled.rb",
-   "\"Content-Length: \" + msg.length.to_s",
-   "\"Content-Length: \" + msg.bytesize.to_s"],
-  ["seedfd", "tep.rb",
-   "  _tep_seed_stream = Stream.new(0)\n",
-   "  _tep_seed_stream = Stream.new(-1)\n"],
-  ["seedfd", "tep.rb",
-   "_tep_seed_res.start_websocket(\"\", Tep::WebSocket::Driver.new(0))",
-   "_tep_seed_res.start_websocket(\"\", Tep::WebSocket::Driver.new(-1))"],
-  ["seedfd", "tep.rb",
-   "_tep_seed_llm_stream = Tep::Stream.new(0)",
-   "_tep_seed_llm_stream = Tep::Stream.new(-1)"],
-  ["seedfd", "tep.rb",
-   "_tep_seed_ws_drv = Tep::WebSocket::Driver.new(0)",
-   "_tep_seed_ws_drv = Tep::WebSocket::Driver.new(-1)"],
   ["fairtick", "tep/app.rb",
    "    attr_accessor :sched_fibers, :sched_wake_at, :sched_current\n",
    "    attr_accessor :sched_fibers, :sched_wake_at, :sched_current, :sched_last\n"],
