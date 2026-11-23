@@ -44,7 +44,7 @@ series of commits as the pin move:
   GPT-2 byte map depended on the old behaviour.
 - **`RUBY_ENGINE` is defined** (`"spinel"`), which tripped vendored tep
   0.11.7's stock-Ruby guard (OriPekelman/tep#272). Fixed in tep 0.11.8;
-  the Gemfile requires `~> 0.11.10`.
+  the Gemfile requires `~> 0.11.12`.
 - **One compiler bug**, worked around with an RBS seed in
   `sig/toy.rbs`: matz/spinel#11623 (a `.seed` call on an untyped
   receiver resolves to `Random#seed` and the C does not compile; still

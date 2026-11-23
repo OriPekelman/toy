@@ -411,18 +411,16 @@ The serve stack lives at `lib/toy/serve/openai/` and is driven by
 `gate-serve-slots-cuda`, `gate-serve-adapter`, `gate-serve-adapter-cuda`,
 `gate-kv-prefix` and `gate-kv-prefix-cuda` cover it.
 
-> **Two fixes are carried as vendored patches**, applied by
+> **One fix is carried as a vendored patch**, applied by
 > `make vendor-tep` (`prep/patch_vendored_tep.rb`), so nothing has to be
-> done by hand:
+> done by hand: a `\uXXXX` escape above ASCII in a request body was
+> decoded to `?` (toy#215); it is now decoded to UTF-8.
 >
-> - the fiber scheduler resumes the lowest-numbered ready fiber on a tie,
->   so with `--slots` one request ran alone while the others waited; ties
->   now go round-robin ([OriPekelman/tep#291](https://github.com/OriPekelman/tep/issues/291));
-> - a `\uXXXX` escape above ASCII in a request body was decoded to `?`
->   (toy#215); it is now decoded to UTF-8.
->
-> The byte-length, boot-guard and stdin-seed fixes that used to be patched
-> in are part of tep 0.11.10, which the Gemfile requires.
+> The byte-length, boot-guard, stdin-seed and scheduler-fairness fixes that
+> used to be patched in are part of tep 0.11.12, which the Gemfile requires.
+> `--slots` needs the last one
+> ([OriPekelman/tep#291](https://github.com/OriPekelman/tep/issues/291)):
+> before it, one request ran alone while the others waited.
 >
 > `infer`/`train`/`eval` don't link tep and are unaffected.
 
