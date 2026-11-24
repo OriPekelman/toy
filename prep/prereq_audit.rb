@@ -42,7 +42,10 @@ HEADER = %r{^(libexec/[a-z0-9._-]+):([ \t]*)((?:[^\n]*\\\n)*[^\n]*\n)}
 def closure(path, seen = {})
   return seen if seen[path] || !File.file?(path)
   seen[path] = true
-  File.read(path).scan(/^\s*require_relative\s+["']([^"']+)["']/) do |(rel)|
+  # A require marked `# cruby-only` sits behind `if RUBY_ENGINE != "spinel"`
+  # and is dropped by Spinel at compile time (toy#175; gate-mri's `entry`
+  # leg checks that), so it is not a prerequisite of any compiled runner.
+  File.read(path).scan(/^\s*require_relative\s+["']([^"']+)["'](?![^\n]*#\s*cruby-only)/) do |(rel)|
     p2 = File.expand_path(rel, File.dirname(path))
     p2 += ".rb" unless p2.end_with?(".rb")
     closure(p2, seen)

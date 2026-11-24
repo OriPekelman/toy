@@ -68,6 +68,12 @@ class FFNFFICacheMetal
   end
 end
 
+# toy#175: under CRuby the declarations below need lib/toy/mri/shim.rb.
+# Spinel resolves this guard at compile time and drops the require.
+if RUBY_ENGINE != "spinel"
+  require_relative "../mri/shim"   # cruby-only
+end
+
 module TinyNNMetal
   # Linking order: the Metal-specific archive first (force-link symbol
   # lives there), then the common tinynn_ggml C wrappers, then ggml-
