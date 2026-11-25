@@ -413,8 +413,7 @@ What it costs and what it does not do:
 - One adapter per server, chosen at start. The file must be F32 or F16,
   and every tensor in it must be one of the pairs above (anything else is
   refused at boot rather than skipped).
-- Fused decode graph only (as `--slots`); `toy pack` does not embed an
-  adapter.
+- Fused decode graph only (as `--slots`).
 - Measured: on the F32 fixture the adapter and a model with the delta
   written into its weights give the same ids, log-probabilities within
   5e-6 and hidden states within 5e-7 on CPU (5e-3 and 1e-3 on CUDA, where
@@ -458,7 +457,7 @@ The serve stack lives at `lib/toy/serve/openai/` and is driven by
 >
 > `infer`/`train`/`eval` don't link tep and are unaffected.
 
-### `pack <model> -o <artifact> [--prefix F] [--name NAME] [--device cpu|cuda] [--ctx N] [--port PORT] [--stop-ids N,M] [--slots N]`
+### `pack <model> -o <artifact> [--prefix F] [--name NAME] [--device cpu|cuda] [--ctx N] [--port PORT] [--stop-ids N,M] [--slots N] [--adapter F]`
 Build one executable that carries the model and serves it with no arguments
 (toy#211).
 
@@ -478,6 +477,11 @@ What is inside:
   computed once at pack time on `--device`. The artifact restores it at boot
   instead of evaluating it. Requests that start with that system message
   skip it, as with `toy serve --prefix-cache`.
+- **An adapter** for `--adapter F` (toy#219): the LoRA GGUF byte for byte,
+  applied as `toy serve --adapter` applies it. Requests choose with
+  `"lora_scale"` (default 1; 0 is the model alone), and replies carry the
+  adapter's sha256. Packing loads the adapter on the model once and
+  refuses one the model cannot take.
 - **A fixed config**: name, context, stop ids, default port, default
   number of slots.
 - **A description**: the `toy describe` card, the model's sha256, the toy,

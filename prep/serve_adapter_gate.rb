@@ -44,6 +44,12 @@
 #             completions, chat and hidden replies carries the sha256 of
 #             the model file, of the adapter file ("" without one) and
 #             the scale; the request event carries the scale
+#   packed    (toy#219) `toy pack --adapter` puts the adapter in the
+#             artifact: started with an empty environment it gives the
+#             edited model's ids by default and the base model's at
+#             "lora_scale" 0, labels its replies with the adapter's sha256,
+#             and names the adapter in --describe; an adapter the model
+#             cannot take is refused when packing
 #   refuse    an adapter whose matrix has the wrong width, one carrying a
 #             tensor that cannot be applied, and an adapter on the per-head
 #             graph (KV_FUSED=0) each exit with a message
@@ -592,6 +598,55 @@ begin
     bad.call("label", "wrong: #{wrong_l.map { |k, (g, w)| "#{k}: got #{g.inspect}, want #{w.inspect}" }.join('; ')}; event scales #{ev_scales.inspect}")
   end
   stop_server
+
+  # packed (toy#219)
+  art = File.join(WORK, "packed-adapter")
+  pout, pst = Open3.capture2e(File.join(ROOT, "bin", "toy"), "pack", GGUF, "--adapter", ADAPTER, "--device", DEVICE,
+                              "--name", "gate", "-o", art)
+  if !pst.success?
+    bad.call("packed", "toy pack --adapter exited #{pst.exitstatus}: #{pout.lines.last(4).join.strip}")
+  else
+    sock = TCPServer.new("127.0.0.1", 0)
+    port = sock.addr[1]
+    sock.close
+    empty = File.join(WORK, "empty")
+    FileUtils.mkdir_p(empty)
+    @logf = File.join(WORK, "packed_#{port}.log")
+    File.open(@logf, "w") do |lf|
+      @pid = Process.spawn({}, *STDBUF, art, "--port", port.to_s, chdir: empty, pgroup: true, out: lf, err: lf,
+                           in: File::NULL, unsetenv_others: true)
+    end
+    up = false
+    deadline = Time.now + 180
+    while Time.now < deadline && !up && !Process.waitpid(@pid, Process::WNOHANG)
+      up = (Net::HTTP.get_response(URI("http://127.0.0.1:#{port}/health")).code == "200" rescue false)
+      sleep 0.2 unless up
+    end
+    if !up
+      @pid = nil unless up
+      bad.call("packed", "the artifact did not serve:\n#{File.read(@logf).lines.last(6).join}")
+    else
+      p_ed   = PROMPTS.map { |pr| gen(port, pr) }
+      p_base = PROMPTS.map { |pr| gen(port, pr, lora_scale: 0) }
+      lab    = labels(port)[0]
+      desc, = Open3.capture2e(art, "--describe")
+      sha_ad = Digest::SHA256.file(ADAPTER).hexdigest
+      ids_ok = p_ed.map(&:first) == ed_gen.map(&:first) && p_base.map(&:first) == ref_gen.map(&:first) &&
+               ed_gen.map(&:first) != ref_gen.map(&:first)
+      lp_ok  = PROMPTS.each_index.all? { |i| lp_diff(p_ed[i][1], ed_gen[i][1]) < TOL_LP }
+      wrong_ad = File.join(WORK, "pack-wrong.gguf")
+      write_adapter(wrong_ad, ALPHA, [["blk.3.ffn_down", D_MODEL, D_MODEL, 1]], [[Array.new(D_MODEL, 0.1), Array.new(D_MODEL, 0.1)]])
+      _, wst = Open3.capture2e(File.join(ROOT, "bin", "toy"), "pack", GGUF, "--adapter", wrong_ad, "--device", DEVICE,
+                               "-o", File.join(WORK, "packed-wrong"))
+      if ids_ok && lp_ok && lab["adapter_sha256"] == sha_ad && lab["lora_scale"] == 1.0 && desc.include?(sha_ad) &&
+         !wst.success? && !File.exist?(File.join(WORK, "packed-wrong"))
+        ok.call("packed", "an artifact packed with the adapter, started with an empty environment, gives the edited ids by default and the base ids at lora_scale 0, labels replies with the adapter's sha256 and describes it; a mis-shaped adapter is refused at pack time")
+      else
+        bad.call("packed", "ids right #{ids_ok}, log-probabilities right #{lp_ok}, label #{lab.inspect}, describe names the adapter #{desc.include?(sha_ad)}, mis-shaped adapter refused #{!wst.success?}")
+      end
+    end
+    stop_server
+  end
 
   # refuse
   wrong = File.join(WORK, "wrong.gguf")

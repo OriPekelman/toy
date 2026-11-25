@@ -135,7 +135,7 @@ MODEL_NAME_ENV = api_setting("MODEL_NAME")
 # of the model file (`toy serve` hashes it; a pack carries it in its config)
 # and of the adapter file. "" when the runner was not told.
 MODEL_SHA256   = api_setting("MODEL_SHA256")
-ADAPTER_SHA256 = PACK_ON ? "" : (ENV["ADAPTER_SHA256"] || "")
+ADAPTER_SHA256 = api_setting("ADAPTER_SHA256")
 # Derive a default model name from the GGUF basename when not given.
 # basename: strip everything before the last "/"; then strip ".gguf".
 _mn_last_slash = GGUF_PATH.rindex("/")
@@ -157,7 +157,8 @@ KV_REUSE_OFF = (ENV["KV_REUSE"] || "") == "0"
 # toy#218: a llama.cpp-format LoRA GGUF applied beside the model's weights
 # (`toy serve --adapter`). A request scales it with "lora_scale" (default
 # 1; 0 = the unedited model), so both weight sets answer from one process.
-ADAPTER_PATH = ENV["ADAPTER"] || ""
+# toy#219: a pack made with --adapter carries the file as its "adapter" entry.
+ADAPTER_PATH = PACK_ON ? (TinyNN.tnn_pack_has("adapter") == 1 ? "@pack:adapter" : "") : (ENV["ADAPTER"] || "")
 # toy#217: how many requests are decoded at the same time (`toy serve
 # --slots N`; in a pack --slots, then SLOTS, then the packed default).
 # 1 serves one request at a time, as before.
