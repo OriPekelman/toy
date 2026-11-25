@@ -18,6 +18,22 @@
 #             JSON decoder turned each escape into "?")
 #   stream    "stream":true frames concatenate to the non-streamed content,
 #             every frame is valid JSON, and the stream ends with [DONE]
+#   streamlp  (toy#219) a streamed reply is toy's own: with logprobs its
+#             frames' entries are exactly those of the non-streamed reply,
+#             with and without a stop string; the last frame has the real
+#             finish_reason ("length" at max_tokens), the usage and the
+#             "toy" label; /v1/completions streams the text and ids of its
+#             non-streamed form; an empty messages array is HTTP 400
+#   jsonfmt   (toy#219) "response_format":{"type":"json_object"} keeps the
+#             reply the start of a JSON object (the plain reply is not),
+#             streamed too; continuing a partial assistant message that
+#             opens an object ends when the object closes, with "stop", and
+#             the whole parses; {"type":"text"} changes nothing; a schema,
+#             and a partial message that is not JSON, are HTTP 400. The
+#             checker itself is tested on a table of texts first.
+#   jsonfar   (toy#219) with the step's own ranking cut to one token
+#             (SERVE_TEST_JSON_TOP=1) the replies are the same: the second,
+#             deeper read of the logits finds the same tokens
 #   stop      with STOP_IDS the same request ends early with finish_reason
 #             "stop" and the stop id is not in the reply; without it the
 #             request runs to max_tokens with "length"
@@ -57,6 +73,7 @@ require "socket"
 require "timeout"
 require "tmpdir"
 require "open3"
+require_relative "../lib/toy/serve/openai/json_prefix"
 
 ROOT    = File.expand_path("..", __dir__)
 DEVICE  = (i = ARGV.index("--device")) ? ARGV[i + 1].to_s : "cpu"
@@ -161,6 +178,26 @@ def post(port, path, payload, timeout = 120)
     req.body = JSON.dump(payload)
     h.request(req)
   end
+end
+
+# A streamed POST: [HTTP code, frames as parsed JSON, saw [DONE], raw body].
+def sse(port, path, payload)
+  buf = +""
+  code = nil
+  Net::HTTP.start("127.0.0.1", port, open_timeout: 2, read_timeout: 120) do |h|
+    req = Net::HTTP::Post.new(path, "Content-Type" => "application/json")
+    req.body = JSON.dump(payload.merge("stream" => true))
+    h.request(req) { |resp| code = resp.code; resp.read_body { |chunk| buf << chunk } }
+  end
+  return [code, [], false, buf] unless code == "200"
+  data = buf.split("\n\n").map { |ev| ev.sub(/\Adata: /, "").strip }.reject(&:empty?)
+  [code, data.reject { |d| d == "[DONE]" }.map { |d| JSON.parse(d) }, data.last == "[DONE]", buf]
+end
+
+# [is `text` the start of a JSON object, is the object closed]
+def json_prefix(text)
+  j = JsonPrefix.new
+  [j.feed(text), j.complete]
 end
 
 # Ids of `text` from the standalone encoder (not the server).
@@ -419,6 +456,105 @@ begin
     ok.call("stream", "#{frames.length} frames, content equals the non-streamed reply")
   end
 
+  # ---- streamlp (toy#219) ----
+  e = []
+  lp_req = chat_req.merge("logprobs" => true, "top_logprobs" => 3)
+  stop_mid = chat_content[chat_content.length / 2, 3].to_s
+  [["no stop", lp_req], ["stop #{stop_mid.inspect}", lp_req.merge("stop" => stop_mid)]].each do |name, rq|
+    r = post(port, "/v1/chat/completions", rq)
+    ref = r.code == "200" ? JSON.parse(r.body) : {}
+    want_lp = ref.dig("choices", 0, "logprobs", "content").to_a
+    code, fr, done, = sse(port, "/v1/chat/completions", rq)
+    got_lp = fr.flat_map { |f| f.dig("choices", 0, "logprobs", "content").to_a }
+    got_text = fr.map { |f| f.dig("choices", 0, "delta", "content").to_s }.join
+    e << "#{name}: HTTP #{code}, [DONE] #{done}" unless code == "200" && done
+    e << "#{name}: no reference entries" if want_lp.empty?
+    e << "#{name}: #{got_lp.length} streamed entries differ from the #{want_lp.length} non-streamed ones" unless got_lp == want_lp
+    e << "#{name}: streamed text #{got_text.inspect} differs from #{ref.dig("choices", 0, "message", "content").inspect}" \
+      unless got_text == ref.dig("choices", 0, "message", "content")
+    last = fr.last || {}
+    e << "#{name}: last frame finish_reason #{last.dig("choices", 0, "finish_reason").inspect}, expected #{ref.dig("choices", 0, "finish_reason").inspect}" \
+      unless last.dig("choices", 0, "finish_reason") == ref.dig("choices", 0, "finish_reason")
+    e << "#{name}: last frame usage #{last["usage"].inspect}, expected #{ref["usage"].inspect}" unless last["usage"] == ref["usage"]
+    e << "#{name}: last frame label #{last["toy"].inspect}, expected #{ref["toy"].inspect}" unless last["toy"] == ref["toy"] && ref["toy"]
+    e << "#{name}: frames do not share one chatcmpl- id" unless fr.map { |f| f["id"] }.uniq.length == 1 && fr[0]["id"].to_s.start_with?("chatcmpl-") && fr[0]["id"] != "chatcmpl-tep"
+    e << "#{name}: only #{fr.length} frames" unless fr.length >= 4
+  end
+  code, fr, done, = sse(port, "/v1/chat/completions", chat_req)
+  e << "a plain stream carries a logprobs field" if fr.any? { |f| f["choices"][0].key?("logprobs") }
+  e << "a plain stream ends with #{fr.last.to_h.dig("choices", 0, "finish_reason").inspect}, expected \"length\"" \
+    unless fr.last.to_h.dig("choices", 0, "finish_reason") == "length"
+  code, fr, done, = sse(port, "/v1/completions", "model" => "gate", "prompt" => PROMPT, "max_tokens" => 10)
+  s_ids  = fr.flat_map { |f| f.dig("choices", 0, "ids").to_a }
+  s_text = fr.map { |f| f.dig("choices", 0, "text").to_s }.join
+  e << "/v1/completions stream: HTTP #{code}, ids #{s_ids.inspect}, expected #{plain_ids.inspect}" unless code == "200" && done && s_ids == plain_ids
+  e << "/v1/completions stream: text #{s_text.inspect} does not re-encode to its ids" unless encode(TOK_GGUF, s_text, true) == plain_ids
+  code, _, _, raw = sse(port, "/v1/chat/completions", "model" => "gate", "messages" => [])
+  e << "empty messages streamed: HTTP #{code} #{raw[0, 80].inspect}, expected 400 with an error object" \
+    unless code == "400" && (JSON.parse(raw)["error"] rescue nil)
+  if e.empty?
+    ok.call("streamlp", "streamed entries equal the non-streamed ones (with and without a stop string); last frame has finish_reason, usage and label; /v1/completions streams; a bad request is 400")
+  else
+    e.first(5).each { |m| failures << "streamlp: #{m}" }
+  end
+
+  # ---- jsonfmt (toy#219) ----
+  e = []
+  good = ['{}', '{"a":1}', '{"a":[1,2.5e-3,true,null,{"b":"x\\u00e9\\n"}],"c":-0.1} ', ' {"a":0}', '{"a":"é"}']
+  bad  = ['[1]', '{"a":01}', '{a:1}', '{"a":1,}', '{"a":tru }', '{"a":"\\x"}', '{"a":1}x', '{"a":-}', '{"a":1.}',
+          '{"a" 1}', "{\"a\":\"\t\"}", '{"a":1e}', '{]', '{"a":[1}', "{" + " " * (JsonPrefix::WS_MAX + 1)]
+  good.each do |g|
+    e << "checker: #{g.inspect} is not accepted as a closed object" unless json_prefix(g) == [true, true] && JSON.parse(g).is_a?(Hash)
+    (0...g.bytesize).each do |n|
+      pre = g.byteslice(0, n)
+      okp, closed = json_prefix(pre)
+      e << "checker: prefix #{pre.inspect} of a valid object is refused" unless okp
+      e << "checker: prefix #{pre.inspect} is called closed" if closed && !(JSON.parse(pre) rescue false)
+    end
+  end
+  bad.each { |b| e << "checker: #{b.inspect} is accepted" if json_prefix(b)[0] }
+
+  json_msgs = [{ "role" => "user", "content" => "Give me a JSON object with the capital of France." }]
+  seed      = '{"answer": '
+  seed_msgs = [{ "role" => "user", "content" => "What is 2+2?" }, { "role" => "assistant", "content" => seed }]
+  fmt       = { "response_format" => { "type" => "json_object" } }
+  free_req  = { "model" => "gate", "messages" => json_msgs, "max_tokens" => 40 }
+  seed_req  = { "model" => "gate", "messages" => seed_msgs, "max_tokens" => 40 }
+  content = lambda do |rq|
+    r = post(port, "/v1/chat/completions", rq)
+    j = r.code == "200" ? JSON.parse(r.body) : {}
+    [r.code, j.dig("choices", 0, "message", "content").to_s, j.dig("choices", 0, "finish_reason"), j.dig("usage", "completion_tokens").to_i]
+  end
+  _, plain, = content.call(free_req)
+  code, json_free, fin, = content.call(free_req.merge(fmt))
+  e << "the plain reply #{plain.inspect} is already the start of a JSON object: the leg cannot tell" if json_prefix(plain)[0]
+  e << "constrained: HTTP #{code}, #{json_free.inspect} is not the start of a JSON object" \
+    unless code == "200" && json_free.strip.start_with?("{") && json_prefix(json_free)[0]
+  e << "constrained: finish_reason #{fin.inspect} but the object is #{json_prefix(json_free)[1] ? "closed" : "open"}" \
+    unless (fin == "stop") == json_prefix(json_free)[1]
+  code, json_seed, fin, n_tok = content.call(seed_req.merge(fmt))
+  parsed = (JSON.parse(seed + json_seed) rescue nil)
+  e << "continued #{seed.inspect}: HTTP #{code}, #{json_seed.inspect} (#{fin.inspect}, #{n_tok} tokens); expected the object to close before max_tokens" \
+    unless code == "200" && fin == "stop" && parsed.is_a?(Hash) && parsed.key?("answer") && n_tok.between?(1, 39)
+  [[free_req, json_free], [seed_req, json_seed]].each do |rq, want|
+    code, fr, done, = sse(port, "/v1/chat/completions", rq.merge(fmt))
+    got = fr.map { |f| f.dig("choices", 0, "delta", "content").to_s }.join
+    e << "streamed: #{got.inspect} differs from #{want.inspect}" unless code == "200" && done && got == want
+  end
+  _, as_text, = content.call(free_req.merge("response_format" => { "type" => "text" }))
+  e << "{\"type\":\"text\"} changed the reply" unless as_text == plain
+  [["a schema", free_req.merge("response_format" => { "type" => "json_schema", "json_schema" => { "name" => "x", "schema" => {} } })],
+   ["a partial message that is not JSON", { "model" => "gate", "max_tokens" => 8, "messages" => [json_msgs[0], { "role" => "assistant", "content" => "Sure:" }] }.merge(fmt)],
+   ["a schema, streamed", free_req.merge("stream" => true, "response_format" => { "type" => "json_schema" })]].each do |name, rq|
+    r = post(port, "/v1/chat/completions", rq)
+    e << "#{name}: HTTP #{r.code}, expected 400 with an error object" unless r.code == "400" && (JSON.parse(r.body)["error"] rescue nil)
+  end
+  if e.empty?
+    ok.call("jsonfmt", "the reply stays a JSON object (#{json_free.strip[0, 24].inspect}...), #{(seed + json_seed).inspect} closes with \"stop\" after #{n_tok} tokens, streamed too; a schema is HTTP 400")
+  else
+    e.first(6).each { |m| failures << "jsonfmt: #{m}" }
+  end
+
   # ---- stop ----
   # Stop on the 4th generated id; `cut` is where it FIRST occurs.
   stop_id = plain_ids[3]
@@ -459,7 +595,14 @@ begin
   # An exception inside one request becomes an HTTP 500 with an error
   # object (toy#216; it was a 200 with finish_reason "error"), is logged,
   # and the next request gets the same answer as on a fresh server.
-  port = start_server(TOK_GGUF, "SERVE_TEST_FAULT_AT" => PROMPT.length.to_s)
+  port = start_server(TOK_GGUF, "SERVE_TEST_FAULT_AT" => PROMPT.length.to_s, "SERVE_TEST_JSON_TOP" => "1")
+  # ---- jsonfar (toy#219), on the same server ----
+  far = [free_req, seed_req].map { |rq| content.call(rq.merge(fmt))[1] }
+  if far == [json_free, json_seed] && !json_free.empty?
+    ok.call("jsonfar", "the replies are the same when the step's own ranking is one token deep and the rest comes from the second read")
+  else
+    failures << "jsonfar: #{far.inspect} differs from #{[json_free, json_seed].inspect}"
+  end
   r = post(port, "/v1/completions", "model" => "gate", "prompt" => PROMPT, "max_tokens" => 10)
   err = (JSON.parse(r.body)["error"] rescue nil) || {}
   f = []

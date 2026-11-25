@@ -204,7 +204,7 @@ What the server offers depends on whether the GGUF embeds its tokenizer
 | | with a tokenizer | without |
 | --- | --- | --- |
 | `POST /v1/chat/completions` | messages in, text out; `"stream": true` supported | 501 |
-| `POST /v1/completions` | token ids in; `ids` and decoded `text` out | token ids in; `ids` out, `text` is `""` |
+| `POST /v1/completions` | token ids or text in; `ids` and decoded `text` out; `"stream": true` supported | token ids in; `ids` out, `text` is `""`; a streamed request is HTTP 400 |
 | end of generation | stops at the model's end token, `finish_reason: "stop"` | runs to `max_tokens`, `"length"` |
 
 - **Chat template.** There is no Jinja evaluator; the template is one of four
@@ -225,13 +225,27 @@ What the server offers depends on whether the GGUF embeds its tokenizer
   Absent, `/v1/completions` generates 16 tokens and chat generates until a
   stop token or the end of the context.
 - **Sampling.** Greedy only: `temperature` and `top_p` are not honoured.
-  `response_format` is accepted and not enforced.
+- **`response_format`.** `{"type": "json_object"}` is enforced (toy#219):
+  each step takes the most likely token that keeps the reply the start of
+  one JSON object, and the reply ends with `finish_reason: "stop"` when
+  the object closes. A reply cut by `max_tokens` (`"length"`) is an
+  unfinished object. With a forced answer prefix on chat (below) the
+  partial assistant message is the start of the object and the reply
+  continues it. Runs of more than 16 whitespace bytes between tokens are
+  not allowed. `logprobs` reports the token taken with its own
+  log-probability; the alternatives are the model's, unconstrained. The
+  search goes 1024 tokens down the ranking; a step with no usable token
+  there fails the request (HTTP 500). `{"type": "text"}` is the default.
+  Any other format, a JSON schema included, is HTTP 400: it would not be
+  enforced. On `/v1/completions` the reply itself must be the object.
 - **Log-probabilities.** `"logprobs": true` (with `"top_logprobs": n`, up
   to 20) on chat, or `"logprobs": n` on `/v1/completions`, adds
   `choices[0].logprobs.content`: one entry per reply token with `token`,
   `id`, `logprob`, `bytes` and the `n` most likely alternatives, best
   first. `token` is `""` when the token's bytes are not whole UTF-8
-  characters; `bytes` always has them. Not available on streamed replies.
+  characters; `bytes` always has them. On a streamed reply each frame
+  carries the entries of the tokens whose text it completes, so the
+  entries of all frames are those of the non-streamed reply.
 - **Forced answer prefix.** Two ways to make the model continue a text
   you wrote: a chat request whose last message has role `assistant` (its
   content is continued and the reply is only what follows), or a text
@@ -241,7 +255,9 @@ What the server offers depends on whether the GGUF embeds its tokenizer
 - **Errors.** No messages, an empty prompt, or a prompt that does not fit
   the context are HTTP 400 with `{"error": {"message", "type"}}`; an
   exception while generating is HTTP 500 and is logged. The server keeps
-  serving. Streamed requests end their stream instead.
+  serving. A streamed request is checked before its stream opens, so
+  the 400s are the same; an exception while generating ends the stream
+  with a `data: {"error": {...}}` frame after what was already sent.
 - **Concurrent requests.** By default requests are answered in turn.
   `--slots N` decodes up to N of them as one batch; see "Concurrent
   requests" below.
@@ -251,9 +267,20 @@ What the server offers depends on whether the GGUF embeds its tokenizer
 
 **Prompt prefix reuse (toy#210).** The K/V rows of whatever prefix a
 request shares with the previous one are kept, and only the rest of the
-prompt is evaluated. Replies are the same as without reuse (`KV_REUSE=0`
-in the runner's environment turns it off, for measurement). For a system
-message that every request starts with:
+prompt is evaluated. On F32 weights replies are the same as without reuse
+(`gate-kv-prefix` asserts it). On quantized weights under CUDA a reply can
+differ at a near-tie, and so the same request sent twice can give two
+replies: the first evaluates its prompt as one batch, the repeat evaluates
+only the last token, and ggml's CUDA kernels for quantized weights give
+slightly different numbers for different batch sizes. Measured on the
+shrink student (Q8, CUDA, one slot, 60 held-out requests, each sent twice
+in a row, toy#219): 5 pairs of replies differed, each first at a token
+whose two best candidates were within 0.07 nats, and the log-probability
+of the first token moved by 6e-5 (median). With `KV_REUSE=0` in the
+runner's environment (no reuse; every prompt evaluated whole) or
+`KV_BATCH=1` (one token per step) all 60 pairs were identical, bit for bit
+in the log-probabilities. Both cost speed; use one when a run has to be
+repeatable. For a system message that every request starts with:
 
 ```
 toy serve model.gguf --device cuda --prefix-file system.txt --prefix-cache system.kv
@@ -330,6 +357,12 @@ toy serve model.gguf --device cuda --ctx 1024 --slots 32 --prefix-file system.tx
   request, 30 ms for 8 and about 56 ms for 32. `llama-server --parallel 32`
   on the same file and requests gave 6.4 requests/s (one run; the GPU is
   shared, and runs disturbed by another job came out near 3–4 for both).
+  Per operation at 64 slots (toy#219, `TNN_STEP_PROFILE=3`): the attention
+  products over the pool, their softmax and the copies around them are
+  about 45 % of a step (42 of 92 ms), against 13 % at 8 slots; the weight
+  products grow only from 26 to 44 ms for eight times the tokens. Attention
+  restricted to each request's own cells would therefore be worth roughly
+  1.5x at 64 slots and nothing at 8. It is not built.
 
 **Weight edits at inference and hidden states (toy#218).** Two things for
 experiments that change a model's weights without training and test the
@@ -367,20 +400,26 @@ change with forward passes:
   produced each result. `toy serve` hashes the two files at start and
   `toy pack` stores the model's hash in the artifact; a runner started
   without either reports `""`. The `run_start` event records both hashes
-  and each request event the scale. Streamed replies are not labelled.
+  and each request event the scale. A streamed reply carries the label
+  on its last frame.
 
 What it costs and what it does not do:
 
-- An edited request reads neither the boot prefix nor rows cached under
-  another scale (they were computed by other weights), so it evaluates its
-  whole prompt; a slot keeps the scale of what it cached.
+- An edited request does not read rows cached under another scale (they
+  were computed by other weights); a slot keeps the scale of what it
+  cached. The boot prefix itself is scale 0. The first request at a
+  non-zero scale that starts with the whole boot prefix evaluates it, and
+  its rows are then kept as that scale's prefix, read by every later
+  request at the scale (toy#219). Up to four scales get one, fewer when
+  the prefix is long for the context (k scales need k + 1 prefixes to fit
+  in `--ctx`); a request at a further scale evaluates its whole prompt. These prefixes are in memory only:
+  a restart, or a packed artifact, begins with the scale-0 one.
 - The adapter adds two small matrix products per adapted matrix to a
   decode step that contains an edited request, and nothing otherwise.
 - One adapter per server, chosen at start. The file must be F32 or F16,
   and every tensor in it must be one of the pairs above (anything else is
   refused at boot rather than skipped).
-- Fused decode graph only (as `--slots`); `toy pack` does not embed an
-  adapter.
+- Fused decode graph only (as `--slots`).
 - Measured: on the F32 fixture the adapter and a model with the delta
   written into its weights give the same ids, log-probabilities within
   5e-6 and hidden states within 5e-7 on CPU (5e-3 and 1e-3 on CUDA, where
@@ -398,12 +437,33 @@ prompt in about 0.2 s. Models and options the fused step does not cover
 run on the older per-head graph, which is several times slower on a GPU;
 see "Decode graphs" in [`models.md`](models.md).
 
-Streamed replies still go through tep's handlers (tep#276), so three
-things are as tep has them there: a streamed `/v1/completions` reads
-`prompt` as a token-id array only; a streamed chat reply always ends with
-`finish_reason: "stop"`, also when it ended on `max_tokens`; and its `id`
-is the constant `chatcmpl-tep`. Non-streamed replies are toy's own
-(toy#216) and have none of the three.
+Re-measured for toy#219 on the shrink student (22 layers, d 3584, CUDA,
+the POC's 200 held-out requests, ~58 new tokens each), requests per second
+at 8 slots / one at a time:
+
+| file | toy serve | llama.cpp (`server-cuda`, 2026-10-17) |
+| --- | --- | --- |
+| Q8_0 | 3.86 / 0.62 | 4.18 / 0.95 |
+| Q4_K_M | 3.32 / 0.54 | 5.33 / 1.48 |
+
+Q4_K_M runs on the fused graph with `--slots`, with the same task scores
+as llama.cpp (100 % valid JSON, type agreement 85.5 % vs 86.0 %); it had
+not been measured. It is where toy is furthest behind: a decode step for
+one request is 25–28 ms on either file, 14 ms (Q4_K_M) to 22 ms (Q8) of it
+in the large quantized matrix products, while llama.cpp spends about 10 ms
+on a whole Q4_K_M token. toy's vendored ggml is from 2026-05-21; upstream
+has since reworked those CUDA kernels (single-column and few-row
+quantized products, fused FFN gate/up). The gap is expected to close with
+a ggml bump, which is its own piece of work (7 of the 14 vendored patches
+no longer apply as they are). The Metal serve path is not measured: there
+is no Mac in this loop.
+
+Streamed replies are toy's own as well (toy#219). The frames share the
+reply's `id`. The last frame before `data: [DONE]` has an empty delta
+(chat) or an empty `text`, the `finish_reason` (`"length"` at
+`max_tokens`), the `usage` and the `"toy"` label. A streamed
+`/v1/completions` takes a text or token-id `prompt` and each frame carries
+the `ids` of the tokens whose text it completes.
 
 The serve stack lives at `lib/toy/serve/openai/` and is driven by
 `lib/toy/run/serve.rb` → `libexec/toy-serve`. `make gate-serve`,
@@ -424,7 +484,7 @@ The serve stack lives at `lib/toy/serve/openai/` and is driven by
 >
 > `infer`/`train`/`eval` don't link tep and are unaffected.
 
-### `pack <model> -o <artifact> [--prefix F] [--name NAME] [--device cpu|cuda] [--ctx N] [--port PORT] [--stop-ids N,M] [--slots N]`
+### `pack <model> -o <artifact> [--prefix F] [--name NAME] [--device cpu|cuda] [--ctx N] [--port PORT] [--stop-ids N,M] [--slots N] [--adapter F] [--static]`
 Build one executable that carries the model and serves it with no arguments
 (toy#211).
 
@@ -444,6 +504,11 @@ What is inside:
   computed once at pack time on `--device`. The artifact restores it at boot
   instead of evaluating it. Requests that start with that system message
   skip it, as with `toy serve --prefix-cache`.
+- **An adapter** for `--adapter F` (toy#219): the LoRA GGUF byte for byte,
+  applied as `toy serve --adapter` applies it. Requests choose with
+  `"lora_scale"` (default 1; 0 is the model alone), and replies carry the
+  adapter's sha256. Packing loads the adapter on the model once and
+  refuses one the model cannot take.
 - **A fixed config**: name, context, stop ids, default port, default
   number of slots.
 - **A description**: the `toy describe` card, the model's sha256, the toy,
@@ -464,10 +529,15 @@ How it behaves:
 
 Limits:
 
-- **Not statically linked.** The artifact needs the shared libraries
+- **Shared libraries.** By default the artifact needs the ones
   `--describe` lists: libc, libstdc++, libm, OpenSSL and SQLite (through
   tep), and for CUDA the driver's `libcuda.so.1`. The CUDA runtime itself is
   linked in, which is why a CUDA artifact is 0.7 GB larger than its model.
+  `--static` (CPU only, toy#219) packs a statically linked runner
+  (`libexec/toy-serve-static`) that needs none of them; building it needs
+  the static libraries of libc, OpenSSL and SQLite on the packing machine.
+  A CUDA artifact cannot be static: the driver's library is loaded at run
+  time.
 - **Tied to the machine class it was packed on**: same OS and CPU
   architecture, and for CUDA a GPU the linked kernels support.
 - **The KV prefix matches one system message exactly.** A request with a

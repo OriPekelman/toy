@@ -135,7 +135,7 @@ MODEL_NAME_ENV = api_setting("MODEL_NAME")
 # of the model file (`toy serve` hashes it; a pack carries it in its config)
 # and of the adapter file. "" when the runner was not told.
 MODEL_SHA256   = api_setting("MODEL_SHA256")
-ADAPTER_SHA256 = PACK_ON ? "" : (ENV["ADAPTER_SHA256"] || "")
+ADAPTER_SHA256 = api_setting("ADAPTER_SHA256")
 # Derive a default model name from the GGUF basename when not given.
 # basename: strip everything before the last "/"; then strip ".gguf".
 _mn_last_slash = GGUF_PATH.rindex("/")
@@ -157,7 +157,8 @@ KV_REUSE_OFF = (ENV["KV_REUSE"] || "") == "0"
 # toy#218: a llama.cpp-format LoRA GGUF applied beside the model's weights
 # (`toy serve --adapter`). A request scales it with "lora_scale" (default
 # 1; 0 = the unedited model), so both weight sets answer from one process.
-ADAPTER_PATH = ENV["ADAPTER"] || ""
+# toy#219: a pack made with --adapter carries the file as its "adapter" entry.
+ADAPTER_PATH = PACK_ON ? (TinyNN.tnn_pack_has("adapter") == 1 ? "@pack:adapter" : "") : (ENV["ADAPTER"] || "")
 # toy#217: how many requests are decoded at the same time (`toy serve
 # --slots N`; in a pack --slots, then SLOTS, then the packed default).
 # 1 serves one request at a time, as before.
@@ -211,7 +212,14 @@ class State
   # highest cell in use, :cell_lo a lower bound on the lowest free one.
   # :step_seq counts decode steps (api_pump).
   attr_accessor :n_cells, :cell_owner, :cell_pos, :cell_hi, :cell_lo, :step_seq
+  # toy#219: the boot prefix evaluated again under an adapter scale. Set p
+  # is the prefix's positions computed at scale :set_scale[p], in cells
+  # whose owner is -(10 + p). A set is made from the cells of the first
+  # request at that scale that starts with the whole prefix (api_set_make).
+  attr_accessor :set_scale
   def initialize
+    @set_scale = [0.0]
+    @set_scale.pop
     @cfg  = nil
     @kv   = nil
     @gguf = TinyNN.tnn_null_ptr
@@ -814,7 +822,9 @@ class Slot
   # :shared_n  how many leading positions are the shared prefix's cells
   # :cells     the cell of each later position (cells[i] holds position
   #            shared_n + i)
-  attr_accessor :idx, :busy, :seq_ids, :shared_n, :cells
+  # :shared_own  the owner of those cells: -1 the boot prefix, -(10 + p)
+  #            its set p (toy#219)
+  attr_accessor :idx, :busy, :seq_ids, :shared_n, :cells, :shared_own
   # The request:
   #   :prompt_ids / :fed   the prompt, and how many of its ids are cached
   #   :n_new      most tokens to generate
@@ -846,7 +856,14 @@ class Slot
   #                (0 = embeddings, i = after block i), ascending
   #   :hidden      their states, d_model values per layer, in that order
   attr_accessor :ad_scale, :tap_layers, :hidden
+  # toy#219:
+  #   :fmt   0 = free text, 1 = the reply must be a JSON object
+  #   :json  what of that object has been generated (or given as a forced
+  #          answer prefix) so far
+  attr_accessor :fmt, :json
   def initialize(idx)
+    @fmt  = 0
+    @json = JsonPrefix.new
     @ad_scale   = 0.0
     @tap_layers = [0]
     @tap_layers.pop
@@ -857,6 +874,7 @@ class Slot
     @seq_ids  = [0]
     @seq_ids.pop
     @shared_n = 0
+    @shared_own = -1
     @cells    = [0]
     @cells.pop
     @prompt_ids = [0]
@@ -970,7 +988,8 @@ end
 #
 # toy#218: rows computed under another adapter scale are not this request's
 # (`ad_scale`), so such a slot counts as sharing nothing, and the boot
-# prefix (computed by the unedited model) serves scale 0 only. Among slots
+# prefix (computed by the unedited model) serves scale 0 only. toy#219: a
+# non-zero scale reads the prefix set made for it, once there is one. Among slots
 # sharing equally much, the one with the least cached is taken, which
 # leaves a base and an edited sequence side by side when there is room.
 def api_slot_acquire(prompt_ids, n_new, ad_scale)
@@ -995,8 +1014,16 @@ def api_slot_acquire(prompt_ids, n_new, ad_scale)
   end
   slot = SLOTS[best]
   pre_lcp = 0
+  pre_own = -1
   if ad_scale == 0.0
     pre_lcp = api_lcp(STATE.kv_ids, prompt_ids)
+  else
+    # toy#219: the prefix as evaluated under this scale, when there is one.
+    set = api_set_find(ad_scale)
+    if set >= 0
+      pre_lcp = api_lcp(STATE.kv_ids, prompt_ids)
+      pre_own = -(SET_OWNER0 + set)
+    end
   end
   if KV_REUSE_OFF
     best_lcp = 0
@@ -1013,7 +1040,8 @@ def api_slot_acquire(prompt_ids, n_new, ad_scale)
     start = prompt_ids.length - 1
   end
   if pre_lcp > best_lcp
-    slot.shared_n = start
+    slot.shared_n   = start
+    slot.shared_own = pre_own
     k = 0
     while k < start
       slot.seq_ids.push(prompt_ids[k])
@@ -1049,16 +1077,111 @@ def api_slot_acquire(prompt_ids, n_new, ad_scale)
   slot.stop_strs.clear
   slot.stop_cut   = -1
   slot.ad_scale   = ad_scale
+  slot.fmt        = 0
   slot.tap_layers.clear
   slot.hidden.clear
   best
 end
 
+# toy#219: prefix sets. SET_MAX scales have one; a request at another
+# non-zero scale evaluates its whole prompt, as every edited request did.
+SET_OWNER0 = 10
+SET_MAX    = 4
+
+# The set holding the boot prefix at `scale`, or -1.
+def api_set_find(scale)
+  p = 0
+  while p < STATE.set_scale.length
+    if STATE.set_scale[p] == scale
+      return p
+    end
+    p = p + 1
+  end
+  -1
+end
+
+# Makes the slot's leading cells the prefix set of its scale, when its
+# sequence starts with the whole boot prefix, it evaluated those positions
+# itself, and that scale has no set yet. The cells change owner; the slot
+# then reads them as its shared prefix, and so can any later request.
+def api_set_make(slot)
+  n = STATE.kv_ids.length
+  if !STATE.kv.fused || KV_REUSE_OFF || n == 0 || slot.ad_scale == 0.0 || slot.shared_n != 0
+    return 0
+  end
+  if STATE.set_scale.length >= SET_MAX || api_set_find(slot.ad_scale) >= 0
+    return 0
+  end
+  # The pool has one context more than the slots need, for the boot
+  # prefix; the sets live in what that prefix leaves of it.
+  if (STATE.set_scale.length + 2) * n > MAX_T
+    return 0
+  end
+  if slot.cells.length < n || api_lcp(STATE.kv_ids, slot.seq_ids) != n
+    return 0
+  end
+  owner = -(SET_OWNER0 + STATE.set_scale.length)
+  rest = [0]
+  rest.pop
+  i = 0
+  while i < slot.cells.length
+    if i < n
+      STATE.cell_owner[slot.cells[i]] = owner
+    else
+      rest.push(slot.cells[i])
+    end
+    i = i + 1
+  end
+  slot.cells      = rest
+  slot.shared_n   = n
+  slot.shared_own = owner
+  STATE.set_scale.push(slot.ad_scale)
+  puts "[openai_api_llama] KV prefix: " + n.to_s + " tokens kept for lora_scale " + slot.ad_scale.to_s
+  0
+end
+
 # Ends the slot's request. Its cached positions stay for the next one.
 def api_slot_release(slot)
+  if slot.err.length == 0
+    api_set_make(slot)
+  end
   slot.busy  = false
   slot.phase = 2
   0
+end
+
+# toy#219: can the slot's JSON reply continue with token `id`? When it can,
+# the slot's JSON state moves past it. A stop token is never a continuation
+# (the reply ends by closing its object), nor is a token with no text.
+def api_json_take(slot, id)
+  if api_stop_id?(id)
+    return false
+  end
+  piece = STATE.tok.decode([id])
+  if piece.bytesize == 0
+    return false
+  end
+  trial = JsonPrefix.new
+  trial.copy_from(slot.json)
+  if !trial.feed(piece)
+    return false
+  end
+  slot.json = trial
+  true
+end
+
+# The most likely token a JSON reply can continue with, among the `top`
+# ranked in alt_ids (row k): its rank, or -1 when there is none.
+def api_json_rank(slot, alt_ids, k, top)
+  j = 0
+  while j < top
+    cid = alt_ids[k * top + j]
+    if cid >= 0 && api_json_take(slot, cid)
+      return j
+    end
+    j = j + 1
+  end
+  -1
 end
 
 # One generated id for the slot: ends the request at a stop id (not
@@ -1090,6 +1213,46 @@ def api_slot_take(slot, id)
   end
   slot.next_id = id
   0
+end
+
+# toy#219: how far down the ranking a JSON reply looks for its next token:
+# JSON_TOP in the step's own pick, JSON_TOP_FAR in a second read of the
+# logits when none of those fits (the shim's limit, TNN_PICK_TOP_MAX).
+JSON_TOP     = (ENV["SERVE_TEST_JSON_TOP"] || "64").to_i   # the gate sets 1 to reach the second read
+JSON_TOP_FAR = 1024
+JSON_FAR_LP  = [0.0]
+
+# The second read for row k of the step's logits: the id of the most likely
+# of JSON_TOP_FAR tokens the slot's reply can continue with (its
+# log-probability goes to JSON_FAR_LP[0]), or -1.
+def api_json_far(kv, t_logits, n_out, k, slot)
+  best = [0];    best.pop
+  lps  = [0.0];  lps.pop
+  ids  = [0];    ids.pop
+  alps = [0.0];  alps.pop
+  i = 0
+  while i < n_out
+    best.push(0)
+    lps.push(0.0)
+    i = i + 1
+  end
+  i = 0
+  while i < n_out * JSON_TOP_FAR
+    ids.push(-1)
+    alps.push(0.0)
+    i = i + 1
+  end
+  rc = TinyNN.tnn_logits_pick(kv.sess, t_logits, n_out, STATE.cfg.vocab, JSON_TOP_FAR,
+                              best, lps, ids, alps)
+  if rc != 0
+    raise "logits pick failed rc=" + rc.to_s
+  end
+  r = api_json_rank(slot, ids, k, JSON_TOP_FAR)
+  if r < 0
+    return -1
+  end
+  JSON_FAR_LP[0] = alps[k * JSON_TOP_FAR + r]
+  ids[k * JSON_TOP_FAR + r]
 end
 
 # One decode step for every busy slot: a generating slot feeds its last id,
@@ -1164,6 +1327,7 @@ def api_pump
     # Enter the step's tokens in the pool and in their slots.
     cells  = [0]; cells.pop
     shared = [0]; shared.pop
+    sown   = [0]; sown.pop
     several = false
     k = 1
     while k < n_tok
@@ -1187,6 +1351,7 @@ def api_pump
       end
       cells.push(c)
       shared.push(slot.shared_n)
+      sown.push(slot.shared_own)
       k = k + 1
     end
     # toy#218: each token's adapter scale, when any is not 0.
@@ -1241,7 +1406,7 @@ def api_pump
       one = SLOTS[own[0]]
       use_mask = n_tok > 1 || one.cells.length + one.shared_n != STATE.cell_hi
       t_logits = SmolLM2KV.decode_cells(kv, ids, pos, cells, rows, STATE.cell_hi, use_mask,
-                                        STATE.cell_owner, STATE.cell_pos, own, shared, gates, taps)
+                                        STATE.cell_owner, STATE.cell_pos, own, shared, sown, gates, taps)
       if taps.length > 0
         d = STATE.cfg.d_model
         buf = [0.0]; buf.pop
@@ -1294,6 +1459,9 @@ def api_pump
         if SLOTS[b_own[k]].lp_top > top
           top = SLOTS[b_own[k]].lp_top
         end
+        if SLOTS[b_own[k]].fmt == 1 && top < JSON_TOP
+          top = JSON_TOP
+        end
         k = k + 1
       end
       best = [0];    best.pop
@@ -1324,16 +1492,44 @@ def api_pump
       k = 0
       while k < n_out
         slot = SLOTS[b_own[k]]
-        if slot.lp_top >= 0
-          slot.lp_tok.push(lps[k])
-          j = 0
-          while j < slot.lp_top
-            slot.lp_alt_ids.push(alt_ids[k * top + j])
-            slot.lp_alt_lps.push(alt_lps[k * top + j])
-            j = j + 1
+        pick = best[k]
+        lp   = 0.0
+        if top >= 0
+          lp = lps[k]
+        end
+        if slot.fmt == 1
+          # toy#219: the most likely token that keeps the reply a JSON
+          # object. Not among the first JSON_TOP: look JSON_TOP_FAR down
+          # for this row alone.
+          r = api_json_rank(slot, alt_ids, k, top)
+          if r >= 0
+            pick = alt_ids[k * top + r]
+            lp   = alt_lps[k * top + r]
+          else
+            pick = api_json_far(kv, t_logits, n_out, k, slot)
+            lp   = JSON_FAR_LP[0]
           end
         end
-        api_slot_take(slot, best[k])
+        if pick < 0
+          slot.err   = "response_format: none of the " + JSON_TOP_FAR.to_s +
+                       " most likely tokens continues a JSON object"
+          slot.phase = 2
+        else
+          if slot.lp_top >= 0
+            slot.lp_tok.push(lp)
+            j = 0
+            while j < slot.lp_top
+              slot.lp_alt_ids.push(alt_ids[k * top + j])
+              slot.lp_alt_lps.push(alt_lps[k * top + j])
+              j = j + 1
+            end
+          end
+          api_slot_take(slot, pick)
+          if slot.fmt == 1 && slot.json.complete && slot.phase != 2
+            slot.finish = "stop"
+            slot.phase  = 2
+          end
+        end
         k = k + 1
       end
     end

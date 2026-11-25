@@ -1346,6 +1346,7 @@ toy-train-metal: libexec/toy-train-metal
 libexec/toy-serve: lib/toy/run/serve.rb lib/toy/io/json_builder.rb lib/toy/io/json.rb lib/toy/io/json_decoder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
 		lib/toy/serve/openai/server.rb \
 		lib/toy/serve/openai/handlers.rb lib/toy/serve/openai/toy_backend.rb \
+		lib/toy/serve/openai/json_prefix.rb \
 		vendor/spinel/tep/lib/tep.rb \
 		lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb \
 		lib/toy/io/tokenizer.rb lib/toy/io/gguf_kv.rb lib/toy/train/toy_chat_template.rb \
@@ -1354,6 +1355,16 @@ libexec/toy-serve: lib/toy/run/serve.rb lib/toy/io/json_builder.rb lib/toy/io/js
 	$(SPINEL) $< -o $@
 toy-serve: libexec/toy-serve
 
+# toy#219 — the CPU serve runner linked statically: the same program with no
+# shared library to find at run time (libc, libstdc++, OpenSSL and SQLite
+# are inside). `toy pack --static` packs this one. Needs the static
+# libraries (libc6-dev, libssl-dev, libsqlite3-dev). The linker's notes
+# about getaddrinfo/dlopen/getpwnam in a static program are expected: the
+# server binds an address and resolves no names.
+libexec/toy-serve-static: libexec/toy-serve
+	$(SPINEL) --link -static lib/toy/run/serve.rb -o $@
+toy-serve-static: libexec/toy-serve-static
+
 # toy#209 — the CUDA serve runner. Same program as libexec/toy-serve: the
 # runner, the serve state and the backend are MECHANICAL mirrors
 # (prep/gen_cuda_mirror.rb), so the two devices cannot drift. `toy serve
@@ -1361,6 +1372,7 @@ toy-serve: libexec/toy-serve
 libexec/toy-serve-cuda: lib/toy/run/serve_cuda.rb lib/toy/io/json_builder.rb lib/toy/io/json.rb lib/toy/io/json_decoder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
 		lib/toy/serve/openai/server_cuda.rb \
 		lib/toy/serve/openai/handlers.rb lib/toy/serve/openai/toy_backend_cuda.rb \
+		lib/toy/serve/openai/json_prefix.rb \
 		vendor/spinel/tep/lib/tep.rb \
 		lib/toy/llm/engine/llama_kv_engine_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb \
 		lib/toy/io/tokenizer.rb lib/toy/io/gguf_kv.rb lib/toy/train/toy_chat_template.rb \

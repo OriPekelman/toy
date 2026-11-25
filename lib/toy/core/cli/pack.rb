@@ -1,4 +1,4 @@
-# lib/toy/core/cli/pack.rb — `toy pack <model.gguf> -o <artifact> [--prefix F] [--name NAME] [--device cpu|cuda] [--ctx N] [--port N] [--stop-ids N,M] [--slots N]`.
+# lib/toy/core/cli/pack.rb — `toy pack <model.gguf> -o <artifact> [--prefix F] [--name NAME] [--device cpu|cuda] [--ctx N] [--port N] [--stop-ids N,M] [--slots N] [--adapter F] [--static]`.
 #
 # Builds ONE executable that carries the model, its tokenizer (inside the
 # GGUF), a fixed serve config, a description, and optionally a precomputed
@@ -8,7 +8,7 @@
 # The artifact is the serve runner (libexec/toy-serve or -cuda) with files
 # appended after the ELF image:
 #
-#   [runner][pad][model][pad][kv][pad][config][pad][describe][pad][index][trailer]
+#   [runner][pad][model][pad][kv][pad][adapter][pad][config][pad][describe][pad][index][trailer]
 #
 # Every entry starts on a 64 KiB boundary and is followed by zeros up to the
 # next one. The index is text ("<name> <offset> <length>\n" per entry) and
@@ -51,6 +51,8 @@ module Toy
           @port = DEFAULT_PORT
           @stop_ids = nil
           @slots = nil
+          @adapter = nil
+          @static = false
         end
 
         def run
@@ -61,6 +63,8 @@ module Toy
           return bad_arg("no such file: #{model}") unless File.file?(model)
           prefix = @prefix && File.expand_path(@prefix)
           return bad_arg("no such file: #{prefix}") if prefix && !File.file?(prefix)
+          adapter = @adapter && File.expand_path(@adapter)
+          return bad_arg("no such file: #{adapter}") if adapter && !File.file?(adapter)
           out = File.expand_path(@out)
           return bad_arg("#{out} is a directory") if File.directory?(out)
           return bad_arg("no such directory: #{File.dirname(out)}") unless File.directory?(File.dirname(out))
@@ -70,6 +74,9 @@ module Toy
           root = ToyRoot.locate_root
           return fail_out("could not locate toy's install root (set TOY_HOME to a toy checkout)") unless root
           target = @device == "cuda" ? "libexec/toy-serve-cuda" : "libexec/toy-serve"
+          # toy#219: a runner with no shared-library dependencies. CPU only:
+          # the CUDA runner loads the driver's libcuda at run time.
+          target = "libexec/toy-serve-static" if @static
           ok, err = ToyRoot.ensure_built(root, target)
           return fail_out(err) unless ok
           runner = File.join(root, target)
@@ -93,6 +100,21 @@ module Toy
               prefix_tokens = log[/KV prefix: evaluated (\d+) tokens/, 1]
               return fail_out("the runner did not report the prefix evaluation:\n#{log.lines.last(8).join}") if prefix_tokens.nil?
             end
+            if adapter
+              # toy#219: the runner must take this adapter on this model (the
+              # fused graph, matching shapes); a pack that cannot boot is
+              # refused here, not at its first start.
+              $stderr.puts "toy pack: checking the adapter on #{@device}..."
+              env = { "MODEL_PATH" => model, "MODEL_NAME" => name, "ADAPTER" => adapter, "SERVE_BOOT_ONLY" => "1",
+                      "PREFIX_FILE" => nil, "PREFIX_CACHE" => nil,
+                      "KV_FUSED" => nil, "KV_BATCH" => nil, "KV_REUSE" => nil, "SLOTS" => nil,
+                      "TOY_RUN_DIR" => nil, "TAO_RUN_DIR" => nil, "STOP_IDS" => @stop_ids }
+              env["MAX_T"] = @ctx ? @ctx.to_s : nil
+              log, st = Open3.capture2e(env, runner)
+              unless st.success? && log.include?("] adapter: ")
+                return fail_out("the runner does not take this adapter:\n#{log.lines.last(8).join}")
+              end
+            end
 
             config = +"MODEL_NAME=#{name}\nPORT=#{@port}\nDEVICE=#{@device}\n"
             config << "MAX_T=#{@ctx}\n" if @ctx
@@ -101,10 +123,12 @@ module Toy
             $stderr.puts "toy pack: hashing the model..."
             # toy#221: replies name the weights that produced them.
             config << "MODEL_SHA256=#{Digest::SHA256.file(model).hexdigest}\n"
-            describe = describe_text(root, model, name, runner, target, prefix, prefix_tokens, config)
+            config << "ADAPTER_SHA256=#{Digest::SHA256.file(adapter).hexdigest}\n" if adapter
+            describe = describe_text(root, model, name, runner, target, prefix, prefix_tokens, config, adapter)
 
             entries = [["model", model]]
             entries << ["kv", kv] if kv
+            entries << ["adapter", adapter] if adapter
             cfg_path = File.join(tmp, "config");   File.binwrite(cfg_path, config)
             dsc_path = File.join(tmp, "describe"); File.binwrite(dsc_path, describe)
             entries << ["config", cfg_path] << ["describe", dsc_path]
@@ -126,7 +150,7 @@ module Toy
 
           size = File.size(out)
           puts "packed #{out} (#{fmt_bytes(size)}): #{name}, #{@device}, port #{@port}" \
-               "#{prefix ? ", KV prefix" : ''}"
+               "#{prefix ? ", KV prefix" : ''}#{adapter ? ", adapter" : ''}"
           puts "run it:      #{out} [--port N]"
           puts "describe it: #{out} --describe"
           EXIT_OK
@@ -157,7 +181,7 @@ module Toy
           io.write("\0" * (ALIGN - rem)) if rem != 0
         end
 
-        def describe_text(root, model, name, runner, target, prefix, prefix_tokens, config)
+        def describe_text(root, model, name, runner, target, prefix, prefix_tokens, config, adapter = nil)
           lines = []
           lines << "toy pack: #{name}"
           lines << ""
@@ -183,7 +207,17 @@ module Toy
           else
             lines << "KV prefix: none"
           end
+          if adapter
+            lines << ""
+            lines << "Adapter"
+            lines << "  source         #{File.basename(adapter)} (#{File.size(adapter)} bytes, sha256 #{Digest::SHA256.file(adapter).hexdigest})"
+            lines << "  applied        at \"lora_scale\" 1 unless a request gives another; 0 is the model alone"
+          end
           needs = shared_libs(runner)
+          if @static
+            lines << ""
+            lines << "Linked statically: no shared libraries needed at run time"
+          end
           unless needs.empty?
             lines << ""
             lines << "Shared libraries needed at run time"
@@ -272,6 +306,8 @@ module Toy
               v = take.call(tok)
               return bad_arg("--slots must be an integer from 1 to 64, got #{v.inspect}") unless v =~ /\A\d+\z/ && (1..64).cover?(v.to_i)
               @slots = v.to_i
+            when "--adapter"   then @adapter = take.call(tok)
+            when "--static"    then @static = true
             when /\A-/ then return bad_arg("unknown flag #{tok.inspect}")
             else rest << tok
             end
@@ -280,6 +316,7 @@ module Toy
           return bad_arg("missing required argument <model.gguf>") if rest.empty?
           return bad_arg("unexpected extra arguments: #{rest[1..].join(' ')}") if rest.length > 1
           return bad_arg("missing -o <artifact>") if @out.nil?
+          return bad_arg("--static is for --device cpu (the CUDA runner loads the driver's library at run time)") if @static && @device != "cpu"
           @model = rest.first
           true
         end

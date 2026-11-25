@@ -1261,17 +1261,18 @@ int tnn_upload_causal_mask(void *sess, void *tensor, int hist, int n_tok, int po
  * cache cell c. A cell is visible to a token (0, otherwise -inf) when
  *   - it belongs to the token's sequence and holds a position <= the
  *     token's (cell_owner[c] == tok_owner[t] && cell_pos[c] <= tok_pos[t]), or
- *   - it is a shared-prefix cell (cell_owner[c] == -1) below the number of
- *     prefix positions the token's sequence starts with
- *     (cell_pos[c] < tok_shared[t]).
+ *   - it is a cell of the shared prefix the token's sequence starts with
+ *     (cell_owner[c] == tok_sown[t]: -1 the boot prefix, <= -10 the same
+ *     prefix evaluated under an adapter scale, toy#219) below the number
+ *     of prefix positions the sequence reads (cell_pos[c] < tok_shared[t]).
  * Free cells carry owner -2 and are visible to nobody. Returns 0, or
  * negative on bad args. */
 int tnn_upload_cell_mask(void *sess, void *tensor, int hi, int n_tok,
                          const long *cell_owner, const long *cell_pos,
                          const long *tok_owner, const long *tok_pos,
-                         const long *tok_shared)
+                         const long *tok_shared, const long *tok_sown)
 {
-    if (!sess || !tensor || !cell_owner || !cell_pos || !tok_owner || !tok_pos || !tok_shared) return -1;
+    if (!sess || !tensor || !cell_owner || !cell_pos || !tok_owner || !tok_pos || !tok_shared || !tok_sown) return -1;
     struct ggml_tensor *t = (struct ggml_tensor *)tensor;
     if (hi <= 0 || n_tok <= 0) return -2;
     if (t->type != GGML_TYPE_F32 || t->ne[0] != hi || t->ne[1] != n_tok) return -3;
@@ -1280,10 +1281,10 @@ int tnn_upload_cell_mask(void *sess, void *tensor, int hi, int n_tok,
     if (!buf) return -4;
     for (int i = 0; i < n_tok; i++) {
         float *col = buf + (size_t)i * (size_t)hi;
-        long own = tok_owner[i], pos = tok_pos[i], sh = tok_shared[i];
+        long own = tok_owner[i], pos = tok_pos[i], sh = tok_shared[i], so = tok_sown[i];
         for (int c = 0; c < hi; c++) {
             long o = cell_owner[c];
-            int vis = (o == own && cell_pos[c] <= pos) || (o == -1 && cell_pos[c] < sh);
+            int vis = (o == own && cell_pos[c] <= pos) || (o == so && cell_pos[c] < sh);
             col[c] = vis ? 0.0f : -INFINITY;
         }
     }
@@ -2593,7 +2594,10 @@ int tnn_download(void *sess, void *tensor)
  *                               log-probability
  * Arithmetic is in double over the f32 logits, one pass per row: the
  * log-sum-exp relative to the maximum, and an insertion sort for the top
- * entries. Returns 0, or negative on bad args. */
+ * entries. top is at most TNN_PICK_TOP_MAX (toy#219: a reply constrained
+ * to JSON looks that far down for a token it can continue with). Returns 0,
+ * or negative on bad args. */
+#define TNN_PICK_TOP_MAX 1024
 int tnn_logits_pick(void *sess, void *tensor, int n_rows, int vocab, int top,
                     long *out_best, double *out_lp, long *out_alt_ids, double *out_alt_lps)
 {
@@ -2602,7 +2606,7 @@ int tnn_logits_pick(void *sess, void *tensor, int n_rows, int vocab, int top,
     if (n_rows <= 0 || vocab <= 0) return -2;
     if (t->type != GGML_TYPE_F32 || ggml_nelements(t) != (int64_t)n_rows * (int64_t)vocab) return -3;
     if (top >= 0 && (!out_lp || (top > 0 && (!out_alt_ids || !out_alt_lps)))) return -1;
-    if (top > 64) return -2;
+    if (top > TNN_PICK_TOP_MAX) return -2;
     size_t n = (size_t)n_rows * (size_t)vocab;
     /* One buffer, kept and grown: a fresh 16+ MiB allocation per step is
      * newly mapped memory every time, and the backend's copy into it then
@@ -2629,8 +2633,8 @@ int tnn_logits_pick(void *sess, void *tensor, int n_rows, int vocab, int top,
         out_best[r] = best;
         if (top < 0) continue;
         double mx = (double)bv, sum = 0.0;
-        long   ids[64];
-        double vals[64];
+        long   ids[TNN_PICK_TOP_MAX];
+        double vals[TNN_PICK_TOP_MAX];
         int    cnt = 0;
         for (int i = 0; i < vocab; i++) {
             double v = (double)row[i];

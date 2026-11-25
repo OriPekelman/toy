@@ -34,10 +34,22 @@
 #   reuse     on one slot, a base request after an edited one with the same
 #             prompt reuses none of its cached rows, and a repeat at the
 #             same scale reuses them
+#   prefix    (toy#219) with a boot prefix (--prefix-file), the first
+#             request at an adapter scale evaluates the system turn and
+#             leaves it as that scale's prefix; later requests at the scale
+#             read it (cached_tokens = the system turn), at two scales and
+#             at scale 0 side by side, and every reply equals a server
+#             without reuse (KV_REUSE=0)
 #   label     (toy#221) every reply names its weights: the "toy" object of
 #             completions, chat and hidden replies carries the sha256 of
 #             the model file, of the adapter file ("" without one) and
 #             the scale; the request event carries the scale
+#   packed    (toy#219) `toy pack --adapter` puts the adapter in the
+#             artifact: started with an empty environment it gives the
+#             edited model's ids by default and the base model's at
+#             "lora_scale" 0, labels its replies with the adapter's sha256,
+#             and names the adapter in --describe; an adapter the model
+#             cannot take is refused when packing
 #   refuse    an adapter whose matrix has the wrong width, one carrying a
 #             tensor that cannot be applied, and an adapter on the per-head
 #             graph (KV_FUSED=0) each exit with a message
@@ -527,7 +539,49 @@ begin
     bad.call("mixed", "replies right #{right}; #{shared}/#{jobs.length} requests shared steps")
   end
 
+  # prefix (toy#219): one slot, a boot prefix, three scales
+  system = "You are a careful assistant. Answer in one short sentence, and say so when you do not know."
+  sysfile = File.join(WORK, "system.txt")
+  File.write(sysfile, system + "\n")
+  chat = lambda do |pt, user, scale|
+    code, body = post(pt, "/v1/chat/completions",
+                      { model: "gate", max_tokens: MAX_TOKENS, logprobs: true, lora_scale: scale,
+                        messages: [{ role: "system", content: system }, { role: "user", content: user }] })
+    raise "chat HTTP #{code}: #{body[0, 200]}" unless code == 200
+    c = JSON.parse(body).dig("choices", 0)
+    [c.dig("message", "content"), c.dig("logprobs", "content").map { |e| e["logprob"] }]
+  end
+  seq = [[0, 1], [1, 1], [0, 2], [1, 2], [1, 0], [2, 1], [2, 2]]   # [user, scale]
+  port = start_server("ADAPTER" => ADAPTER, "KV_REUSE" => "0")
+  want = seq.map { |u, sc| chat.call(port, USERS[u], sc) }
+  port = start_server("ADAPTER" => ADAPTER, "PREFIX_FILE" => sysfile)
+  n0 = request_events.length
+  got = seq.map { |u, sc| chat.call(port, USERS[u], sc) }
+  cached = request_events[n0..].map { |e| e["cached_tokens"] }
+  sys_n = cached[4]   # the base request reads the boot prefix
+  same = seq.each_index.all? { |i| got[i][0] == want[i][0] && lp_diff(got[i][1], want[i][1]) < TOL_LP }
+  kept = File.read(@logf).scan(/KV prefix: (\d+) tokens kept for lora_scale/).flatten.map(&:to_i)
+  differ = want[1][0] != want[4][0] || lp_diff(want[1][1], want[4][1]) > TOL_LP
+  # Requests 1 and 3 follow one at their own scale in the slot and reuse
+  # its rows (the system turn and more); 5 and 6 follow another scale, so
+  # what they have cached can only be their scale's prefix.
+  shape = cached[0] == 0 && cached[2] == 0 && cached[1] >= sys_n && cached[3] >= sys_n && cached[4..] == [sys_n] * 3
+  # The same on 3 slots, all requests at once, twice: the second round finds
+  # the sets the first one left.
+  port = start_server("ADAPTER" => ADAPTER, "PREFIX_FILE" => sysfile, "SLOTS" => "3")
+  rounds = 2.times.map { all_at_once(seq) { |u, sc| chat.call(port, USERS[u], sc) } }
+  n_ev = request_events.length
+  cached2 = request_events[n_ev - seq.length, seq.length].map { |e| e["cached_tokens"] }
+  same = same && rounds.all? { |r| seq.each_index.all? { |i| r[i][0] == want[i][0] && lp_diff(r[i][1], want[i][1]) < TOL_LP } }
+  shape = shape && cached2.all? { |c| c >= sys_n }
+  if same && differ && sys_n > 10 && shape && kept == [sys_n, sys_n]
+    ok.call("prefix", "cached tokens #{cached.inspect}: after the first request at a scale, requests at scales 1, 2 and 0 each read the #{sys_n}-token system turn, and all #{seq.length} replies equal a server without reuse, also sent at once on 3 slots (cached #{cached2.inspect})")
+  else
+    bad.call("prefix", "cached tokens #{cached.inspect}, on 3 slots second round #{cached2.inspect} (system turn #{sys_n}), sets kept #{kept.inspect}, replies equal the no-reuse server #{same}, edited differs from base #{differ}")
+  end
+
   # label
+  port = start_server("ADAPTER" => ADAPTER, "SLOTS" => "2")
   sha_m = Digest::SHA256.file(GGUF).hexdigest
   sha_a = Digest::SHA256.file(ADAPTER).hexdigest
   want = ->(a, s) { { "model_sha256" => sha_m, "adapter_sha256" => a, "lora_scale" => s } }
@@ -544,6 +598,55 @@ begin
     bad.call("label", "wrong: #{wrong_l.map { |k, (g, w)| "#{k}: got #{g.inspect}, want #{w.inspect}" }.join('; ')}; event scales #{ev_scales.inspect}")
   end
   stop_server
+
+  # packed (toy#219)
+  art = File.join(WORK, "packed-adapter")
+  pout, pst = Open3.capture2e(File.join(ROOT, "bin", "toy"), "pack", GGUF, "--adapter", ADAPTER, "--device", DEVICE,
+                              "--name", "gate", "-o", art)
+  if !pst.success?
+    bad.call("packed", "toy pack --adapter exited #{pst.exitstatus}: #{pout.lines.last(4).join.strip}")
+  else
+    sock = TCPServer.new("127.0.0.1", 0)
+    port = sock.addr[1]
+    sock.close
+    empty = File.join(WORK, "empty")
+    FileUtils.mkdir_p(empty)
+    @logf = File.join(WORK, "packed_#{port}.log")
+    File.open(@logf, "w") do |lf|
+      @pid = Process.spawn({}, *STDBUF, art, "--port", port.to_s, chdir: empty, pgroup: true, out: lf, err: lf,
+                           in: File::NULL, unsetenv_others: true)
+    end
+    up = false
+    deadline = Time.now + 180
+    while Time.now < deadline && !up && !Process.waitpid(@pid, Process::WNOHANG)
+      up = (Net::HTTP.get_response(URI("http://127.0.0.1:#{port}/health")).code == "200" rescue false)
+      sleep 0.2 unless up
+    end
+    if !up
+      @pid = nil unless up
+      bad.call("packed", "the artifact did not serve:\n#{File.read(@logf).lines.last(6).join}")
+    else
+      p_ed   = PROMPTS.map { |pr| gen(port, pr) }
+      p_base = PROMPTS.map { |pr| gen(port, pr, lora_scale: 0) }
+      lab    = labels(port)[0]
+      desc, = Open3.capture2e(art, "--describe")
+      sha_ad = Digest::SHA256.file(ADAPTER).hexdigest
+      ids_ok = p_ed.map(&:first) == ed_gen.map(&:first) && p_base.map(&:first) == ref_gen.map(&:first) &&
+               ed_gen.map(&:first) != ref_gen.map(&:first)
+      lp_ok  = PROMPTS.each_index.all? { |i| lp_diff(p_ed[i][1], ed_gen[i][1]) < TOL_LP }
+      wrong_ad = File.join(WORK, "pack-wrong.gguf")
+      write_adapter(wrong_ad, ALPHA, [["blk.3.ffn_down", D_MODEL, D_MODEL, 1]], [[Array.new(D_MODEL, 0.1), Array.new(D_MODEL, 0.1)]])
+      _, wst = Open3.capture2e(File.join(ROOT, "bin", "toy"), "pack", GGUF, "--adapter", wrong_ad, "--device", DEVICE,
+                               "-o", File.join(WORK, "packed-wrong"))
+      if ids_ok && lp_ok && lab["adapter_sha256"] == sha_ad && lab["lora_scale"] == 1.0 && desc.include?(sha_ad) &&
+         !wst.success? && !File.exist?(File.join(WORK, "packed-wrong"))
+        ok.call("packed", "an artifact packed with the adapter, started with an empty environment, gives the edited ids by default and the base ids at lora_scale 0, labels replies with the adapter's sha256 and describes it; a mis-shaped adapter is refused at pack time")
+      else
+        bad.call("packed", "ids right #{ids_ok}, log-probabilities right #{lp_ok}, label #{lab.inspect}, describe names the adapter #{desc.include?(sha_ad)}, mis-shaped adapter refused #{!wst.success?}")
+      end
+    end
+    stop_server
+  end
 
   # refuse
   wrong = File.join(WORK, "wrong.gguf")

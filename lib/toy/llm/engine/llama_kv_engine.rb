@@ -2667,7 +2667,7 @@ module SmolLM2KV
   # layers whose state for the last n_out tokens is left in
   # kv_cache.last_taps, one ne=[d_model, n_out] tensor per layer.
   def self.decode_cells(kv_cache, ids, poss, cells, n_out, hi, use_mask,
-                        cell_owner, cell_pos, tok_owner, tok_shared, gates, tap_layers)
+                        cell_owner, cell_pos, tok_owner, tok_shared, tok_sown, gates, tap_layers)
     n_tok = ids.length
     # Consecutive cells take the cpy-into-a-view write of build_fused_step.
     cell0 = cells[0]
@@ -2693,7 +2693,7 @@ module SmolLM2KV
     end
     if use_mask
       rc = TinyNN.tnn_upload_cell_mask(kv_cache.sess, step.t_mask, hi, n_tok,
-                                       cell_owner, cell_pos, tok_owner, poss, tok_shared)
+                                       cell_owner, cell_pos, tok_owner, poss, tok_shared, tok_sown)
       if rc != 0
         raise "decode_cells: mask upload failed rc=" + rc.to_s
       end
