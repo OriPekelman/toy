@@ -399,9 +399,15 @@ change with forward passes:
 
 What it costs and what it does not do:
 
-- An edited request reads neither the boot prefix nor rows cached under
-  another scale (they were computed by other weights), so it evaluates its
-  whole prompt; a slot keeps the scale of what it cached.
+- An edited request does not read rows cached under another scale (they
+  were computed by other weights); a slot keeps the scale of what it
+  cached. The boot prefix itself is scale 0. The first request at a
+  non-zero scale that starts with the whole boot prefix evaluates it, and
+  its rows are then kept as that scale's prefix, read by every later
+  request at the scale (toy#219). Up to four scales get one, fewer when
+  the prefix is long for the context (k scales need k + 1 prefixes to fit
+  in `--ctx`); a request at a further scale evaluates its whole prompt. These prefixes are in memory only:
+  a restart, or a packed artifact, begins with the scale-0 one.
 - The adapter adds two small matrix products per adapted matrix to a
   decode step that contains an edited request, and nothing otherwise.
 - One adapter per server, chosen at start. The file must be F32 or F16,

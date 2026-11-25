@@ -325,7 +325,7 @@ int    tnn_logits_pick(void *sess, void *tensor, int n_rows, int vocab, int top,
 int    tnn_upload_cell_mask(void *sess, void *tensor, int hi, int n_tok,
                             const long *cell_owner, const long *cell_pos,
                             const long *tok_owner, const long *tok_pos,
-                            const long *tok_shared);
+                            const long *tok_shared, const long *tok_sown);
 void  *tnn_cpy(void *sess, void *a, void *b);
 
 /* Reshape a contiguous tensor to a new shape with the same total

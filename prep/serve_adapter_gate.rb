@@ -34,6 +34,12 @@
 #   reuse     on one slot, a base request after an edited one with the same
 #             prompt reuses none of its cached rows, and a repeat at the
 #             same scale reuses them
+#   prefix    (toy#219) with a boot prefix (--prefix-file), the first
+#             request at an adapter scale evaluates the system turn and
+#             leaves it as that scale's prefix; later requests at the scale
+#             read it (cached_tokens = the system turn), at two scales and
+#             at scale 0 side by side, and every reply equals a server
+#             without reuse (KV_REUSE=0)
 #   label     (toy#221) every reply names its weights: the "toy" object of
 #             completions, chat and hidden replies carries the sha256 of
 #             the model file, of the adapter file ("" without one) and
@@ -527,7 +533,49 @@ begin
     bad.call("mixed", "replies right #{right}; #{shared}/#{jobs.length} requests shared steps")
   end
 
+  # prefix (toy#219): one slot, a boot prefix, three scales
+  system = "You are a careful assistant. Answer in one short sentence, and say so when you do not know."
+  sysfile = File.join(WORK, "system.txt")
+  File.write(sysfile, system + "\n")
+  chat = lambda do |pt, user, scale|
+    code, body = post(pt, "/v1/chat/completions",
+                      { model: "gate", max_tokens: MAX_TOKENS, logprobs: true, lora_scale: scale,
+                        messages: [{ role: "system", content: system }, { role: "user", content: user }] })
+    raise "chat HTTP #{code}: #{body[0, 200]}" unless code == 200
+    c = JSON.parse(body).dig("choices", 0)
+    [c.dig("message", "content"), c.dig("logprobs", "content").map { |e| e["logprob"] }]
+  end
+  seq = [[0, 1], [1, 1], [0, 2], [1, 2], [1, 0], [2, 1], [2, 2]]   # [user, scale]
+  port = start_server("ADAPTER" => ADAPTER, "KV_REUSE" => "0")
+  want = seq.map { |u, sc| chat.call(port, USERS[u], sc) }
+  port = start_server("ADAPTER" => ADAPTER, "PREFIX_FILE" => sysfile)
+  n0 = request_events.length
+  got = seq.map { |u, sc| chat.call(port, USERS[u], sc) }
+  cached = request_events[n0..].map { |e| e["cached_tokens"] }
+  sys_n = cached[4]   # the base request reads the boot prefix
+  same = seq.each_index.all? { |i| got[i][0] == want[i][0] && lp_diff(got[i][1], want[i][1]) < TOL_LP }
+  kept = File.read(@logf).scan(/KV prefix: (\d+) tokens kept for lora_scale/).flatten.map(&:to_i)
+  differ = want[1][0] != want[4][0] || lp_diff(want[1][1], want[4][1]) > TOL_LP
+  # Requests 1 and 3 follow one at their own scale in the slot and reuse
+  # its rows (the system turn and more); 5 and 6 follow another scale, so
+  # what they have cached can only be their scale's prefix.
+  shape = cached[0] == 0 && cached[2] == 0 && cached[1] >= sys_n && cached[3] >= sys_n && cached[4..] == [sys_n] * 3
+  # The same on 3 slots, all requests at once, twice: the second round finds
+  # the sets the first one left.
+  port = start_server("ADAPTER" => ADAPTER, "PREFIX_FILE" => sysfile, "SLOTS" => "3")
+  rounds = 2.times.map { all_at_once(seq) { |u, sc| chat.call(port, USERS[u], sc) } }
+  n_ev = request_events.length
+  cached2 = request_events[n_ev - seq.length, seq.length].map { |e| e["cached_tokens"] }
+  same = same && rounds.all? { |r| seq.each_index.all? { |i| r[i][0] == want[i][0] && lp_diff(r[i][1], want[i][1]) < TOL_LP } }
+  shape = shape && cached2.all? { |c| c >= sys_n }
+  if same && differ && sys_n > 10 && shape && kept == [sys_n, sys_n]
+    ok.call("prefix", "cached tokens #{cached.inspect}: after the first request at a scale, requests at scales 1, 2 and 0 each read the #{sys_n}-token system turn, and all #{seq.length} replies equal a server without reuse, also sent at once on 3 slots (cached #{cached2.inspect})")
+  else
+    bad.call("prefix", "cached tokens #{cached.inspect}, on 3 slots second round #{cached2.inspect} (system turn #{sys_n}), sets kept #{kept.inspect}, replies equal the no-reuse server #{same}, edited differs from base #{differ}")
+  end
+
   # label
+  port = start_server("ADAPTER" => ADAPTER, "SLOTS" => "2")
   sha_m = Digest::SHA256.file(GGUF).hexdigest
   sha_a = Digest::SHA256.file(ADAPTER).hexdigest
   want = ->(a, s) { { "model_sha256" => sha_m, "adapter_sha256" => a, "lora_scale" => s } }

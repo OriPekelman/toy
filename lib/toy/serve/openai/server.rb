@@ -211,7 +211,14 @@ class State
   # highest cell in use, :cell_lo a lower bound on the lowest free one.
   # :step_seq counts decode steps (api_pump).
   attr_accessor :n_cells, :cell_owner, :cell_pos, :cell_hi, :cell_lo, :step_seq
+  # toy#219: the boot prefix evaluated again under an adapter scale. Set p
+  # is the prefix's positions computed at scale :set_scale[p], in cells
+  # whose owner is -(10 + p). A set is made from the cells of the first
+  # request at that scale that starts with the whole prefix (api_set_make).
+  attr_accessor :set_scale
   def initialize
+    @set_scale = [0.0]
+    @set_scale.pop
     @cfg  = nil
     @kv   = nil
     @gguf = TinyNN.tnn_null_ptr
@@ -814,7 +821,9 @@ class Slot
   # :shared_n  how many leading positions are the shared prefix's cells
   # :cells     the cell of each later position (cells[i] holds position
   #            shared_n + i)
-  attr_accessor :idx, :busy, :seq_ids, :shared_n, :cells
+  # :shared_own  the owner of those cells: -1 the boot prefix, -(10 + p)
+  #            its set p (toy#219)
+  attr_accessor :idx, :busy, :seq_ids, :shared_n, :cells, :shared_own
   # The request:
   #   :prompt_ids / :fed   the prompt, and how many of its ids are cached
   #   :n_new      most tokens to generate
@@ -864,6 +873,7 @@ class Slot
     @seq_ids  = [0]
     @seq_ids.pop
     @shared_n = 0
+    @shared_own = -1
     @cells    = [0]
     @cells.pop
     @prompt_ids = [0]
@@ -977,7 +987,8 @@ end
 #
 # toy#218: rows computed under another adapter scale are not this request's
 # (`ad_scale`), so such a slot counts as sharing nothing, and the boot
-# prefix (computed by the unedited model) serves scale 0 only. Among slots
+# prefix (computed by the unedited model) serves scale 0 only. toy#219: a
+# non-zero scale reads the prefix set made for it, once there is one. Among slots
 # sharing equally much, the one with the least cached is taken, which
 # leaves a base and an edited sequence side by side when there is room.
 def api_slot_acquire(prompt_ids, n_new, ad_scale)
@@ -1002,8 +1013,16 @@ def api_slot_acquire(prompt_ids, n_new, ad_scale)
   end
   slot = SLOTS[best]
   pre_lcp = 0
+  pre_own = -1
   if ad_scale == 0.0
     pre_lcp = api_lcp(STATE.kv_ids, prompt_ids)
+  else
+    # toy#219: the prefix as evaluated under this scale, when there is one.
+    set = api_set_find(ad_scale)
+    if set >= 0
+      pre_lcp = api_lcp(STATE.kv_ids, prompt_ids)
+      pre_own = -(SET_OWNER0 + set)
+    end
   end
   if KV_REUSE_OFF
     best_lcp = 0
@@ -1020,7 +1039,8 @@ def api_slot_acquire(prompt_ids, n_new, ad_scale)
     start = prompt_ids.length - 1
   end
   if pre_lcp > best_lcp
-    slot.shared_n = start
+    slot.shared_n   = start
+    slot.shared_own = pre_own
     k = 0
     while k < start
       slot.seq_ids.push(prompt_ids[k])
@@ -1062,8 +1082,68 @@ def api_slot_acquire(prompt_ids, n_new, ad_scale)
   best
 end
 
+# toy#219: prefix sets. SET_MAX scales have one; a request at another
+# non-zero scale evaluates its whole prompt, as every edited request did.
+SET_OWNER0 = 10
+SET_MAX    = 4
+
+# The set holding the boot prefix at `scale`, or -1.
+def api_set_find(scale)
+  p = 0
+  while p < STATE.set_scale.length
+    if STATE.set_scale[p] == scale
+      return p
+    end
+    p = p + 1
+  end
+  -1
+end
+
+# Makes the slot's leading cells the prefix set of its scale, when its
+# sequence starts with the whole boot prefix, it evaluated those positions
+# itself, and that scale has no set yet. The cells change owner; the slot
+# then reads them as its shared prefix, and so can any later request.
+def api_set_make(slot)
+  n = STATE.kv_ids.length
+  if !STATE.kv.fused || KV_REUSE_OFF || n == 0 || slot.ad_scale == 0.0 || slot.shared_n != 0
+    return 0
+  end
+  if STATE.set_scale.length >= SET_MAX || api_set_find(slot.ad_scale) >= 0
+    return 0
+  end
+  # The pool has one context more than the slots need, for the boot
+  # prefix; the sets live in what that prefix leaves of it.
+  if (STATE.set_scale.length + 2) * n > MAX_T
+    return 0
+  end
+  if slot.cells.length < n || api_lcp(STATE.kv_ids, slot.seq_ids) != n
+    return 0
+  end
+  owner = -(SET_OWNER0 + STATE.set_scale.length)
+  rest = [0]
+  rest.pop
+  i = 0
+  while i < slot.cells.length
+    if i < n
+      STATE.cell_owner[slot.cells[i]] = owner
+    else
+      rest.push(slot.cells[i])
+    end
+    i = i + 1
+  end
+  slot.cells      = rest
+  slot.shared_n   = n
+  slot.shared_own = owner
+  STATE.set_scale.push(slot.ad_scale)
+  puts "[openai_api_llama] KV prefix: " + n.to_s + " tokens kept for lora_scale " + slot.ad_scale.to_s
+  0
+end
+
 # Ends the slot's request. Its cached positions stay for the next one.
 def api_slot_release(slot)
+  if slot.err.length == 0
+    api_set_make(slot)
+  end
   slot.busy  = false
   slot.phase = 2
   0
@@ -1246,6 +1326,7 @@ def api_pump
     # Enter the step's tokens in the pool and in their slots.
     cells  = [0]; cells.pop
     shared = [0]; shared.pop
+    sown   = [0]; sown.pop
     several = false
     k = 1
     while k < n_tok
@@ -1269,6 +1350,7 @@ def api_pump
       end
       cells.push(c)
       shared.push(slot.shared_n)
+      sown.push(slot.shared_own)
       k = k + 1
     end
     # toy#218: each token's adapter scale, when any is not 0.
@@ -1323,7 +1405,7 @@ def api_pump
       one = SLOTS[own[0]]
       use_mask = n_tok > 1 || one.cells.length + one.shared_n != STATE.cell_hi
       t_logits = SmolLM2KV.decode_cells(kv, ids, pos, cells, rows, STATE.cell_hi, use_mask,
-                                        STATE.cell_owner, STATE.cell_pos, own, shared, gates, taps)
+                                        STATE.cell_owner, STATE.cell_pos, own, shared, sown, gates, taps)
       if taps.length > 0
         d = STATE.cfg.d_model
         buf = [0.0]; buf.pop
