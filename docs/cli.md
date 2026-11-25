@@ -267,9 +267,20 @@ What the server offers depends on whether the GGUF embeds its tokenizer
 
 **Prompt prefix reuse (toy#210).** The K/V rows of whatever prefix a
 request shares with the previous one are kept, and only the rest of the
-prompt is evaluated. Replies are the same as without reuse (`KV_REUSE=0`
-in the runner's environment turns it off, for measurement). For a system
-message that every request starts with:
+prompt is evaluated. On F32 weights replies are the same as without reuse
+(`gate-kv-prefix` asserts it). On quantized weights under CUDA a reply can
+differ at a near-tie, and so the same request sent twice can give two
+replies: the first evaluates its prompt as one batch, the repeat evaluates
+only the last token, and ggml's CUDA kernels for quantized weights give
+slightly different numbers for different batch sizes. Measured on the
+shrink student (Q8, CUDA, one slot, 60 held-out requests, each sent twice
+in a row, toy#219): 5 pairs of replies differed, each first at a token
+whose two best candidates were within 0.07 nats, and the log-probability
+of the first token moved by 6e-5 (median). With `KV_REUSE=0` in the
+runner's environment (no reuse; every prompt evaluated whole) or
+`KV_BATCH=1` (one token per step) all 60 pairs were identical, bit for bit
+in the log-probabilities. Both cost speed; use one when a run has to be
+repeatable. For a system message that every request starts with:
 
 ```
 toy serve model.gguf --device cuda --prefix-file system.txt --prefix-cache system.kv
