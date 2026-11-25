@@ -1346,6 +1346,7 @@ toy-train-metal: libexec/toy-train-metal
 libexec/toy-serve: lib/toy/run/serve.rb lib/toy/io/json_builder.rb lib/toy/io/json.rb lib/toy/io/json_decoder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
 		lib/toy/serve/openai/server.rb \
 		lib/toy/serve/openai/handlers.rb lib/toy/serve/openai/toy_backend.rb \
+		lib/toy/serve/openai/json_prefix.rb \
 		vendor/spinel/tep/lib/tep.rb \
 		lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb \
 		lib/toy/io/tokenizer.rb lib/toy/io/gguf_kv.rb lib/toy/train/toy_chat_template.rb \
@@ -1361,6 +1362,7 @@ toy-serve: libexec/toy-serve
 libexec/toy-serve-cuda: lib/toy/run/serve_cuda.rb lib/toy/io/json_builder.rb lib/toy/io/json.rb lib/toy/io/json_decoder.rb lib/toy/io/toy_events.rb vendor/spinel/spinel_kit/lib/spinel_kit/git.rb \
 		lib/toy/serve/openai/server_cuda.rb \
 		lib/toy/serve/openai/handlers.rb lib/toy/serve/openai/toy_backend_cuda.rb \
+		lib/toy/serve/openai/json_prefix.rb \
 		vendor/spinel/tep/lib/tep.rb \
 		lib/toy/llm/engine/llama_kv_engine_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb \
 		lib/toy/io/tokenizer.rb lib/toy/io/gguf_kv.rb lib/toy/train/toy_chat_template.rb \

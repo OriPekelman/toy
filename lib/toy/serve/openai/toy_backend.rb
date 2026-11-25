@@ -113,7 +113,11 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
 
   # The checks serve_generate makes before it generates. Returns the number
   # of tokens to generate; on a refusal `rep` carries the error.
-  def stream_check(rep, body, token_ids, n_new_req)
+  def stream_check(rep, body, token_ids, n_new_req, chat)
+    fmt_check(rep, body, chat)
+    if rep.status != 200
+      return 0
+    end
     if !@state.tok.present
       rep.fail(400, "invalid_request_error",
                "a streamed reply needs a GGUF with an embedded tokenizer")
@@ -188,6 +192,7 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
       slot = SLOTS[slot_i]
       slot.stop_strs = stops
       slot.lp_top    = top
+      fmt_apply(slot, body, chat)
       cached = slot.cached
       while true
         api_slot_turn(slot)
@@ -361,7 +366,7 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
     if token_ids.length == 0
       return rep.fail(400, "invalid_request_error", "messages must be a non-empty array")
     end
-    serve_generate(rep, body, token_ids, chat_max_tokens(body, token_ids.length))
+    serve_generate(rep, body, token_ids, chat_max_tokens(body, token_ids.length), true)
     rep
   end
 
@@ -375,7 +380,7 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
     if rep.status != 200
       return rep
     end
-    serve_generate(rep, body, token_ids, text_max_tokens(body))
+    serve_generate(rep, body, token_ids, text_max_tokens(body), false)
     rep.with_ids = true
     rep
   end
@@ -432,6 +437,86 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
     if n < 0; n = 0; end
     if n > 20; n = 20; end
     n
+  end
+
+  # toy#219: what `response_format` asks for: 0 free text (absent, null or
+  # {"type":"text"}), 1 a JSON object ({"type":"json_object"}), -1 anything
+  # else (a schema is not enforced, so it is refused rather than ignored).
+  def fmt_request(body)
+    pos = SpinelKit::Json.find_value_start(body, "response_format")
+    if pos < 0 || pos >= body.length || body[pos] == "n"
+      return 0
+    end
+    v = ""
+    i = pos
+    open = true
+    while open && i < body.length && v.length < 40
+      c = body[i]
+      if c != " " && c != "\n" && c != "\t" && c != "\r"
+        v = v + c
+      end
+      if c == "}"
+        open = false
+      end
+      i = i + 1
+    end
+    if v == "{\"type\":\"json_object\"}"
+      return 1
+    end
+    if v == "{\"type\":\"text\"}"
+      return 0
+    end
+    -1
+  end
+
+  # The JSON state a request's reply starts from: empty, or, for a chat
+  # request whose last message is a partial assistant answer (toy#216), that
+  # answer, so the reply continues the object it began.
+  def fmt_state(body, chat)
+    js = JsonPrefix.new
+    if chat
+      msgs = Tep::Llm::OpenAI.parse_messages(body)
+      if msgs.length > 0 && msgs[msgs.length - 1].role == "assistant"
+        if !js.feed(msgs[msgs.length - 1].content)
+          js.st = -1
+        end
+      end
+    end
+    js
+  end
+
+  # Refuses (on `rep`) a response_format this server cannot enforce.
+  def fmt_check(rep, body, chat)
+    f = fmt_request(body)
+    if f == 0
+      return 0
+    end
+    if f < 0
+      rep.fail(400, "invalid_request_error",
+               "response_format: only {\"type\":\"json_object\"} and {\"type\":\"text\"} are supported")
+      return 0
+    end
+    if !@state.tok.present
+      rep.fail(400, "invalid_request_error",
+               "response_format needs a GGUF with an embedded tokenizer")
+      return 0
+    end
+    js = fmt_state(body, chat)
+    if js.st == -1 || js.complete
+      rep.fail(400, "invalid_request_error",
+               "response_format: the partial assistant message is not the start of a JSON object")
+      return 0
+    end
+    1
+  end
+
+  # Tells the slot to keep its reply a JSON object when the request asks.
+  def fmt_apply(slot, body, chat)
+    if fmt_request(body) == 1
+      slot.fmt  = 1
+      slot.json = fmt_state(body, chat)
+    end
+    0
   end
 
   # toy#218: the adapter scale a request asks for: "lora_scale" when given,
@@ -614,7 +699,7 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
   # Generate into `rep` with the request's options: stop strings and
   # log-probabilities (toy#216), the context check (toy#207), and one
   # request event. A Ruby exception becomes a 500 reply (toy#214).
-  def serve_generate(rep, body, token_ids, n_new_req)
+  def serve_generate(rep, body, token_ids, n_new_req, chat)
     rep.prompt_tokens = token_ids.length
     scale = ad_request(body)
     rep.prov = prov_json(scale)
@@ -623,6 +708,10 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
     if (stops.length > 0 || top >= 0) && !@state.tok.present
       return rep.fail(400, "invalid_request_error",
                       "stop strings and logprobs need a GGUF with an embedded tokenizer")
+    end
+    fmt_check(rep, body, chat)
+    if rep.status != 200
+      return rep
     end
     n_new = fit_context(token_ids.length, n_new_req)
     if n_new <= 0
@@ -640,6 +729,7 @@ class ToyBackend < Tep::Llm::OpenAI::Backend
       slot = SLOTS[slot_i]
       slot.stop_strs = stops
       slot.lp_top    = top
+      fmt_apply(slot, body, chat)
       api_slot_run(slot)
       if slot.err.length > 0
         raise slot.err
@@ -967,7 +1057,7 @@ end
 def api_stream_reply(backend, res, rep, body, token_ids, n_new_req, chat)
   n_new = 0
   if rep.status == 200
-    n_new = backend.stream_check(rep, body, token_ids, n_new_req)
+    n_new = backend.stream_check(rep, body, token_ids, n_new_req, chat)
   end
   if rep.status != 200
     res.headers["Content-Type"] = "application/json"

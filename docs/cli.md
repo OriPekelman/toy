@@ -225,7 +225,19 @@ What the server offers depends on whether the GGUF embeds its tokenizer
   Absent, `/v1/completions` generates 16 tokens and chat generates until a
   stop token or the end of the context.
 - **Sampling.** Greedy only: `temperature` and `top_p` are not honoured.
-  `response_format` is accepted and not enforced.
+- **`response_format`.** `{"type": "json_object"}` is enforced (toy#219):
+  each step takes the most likely token that keeps the reply the start of
+  one JSON object, and the reply ends with `finish_reason: "stop"` when
+  the object closes. A reply cut by `max_tokens` (`"length"`) is an
+  unfinished object. With a forced answer prefix on chat (below) the
+  partial assistant message is the start of the object and the reply
+  continues it. Runs of more than 16 whitespace bytes between tokens are
+  not allowed. `logprobs` reports the token taken with its own
+  log-probability; the alternatives are the model's, unconstrained. The
+  search goes 1024 tokens down the ranking; a step with no usable token
+  there fails the request (HTTP 500). `{"type": "text"}` is the default.
+  Any other format, a JSON schema included, is HTTP 400: it would not be
+  enforced. On `/v1/completions` the reply itself must be the object.
 - **Log-probabilities.** `"logprobs": true` (with `"top_logprobs": n`, up
   to 20) on chat, or `"logprobs": n` on `/v1/completions`, adds
   `choices[0].logprobs.content`: one entry per reply token with `token`,

@@ -846,7 +846,14 @@ class Slot
   #                (0 = embeddings, i = after block i), ascending
   #   :hidden      their states, d_model values per layer, in that order
   attr_accessor :ad_scale, :tap_layers, :hidden
+  # toy#219:
+  #   :fmt   0 = free text, 1 = the reply must be a JSON object
+  #   :json  what of that object has been generated (or given as a forced
+  #          answer prefix) so far
+  attr_accessor :fmt, :json
   def initialize(idx)
+    @fmt  = 0
+    @json = JsonPrefix.new
     @ad_scale   = 0.0
     @tap_layers = [0]
     @tap_layers.pop
@@ -1049,6 +1056,7 @@ def api_slot_acquire(prompt_ids, n_new, ad_scale)
   slot.stop_strs.clear
   slot.stop_cut   = -1
   slot.ad_scale   = ad_scale
+  slot.fmt        = 0
   slot.tap_layers.clear
   slot.hidden.clear
   best
@@ -1059,6 +1067,40 @@ def api_slot_release(slot)
   slot.busy  = false
   slot.phase = 2
   0
+end
+
+# toy#219: can the slot's JSON reply continue with token `id`? When it can,
+# the slot's JSON state moves past it. A stop token is never a continuation
+# (the reply ends by closing its object), nor is a token with no text.
+def api_json_take(slot, id)
+  if api_stop_id?(id)
+    return false
+  end
+  piece = STATE.tok.decode([id])
+  if piece.bytesize == 0
+    return false
+  end
+  trial = JsonPrefix.new
+  trial.copy_from(slot.json)
+  if !trial.feed(piece)
+    return false
+  end
+  slot.json = trial
+  true
+end
+
+# The most likely token a JSON reply can continue with, among the `top`
+# ranked in alt_ids (row k): its rank, or -1 when there is none.
+def api_json_rank(slot, alt_ids, k, top)
+  j = 0
+  while j < top
+    cid = alt_ids[k * top + j]
+    if cid >= 0 && api_json_take(slot, cid)
+      return j
+    end
+    j = j + 1
+  end
+  -1
 end
 
 # One generated id for the slot: ends the request at a stop id (not
@@ -1090,6 +1132,46 @@ def api_slot_take(slot, id)
   end
   slot.next_id = id
   0
+end
+
+# toy#219: how far down the ranking a JSON reply looks for its next token:
+# JSON_TOP in the step's own pick, JSON_TOP_FAR in a second read of the
+# logits when none of those fits (the shim's limit, TNN_PICK_TOP_MAX).
+JSON_TOP     = (ENV["SERVE_TEST_JSON_TOP"] || "64").to_i   # the gate sets 1 to reach the second read
+JSON_TOP_FAR = 1024
+JSON_FAR_LP  = [0.0]
+
+# The second read for row k of the step's logits: the id of the most likely
+# of JSON_TOP_FAR tokens the slot's reply can continue with (its
+# log-probability goes to JSON_FAR_LP[0]), or -1.
+def api_json_far(kv, t_logits, n_out, k, slot)
+  best = [0];    best.pop
+  lps  = [0.0];  lps.pop
+  ids  = [0];    ids.pop
+  alps = [0.0];  alps.pop
+  i = 0
+  while i < n_out
+    best.push(0)
+    lps.push(0.0)
+    i = i + 1
+  end
+  i = 0
+  while i < n_out * JSON_TOP_FAR
+    ids.push(-1)
+    alps.push(0.0)
+    i = i + 1
+  end
+  rc = TinyNN.tnn_logits_pick(kv.sess, t_logits, n_out, STATE.cfg.vocab, JSON_TOP_FAR,
+                              best, lps, ids, alps)
+  if rc != 0
+    raise "logits pick failed rc=" + rc.to_s
+  end
+  r = api_json_rank(slot, ids, k, JSON_TOP_FAR)
+  if r < 0
+    return -1
+  end
+  JSON_FAR_LP[0] = alps[k * JSON_TOP_FAR + r]
+  ids[k * JSON_TOP_FAR + r]
 end
 
 # One decode step for every busy slot: a generating slot feeds its last id,
@@ -1294,6 +1376,9 @@ def api_pump
         if SLOTS[b_own[k]].lp_top > top
           top = SLOTS[b_own[k]].lp_top
         end
+        if SLOTS[b_own[k]].fmt == 1 && top < JSON_TOP
+          top = JSON_TOP
+        end
         k = k + 1
       end
       best = [0];    best.pop
@@ -1324,16 +1409,44 @@ def api_pump
       k = 0
       while k < n_out
         slot = SLOTS[b_own[k]]
-        if slot.lp_top >= 0
-          slot.lp_tok.push(lps[k])
-          j = 0
-          while j < slot.lp_top
-            slot.lp_alt_ids.push(alt_ids[k * top + j])
-            slot.lp_alt_lps.push(alt_lps[k * top + j])
-            j = j + 1
+        pick = best[k]
+        lp   = 0.0
+        if top >= 0
+          lp = lps[k]
+        end
+        if slot.fmt == 1
+          # toy#219: the most likely token that keeps the reply a JSON
+          # object. Not among the first JSON_TOP: look JSON_TOP_FAR down
+          # for this row alone.
+          r = api_json_rank(slot, alt_ids, k, top)
+          if r >= 0
+            pick = alt_ids[k * top + r]
+            lp   = alt_lps[k * top + r]
+          else
+            pick = api_json_far(kv, t_logits, n_out, k, slot)
+            lp   = JSON_FAR_LP[0]
           end
         end
-        api_slot_take(slot, best[k])
+        if pick < 0
+          slot.err   = "response_format: none of the " + JSON_TOP_FAR.to_s +
+                       " most likely tokens continues a JSON object"
+          slot.phase = 2
+        else
+          if slot.lp_top >= 0
+            slot.lp_tok.push(lp)
+            j = 0
+            while j < slot.lp_top
+              slot.lp_alt_ids.push(alt_ids[k * top + j])
+              slot.lp_alt_lps.push(alt_lps[k * top + j])
+              j = j + 1
+            end
+          end
+          api_slot_take(slot, pick)
+          if slot.fmt == 1 && slot.json.complete && slot.phase != 2
+            slot.finish = "stop"
+            slot.phase  = 2
+          end
+        end
         k = k + 1
       end
     end
