@@ -357,6 +357,12 @@ toy serve model.gguf --device cuda --ctx 1024 --slots 32 --prefix-file system.tx
   request, 30 ms for 8 and about 56 ms for 32. `llama-server --parallel 32`
   on the same file and requests gave 6.4 requests/s (one run; the GPU is
   shared, and runs disturbed by another job came out near 3–4 for both).
+  Per operation at 64 slots (toy#219, `TNN_STEP_PROFILE=3`): the attention
+  products over the pool, their softmax and the copies around them are
+  about 45 % of a step (42 of 92 ms), against 13 % at 8 slots; the weight
+  products grow only from 26 to 44 ms for eight times the tokens. Attention
+  restricted to each request's own cells would therefore be worth roughly
+  1.5x at 64 slots and nothing at 8. It is not built.
 
 **Weight edits at inference and hidden states (toy#218).** Two things for
 experiments that change a model's weights without training and test the
@@ -430,6 +436,27 @@ generated on CUDA (llama.cpp: 55–58 under the same load) and a 776-token
 prompt in about 0.2 s. Models and options the fused step does not cover
 run on the older per-head graph, which is several times slower on a GPU;
 see "Decode graphs" in [`models.md`](models.md).
+
+Re-measured for toy#219 on the shrink student (22 layers, d 3584, CUDA,
+the POC's 200 held-out requests, ~58 new tokens each), requests per second
+at 8 slots / one at a time:
+
+| file | toy serve | llama.cpp (`server-cuda`, 2026-10-17) |
+| --- | --- | --- |
+| Q8_0 | 3.86 / 0.62 | 4.18 / 0.95 |
+| Q4_K_M | 3.32 / 0.54 | 5.33 / 1.48 |
+
+Q4_K_M runs on the fused graph with `--slots`, with the same task scores
+as llama.cpp (100 % valid JSON, type agreement 85.5 % vs 86.0 %); it had
+not been measured. It is where toy is furthest behind: a decode step for
+one request is 25–28 ms on either file, 14 ms (Q4_K_M) to 22 ms (Q8) of it
+in the large quantized matrix products, while llama.cpp spends about 10 ms
+on a whole Q4_K_M token. toy's vendored ggml is from 2026-05-21; upstream
+has since reworked those CUDA kernels (single-column and few-row
+quantized products, fused FFN gate/up). The gap is expected to close with
+a ggml bump, which is its own piece of work (7 of the 14 vendored patches
+no longer apply as they are). The Metal serve path is not measured: there
+is no Mac in this loop.
 
 Streamed replies are toy's own as well (toy#219). The frames share the
 reply's `id`. The last frame before `data: [DONE]` has an empty delta
