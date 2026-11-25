@@ -454,8 +454,8 @@ in the large quantized matrix products, while llama.cpp spends about 10 ms
 on a whole Q4_K_M token. toy's vendored ggml is from 2026-05-21; upstream
 has since reworked those CUDA kernels (single-column and few-row
 quantized products, fused FFN gate/up). The gap is expected to close with
-a ggml bump, which is its own piece of work (7 of the 14 vendored patches
-no longer apply as they are). The Metal serve path is not measured: there
+a ggml bump, which is its own piece of work (toy#223; 8 of the 14 vendored
+patches no longer apply as they are). The Metal serve path is not measured: there
 is no Mac in this loop.
 
 Streamed replies are toy's own as well (toy#219). The frames share the
