@@ -1,4 +1,4 @@
-# lib/toy/core/cli/pack.rb — `toy pack <model.gguf> -o <artifact> [--prefix F] [--name NAME] [--device cpu|cuda] [--ctx N] [--port N] [--stop-ids N,M] [--slots N] [--adapter F]`.
+# lib/toy/core/cli/pack.rb — `toy pack <model.gguf> -o <artifact> [--prefix F] [--name NAME] [--device cpu|cuda] [--ctx N] [--port N] [--stop-ids N,M] [--slots N] [--adapter F] [--static]`.
 #
 # Builds ONE executable that carries the model, its tokenizer (inside the
 # GGUF), a fixed serve config, a description, and optionally a precomputed
@@ -52,6 +52,7 @@ module Toy
           @stop_ids = nil
           @slots = nil
           @adapter = nil
+          @static = false
         end
 
         def run
@@ -73,6 +74,9 @@ module Toy
           root = ToyRoot.locate_root
           return fail_out("could not locate toy's install root (set TOY_HOME to a toy checkout)") unless root
           target = @device == "cuda" ? "libexec/toy-serve-cuda" : "libexec/toy-serve"
+          # toy#219: a runner with no shared-library dependencies. CPU only:
+          # the CUDA runner loads the driver's libcuda at run time.
+          target = "libexec/toy-serve-static" if @static
           ok, err = ToyRoot.ensure_built(root, target)
           return fail_out(err) unless ok
           runner = File.join(root, target)
@@ -210,6 +214,10 @@ module Toy
             lines << "  applied        at \"lora_scale\" 1 unless a request gives another; 0 is the model alone"
           end
           needs = shared_libs(runner)
+          if @static
+            lines << ""
+            lines << "Linked statically: no shared libraries needed at run time"
+          end
           unless needs.empty?
             lines << ""
             lines << "Shared libraries needed at run time"
@@ -299,6 +307,7 @@ module Toy
               return bad_arg("--slots must be an integer from 1 to 64, got #{v.inspect}") unless v =~ /\A\d+\z/ && (1..64).cover?(v.to_i)
               @slots = v.to_i
             when "--adapter"   then @adapter = take.call(tok)
+            when "--static"    then @static = true
             when /\A-/ then return bad_arg("unknown flag #{tok.inspect}")
             else rest << tok
             end
@@ -307,6 +316,7 @@ module Toy
           return bad_arg("missing required argument <model.gguf>") if rest.empty?
           return bad_arg("unexpected extra arguments: #{rest[1..].join(' ')}") if rest.length > 1
           return bad_arg("missing -o <artifact>") if @out.nil?
+          return bad_arg("--static is for --device cpu (the CUDA runner loads the driver's library at run time)") if @static && @device != "cpu"
           @model = rest.first
           true
         end

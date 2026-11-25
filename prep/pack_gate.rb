@@ -31,6 +31,10 @@
 #             model elsewhere); a pack whose KV entry was made from another
 #             model refuses to boot
 #   bare      a pack made without --prefix serves, with no KV prefix
+#   static    (toy#219, CPU) `toy pack --static` gives an artifact that is
+#             not a dynamic executable, serves the same replies from an
+#             empty environment, and says so in --describe; with
+#             --device cuda it is refused (exit 2)
 #   usage     `toy pack` without -o, or with a missing model, exits 2
 #
 #   ruby prep/pack_gate.rb [--device cuda]   # exit 0 pass, 1 fail, 2 unusable
@@ -436,6 +440,39 @@ begin
     ok.call("bare", "a pack without --prefix serves the same replies with no KV prefix")
   else
     b.each { |m| failures << "bare: #{m}" }
+  end
+
+  # ---- static (toy#219) ----
+  s = []
+  if DEVICE == "cuda"
+    _o, st = toy_pack(GGUF, "--device", "cuda", "--static", "-o", File.join(TMP, "static-cuda"))
+    s << "--static with --device cuda: exit #{st.exitstatus}, expected 2" unless st.exitstatus == 2
+    s << "a refused pack left an artifact behind" if File.exist?(File.join(TMP, "static-cuda"))
+    s.empty? ? ok.call("static", "--static with --device cuda is refused") : s.each { |m| failures << "static: #{m}" }
+  else
+    stat = File.join(TMP, "static")
+    sport = free_port
+    out, st = toy_pack(GGUF, "--name", NAME, "--static", "--port", sport.to_s, "-o", stat)
+    if st.success?
+      kind, = Open3.capture2e("file", "-b", stat)
+      s << "the artifact is not statically linked: #{kind.strip[0, 120]}" unless kind.include?("statically linked")
+      dyn, = Open3.capture2e("file", "-b", RUNNER)
+      s << "the plain runner is not dynamically linked, so the leg cannot tell" unless dyn.include?("dynamically linked")
+      desc, = Open3.capture2e(stat, "--describe")
+      s << "--describe does not say the artifact is linked statically" unless desc.include?("Linked statically")
+      s << "--describe lists shared libraries" if desc.include?("Shared libraries needed")
+      r = boot([stat], {}, sport, chdir: EMPTY, clean: true)
+      if r == true
+        s << "a static pack gives other replies" unless replies(sport) == ref
+      else
+        s << "a static pack exited #{r}"
+      end
+      stop_server
+    else
+      s << "`toy pack --static` exited #{st.exitstatus}: #{out.lines.last.to_s.strip}"
+    end
+    FileUtils.rm_f(stat)
+    s.empty? ? ok.call("static", "a --static pack is not a dynamic executable and serves the same replies from an empty environment") : s.each { |m| failures << "static: #{m}" }
   end
 
   # ---- usage ----

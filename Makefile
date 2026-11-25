@@ -1355,6 +1355,16 @@ libexec/toy-serve: lib/toy/run/serve.rb lib/toy/io/json_builder.rb lib/toy/io/js
 	$(SPINEL) $< -o $@
 toy-serve: libexec/toy-serve
 
+# toy#219 — the CPU serve runner linked statically: the same program with no
+# shared library to find at run time (libc, libstdc++, OpenSSL and SQLite
+# are inside). `toy pack --static` packs this one. Needs the static
+# libraries (libc6-dev, libssl-dev, libsqlite3-dev). The linker's notes
+# about getaddrinfo/dlopen/getpwnam in a static program are expected: the
+# server binds an address and resolves no names.
+libexec/toy-serve-static: libexec/toy-serve
+	$(SPINEL) --link -static lib/toy/run/serve.rb -o $@
+toy-serve-static: libexec/toy-serve-static
+
 # toy#209 — the CUDA serve runner. Same program as libexec/toy-serve: the
 # runner, the serve state and the backend are MECHANICAL mirrors
 # (prep/gen_cuda_mirror.rb), so the two devices cannot drift. `toy serve

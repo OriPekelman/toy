@@ -457,7 +457,7 @@ The serve stack lives at `lib/toy/serve/openai/` and is driven by
 >
 > `infer`/`train`/`eval` don't link tep and are unaffected.
 
-### `pack <model> -o <artifact> [--prefix F] [--name NAME] [--device cpu|cuda] [--ctx N] [--port PORT] [--stop-ids N,M] [--slots N] [--adapter F]`
+### `pack <model> -o <artifact> [--prefix F] [--name NAME] [--device cpu|cuda] [--ctx N] [--port PORT] [--stop-ids N,M] [--slots N] [--adapter F] [--static]`
 Build one executable that carries the model and serves it with no arguments
 (toy#211).
 
@@ -502,10 +502,15 @@ How it behaves:
 
 Limits:
 
-- **Not statically linked.** The artifact needs the shared libraries
+- **Shared libraries.** By default the artifact needs the ones
   `--describe` lists: libc, libstdc++, libm, OpenSSL and SQLite (through
   tep), and for CUDA the driver's `libcuda.so.1`. The CUDA runtime itself is
   linked in, which is why a CUDA artifact is 0.7 GB larger than its model.
+  `--static` (CPU only, toy#219) packs a statically linked runner
+  (`libexec/toy-serve-static`) that needs none of them; building it needs
+  the static libraries of libc, OpenSSL and SQLite on the packing machine.
+  A CUDA artifact cannot be static: the driver's library is loaded at run
+  time.
 - **Tied to the machine class it was packed on**: same OS and CPU
   architecture, and for CUDA a GPU the linked kernels support.
 - **The KV prefix matches one system message exactly.** A request with a
