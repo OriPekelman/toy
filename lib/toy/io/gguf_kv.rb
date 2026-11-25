@@ -10,6 +10,12 @@
 # + scalar/array reads + close). No tensor types, no Mat, no FFNFFICache.
 # Callers requiring just metadata access load this module standalone.
 
+# toy#175: under CRuby the declarations below need lib/toy/mri/shim.rb.
+# Spinel resolves this guard at compile time and drops the require.
+if RUBY_ENGINE != "spinel"
+  require_relative "../mri/shim"   # cruby-only
+end
+
 module GgufKV
   ffi_lib "tinynn_ggml"
   ffi_lib "ggml"
