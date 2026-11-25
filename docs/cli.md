@@ -204,7 +204,7 @@ What the server offers depends on whether the GGUF embeds its tokenizer
 | | with a tokenizer | without |
 | --- | --- | --- |
 | `POST /v1/chat/completions` | messages in, text out; `"stream": true` supported | 501 |
-| `POST /v1/completions` | token ids in; `ids` and decoded `text` out | token ids in; `ids` out, `text` is `""` |
+| `POST /v1/completions` | token ids or text in; `ids` and decoded `text` out; `"stream": true` supported | token ids in; `ids` out, `text` is `""`; a streamed request is HTTP 400 |
 | end of generation | stops at the model's end token, `finish_reason: "stop"` | runs to `max_tokens`, `"length"` |
 
 - **Chat template.** There is no Jinja evaluator; the template is one of four
@@ -231,7 +231,9 @@ What the server offers depends on whether the GGUF embeds its tokenizer
   `choices[0].logprobs.content`: one entry per reply token with `token`,
   `id`, `logprob`, `bytes` and the `n` most likely alternatives, best
   first. `token` is `""` when the token's bytes are not whole UTF-8
-  characters; `bytes` always has them. Not available on streamed replies.
+  characters; `bytes` always has them. On a streamed reply each frame
+  carries the entries of the tokens whose text it completes, so the
+  entries of all frames are those of the non-streamed reply.
 - **Forced answer prefix.** Two ways to make the model continue a text
   you wrote: a chat request whose last message has role `assistant` (its
   content is continued and the reply is only what follows), or a text
@@ -241,7 +243,9 @@ What the server offers depends on whether the GGUF embeds its tokenizer
 - **Errors.** No messages, an empty prompt, or a prompt that does not fit
   the context are HTTP 400 with `{"error": {"message", "type"}}`; an
   exception while generating is HTTP 500 and is logged. The server keeps
-  serving. Streamed requests end their stream instead.
+  serving. A streamed request is checked before its stream opens, so
+  the 400s are the same; an exception while generating ends the stream
+  with a `data: {"error": {...}}` frame after what was already sent.
 - **Concurrent requests.** By default requests are answered in turn.
   `--slots N` decodes up to N of them as one batch; see "Concurrent
   requests" below.
@@ -367,7 +371,8 @@ change with forward passes:
   produced each result. `toy serve` hashes the two files at start and
   `toy pack` stores the model's hash in the artifact; a runner started
   without either reports `""`. The `run_start` event records both hashes
-  and each request event the scale. Streamed replies are not labelled.
+  and each request event the scale. A streamed reply carries the label
+  on its last frame.
 
 What it costs and what it does not do:
 
@@ -398,12 +403,12 @@ prompt in about 0.2 s. Models and options the fused step does not cover
 run on the older per-head graph, which is several times slower on a GPU;
 see "Decode graphs" in [`models.md`](models.md).
 
-Streamed replies still go through tep's handlers (tep#276), so three
-things are as tep has them there: a streamed `/v1/completions` reads
-`prompt` as a token-id array only; a streamed chat reply always ends with
-`finish_reason: "stop"`, also when it ended on `max_tokens`; and its `id`
-is the constant `chatcmpl-tep`. Non-streamed replies are toy's own
-(toy#216) and have none of the three.
+Streamed replies are toy's own as well (toy#219). The frames share the
+reply's `id`. The last frame before `data: [DONE]` has an empty delta
+(chat) or an empty `text`, the `finish_reason` (`"length"` at
+`max_tokens`), the `usage` and the `"toy"` label. A streamed
+`/v1/completions` takes a text or token-id `prompt` and each frame carries
+the `ids` of the tokens whose text it completes.
 
 The serve stack lives at `lib/toy/serve/openai/` and is driven by
 `lib/toy/run/serve.rb` → `libexec/toy-serve`. `make gate-serve`,

@@ -18,6 +18,12 @@
 #             JSON decoder turned each escape into "?")
 #   stream    "stream":true frames concatenate to the non-streamed content,
 #             every frame is valid JSON, and the stream ends with [DONE]
+#   streamlp  (toy#219) a streamed reply is toy's own: with logprobs its
+#             frames' entries are exactly those of the non-streamed reply,
+#             with and without a stop string; the last frame has the real
+#             finish_reason ("length" at max_tokens), the usage and the
+#             "toy" label; /v1/completions streams the text and ids of its
+#             non-streamed form; an empty messages array is HTTP 400
 #   stop      with STOP_IDS the same request ends early with finish_reason
 #             "stop" and the stop id is not in the reply; without it the
 #             request runs to max_tokens with "length"
@@ -161,6 +167,20 @@ def post(port, path, payload, timeout = 120)
     req.body = JSON.dump(payload)
     h.request(req)
   end
+end
+
+# A streamed POST: [HTTP code, frames as parsed JSON, saw [DONE], raw body].
+def sse(port, path, payload)
+  buf = +""
+  code = nil
+  Net::HTTP.start("127.0.0.1", port, open_timeout: 2, read_timeout: 120) do |h|
+    req = Net::HTTP::Post.new(path, "Content-Type" => "application/json")
+    req.body = JSON.dump(payload.merge("stream" => true))
+    h.request(req) { |resp| code = resp.code; resp.read_body { |chunk| buf << chunk } }
+  end
+  return [code, [], false, buf] unless code == "200"
+  data = buf.split("\n\n").map { |ev| ev.sub(/\Adata: /, "").strip }.reject(&:empty?)
+  [code, data.reject { |d| d == "[DONE]" }.map { |d| JSON.parse(d) }, data.last == "[DONE]", buf]
 end
 
 # Ids of `text` from the standalone encoder (not the server).
@@ -417,6 +437,48 @@ begin
     failures << "stream: last frame carries no finish_reason"
   else
     ok.call("stream", "#{frames.length} frames, content equals the non-streamed reply")
+  end
+
+  # ---- streamlp (toy#219) ----
+  e = []
+  lp_req = chat_req.merge("logprobs" => true, "top_logprobs" => 3)
+  stop_mid = chat_content[chat_content.length / 2, 3].to_s
+  [["no stop", lp_req], ["stop #{stop_mid.inspect}", lp_req.merge("stop" => stop_mid)]].each do |name, rq|
+    r = post(port, "/v1/chat/completions", rq)
+    ref = r.code == "200" ? JSON.parse(r.body) : {}
+    want_lp = ref.dig("choices", 0, "logprobs", "content").to_a
+    code, fr, done, = sse(port, "/v1/chat/completions", rq)
+    got_lp = fr.flat_map { |f| f.dig("choices", 0, "logprobs", "content").to_a }
+    got_text = fr.map { |f| f.dig("choices", 0, "delta", "content").to_s }.join
+    e << "#{name}: HTTP #{code}, [DONE] #{done}" unless code == "200" && done
+    e << "#{name}: no reference entries" if want_lp.empty?
+    e << "#{name}: #{got_lp.length} streamed entries differ from the #{want_lp.length} non-streamed ones" unless got_lp == want_lp
+    e << "#{name}: streamed text #{got_text.inspect} differs from #{ref.dig("choices", 0, "message", "content").inspect}" \
+      unless got_text == ref.dig("choices", 0, "message", "content")
+    last = fr.last || {}
+    e << "#{name}: last frame finish_reason #{last.dig("choices", 0, "finish_reason").inspect}, expected #{ref.dig("choices", 0, "finish_reason").inspect}" \
+      unless last.dig("choices", 0, "finish_reason") == ref.dig("choices", 0, "finish_reason")
+    e << "#{name}: last frame usage #{last["usage"].inspect}, expected #{ref["usage"].inspect}" unless last["usage"] == ref["usage"]
+    e << "#{name}: last frame label #{last["toy"].inspect}, expected #{ref["toy"].inspect}" unless last["toy"] == ref["toy"] && ref["toy"]
+    e << "#{name}: frames do not share one chatcmpl- id" unless fr.map { |f| f["id"] }.uniq.length == 1 && fr[0]["id"].to_s.start_with?("chatcmpl-") && fr[0]["id"] != "chatcmpl-tep"
+    e << "#{name}: only #{fr.length} frames" unless fr.length >= 4
+  end
+  code, fr, done, = sse(port, "/v1/chat/completions", chat_req)
+  e << "a plain stream carries a logprobs field" if fr.any? { |f| f["choices"][0].key?("logprobs") }
+  e << "a plain stream ends with #{fr.last.to_h.dig("choices", 0, "finish_reason").inspect}, expected \"length\"" \
+    unless fr.last.to_h.dig("choices", 0, "finish_reason") == "length"
+  code, fr, done, = sse(port, "/v1/completions", "model" => "gate", "prompt" => PROMPT, "max_tokens" => 10)
+  s_ids  = fr.flat_map { |f| f.dig("choices", 0, "ids").to_a }
+  s_text = fr.map { |f| f.dig("choices", 0, "text").to_s }.join
+  e << "/v1/completions stream: HTTP #{code}, ids #{s_ids.inspect}, expected #{plain_ids.inspect}" unless code == "200" && done && s_ids == plain_ids
+  e << "/v1/completions stream: text #{s_text.inspect} does not re-encode to its ids" unless encode(TOK_GGUF, s_text, true) == plain_ids
+  code, _, _, raw = sse(port, "/v1/chat/completions", "model" => "gate", "messages" => [])
+  e << "empty messages streamed: HTTP #{code} #{raw[0, 80].inspect}, expected 400 with an error object" \
+    unless code == "400" && (JSON.parse(raw)["error"] rescue nil)
+  if e.empty?
+    ok.call("streamlp", "streamed entries equal the non-streamed ones (with and without a stop string); last frame has finish_reason, usage and label; /v1/completions streams; a bad request is 400")
+  else
+    e.first(5).each { |m| failures << "streamlp: #{m}" }
   end
 
   # ---- stop ----
