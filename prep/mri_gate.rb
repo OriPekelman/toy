@@ -35,6 +35,12 @@
 #                line in prep/fixtures/infer_baseline.txt.
 #             Plus an informative perf line (steps/s, decode tok/s).
 #
+#   entry     (toy#175, run by the orchestrator) `require "toy"`,
+#             "toy/compute" and the single files that declare native
+#             functions each load under CRuby; and, when SPINEL_DIR names
+#             a toolchain, Spinel's C for a program requiring the
+#             declarations contains none of the CRuby shim.
+#
 # When tinynn/libtinynn_ggml_shared.so is absent the native leg SKIPs
 # LOUDLY (exit 0) so dev boxes without a ggml build stay green; set
 # MRI_GATE_STRICT=1 to turn that skip into a failure (CI-strict mode).
@@ -73,6 +79,40 @@ if ARGV.empty?
     puts "mri-gate: NATIVE LEG SKIPPED — #{NATIVE_LIB} missing; " \
          "`make libtinynn_shared` builds it (MRI_GATE_STRICT=1 makes this a failure)"
   end
+  # ── entry (toy#175) ────────────────────────────────────────────────
+  # Every file that declares native functions loads the DSL shim itself
+  # under CRuby, so the entries a newcomer guesses load too — not only
+  # toy/mri. Each in its own process (the shim refuses a second load).
+  entries = ["toy", "toy/compute", "toy/io/gguf_kv", "toy/ffi/tinynn_cuda", "toy/ffi/tinynn_metal"]
+  entries.each do |e|
+    code = "require #{e.inspect}; n = Toy::MRI.declarations.values.sum(&:length); " \
+           "abort('no declarations recorded') if n == 0; puts n"
+    out, st = Open3.capture2e({ "TOY_MRI_NATIVE" => "0" }, RbConfig.ruby, "-I", File.join(ROOT, "lib"), "-e", code)
+    gate_fail "entry: `require #{e.inspect}` under CRuby failed: #{out.lines.first(2).join.strip}" unless st.success?
+  end
+  puts "  ok: entry — #{entries.map { |e| "require \"#{e}\"" }.join(', ')} each load under CRuby"
+
+  # The same guard must vanish under Spinel: the C generated for a program
+  # that requires the declarations carries the declared functions and none
+  # of the shim. Needs the compiler, so it is skipped without SPINEL_DIR.
+  spinel = File.join(ENV["SPINEL_DIR"].to_s, "spinel")
+  if File.executable?(spinel)
+    require "tmpdir"
+    Dir.mktmpdir("mri_gate_entry") do |dir|
+      src = File.join(dir, "probe.rb")
+      File.write(src, "require_relative #{File.join(ROOT, 'lib/toy/ffi/tinynn').inspect}\nputs TinyNN.tnn_events_active\n")
+      out, st = Open3.capture2e(spinel, src, "-c", "-o", File.join(dir, "probe.c"), "--force")
+      gate_fail "entry: Spinel did not compile a program requiring lib/toy/ffi/tinynn.rb: #{out.lines.last(3).join}" unless st.success?
+      c = File.read(File.join(dir, "probe.c"))
+      gate_fail "entry: the probe's C does not call tnn_events_active — nothing was compiled" unless c.include?("tnn_events_active")
+      leaked = %w[NativeCallError ShimCollisionError record_func try_open_native].select { |w| c.include?(w) }
+      gate_fail "entry: the CRuby shim reached Spinel's output (#{leaked.join(', ')}); the RUBY_ENGINE guard was not resolved at compile time" unless leaked.empty?
+    end
+    puts "  ok: entry — Spinel drops the guarded require: the generated C has the declarations and none of the shim"
+  else
+    puts "  not run: entry (Spinel side) — SPINEL_DIR is not set to a toolchain"
+  end
+
   puts "mri-gate: ok"
   exit 0
 end

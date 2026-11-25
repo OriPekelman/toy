@@ -71,6 +71,12 @@ class FFNFFICacheCuda
   end
 end
 
+# toy#175: under CRuby the declarations below need lib/toy/mri/shim.rb.
+# Spinel resolves this guard at compile time and drops the require.
+if RUBY_ENGINE != "spinel"
+  require_relative "../mri/shim"   # cruby-only
+end
+
 module TinyNNCuda
   ffi_lib "tinynn_ggml_cuda"
   ffi_lib "ggml"

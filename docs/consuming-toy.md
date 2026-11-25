@@ -231,17 +231,15 @@ line via the `SPINEL_EXT_<PLACEHOLDER>` escape hatch.
 
 ## MRI dev-runs: `require "toy/mri"` (toy#71)
 
-> **`require "toy"` does not work under MRI, and the error does not say so.**
-> It raises `undefined method 'ffi_lib' for TinyNN:Module (NoMethodError)`
-> from `lib/toy/ffi/tinynn.rb`, which reads like a broken install rather
-> than a wrong entry point. Use **`toy/compute`** (the library surface, see
-> the README) or **`toy/mri`** (FFI dev-runs, below).
->
-> `lib/toy.rb` is the *Spinel* entry and is compiled; it cannot detect MRI
-> and re-route, because a conditional `require_relative` is silently
-> compiled to `0` (spinel-dev#20 — see the note at `lib/toy/mri.rb:33`), so
-> the obvious guard would break every compiled runner without failing.
-> Tracked as toy#175.
+> **Any entry loads under CRuby (toy#175).** `require "toy"`,
+> `require "toy/compute"` or a single engine file used to die in
+> `undefined method 'ffi_lib' for TinyNN:Module`; only `toy/mri` worked.
+> The files that declare native functions now load the declaration shim
+> (`lib/toy/mri/shim.rb`) themselves under CRuby, behind
+> `if RUBY_ENGINE != "spinel"`, which Spinel resolves at compile time and
+> drops (this needs the pinned Spinel 2026.10.25 or later, which defines
+> `RUBY_ENGINE`). `toy/mri` remains the documented entry and behaves as
+> before.
 
 Plain CRuby can load — and, with one `make` target, **run** — the whole
 compute surface; no Spinel:
