@@ -210,6 +210,14 @@ vendor-tep:
 vendor/spinel/tep/lib/tep.rb:
 	@$(MAKE) vendor-tep
 
+# Every file `make vendor-tep` leaves under vendor/spinel/ (the gems' Ruby,
+# their compiled C objects, the rbs seeds, spinel-flags), as a prerequisite
+# list for the binaries that link tep. Naming tep.rb alone only said "the
+# tree exists": a re-vendor to a new tep, or a patch to one vendored file,
+# left libexec/toy-serve "up to date" and the gates ran the old server.
+# Empty on a fresh tree; the tep.rb rule above then vendors first.
+VENDOR_SPINEL_SRCS := $(shell find vendor/spinel -type f 2>/dev/null)
+
 # SpinelKit (toy#44) is vendored by the SAME `vendor-tep` step (both gems are in
 # the Gemfile/lock; `spinel-compat vendor` copies all of them). This rule lets
 # any runner/example list the vendored spinel_kit/git.rb (toy_events' git
@@ -1347,7 +1355,7 @@ libexec/toy-serve: lib/toy/run/serve.rb lib/toy/io/json_builder.rb lib/toy/io/js
 		lib/toy/serve/openai/server.rb \
 		lib/toy/serve/openai/handlers.rb lib/toy/serve/openai/toy_backend.rb \
 		lib/toy/serve/openai/json_prefix.rb \
-		vendor/spinel/tep/lib/tep.rb \
+		vendor/spinel/tep/lib/tep.rb $(VENDOR_SPINEL_SRCS) \
 		lib/toy/llm/engine/llama_kv_engine.rb lib/toy/io/loaders/toy_smollm2_loader.rb \
 		lib/toy/io/tokenizer.rb lib/toy/io/gguf_kv.rb lib/toy/train/toy_chat_template.rb \
 		tinynn/libtinynn_ggml.a $(SPINEL_DEPS) \
@@ -1373,7 +1381,7 @@ libexec/toy-serve-cuda: lib/toy/run/serve_cuda.rb lib/toy/io/json_builder.rb lib
 		lib/toy/serve/openai/server_cuda.rb \
 		lib/toy/serve/openai/handlers.rb lib/toy/serve/openai/toy_backend_cuda.rb \
 		lib/toy/serve/openai/json_prefix.rb \
-		vendor/spinel/tep/lib/tep.rb \
+		vendor/spinel/tep/lib/tep.rb $(VENDOR_SPINEL_SRCS) \
 		lib/toy/llm/engine/llama_kv_engine_cuda.rb lib/toy/io/loaders/toy_smollm2_loader.rb \
 		lib/toy/io/tokenizer.rb lib/toy/io/gguf_kv.rb lib/toy/train/toy_chat_template.rb \
 		lib/toy/ffi/tinynn_cuda.rb tinynn/libtinynn_ggml.a tinynn/libtinynn_ggml_cuda.a $(SPINEL_DEPS) \
@@ -1858,11 +1866,11 @@ $(MIRROR_METAL): %_metal.rb: %.rb prep/gen_cuda_mirror.rb
 # Tep+Spinel HTTP server demos. See tep_demo/README.md. Builds bypass
 # tep's translator (we use spinel directly on the spinelgems-vendored
 # tep tree at vendor/spinel/tep/lib/, produced by `make vendor-tep`).
-tep_demo/hello: tep_demo/hello_api.rb vendor/spinel/tep/lib/tep.rb
+tep_demo/hello: tep_demo/hello_api.rb vendor/spinel/tep/lib/tep.rb $(VENDOR_SPINEL_SRCS)
 	$(SPINEL) tep_demo/hello_api.rb -o tep_demo/hello
 
 # Inference API: /generate?n=N runs greedy generation via FullForwardFFICache.
-tep_demo/api: tep_demo/legacy/inference_api.rb vendor/spinel/tep/lib/tep.rb lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
+tep_demo/api: tep_demo/legacy/inference_api.rb vendor/spinel/tep/lib/tep.rb $(VENDOR_SPINEL_SRCS) lib/toy/models/transformer.rb lib/toy/ffi/tinynn.rb tinynn/libtinynn_ggml.a
 	$(SPINEL) tep_demo/legacy/inference_api.rb -o tep_demo/api
 
 # --- ggml vendor ------------------------------------------------------------
